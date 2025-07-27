@@ -1,0 +1,7 @@
+<launch>
+    <node pkg="auv_control" type="main_driver.py" name="main_driver" output="screen" />
+    <node pkg="auv_control" type="sensor_driver.py" name="sensor_driver" output="screen" />
+    <node pkg="auv_control" type="state_control.py" name="state_control" output="screen" />
+    <node pkg="auv_control" type="debg_driver.py" name="debug_driver" output="screen" />
+    <!-- <node pkg="auv_control" type="keyboard_node.py" name="keyboard_node" output="screen" /> -->
+</launch>

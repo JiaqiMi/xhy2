@@ -1,0 +1,51 @@
+# 忽略所有 .log 文件
+*.log
+
+# 忽略 build 文件夹
+build/
+devel/
+camera/
+datasets/
+models/
+packages/
+src/cv_bridge/
+src/geometry2/
+
+# 忽略所有 __pycache__ 文件夹
+__pycache__/
+
+# 忽略 Mac 的系统文件
+.DS_Store
+
+# 忽略 Jupyter notebook 的检查点
+.ipynb_checkpoints/
+
+# 忽略某个具体文件
+secret_config.py
+
+# 忽略特定文件夹
+test/
+packages/
+
+# 忽略训练数据
+datasets/images/
+datasets/video/
+datasets/xhy0718-holes/
+datasets/xhy0718-shapes/
+datasets/xhy0718-balls/
+
+# 忽略模型
+train_models/
+models/
+
+
+
+# 豁免相机参数文件
+!camera/*.txt
+
+*.jpg
+*.mkv
+*.json
+*.zip
+*.pt
+
