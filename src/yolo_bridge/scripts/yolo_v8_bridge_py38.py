@@ -14,7 +14,7 @@ class YOLOv8Detector:
     def __init__(self):
         rospy.init_node("yolov8_detector", anonymous=True)
         
-        self.DetectMode = rospy.get_param('~detect_mode', 3)  
+        self.DetectMode = rospy.get_param('~detect_mode', 2)  
         
         
         if self.DetectMode == 1:
@@ -101,9 +101,9 @@ class YOLOv8Detector:
                 self.center_pub.publish(pt)
                 
         # 可视化
-        annotated = results[0].plot()
-        cv2.imshow("YOLOv8 Detection", annotated)
-        cv2.waitKey(1)
+        # annotated = results[0].plot()
+        # cv2.imshow("YOLOv8 Detection", annotated)
+        # cv2.waitKey(1)
 
 if __name__ == "__main__":
     try:

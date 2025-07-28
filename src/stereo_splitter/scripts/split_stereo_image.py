@@ -1,8 +1,14 @@
 #!/home/xhy/xhy_env/bin/python
+
 import rospy
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import cv2
+
+"""
+#!/home/xhy/xhy_env/bin/python
+#!/usr/bin/env python
+"""
 
 class StereoSplitter:
     def __init__(self):

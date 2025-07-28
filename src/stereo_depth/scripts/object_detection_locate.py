@@ -50,12 +50,21 @@ class StereoDepthNode:
         # self.cy = 271.474743
         # self.baseline = 34.309807 / 572.993971  # m
         
-        # water - new
-        self.fx = 1080.689861
-        self.fy = 1080.689861
-        self.cx = 559.908498
-        self.cy = 261.932663
-        self.baseline = 81.420154 / 1080.689861  # m
+        # # water - new
+        # self.fx = 1080.689861
+        # self.fy = 1080.689861
+        # self.cx = 559.908498
+        # self.cy = 261.932663
+        # self.baseline = 81.420154 / 1080.689861  # m
+        
+        # water - new - 0727
+        self.fx = 798.731044
+        self.fy = 798.731044
+        self.cx = 348.127430
+        self.cy = 269.935493
+        self.baseline = 47.694354 / 798.731044  # m
+        
+        
         
         self.bridge = CvBridge()
         self.target_uv = None  
@@ -139,11 +148,11 @@ class StereoDepthNode:
 
         # 判断是否有来自YOLO的像素坐标
         X, Y, Z = None, None, None
-        if self.target_uv is not None and self.target_conf >= 0.8:
+        if self.target_uv is not None and self.target_conf >= 0.6:
             u, v = self.target_uv
             if 0 <= u < disparity.shape[1] and 0 <= v < disparity.shape[0]:
                 X, Y, Z = pixel_to_camera_coords(u, v, depth, self.fx, self.fy, self.cx, self.cy)
-                if X is not None and (-0.2 < X < 0.2 or -0.2 < Y < 0.2):
+                if X is not None and (-0.5 < X < 0.5 and -0.5 < Y < 0.5):
                     rospy.loginfo(
                         "Valid target: time=%s, class=%s conf=%.2f -> X=%.2f Y=%.2f Z=%.2f", \
                         self.target_check_time, self.target_class, self.target_conf, X, Y, Z)
@@ -155,7 +164,7 @@ class StereoDepthNode:
 
         # 发布相机事件
         try:
-            if X is not None and (-0.2 < X < 0.2 or -0.2 < Y < 0.2):
+            if X is not None and (-0.5 < X < 0.5 and -0.5 < Y < 0.5):
                 depth_msg = self.bridge.cv2_to_imgmsg(depth, encoding="32FC1")
                 depth_msg.header = left_img_msg.header
                 # self.depth_pub.publish(depth_msg)
