@@ -1,0 +1,33 @@
+<launch>
+    <!-- 下潜的深度-->
+    <param name="depth" type ="double" value="0.2" />
+    
+    <!-- task1: 记录三个点 -->
+    <param name="detect_door" type="bool" value="false" />
+    <param name="task1_target_class" type="string" value="blue" />
+
+    <!-- 第一个点，任务初始点 -->
+    <param name="task1_point1" type="yaml" value="[0.5, -0.8, 0.2, -0.0]" /> 
+    <!-- 第二个点，蓝色门的点 -->
+    <param name="task1_point2" type="yaml" value="[0.52, -2.62, 0.2, -90.0]" />
+    <!-- 第三个点，红色门的点 -->
+    <param name="task1_point3" type="yaml" value="[1.99, -2.85, 0.2, -90.0]" />
+
+    <!-- 寻找目标释放作业任务：点1 单位 m/m/m/° -->
+    <param name="task2_point1" type="yaml" value="[1.08, -5.37, 0.2, -15.0]" />
+    <!-- 寻找目标释放作业任务：目标监测class -->
+    <param name="task2_target_class" type="string" value="black" />
+    <param name="task2_target_yaw" type="double" value="0.0" />
+
+    <!-- 任务3：夹小球 -->
+    <param name="task3_point0" type="yaml" value="[0.5, -0.5, 0.15, 0.0]" />
+    <param name="task3_target_yaw" type="double" value="-180.0" />
+    <param name="task3_target_class" type="string" value="red" />
+
+    <!-- 任务4 巡线 -->
+    <param name="task4_point1" type="yaml" value="[0.02, -4.98, 0.2, 180]" />
+
+    <!-- 任务5 上浮目标点 -->
+    <param name="task5_point1" type="yaml" value="[-1.55, -7.97, 0.2, 90]" />
+    
+</launch>

@@ -1,7 +1,25 @@
 <launch>
-    <node pkg="auv_control" type="main_driver.py" name="main_driver" output="screen" />
-    <node pkg="auv_control" type="sensor_driver.py" name="sensor_driver" output="screen" />
-    <node pkg="auv_control" type="state_control.py" name="state_control" output="screen" />
-    <node pkg="auv_control" type="debg_driver.py" name="debug_driver" output="screen" />
+    <include file="$(find auv_control)/launch/param.launch" />
+    <!-- <node pkg="auv_control" type="main_driver.py" name="main_driver" output="screen" /> -->
+    <node pkg="auv_control" type="sensor_driver.py" name="sensor_driver" output="screen" >
+        <param name="sensor_ip" value="192.168.1.115" />
+        <param name="sensor_port" value="5064" />
+        <param name="light1_brightness" value="10" /> 
+        <param name="light2_brightness" value="70" />
+    </node>
+
+    <!-- <node pkg="auv_control" type="state_control.py" name="state_control" output="screen" /> -->
+    <node pkg="auv_control" type="debug_driver.py" name="debug_driver" output="screen" >
+        <param name="debug_ip" value="192.168.1.115" />
+        <param name="debug_port" value="5063" />
+        <param name="save_path" type="string" value="/home/hsx/debug_data0728-2.csv" />
+        <param name="save_data" type="bool" value="true" />
+    </node>
+
+    <node pkg="auv_control" type="map_initer.py" name="map_initer" output="screen"/>
     <!-- <node pkg="auv_control" type="keyboard_node.py" name="keyboard_node" output="screen" /> -->
+    <node pkg="auv_control" type="static_tf_broadcaster.py" name="static_tf_broadcaster" output="screen"/>
+    <node pkg="auv_control" type="auv_tf_handler.py" name="auv_tf_hander" output="screen"/>
+    <node pkg="auv_control" type="state_control.py" name="state_control" output="screen"/>
+
 </launch>

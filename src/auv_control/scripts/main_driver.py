@@ -1,3 +1,4 @@
+#! /home/xhy/xhy_env36/bin/python
 """
 main_driver.py
 监听：auv_control/Control
@@ -8,6 +9,8 @@ main_driver.py
 v25.6.3.1
     # 接收AUV数据包，解析并发布AUV数据
     # 控制AUV运动数据
+7月15日 16：23
+    T暂时弃用，暂时没想好怎么使用
 """
 
 """

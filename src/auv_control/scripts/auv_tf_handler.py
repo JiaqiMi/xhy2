@@ -23,8 +23,8 @@ float64 longitude  # 经度(degrees)
 float64 altitude   # 高度(meters)
 """
 import rospy
-import tf2_ros
 import tf
+from tf import transformations
 from sensor_msgs.msg import NavSatFix
 from auv_control.msg import AUVData,AUVPose
 import numpy as np
@@ -40,11 +40,12 @@ class AUV_tfhandler:
     """
     def __init__(self):
         # rospy.init_node('auv_pose_control_publisher')
+        origin = NavSatFix()
         origin = rospy.wait_for_message('/world_origin', NavSatFix)
         self.wfm = WorldFrameManager(origin.latitude, origin.longitude, origin.altitude)
         rospy.loginfo(f"auv_tfhandler: 世界坐标系初始化完成{origin.latitude, origin.longitude, origin.altitude}")
         # TF相关
-        self.tf_broadcaster = tf2_ros.TransformBroadcaster()
+        self.tf_broadcaster = tf.TransformBroadcaster()
         rospy.Subscriber('/debug_auv_data', AUVData, self.debug_callback) # 订阅imu数据
         rospy.Subscriber('/target', PoseStamped, self.target_callback) # 订阅目标点数据
         self.current_pose = None
@@ -65,7 +66,7 @@ class AUV_tfhandler:
         self.current_yaw = msg.pose.yaw
         if self.current_pose is not None:
             # 欧拉角使用北东地坐标系,且使用弧度制
-            self.current_pose[3:7] = tf.transformations.quaternion_from_euler(
+            self.current_pose[3:7] = transformations.quaternion_from_euler(
                 np.radians(msg.pose.roll), 
                 np.radians(msg.pose.pitch), 
                 np.radians(msg.pose.yaw)
@@ -98,19 +99,14 @@ class AUV_tfhandler:
 
     def publish_tf(self):
         """发布map到base_link的TF（NED）"""
-        t = TransformStamped()
-        t.header.stamp = rospy.Time.now()
-        t.header.frame_id = "map"
-        t.child_frame_id = "base_link"
-        t.transform.translation.x = self.current_pose[0]  # n
-        t.transform.translation.y = self.current_pose[1]  # e
-        t.transform.translation.z = self.current_pose[2]  # d
-        t.transform.rotation.x = self.current_pose[3]
-        t.transform.rotation.y = self.current_pose[4]
-        t.transform.rotation.z = self.current_pose[5]
-        t.transform.rotation.w = self.current_pose[6]
-        self.tf_broadcaster.sendTransform(t)
-    
+        self.tf_broadcaster.sendTransform(
+            (self.current_pose[0], self.current_pose[1], self.current_pose[2]),  # translation (n,e,d)
+            (self.current_pose[3], self.current_pose[4], self.current_pose[5], self.current_pose[6]),  # rotation (quaternion)
+            rospy.Time.now(),
+            "base_link",
+            "map"
+        )
+
     def run(self):
         while not rospy.is_shutdown():
             self.Rate.sleep()
