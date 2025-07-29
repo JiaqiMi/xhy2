@@ -24,6 +24,33 @@ def pixel_to_camera_coords(u, v, depth, fx, fy, cx, cy):
     return np.array([X, Y, Z])
 
 
+def get_stable_depth(u, v, depth, fx, fy, cx, cy, window_size=11):
+    half_w = window_size // 2
+    h, w = depth.shape
+
+    u, v = int(u), int(v)
+
+    umin = max(u - half_w, 0)
+    umax = min(u + half_w + 1, w)
+    vmin = max(v - half_w, 0)
+    vmax = min(v + half_w + 1, h)
+
+    region = depth[vmin:vmax, umin:umax]
+    valid = region[np.isfinite(region) & (region > 0)]
+
+    if valid.size < 3:
+        return np.array([np.nan, np.nan, np.nan])  # too few valid points
+
+    Z = np.min(valid)  # or np.mean(valid)
+    if Z == 0:
+        rospy.logwarn("Invalid depth at pixel ({}, {}): Z = 0".format(u, v))
+        return np.array([np.nan, np.nan, np.nan])
+    X = (u - cx) * Z / fx
+    Y = (v - cy) * Z / fy
+    return np.array([X, Y, Z])
+
+
+
 def compute_pose_from_quad(P1, P2, P3, P4):
     center = (P1 + P2 + P3 + P4) / 4.0
     vec1 = P2 - P1
@@ -91,7 +118,6 @@ class StereoDepthNode:
         # self.cx = 348.127430
         # self.cy = 269.935493
         # self.baseline = 47.694354 / 798.731044  # m
-        
         
         
         self.bridge = CvBridge()
@@ -194,10 +220,10 @@ class StereoDepthNode:
                 (0 <= self.target_x2 <= disparity.shape[1]) and (0 <= self.target_y2 <= disparity.shape[0]):
                
                 # 获取每个角点的相机坐标
-                P1 = pixel_to_camera_coords(self.target_x1, self.target_y1, depth, self.fx, self.fy, self.cx, self.cy)
-                P2 = pixel_to_camera_coords(self.target_x2, self.target_y1, depth, self.fx, self.fy, self.cx, self.cy)
-                P3 = pixel_to_camera_coords(self.target_x2, self.target_y2, depth, self.fx, self.fy, self.cx, self.cy)
-                P4 = pixel_to_camera_coords(self.target_x1, self.target_y2, depth, self.fx, self.fy, self.cx, self.cy)
+                P1 = get_stable_depth(self.target_x1, self.target_y1, depth, self.fx, self.fy, self.cx, self.cy)
+                P2 = get_stable_depth(self.target_x2, self.target_y1, depth, self.fx, self.fy, self.cx, self.cy)
+                P3 = get_stable_depth(self.target_x2, self.target_y2, depth, self.fx, self.fy, self.cx, self.cy)
+                P4 = get_stable_depth(self.target_x1, self.target_y2, depth, self.fx, self.fy, self.cx, self.cy)
                 
                 rospy.loginfo("class_name: %s, P1.X: %.2f, P1.Y: %.2f, P1.Z: %.2f", self.target_class, P1[0], P1[1], P1[2])
                 rospy.loginfo("class_name: %s, P2.X: %.2f, P2.Y: %.2f, P2.Z: %.2f", self.target_class, P2[0], P2[1], P2[2])
