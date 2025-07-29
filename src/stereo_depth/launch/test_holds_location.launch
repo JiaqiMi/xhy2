@@ -17,7 +17,7 @@
 
 
     <!-- 目标点空间定位 -->
-    <node pkg="stereo_depth" type="object_detection_locate.py" name="object_detection_locate" output="screen" />
+    <node pkg="stereo_depth" type="holes_detection.py" name="holes_location" output="screen" />
 
 </launch>
 

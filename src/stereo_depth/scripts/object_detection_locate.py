@@ -145,11 +145,21 @@ class StereoDepthNode:
         #     cy=self.cy
         # )
         # print("X: {}, Y: {}, Z:{}".format(X, Y, Z))
+        
+        if self.target_uv is not None:
+            u = self.target_uv[0]
+            v = self.target_uv[1]
+            rospy.loginfo("All target: time=%s, class=%s conf=%.2f -> u=%d, v=%d", \
+                            self.target_check_time, self.target_class, self.target_conf, u, v)
 
         # 判断是否有来自YOLO的像素坐标
         X, Y, Z = None, None, None
         if self.target_uv is not None and self.target_conf >= 0.6:
-            u, v = self.target_uv
+            u = self.target_uv[0]
+            v = self.target_uv[1]
+            # rospy.loginfo(
+            #             "Valid target: time=%s, class=%s conf=%.2f -> X=%.2f Y=%.2f Z=%.2f", \
+            #             self.target_check_time, self.target_class, self.target_conf, X, Y, Z)
             if 0 <= u < disparity.shape[1] and 0 <= v < disparity.shape[0]:
                 X, Y, Z = pixel_to_camera_coords(u, v, depth, self.fx, self.fy, self.cx, self.cy)
                 if X is not None and (-0.5 < X < 0.5 and -0.5 < Y < 0.5):
@@ -157,7 +167,10 @@ class StereoDepthNode:
                         "Valid target: time=%s, class=%s conf=%.2f -> X=%.2f Y=%.2f Z=%.2f", \
                         self.target_check_time, self.target_class, self.target_conf, X, Y, Z)
                 else:
-                    rospy.logwarn("Valid location of objection.")
+                    # rospy.logwarn("Invalid location of objection.")
+                    rospy.loginfo(
+                        "Invalid target: time=%s, class=%s conf=%.2f -> X=%.2f Y=%.2f Z=%.2f", \
+                        self.target_check_time, self.target_class, self.target_conf, X, Y, Z)
             else:
                 rospy.logwarn("Target pixel coordinates are out of bounds.")
         
@@ -177,7 +190,8 @@ class StereoDepthNode:
                 pos_msg.pose.position.x = X
                 pos_msg.pose.position.y = Y
                 pos_msg.pose.position.z = Z 
-                pos_msg.pose.orientation = Quaternion(0, 0, 0, 1) # tf.transformations.quaternion_from_euler(0, 0, 1)
+                # pos_msg.pose.orientation = Quaternion(0, 0, 0, 1) 
+                pos_msg.pose.orientation = pos_msg.pose.orientation = Quaternion(0, 0, 0, 1) # tf.transformations.quaternion_from_euler(0, 0, 1)
                 msg.pose = pos_msg
                 msg.type = 'center'
                 msg.conf = self.target_conf
