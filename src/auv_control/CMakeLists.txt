@@ -130,11 +130,22 @@ include_directories(
   scripts/keyboard_control.py
   scripts/main_driver.py
   scripts/sensor_driver.py
-  # scripts/vision_driver.py
   scripts/state_control.py
-  scripts/test_point_control.py
   scripts/debug_driver.py
-  # scripts/main_node.py
+  scripts/task1_node.py
+  scripts/task2_node.py
+  scripts/task3_node.py
+  scripts/task4_node.py
+  scripts/task5_node.py
+  scripts/auv_tf_handler.py
+  scripts/static_tf_broadcaster.py
+  scripts/map_initer.py
+  test/test_point_control.py
+  test/test1.py
+  test/test_pose_control.py
+  test/test_rotation.py
+  test/test_task2_1.py
+  test/test_targetdetection.py
   ${catkin_INCLUDE_DIRS}
 )
 
