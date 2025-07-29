@@ -24,7 +24,6 @@ __pycache__/
 secret_config.py
 
 # 忽略特定文件夹
-test/
 packages/
 
 # 忽略训练数据
