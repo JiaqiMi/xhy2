@@ -1,19 +1,24 @@
+#! /home/xhy/xhy_env36/bin/python
 """
-键盘控制节点
-发布消息到main节点
-1. 手动设置运行阶段 
-    0 不切换 
-    1 过门
-    2 巡线
-    3 作业
-    4 夹球
-    5 上浮
-2. 手动控制机器人运行 wasdqeik
-3. 开启自动运行 g
-
+名称: keyboard_control.py
+功能: 键盘控制节点
+描述:
+    1. 手动设置运行阶段 
+        0 不切换 
+        1 过门
+        2 巡线
+        3 作业
+        4 夹球
+        5 上浮
+    2. 开启自动运行 g/l
+作者：黄思旭
+记录：
+2025.7.16 16:35
+    1. 添加了键盘控制节点，支持手动设置运行阶段和开启自动运行
+    2. 修改了Keyboard.msg，添加了run字段，表示是否开启自动运行
 """
 import rospy
-from auv_control.msg import Key
+from auv_control.msg import Keyboard
 import sys
 import termios
 import tty
@@ -39,23 +44,14 @@ int16 MZ
 class KeyboardControlNode:
     def __init__(self):
         rospy.init_node('keyboard_control_node')
-        self.pub = rospy.Publisher('/auv_keyboard', Key, queue_size=10)
-        self.force = rospy.get_param('~force', 50) # 默认力矩大小 50
-        self.torque = rospy.get_param('~torque', 50) # 默认转矩大小 50
+        self.pub = rospy.Publisher('/auv_keyboard', Keyboard, queue_size=10)
         self.rate = rospy.Rate(10)
-        self.running = False # 默认模式为0（待机）
-        self.led_red = False  # 红色LED状态
-        self.led_green = False  # 绿色LED状态
-        self.servo = False  # 舵机状态
-        rospy.loginfo("Control AUV with keyboard:")
-        rospy.loginfo("w/s: forward/backward")
-        rospy.loginfo("a/d: turn left/right")
-        rospy.loginfo("q/e: left/right")
-        rospy.loginfo("i/k: up/down")
-        rospy.loginfo("0-5: set run stage")
-        rospy.loginfo("g: start auto run")
-        rospy.loginfo("CTRL+C to quit")
-
+        self.running = 0 # 默认模式为0（待机）
+        rospy.loginfo("键盘控制AUV状态:")
+        rospy.loginfo("0-5: 手动设置运行阶段（仅非自动运行可用）")
+        rospy.loginfo("g: 开启自动运行")
+        rospy.loginfo("l: 停止自动运行")
+        rospy.loginfo("CTRL+C: 退出")
 
     def get_key(self):
         fd = sys.stdin.fileno()
@@ -68,54 +64,32 @@ class KeyboardControlNode:
         return key
 
     def run(self):
+        """
+        run = 1时，不关注mode是多少
+        run = 0时，mode发挥作用
+        run = 2时，退出自动运行
+        """
         while not rospy.is_shutdown():
-            key = self.get_key()
-            msg = Key()
-            # Reset all values
-            msg.run = self.running
-            msg.mode = 0
-            msg.control.force.TX = 0
-            msg.control.force.TY = 0
-            msg.control.force.TZ = 0
-            msg.control.force.MX = 0
-            msg.control.force.MY = 0
-            msg.control.force.MZ = 0
-            if key == 'g':
+            key = self.get_key() # 这个是阻塞的，直到有输入
+            rospy.loginfo(f"keyboard: input {key}")
+            msg = Keyboard()
+            # 只设置状态相关字段
+            msg.run = self.running # 初始化为当前运行状态
+            msg.mode = 0 # 初始化为不切换状态
+            if key == 'g': # 切换自动运行状态，并将runing置1
                 self.running = not self.running
-                msg.run = self.running
-            if key == 'w':
-                msg.control.force.TX = self.force
-            elif key == 's':
-                msg.control.force.TX = -self.force
-            elif key == 'a':
-                msg.control.force.MZ = self.torque
-            elif key == 'd':
-                msg.control.force.MZ = -self.torque
-            elif key == 'q':
-                msg.control.force.TY = self.force
-            elif key == 'e':
-                msg.control.force.TY = -self.force
-            elif key == 'i':
-                msg.control.force.TZ = self.force
-            elif key == 'k':
-                msg.control.force.TZ = -self.force
-            elif key == 'z':
-                msg.control.enable = True  # 启用外设控制
-                self.led_red = not getattr(self, 'led_red', False)  # 切换红色LED状态
-                msg.control.led_red = not self.led_red  # 切换红色LED状态
-            elif key == 'x':
-                msg.control.enable = True
-                self.led_green = not getattr(self, 'led_green', False)  # 切换绿色LED状态
-                msg.control.led_green = not self.led_green  # 切换绿色LED状态
-            elif key == 'c':
-                msg.control.enable = True
-                self.servo = not getattr(self, 'servo', False)  # 切换舵机状态
-                msg.control.servo = not self.servo  # 切换舵机状态
+                msg.run = 1
+                
+                self.pub.publish(msg)
+            elif key == 'l':
+                self.running = 0 # 停止自动运行
+                msg.run = 2
+                self.pub.publish(msg)
             elif key in '012345':
                 msg.mode = int(key)
+                self.pub.publish(msg)
             elif key == '\x03':  # CTRL+C
-                break
-            self.pub.publish(msg)
+                break 
             self.rate.sleep()
 
 def restore_terminal():

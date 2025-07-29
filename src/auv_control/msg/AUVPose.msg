@@ -5,9 +5,4 @@ float32 depth       # 深度
 float64 roll        # 横滚角
 float64 pitch       # 俯仰角
 float64 yaw         # 偏航角
-float32 velocity    # 速度
-
-# 新增：ENU坐标（单位：mm）
-float64 east
-float64 north
-float64 up
+float32 speed       # 速度 单位 m/s

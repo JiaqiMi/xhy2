@@ -1,0 +1,11 @@
+<!-- 例程 -->
+ <!-- TODO 添加实际的静态变换 -->
+<launch>
+    <!-- 发布base到imu的静态变换 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="base_to_imu" 
+          args="0.1 0.0 0.2 0.0 0.0 0.0 1.0 base imu" />
+          
+    <!-- 发布base到scan的静态变换 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="base_to_scan" 
+          args="0.15 0.0 0.1 0.0 0.0 0.707 0.707 base scan" />
+</launch>
