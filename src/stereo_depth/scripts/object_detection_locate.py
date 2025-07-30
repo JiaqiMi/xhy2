@@ -44,11 +44,11 @@ class StereoDepthNode:
         # self.baseline = 21.507233 / 360.607260  # m
         
         # air - new
-        # self.fx = 572.993971
-        # self.fy = 572.993971
-        # self.cx = 374.534946
-        # self.cy = 271.474743
-        # self.baseline = 34.309807 / 572.993971  # m
+        self.fx = 572.993971
+        self.fy = 572.993971
+        self.cx = 374.534946
+        self.cy = 271.474743
+        self.baseline = 34.309807 / 572.993971  # m
         
         # # water - new
         # self.fx = 1080.689861
@@ -58,11 +58,11 @@ class StereoDepthNode:
         # self.baseline = 81.420154 / 1080.689861  # m
         
         # water - new - 0727
-        self.fx = 798.731044
-        self.fy = 798.731044
-        self.cx = 348.127430
-        self.cy = 269.935493
-        self.baseline = 47.694354 / 798.731044  # m
+        # self.fx = 798.731044
+        # self.fy = 798.731044
+        # self.cx = 348.127430
+        # self.cy = 269.935493
+        # self.baseline = 47.694354 / 798.731044  # m
         
         
         

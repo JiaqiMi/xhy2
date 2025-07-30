@@ -15,13 +15,18 @@ class ArucoPosePublisher:
         self.bridge = CvBridge()
 
         # 相机内参（替换为实际标定值）
-        self.K = np.array([[519.1519, 0, 319.174292],
-                           [0, 519.712551, 277.976296],
-                           [0, 0, 1]], dtype=np.float64)
+        # air
+        # self.K = np.array([[519.1519, 0, 319.174292],
+        #                    [0, 519.712551, 277.976296],
+        #                    [0, 0, 1]], dtype=np.float64)
+        # water
+        self.K  = np.array([[ 686.32092,    0.     ,  316.41091,
+            0.     ,  685.83026,  279.42833,
+            0.     ,    0.     ,    1.     ]], dtype=np.float64)
         self.dist_coeffs = np.array([[-0.019985, 0.106889, 0.000070, 0.002679, 0.000000]], dtype=np.float64).T
 
         # ArUco 参数
-        self.marker_length = 0.035  # 单位：米
+        self.marker_length = 0.105  # 单位：米
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
 
         # 订阅图像

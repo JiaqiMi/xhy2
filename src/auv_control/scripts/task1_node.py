@@ -56,7 +56,7 @@ class Task1Node:
         start_point_from_param = rospy.get_param('/task1_point1', [0.5, -0.5, 0.15, 0.0])  # 默认值
         point_red_door = rospy.get_param('/task1_point2', [0.52, -2.62, 0.15, 0.0])  # 默认值
         point_bluedoor_params = rospy.get_param('/task1_point3', [1.99, -2.85, 0.15, -90.0])  # 默认值
-        self.pitch_offset = rospy.get_param('/pitch_offset', 0.0)  # 俯仰角偏移，默认0.0, 单位°
+        self.pitch_offset = np.radians(rospy.get_param('/pitch_offset', 0.0))  # 俯仰角偏移，默认0.0, 单位°
 
         # 变量初始化
         self.target_posestamped = PoseStamped()  # 用于存储目标点的位姿

@@ -120,6 +120,13 @@ class StereoDepthNode:
         self.baseline = 47.694354 / 798.731044  # m
         
         
+        # self.fx = 686.32092
+        # self.fy = 685.83026
+        # self.cx = 316.41091
+        # self.cy = 279.42833
+        # self.baseline = 47.694354 / 686.32092  # m
+        
+        
         self.bridge = CvBridge()
         self.target_uv = None  
         self.target_conf = 0.0

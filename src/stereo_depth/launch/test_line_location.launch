@@ -1,0 +1,16 @@
+<launch>
+    <!-- 启动 USB 相机 -->
+    <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
+
+    <!-- 图像左右分割节点 -->
+    <node pkg="stereo_splitter" type="split_image_info.py" name="split_stereo_image" output="screen" />
+        <param name="left_camera_yaml" value="/home/xhy/catkin_ws/camera/left_nc_water_0727.yaml"/>
+        <param name="right_camera_yaml" value="/home/xhy/catkin_ws/camera/right_nc_water_0727.yaml"/>
+        <param name="input_image_topic" value="/usb_cam/image_raw"/>
+
+
+    <!-- 目标点空间定位 -->
+    <node pkg="stereo_depth" type="line_detection.py" name="pipeline_detector" output="screen" />
+
+</launch>
+

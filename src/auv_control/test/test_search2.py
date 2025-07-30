@@ -36,10 +36,10 @@ class Search2:
         self.step = 0 # 程序运行阶段
         self.search_direction = 1
         self.init_yaw = None
-        self.pitch_offset = 1.5 # 固定1.5°俯仰
+        self.pitch_offset = np.radians(1.5) # 固定1.5°俯仰
         # 获取检测目标
         # self.target_color = rospy.get_param('/task2_target_class', 'red')  # 目标颜色，默认为红色   
-        self.target_color = "circle"
+        self.target_color = "black"
     ###############################################驱动层#################################    
     def is_arrival(self, current_pose:PoseStamped, target_pose:PoseStamped, max_xyz_dist=0.2, max_yaw_dist=np.radians(0.2)):
         """
@@ -254,7 +254,7 @@ class Search2:
             next_pose = self.generate_smooth_pose(current_pose, self.target_posestamped)
             dist_to_target = self.xyz_distance(current_pose.pose.position, self.target_posestamped.pose.position)
             yaw_to_target = self.yaw_distance(current_pose.pose.orientation, self.target_posestamped.pose.orientation)
-            # rospy.loginfo(f"{NODE_NAME}: 移动到目标点: 距离={dist_to_target:.3f}米, 航向差={np.degrees(yaw_to_target):.2f}度")
+            rospy.loginfo_throttle(2,f"{NODE_NAME}: 移动到目标点: 距离={dist_to_target:.3f}米, 航向差={np.degrees(yaw_to_target):.2f}度")
             self.target_pub.publish(next_pose)
 
             return False
@@ -403,6 +403,8 @@ class Search2:
 
         # 初始化当前位姿
         current_pose = self.get_current_pose()
+        if current_pose == None:
+            return False
         current_yaw = euler_from_quaternion([current_pose.pose.orientation.x,
                                               current_pose.pose.orientation.y,
                                               current_pose.pose.orientation.z,
@@ -433,11 +435,12 @@ class Search2:
         # 先运动到一个目标点，然后运行search2，直接开始搜索
         while not rospy.is_shutdown():
             if self.step == 0:
-                if self.search_target():
+                if self.search_target(rotate_step=np.radians(1.5)):
                     self.step = 1
                 # 同时原地进行旋转运动
             if self.step == 1:
-                self.move_to_target()
+                self.move_to_target(max_xyz_dist=0.1, max_yaw_step=np.radians(0.2))
+            self.rate.sleep()
 
 if __name__ == '__main__':
     rospy.init_node(NODE_NAME, anonymous=True)
