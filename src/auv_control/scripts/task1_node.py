@@ -485,7 +485,7 @@ class Task1Node:
 
         
         self.total_rotated += abs(delta_yaw)
-        rospy.loginfo(self.total_rotated)
+        # rospy.loginfo(self.total_rotated)
         self.last_yaw = current_yaw
         
         # 设置新的目标姿态
@@ -573,7 +573,8 @@ class Task1Node:
                     self.step = 8
                 else:
                     # 继续发送目标姿态
-                    self.rotate_to_target()
+                    # self.rotate_to_target()
+                    self.move_to_target()
             elif self.step == 8:
                 self.finish_task()
             self.rate.sleep()

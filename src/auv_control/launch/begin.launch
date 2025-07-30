@@ -12,7 +12,7 @@
     <node pkg="auv_control" type="debug_driver.py" name="debug_driver" output="screen" >
         <param name="debug_ip" value="192.168.1.115" />
         <param name="debug_port" value="5063" />
-        <param name="save_path" type="string" value="/home/hsx/debug_data0728-2.csv" />
+        <param name="save_path" type="string" value="/home/xhy/catkin_ws/debug_data0729-1.csv" />
         <param name="save_data" type="bool" value="true" />
     </node>
 

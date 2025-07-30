@@ -41,12 +41,12 @@ class Task2Node:
         self.target_pub = rospy.Publisher('/target', PoseStamped, queue_size=10) # 发布期望位姿话题                  
         self.control_pub = rospy.Publisher('/control', Control, queue_size=10) # 发布控制话题
         self.finished_pub = rospy.Publisher('/finished', String, queue_size=10) # 发布任务完成标志话题
-        rospy.Subscriber('/target_detection', TargetDetection, self.target_detection_callback) # 订阅目标检测话题
+        rospy.Subscriber('/obj/target_message', TargetDetection, self.target_detection_callback) # 订阅目标检测话题
         self.rate = rospy.Rate(5)  # 运行频率5Hz
         self.tf_listener = tf.TransformListener()
         self.step = 0 # 程序运行阶段
 
-        self.target_pose = PoseStamped() # 期望位置消息定义
+        self.target_posestamped = PoseStamped() # 期望位置消息定义
         
         # 添加优先队列用于存储目标位置
         self.target_positions_queue = PriorityQueue(maxsize=10)
@@ -58,7 +58,8 @@ class Task2Node:
         self.search_direction = 1  # 搜索方向：1表示正向，-1表示反向
         self.yaw_step = np.radians(3)  # 每次旋转3度
         self.search_phase = 1  # 搜索阶段：1为航向对齐，2为位置对齐
-        self.target_yaw = rospy.get_param('/task2_target_yaw', None)  # 从参数服务器读取目标航向
+       # self.target_yaw = rospy.get_param('/task2_target_yaw', None)  # 从参数服务器读取目标航向
+        self.target_yaw = None
         self.aligned_yaw = None  # 记录对齐后的航向
         self.best_confidence = 0.0  # 记录最佳置信度
 
@@ -78,8 +79,10 @@ class Task2Node:
         start_point_from_param = rospy.get_param('/task2_point1', [0.5, -0.5, 0.15, 0.0])  # 默认值
         self.start_point.pose.position.x = start_point_from_param[0]
         self.start_point.pose.position.y = start_point_from_param[1]
-        self.start_point.pose.position.z = start_point_from_param[2]
+        self.start_point.pose.position.z = start_point_from_param[2] #TODO depth
+        # rospy.loginfo(start_point_from_param)
         self.start_point.pose.orientation = Quaternion(*quaternion_from_euler(0, 0, np.radians(start_point_from_param[3])))
+        rospy.loginfo(f"task2 node: 初始位置设置为: {self.start_point.pose.position.x}, {self.start_point.pose.position.y}, {self.start_point.pose.position.z}, ")
 
     def is_arrival(self, current_pose:PoseStamped, target_pose:PoseStamped, max_dist=0.2, max_yaw_dist=np.radians(0.2)):
         """
@@ -138,6 +141,7 @@ class Task2Node:
 
     def target_detection_callback(self, msg: TargetDetection):
         """目标检测回调函数，当检测到目标时，计算目标在世界坐标系下的位置, 并将其添加到优先队列中，不做其他处理"""
+        rospy.loginfo(f"task2 node: get msg{msg.class_name}")
         with self._queue_lock: # 获取线程锁
             try:
                 if msg.class_name == self.target_color and msg.conf > 0.6:  # 只有当检测到的目标颜色与宏定义的目标颜色一致时才处理
@@ -178,7 +182,7 @@ class Task2Node:
         Returns:
             到达目标位置返回true,未到达目标位置返回false
         """
-        self.target_pose = self.start_point # 将宏定义的初始位置赋值给目标位置
+        self.target_posestamped = self.start_point # 将宏定义的初始位置赋值给目标位置
         return self.move_to_target()
 
     def generate_smooth_pose(self, current_pose:PoseStamped, target_pose:PoseStamped, max_xy_step=0.8, max_z_step=0.1, max_yaw_step=np.radians(5)):
@@ -304,7 +308,7 @@ class Task2Node:
         
         return next_pose
 
-    def move_to_target(self,max_dist=0.2,max_yaw_step=np.radians(5),max_yaw_dist =0.2):
+    def move_to_target(self,max_dist=0.2,max_yaw_step=np.radians(5),max_yaw_dist =np.radians(0.2)):
         """
         发送一次指令移动到目标位姿，通过生成平滑路径点实现
         
@@ -325,6 +329,7 @@ class Task2Node:
             next_pose = self.generate_smooth_pose(current_pose, self.target_posestamped)
             dist_to_target = self.numpy_distance(current_pose.pose.position, self.target_posestamped.pose.position)
             yaw_to_target = self.yaw_distance(current_pose.pose.orientation, self.target_posestamped.pose.orientation)
+            # rospy.loginfo(f"task1 node: 生成平滑路径点: 当前位姿: {current_pose.pose.position},  target:{self.target_posestamped.pose.position}, ")
             rospy.loginfo(f"task1 node: 移动到目标点: 距离={dist_to_target:.3f}米, 航向差={np.degrees(yaw_to_target):.2f}度")
             self.target_pub.publish(next_pose)
 
@@ -390,20 +395,19 @@ class Task2Node:
             (base_trans, base_rot) = self.tf_listener.lookupTransform("map", "base_link", rospy.Time(0))
             
             # 计算base_link的目标位置
-            self.target_pose = PoseStamped()
-            self.target_pose.header.frame_id = "map"
-            self.target_pose.header.stamp = rospy.Time.now()
-            self.target_pose.pose.position.x = avg_position[0] - trans[0]
-            self.target_pose.pose.position.y = avg_position[1] - trans[1]
-            self.target_pose.pose.position.z = avg_position[2] - trans[2]
-            self.target_pose.pose.orientation.x = base_rot[0]
-            self.target_pose.pose.orientation.y = base_rot[1]
-            self.target_pose.pose.orientation.z = base_rot[2]
-            self.target_pose.pose.orientation.w = base_rot[3]
+            self.target_posestamped.header.frame_id = "map"
+            self.target_posestamped.header.stamp = rospy.Time.now()
+            self.target_posestamped.pose.position.x = avg_position[0] - trans[0]
+            self.target_posestamped.pose.position.y = avg_position[1] - trans[1]
+            self.target_posestamped.pose.position.z = avg_position[2] - trans[2]
+            self.target_posestamped.pose.orientation.x = base_rot[0]
+            self.target_posestamped.pose.orientation.y = base_rot[1]
+            self.target_posestamped.pose.orientation.z = base_rot[2]
+            self.target_posestamped.pose.orientation.w = base_rot[3]
             
-            rospy.loginfo(f"计算得到的工作目标点位置: x={self.target_pose.pose.position.x:.3f}, "
-                         f"y={self.target_pose.pose.position.y:.3f}, "
-                         f"z={self.target_pose.pose.position.z:.3f}")
+            rospy.loginfo(f"计算得到的工作目标点位置: x={self.target_posestamped.pose.position.x:.3f}, "
+                         f"y={self.target_posestamped.pose.position.y:.3f}, "
+                         f"z={self.target_posestamped.pose.position.z:.3f}")
             
             return self.move_to_target()
             
@@ -481,10 +485,12 @@ class Task2Node:
                                     auv_pose.pose.position.x
                                 )
                                 # 计算垂直于目标的航向
-                                best_yaw = current_yaw + target_dir + np.pi/2
+                                # best_yaw = current_yaw + target_dir + np.pi/2
+                                best_yaw = current_yaw + target_dir
                             temp_queue.put((priority, seq, map_pose, auv_pose))
                         
                         self.target_positions_queue = temp_queue
+                        rospy.loginfo(f"best_raw: {best_raw}")
 
                     # 如果找到了足够高置信度的目标
                     if max_conf > self.best_confidence:
@@ -493,7 +499,7 @@ class Task2Node:
                         rospy.loginfo(f"找到更好的目标方向，置信度: {max_conf:.2f}")
 
                     # 如果置信度足够高，进入第二阶段
-                    if max_conf > 0.8:
+                    if max_conf > 0.7:
                         self.search_phase = 2
                         rospy.loginfo("航向对齐完成，进入位置对齐阶段")
                         return False
@@ -502,83 +508,82 @@ class Task2Node:
                 next_yaw = current_yaw + (self.yaw_step * self.search_direction)
 
                 # 检查是否需要改变搜索方向
-                if next_yaw > self.initial_yaw + np.radians(180):
+                if next_yaw > self.initial_yaw + np.radians(30):
                     self.search_direction = -1
                     next_yaw = current_yaw + (self.yaw_step * self.search_direction)
                     rospy.loginfo("掉头顺时针搜索")
-                elif next_yaw < self.initial_yaw - np.radians(180):
+                elif next_yaw < self.initial_yaw - np.radians(30):
                     self.search_direction = 1
                     next_yaw = current_yaw + (self.yaw_step * self.search_direction)
                     rospy.loginfo("掉头逆时针搜索")
 
             # 阶段2：位置对齐
             else:
-                if not self.target_positions_queue.full():
-                    rospy.loginfo_throttle(1, "等待足够的目标位置数据...")
-                    return False
+                if self.target_positions_queue.qsize()>=3:
+                  
 
-                # 计算目标在map下的平均位置
-                temp_queue = PriorityQueue()
-                sum_pos = np.zeros(3)
-                sum_weight = 0.0
-                
-                while not self.target_positions_queue.empty():
-                    priority, seq, map_pose, auv_pose = self.target_positions_queue.get()
-                    weight = -priority  # 转换回置信度
-                    pos = np.array([
-                        map_pose.pose.position.x,
-                        map_pose.pose.position.y,
-                        map_pose.pose.position.z
-                    ])
-                    sum_pos += pos * weight
-                    sum_weight += weight
-                    temp_queue.put((priority, seq, map_pose, auv_pose))
-                
-                self.target_positions_queue = temp_queue
-                avg_pos = sum_pos / sum_weight
+                    # 计算目标在map下的平均位置
+                    temp_queue = PriorityQueue()
+                    sum_pos = np.zeros(3)
+                    sum_weight = 0.0
+                    
+                    while not self.target_positions_queue.empty():
+                        priority, seq, map_pose, auv_pose = self.target_positions_queue.get()
+                        weight = -priority  # 转换回置信度
+                        pos = np.array([
+                            map_pose.pose.position.x,
+                            map_pose.pose.position.y,
+                            map_pose.pose.position.z
+                        ])
+                        sum_pos += pos * weight
+                        sum_weight += weight
+                        temp_queue.put((priority, seq, map_pose, auv_pose))
+                    
+                    self.target_positions_queue = temp_queue
+                    avg_pos = sum_pos / sum_weight
 
-                try:
-                    # 获取hand到base_link的静态变换
-                    self.tf_listener.waitForTransform("base_link", "hand", rospy.Time(0), rospy.Duration(1.0))
-                    (hand_trans, hand_rot) = self.tf_listener.lookupTransform("base_link", "hand", rospy.Time(0))
+                    try:
+                        # 获取hand到base_link的静态变换
+                        self.tf_listener.waitForTransform("base_link", "hand", rospy.Time(0), rospy.Duration(1.0))
+                        (hand_trans, hand_rot) = self.tf_listener.lookupTransform("base_link", "hand", rospy.Time(0))
+                        
+                        # 计算当前位置与目标的偏差，考虑夹爪偏移
+                        current_pos = np.array([
+                            current_pose.pose.position.x + hand_trans[0],  # 加上夹爪在x方向的偏移
+                            current_pose.pose.position.y + hand_trans[1],  # 加上夹爪在y方向的偏移
+                            current_pose.pose.position.z + hand_trans[2]   # 加上夹爪在z方向的偏移
+                        ])
+                        pos_error = np.linalg.norm(avg_pos - current_pos)
+                        
+                        # 如果位置和航向都对齐得比较好，完成搜索
+                        yaw_error = abs((self.aligned_yaw - current_yaw + np.pi) % (2 * np.pi) - np.pi)
+                        if pos_error < 0.1 and yaw_error < np.radians(5):
+                            rospy.loginfo("位置和航向对齐完成")
+                            return True
+                        # 设置目标姿态，考虑夹爪偏移
+                        self.target_posestamped.header.frame_id = "map"
+                        self.target_posestamped.header.stamp = rospy.Time.now()
+                        
+                        # 设置目标位置，让hand对准目标
+                        self.target_posestamped.pose.position.x = avg_pos[0] - hand_trans[0]
+                        self.target_posestamped.pose.position.y = avg_pos[1] - hand_trans[1]
+                        self.target_posestamped.pose.position.z = avg_pos[2] - hand_trans[2]
                     
-                    # 计算当前位置与目标的偏差，考虑夹爪偏移
-                    current_pos = np.array([
-                        current_pose.pose.position.x + hand_trans[0],  # 加上夹爪在x方向的偏移
-                        current_pose.pose.position.y + hand_trans[1],  # 加上夹爪在y方向的偏移
-                        current_pose.pose.position.z + hand_trans[2]   # 加上夹爪在z方向的偏移
-                    ])
-                    pos_error = np.linalg.norm(avg_pos - current_pos)
-                    
-                    # 如果位置和航向都对齐得比较好，完成搜索
-                    yaw_error = abs((self.aligned_yaw - current_yaw + np.pi) % (2 * np.pi) - np.pi)
-                    if pos_error < 0.1 and yaw_error < np.radians(5):
-                        rospy.loginfo("位置和航向对齐完成")
-                        return True
-                    # 设置目标姿态，考虑夹爪偏移
-                    self.target_pose.header.frame_id = "map"
-                    self.target_pose.header.stamp = rospy.Time.now()
-                    
-                    # 设置目标位置，让hand对准目标
-                    self.target_pose.pose.position.x = avg_pos[0] - hand_trans[0]
-                    self.target_pose.pose.position.y = avg_pos[1] - hand_trans[1]
-                    self.target_pose.pose.position.z = avg_pos[2] - hand_trans[2]
-                
-                    # 设置目标航向
-                    self.target_pose.pose.orientation = Quaternion(*quaternion_from_euler(0, 0, self.aligned_yaw))
-                    
-                    rospy.loginfo_throttle(1, f"位置对齐: 误差={pos_error:.3f}米, "
-                                         f"航向误差={np.degrees(yaw_error):.1f}度")
-                except tf.Exception as e:
-                    rospy.logwarn(f"task2 node: 获取hand变换失败: {e}")
-                    return False
-
+                        # 设置目标航向
+                        # self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, 0, self.aligned_yaw))
+                        
+                        rospy.loginfo_throttle(1, f"位置对齐: 误差={pos_error:.3f}米, "
+                                            f"航向误差={np.degrees(yaw_error):.1f}度")
+                    except tf.Exception as e:
+                        rospy.logwarn(f"task2 node: 获取hand变换失败: {e}")
+                        return False
+                else
+                      rospy.loginfo_throttle(1, "等待足够的目标位置数据...")
             # 设置目标姿态
-            self.target_pose.header.frame_id = "map"
-            self.target_pose.header.stamp = rospy.Time.now()
             # 设置目标航向
             target_yaw = self.aligned_yaw if self.search_phase == 2 else next_yaw
-            self.target_pose.pose.orientation = Quaternion(*quaternion_from_euler(0, 0, target_yaw))
+            # rospy.loginfo(target_yaw)
+            self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, 1, target_yaw))
             self.move_to_target()  # 发布目标位置
             rospy.loginfo_throttle(1, f"搜索阶段{self.search_phase}: 当前航向={np.degrees(current_yaw):.1f}度, "
                                     f"目标航向={np.degrees(target_yaw):.1f}度")           

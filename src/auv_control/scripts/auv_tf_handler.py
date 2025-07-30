@@ -94,6 +94,7 @@ class AUV_tfhandler:
         ctrl_msg.roll = np.degrees(roll)
         ctrl_msg.pitch = np.degrees(pitch)
         ctrl_msg.yaw = np.degrees(yaw)
+        rospy.loginfo("auv_tfhdler: 发布控制指令")
         self.control_pub.publish(ctrl_msg)
         # rospy.loginfo_(f"auv_tfhandler: control 已发布lat:{lat},lon:{lon},dep:{depth},rpy:{ctrl_msg.roll:.2f},{ctrl_msg.pitch:.2f},{ctrl_msg.yaw:.2f}")
 

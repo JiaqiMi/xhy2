@@ -243,7 +243,7 @@ class SearchTester:
             self.target_pose.header.frame_id = "map"
             self.target_pose.header.stamp = rospy.Time.now()
             # 目标位置更新
-            self.target_pose.pose.positon = self.target_pose.pose.position if self.search_phase == 1 else avg_pos
+            self.target_pose.pose.position = self.target_pose.pose.position if self.search_phase == 1 else Point(*avg_pos)
             # 目标航向更新
             target_yaw = self.aligned_yaw if self.search_phase == 2 else next_yaw
             self.target_pose.pose.orientation = Quaternion(*quaternion_from_euler(0, 0, target_yaw))
