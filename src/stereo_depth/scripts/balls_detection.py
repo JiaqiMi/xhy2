@@ -166,7 +166,7 @@ class BallsDetector:
         # 获取骨架上的像素点
         points = np.column_stack(np.where(skeleton > 0))  # [[y,x], ...]
 
-        if len(points) < 5:
+        if len(points) < 1:
             rospy.logwarn("Not enough skeleton points found.")
             return
 
@@ -220,9 +220,15 @@ class BallsDetector:
             
             
         # ============================  获取蓝色球   ============================ #
-        lower_blue = np.array([100, 70, 50])
-        upper_blue = np.array([130, 255, 255])
+        # lower_blue = np.array([100, 70, 50])
+        # upper_blue = np.array([130, 255, 255])
+        
+        lower_blue = np.array([105, 150, 40])  # 更高的S，更低的V
+        upper_blue = np.array([125, 255, 200])
+        
         mask = cv2.inRange(hsv, lower_blue, upper_blue)
+        
+        
 
         # 形态学操作清除噪声
         kernel = np.ones((5, 5), np.uint8)

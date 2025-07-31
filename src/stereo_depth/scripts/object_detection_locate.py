@@ -171,7 +171,7 @@ class StereoDepthNode:
             
         # 判断是否有来自模型的像素坐标
         X, Y, Z = None, None, None
-        if self.target_uv is not None and self.target_conf >= 0.5:
+        if self.target_uv is not None and self.target_conf >= 0.6:
             u, v = self.target_uv
             if (0 <= u < disparity.shape[1]) and (0 <= v < disparity.shape[0]):
                 

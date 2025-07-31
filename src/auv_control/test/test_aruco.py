@@ -341,8 +341,22 @@ class testaAruco:
             pose_in_map.pose.orientation.w
         ])
         
-        rospy.loginfo(f"{NODE_NAME}: 目标检测到aruco标记, 位置={pose_in_map.pose.position}, 欧拉角=({np.degrees(roll)}, {np.degrees(pitch)}, {np.degrees(yaw)})")
-        # # 
+        # rospy.loginfo(f"{NODE_NAME}: 目标检测到aruco标记, 位置={pose_in_map.pose.position}, 欧拉角=({np.degrees(roll)}, {np.degrees(pitch)}, {np.degrees(yaw)})")
+        
+        # changed by Rice 
+        
+        current_pose = self.get_current_pose()
+        # 获取当前位姿在map下的表示
+        if current_pose is not None:
+            q = current_pose.pose.orientation
+            roll_c, pitch_c, yaw_c = euler_from_quaternion([q.x, q.y, q.z, q.w])
+            rospy.loginfo(f"{NODE_NAME}: 当前位姿欧拉角 (roll, pitch, yaw) = ({np.degrees(roll_c):.2f}, {np.degrees(pitch_c):.2f}, {np.degrees(yaw_c):.2f})")
+
+      
+        target_raw = np.degrees(yaw) + 90      # 目标航向角，注意这里是从二维码坐标系到小黄鱼坐标系的转换
+        if target_raw > 180:
+            target_raw -= 360
+        rospy.loginfo(f"{NODE_NAME}: 目标航向角 (raw) = {target_raw:.2f}度")
         # matrix = euler_matrix(yaw, pitch, roll, 'szyx')
         # #rospy.loginfo(f"matrix={matrix}")
         # vector = [matrix[0][2], matrix[1][2], matrix[2][2]]  # 假设前进方向是x轴
@@ -352,7 +366,7 @@ class testaAruco:
         
         # target_angle = self.yaw_cvt(yaw, pitch, roll)
         
-        rospy.loginfo(f"{NODE_NAME}: 转换后的目标航向={target_angle:.2f}度")
+        # rospy.loginfo(f"{NODE_NAME}: 转换后的目标航向={target_angle:.2f}度")
         
         
         self.queue.append([roll,pitch,yaw])

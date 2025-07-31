@@ -26,7 +26,7 @@ class YOLOv8Detector:
         elif self.DetectMode == 2:
             self.model = YOLO("/home/xhy/catkin_ws/models/holes_model0719.pt")
         elif self.DetectMode == 3:
-            self.model = YOLO("/home/xhy/catkin_ws/models/balls_model0725.pt")
+            self.model = YOLO("/home/xhy/catkin_ws/models/balls_model0719.pt")
             # self.model = YOLO("/home/xhy/catkin_ws/models/yolov8m-balls-0728.pt")
         else:
             rospy.logwarn("DetectMode error: %s, select the shapes model by default", str(self.DetectMode))
