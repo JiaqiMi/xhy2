@@ -127,13 +127,20 @@ class PipelineDetector:
         # lower_red2 = np.array([160, 70, 50])
         # upper_red2 = np.array([180, 255, 255])
 
+        # 红色阈值
         # mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
         # mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
         # mask = cv2.bitwise_or(mask1, mask2)
         
-        lower_green = np.array([35, 70, 50])
-        upper_green = np.array([85, 255, 255])
-        mask = cv2.inRange(hsv, lower_green, upper_green)
+        # 绿色阈值
+        # lower_green = np.array([35, 70, 50])
+        # upper_green = np.array([85, 255, 255])
+        # mask = cv2.inRange(hsv, lower_green, upper_green)
+        
+        # 蓝色阈值
+        # lower_blue = np.array([100, 70, 50])
+        # upper_blue = np.array([130, 255, 255])
+        # mask = cv2.inRange(hsv, lower_blue, upper_blue)
 
         # 形态学操作清除噪声
         kernel = np.ones((5, 5), np.uint8)

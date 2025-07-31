@@ -15,6 +15,7 @@
 
     <!-- 寻找目标释放作业任务：点1 单位 m/m/m/° -->
     <param name="task2_point1" type="yaml" value="[1.08, -5.37, 0.2, -15.0]" />
+    
     <!-- 寻找目标释放作业任务：目标监测class -->
     <param name="task2_target_class" type="string" value="black" />
     <param name="task2_target_yaw" type="double" value="0.0" />

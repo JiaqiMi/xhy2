@@ -9,6 +9,8 @@
     3. 不用优先队列，用普通队列就行，保证顺序处理
 2025.07.30 15:30
     第一版完成   
+2025.07.30 17:08
+    增加期望航向设置，输出改为ned
 """
 import rospy
 import tf
@@ -40,6 +42,7 @@ class Search2:
         # 获取检测目标
         # self.target_color = rospy.get_param('/task2_target_class', 'red')  # 目标颜色，默认为红色   
         self.target_color = "black"
+    
     ###############################################驱动层#################################    
     def is_arrival(self, current_pose:PoseStamped, target_pose:PoseStamped, max_xyz_dist=0.2, max_yaw_dist=np.radians(0.2)):
         """
@@ -313,6 +316,16 @@ class Search2:
                         current_pose = self.get_current_pose()
                         if current_pose is None:
                             return
+                        # 根据target_in_map 和current_pose 计算两者的指向作为航向
+                        p0 = np.array([current_pose.pose.position.x, current_pose.pose.position.y, current_pose.pose.position.z])
+                        p1 = np.array([target_in_map.pose.position.x, target_in_map.pose.position.y, target_in_map.pose.position.z])
+                        direction = p1 - p0
+                        direction_xy = direction[:2]
+                        direction_xy_norm = np.linalg.norm(direction_xy)
+                        if direction_xy_norm > 0:
+                            direction_xy = direction_xy / direction_xy_norm
+                            # 计算期望的航向角(前进方向)
+                            desired_yaw = np.arctan2(direction_xy[1], direction_xy[0])
 
                         # 将目标从camera坐标系转换到hand坐标系，然后再转到map坐标系
                         # 这样可以直接得到hand应该到达的位置
@@ -326,7 +339,7 @@ class Search2:
                         expected_pose.header.frame_id = "map"
                         expected_pose.header.stamp = rospy.Time.now()
                         expected_pose.pose.position = hand_target_in_map.pose.position
-                        expected_pose.pose.orientation = current_pose.pose.orientation
+                        expected_pose.pose.orientation = Quaternion(*quaternion_from_euler(0,self.pitch_offset, desired_yaw)) # 期望航向是前进方向
 
                         # 加入队列
                         self.queue.append((msg.conf, current_pose, expected_pose, target_in_map, target_in_base))
@@ -395,7 +408,7 @@ class Search2:
                                 self.target_posestamped.pose.position.x = avg_x
                                 self.target_posestamped.pose.position.y = avg_y
                                 self.target_posestamped.pose.position.z = avg_z
-                                rospy.loginfo(f"{NODE_NAME}: 目标位置设置为: x={avg_x:.2f}, y={avg_y:.2f}, z={avg_z:.2f}")
+                                rospy.loginfo(f"{NODE_NAME}: 目标位置设置为: n={avg_x:.2f}, e={avg_y:.2f}, d={avg_z:.2f},yaw ={np.degrees(avg_yaw)}")
                                 self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, avg_yaw))
                                 return True
             # 如果没有找到目标点，删除队列中的第一个元素

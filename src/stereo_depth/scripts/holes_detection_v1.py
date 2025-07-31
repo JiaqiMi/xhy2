@@ -112,7 +112,7 @@ class StereoDepthNode:
         # self.cy = 261.932663
         # self.baseline = 81.420154 / 1080.689861  # m
         
-        # water - new - 0727
+        # water - new - 0727 - P
         self.fx = 798.731044
         self.fy = 798.731044
         self.cx = 348.127430

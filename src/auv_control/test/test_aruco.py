@@ -1,3 +1,5 @@
+#!/home/xhy/xhy_env/bin/python
+
 # 检测aruco并正确的将其航向转换为map下的航向
 """
 2025.07.30 15:30
@@ -5,19 +7,20 @@
 """
 import rospy
 import tf
-from tf.transformations import euler_from_quaternion, quaternion_from_euler
+from tf.transformations import euler_from_quaternion, quaternion_from_euler, euler_matrix
 from std_msgs.msg import String
 from auv_control.msg import TargetDetection, Control
 from geometry_msgs.msg import PoseStamped, Quaternion, Point
 import numpy as np
-from queue import Queue
-from threading import Lock
+from scipy.spatial.transform import Rotation as R
+# from queue import Queue
+# from threading import Lock
 
 NODE_NAME = "aruco_detector"
 
 class testaAruco:
     def __init__(self):
-        self.lock = Lock()
+        # self.lock = Lock()
         self.queue = []
         self.target_detection_sub = rospy.Subscriber("/aruco/pose", PoseStamped, self.target_detection_callback)
         self.target_posestamped = PoseStamped() # 记录最终目标位置
@@ -97,6 +100,42 @@ class testaAruco:
         a = np.array([p1.x, p1.y, p1.z])
         b = np.array([p2.x, p2.y, p2.z])
         return np.linalg.norm(a - b)
+    
+    
+    def yaw_cvt(self, yaw, pitch, roll):
+        """
+        依据arocu标记提供的坐标系确定小黄鱼的目标航向
+        
+        Parameters:
+            yaw: 从导航坐标系到二维码坐标系的欧拉角中的偏航角(度)
+            pitch: 从导航坐标系到二维码坐标系的欧拉角中的俯仰角(度)
+            roll: 从导航坐标系到二维码坐标系的欧拉角中的横滚角(度)
+        
+        Returns:
+            angle_deg: float, 小黄鱼在导航坐标系下的航向角(度)
+        """
+        euler_nav2qr = [yaw, pitch, roll]  # ZYX 顺序
+        r = R.from_euler('zyx', euler_nav2qr, degrees=True)
+        R_nav2qr = r.as_matrix()
+
+        R_qr2nav = R_nav2qr.T
+
+        v_qr = np.array([0, 0, -1])  # 二维码坐标系的Z轴
+        v_nav = R_qr2nav @ v_qr     # 在导航系下的表示
+
+        # 在导航坐标系xy平面上的投影向量 K
+        K = v_nav.copy()
+        K[2] = 0
+
+        # 单位化投影向量
+        K_unit = K / np.linalg.norm(K)
+
+        x_axis = np.array([1, 0, 0])
+        cos_theta = np.dot(K_unit, x_axis)
+        angle_deg = np.degrees(np.arccos(cos_theta))
+        
+        return angle_deg
+    
     
     def generate_smooth_pose(self, current_pose:PoseStamped, target_pose:PoseStamped, max_xy_step=0.8, max_z_step=0.1, max_yaw_step=np.radians(5)):
         """
@@ -291,17 +330,32 @@ class testaAruco:
         收到目标检测消息，将消息加入队列，不做操作
         存的时候就应该存减去夹爪之后的位置
         """
-        with self.lock:
-            pose_in_camera = msg
-            pose_in_map = self.tf_listener.transformPose("map", pose_in_camera)
-            roll,pitch,yaw = euler_from_quaternion([
-                pose_in_map.pose.orientation.x,
-                pose_in_map.pose.orientation.y,
-                pose_in_map.pose.orientation.z,
-                pose_in_map.pose.orientation.w
-            ])
-            rospy.loginfo(f"{NODE_NAME}: 目标检测到aruco标记, 位置={pose_in_map.pose.position}, 欧拉角=({np.degrees(roll)}, {np.degrees(pitch)}, {np.degrees(yaw)})")
-            self.queue.append([roll,pitch,yaw])
+        # with self.lock:
+        self.tf_listener.waitForTransform("map", "camera", msg.header.stamp, rospy.Duration(1.0))
+        pose_in_camera = msg
+        pose_in_map = self.tf_listener.transformPose("map", pose_in_camera)
+        roll,pitch,yaw = euler_from_quaternion([
+            pose_in_map.pose.orientation.x,
+            pose_in_map.pose.orientation.y,
+            pose_in_map.pose.orientation.z,
+            pose_in_map.pose.orientation.w
+        ])
+        
+        rospy.loginfo(f"{NODE_NAME}: 目标检测到aruco标记, 位置={pose_in_map.pose.position}, 欧拉角=({np.degrees(roll)}, {np.degrees(pitch)}, {np.degrees(yaw)})")
+        # # 
+        # matrix = euler_matrix(yaw, pitch, roll, 'szyx')
+        # #rospy.loginfo(f"matrix={matrix}")
+        # vector = [matrix[0][2], matrix[1][2], matrix[2][2]]  # 假设前进方向是x轴
+        # # rospy.loginfo(f"vector={vector}")
+        # yaw = np.arctan2(vector[0], vector[1])  # 计算航向角
+        # rospy.loginfo(f"yaw={np.degrees(yaw)}")
+        
+        # target_angle = self.yaw_cvt(yaw, pitch, roll)
+        
+        rospy.loginfo(f"{NODE_NAME}: 转换后的目标航向={target_angle:.2f}度")
+        
+        
+        self.queue.append([roll,pitch,yaw])
     ############################################### 回调层 #########################################
 
 

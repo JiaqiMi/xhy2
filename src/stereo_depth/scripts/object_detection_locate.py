@@ -24,6 +24,32 @@ def pixel_to_camera_coords(u, v, depth, fx, fy, cx, cy):
     return X, Y, Z
 
 
+def get_stable_depth(u, v, depth, fx, fy, cx, cy, window_size=11):
+    half_w = window_size // 2
+    h, w = depth.shape
+
+    u, v = int(u), int(v)
+
+    umin = max(u - half_w, 0)
+    umax = min(u + half_w + 1, w)
+    vmin = max(v - half_w, 0)
+    vmax = min(v + half_w + 1, h)
+
+    region = depth[vmin:vmax, umin:umax]
+    valid = region[np.isfinite(region) & (region > 0)]
+
+    if valid.size < 3:
+        return np.array([np.nan, np.nan, np.nan])  # too few valid points
+
+    Z = np.min(valid)  # or np.mean(valid)
+    if Z == 0:
+        rospy.logwarn("Invalid depth at pixel ({}, {}): Z = 0".format(u, v))
+        return np.array([np.nan, np.nan, np.nan])
+    X = (u - cx) * Z / fx
+    Y = (v - cy) * Z / fy
+    return X, Y, Z
+
+
 class StereoDepthNode:
     def __init__(self):
         rospy.init_node("stereo_depth", anonymous=True)
@@ -43,28 +69,33 @@ class StereoDepthNode:
         # self.cy = 121.148735
         # self.baseline = 21.507233 / 360.607260  # m
         
-        # air - new
+        # air - new - 0727 - P
         self.fx = 572.993971
         self.fy = 572.993971
         self.cx = 374.534946
         self.cy = 271.474743
         self.baseline = 34.309807 / 572.993971  # m
         
-        # # water - new
-        # self.fx = 1080.689861
-        # self.fy = 1080.689861
-        # self.cx = 559.908498
-        # self.cy = 261.932663
-        # self.baseline = 81.420154 / 1080.689861  # m
+        # air - new - 0727 - K
+        # self.fx = 519.151900
+        # self.fy = 519.712551
+        # self.cx = 319.174292
+        # self.cy = 277.976296
+        # self.baseline = 47.694354 / 519.151900  # m
         
-        # water - new - 0727
+        # water - new - 0727 - P
         # self.fx = 798.731044
         # self.fy = 798.731044
         # self.cx = 348.127430
         # self.cy = 269.935493
         # self.baseline = 47.694354 / 798.731044  # m
         
-        
+        # water - new - 0727 - K
+        # self.fx = 686.32092
+        # self.fy = 685.83026
+        # self.cx = 316.41091
+        # self.cy = 279.42833
+        # self.baseline = 47.694354 / 686.32092  # m
         
         self.bridge = CvBridge()
         self.target_uv = None  
@@ -132,40 +163,53 @@ class StereoDepthNode:
 
         # 计算深度（Z = fx * baseline / disparity）
         depth = self.fx * self.baseline / disparity  # 单位：米
-
-        # calculate the center pixel location
-        # (height, width) = disparity.shape
-        # X, Y, Z = pixel_to_camera_coords(
-        #     u=width//2,
-        #     v=height//2,
-        #     depth=depth,
-        #     fx=self.fx,
-        #     fy=self.fy,
-        #     cx=self.cx,
-        #     cy=self.cy
-        # )
-        # print("X: {}, Y: {}, Z:{}".format(X, Y, Z))
         
+        # 打印找到的所有目标的像素坐标和置信度
         if self.target_uv is not None:
-            u = self.target_uv[0]
-            v = self.target_uv[1]
-            rospy.loginfo("All target: time=%s, class=%s conf=%.2f -> u=%d, v=%d", \
-                            self.target_check_time, self.target_class, self.target_conf, u, v)
-
-        # 判断是否有来自YOLO的像素坐标
+            rospy.loginfo("Find target: time=%s, class=%s conf=%.2f",
+                          self.target_check_time, self.target_class, self.target_conf)
+            
+        # 判断是否有来自模型的像素坐标
         X, Y, Z = None, None, None
-        if self.target_uv is not None and self.target_conf >= 0.6:
-            u = self.target_uv[0]
-            v = self.target_uv[1]
-            # rospy.loginfo(
-            #             "Valid target: time=%s, class=%s conf=%.2f -> X=%.2f Y=%.2f Z=%.2f", \
-            #             self.target_check_time, self.target_class, self.target_conf, X, Y, Z)
-            if 0 <= u < disparity.shape[1] and 0 <= v < disparity.shape[0]:
-                X, Y, Z = pixel_to_camera_coords(u, v, depth, self.fx, self.fy, self.cx, self.cy)
-                if X is not None and (-0.5 < X < 0.5 and -0.5 < Y < 0.5):
+        if self.target_uv is not None and self.target_conf >= 0.5:
+            u, v = self.target_uv
+            if (0 <= u < disparity.shape[1]) and (0 <= v < disparity.shape[0]):
+                
+                # 获取稳定的深度值
+                # X, Y, Z = pixel_to_camera_coords(u, v, depth, self.fx, self.fy, self.cx, self.cy)
+                X, Y, Z = get_stable_depth(
+                    u, v, depth,
+                    self.fx, self.fy, self.cx, self.cy,
+                    window_size=11
+                )
+                rospy.loginfo(f"The location of target: ({X}, {Y}, {Z})")
+                if (-1 < X < 1) and (-1 < Y < 1) and (0 < Z < 3):
                     rospy.loginfo(
                         "Valid target: time=%s, class=%s conf=%.2f -> X=%.2f Y=%.2f Z=%.2f", \
                         self.target_check_time, self.target_class, self.target_conf, X, Y, Z)
+                    
+                     # 发布相机事件
+                    try:
+                        # depth_msg = self.bridge.cv2_to_imgmsg(depth, encoding="32FC1")
+                        # depth_msg.header = left_img_msg.header
+                        # self.depth_pub.publish(depth_msg)
+
+                        # 发布target message
+                        msg = TargetDetection()
+                        pos_msg = PoseStamped()
+                        pos_msg.header.stamp = self.target_check_time
+                        pos_msg.header.frame_id = "camera"
+                        pos_msg.pose.position.x = X
+                        pos_msg.pose.position.y = Y
+                        pos_msg.pose.position.z = Z 
+                        pos_msg.pose.orientation = Quaternion(0, 0, 0, 1)
+                        msg.pose = pos_msg
+                        msg.type = 'center'
+                        msg.conf = self.target_conf
+                        msg.class_name = self.target_class
+                        self.target_message.publish(msg)
+                    except Exception as e:
+                        rospy.logerr("Error publishing depth: %s", str(e))
                 else:
                     # rospy.logwarn("Invalid location of objection.")
                     rospy.loginfo(
@@ -173,33 +217,9 @@ class StereoDepthNode:
                         self.target_check_time, self.target_class, self.target_conf, X, Y, Z)
             else:
                 rospy.logwarn("Target pixel coordinates are out of bounds.")
+        else:
+            rospy.logwarn("Confidence too low to calculate the location.")
         
-
-        # 发布相机事件
-        try:
-            if X is not None and (-0.5 < X < 0.5 and -0.5 < Y < 0.5):
-                depth_msg = self.bridge.cv2_to_imgmsg(depth, encoding="32FC1")
-                depth_msg.header = left_img_msg.header
-                # self.depth_pub.publish(depth_msg)
-
-                # 发布target message
-                msg = TargetDetection()
-                pos_msg = PoseStamped()
-                pos_msg.header.stamp = self.target_check_time
-                pos_msg.header.frame_id = "camera"
-                pos_msg.pose.position.x = X
-                pos_msg.pose.position.y = Y
-                pos_msg.pose.position.z = Z 
-                # pos_msg.pose.orientation = Quaternion(0, 0, 0, 1) 
-                pos_msg.pose.orientation = pos_msg.pose.orientation = Quaternion(0, 0, 0, 1) # tf.transformations.quaternion_from_euler(0, 0, 1)
-                msg.pose = pos_msg
-                msg.type = 'center'
-                msg.conf = self.target_conf
-                msg.class_name = self.target_class
-                self.target_message.publish(msg)
-        except Exception as e:
-            rospy.logerr("Error publishing depth: %s", str(e))
-
         # 可视化（归一化视差）
         # disp_vis = cv2.normalize(disparity, None, 0, 255, cv2.NORM_MINMAX)
         # disp_vis = np.uint8(disp_vis)

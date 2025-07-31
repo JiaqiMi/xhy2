@@ -5,6 +5,7 @@ import numpy as np
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import PoseStamped, Quaternion
+from scipy.spatial.transform import Rotation as R
 import tf
 
 class ArucoPosePublisher:
@@ -19,11 +20,13 @@ class ArucoPosePublisher:
         # self.K = np.array([[519.1519, 0, 319.174292],
         #                    [0, 519.712551, 277.976296],
         #                    [0, 0, 1]], dtype=np.float64)
+        # self.dist_coeffs = np.array([[-0.019985, 0.106889, 0.000070, 0.002679, 0.000000]], dtype=np.float64).T
+        
         # water
-        self.K  = np.array([[ 686.32092,    0.     ,  316.41091,
-            0.     ,  685.83026,  279.42833,
-            0.     ,    0.     ,    1.     ]], dtype=np.float64)
-        self.dist_coeffs = np.array([[-0.019985, 0.106889, 0.000070, 0.002679, 0.000000]], dtype=np.float64).T
+        self.K = np.array([[686.32092, 0, 316.41091],
+                           [0, 685.83026, 279.42833],
+                           [0, 0, 1]], dtype=np.float64)
+        self.dist_coeffs = np.array([[0.287829, 0.605589, 0.005716, -0.000247, 0.000000]], dtype=np.float64).T
 
         # ArUco 参数
         self.marker_length = 0.105  # 单位：米
@@ -36,8 +39,19 @@ class ArucoPosePublisher:
         self.pose_pub = rospy.Publisher("/aruco/pose", PoseStamped, queue_size=10)
 
         rospy.loginfo("Aruco Pose Publisher Initialized.")
+        
+        # 控制推断频率
+        self.last_infer_time = rospy.Time.now()
+        self.infer_interval = rospy.Duration(2)  # 单位秒 
 
     def image_callback(self, img_msg):
+        
+        now = rospy.Time.now()
+        if now - self.last_infer_time < self.infer_interval:
+            return  # 距离上次推理太近，跳过此次图像
+
+        self.last_infer_time = now
+        
         try:
             cv_image = self.bridge.imgmsg_to_cv2(img_msg, "bgr8")
         except Exception as e:
@@ -77,6 +91,8 @@ class ArucoPosePublisher:
                 self.pose_pub.publish(pose_msg)
 
                 rospy.loginfo(f"Published pose for ArUco ID={ids[i][0]}: tvec={tvec.ravel()}, quat={quat}")
+                
+                rospy.sleep(0.2)
 
 if __name__ == '__main__':
     try:

@@ -27,6 +27,7 @@ class YOLOv8Detector:
             self.model = YOLO("/home/xhy/catkin_ws/models/holes_model0719.pt")
         elif self.DetectMode == 3:
             self.model = YOLO("/home/xhy/catkin_ws/models/balls_model0725.pt")
+            # self.model = YOLO("/home/xhy/catkin_ws/models/yolov8m-balls-0728.pt")
         else:
             rospy.logwarn("DetectMode error: %s, select the shapes model by default", str(self.DetectMode))
             self.model = YOLO("/home/xhy/catkin_ws/models/shapes_model0719.pt")
@@ -121,9 +122,9 @@ class YOLOv8Detector:
                 rospy.loginfo("object %s, conf: %.2f, x1: %d, y1: %d, x2: %d, y2: %d", str(cls_name), float(conf),
                               bb.x1, bb.y1, bb.x2, bb.y2)
         # 可视化
-        # annotated = results[0].plot()
-        # cv2.imshow("YOLOv8 Detection", annotated)
-        # cv2.waitKey(1)
+        annotated = results[0].plot()
+        cv2.imshow("YOLOv8 Detection", annotated)
+        cv2.waitKey(1)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='YOLOv8 Detector Node')
