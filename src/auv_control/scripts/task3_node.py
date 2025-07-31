@@ -34,7 +34,7 @@ class Task3Node:
     def __init__(self):
         # ros相关的初始化
         self.target_pub = rospy.Publisher('/target', PoseStamped, queue_size=10)
-        self.control_pub = rospy.Publisher('/control', Control, queue_size=10)
+        self.control_pub = rospy.Publisher('/sensor', Control, queue_size=10)
         self.finished_pub = rospy.Publisher('/finished', String, queue_size=10)
         rospy.Subscriber('/obj/target_message', TargetDetection, self.target_detection_callback)
         self.rate = rospy.Rate(5)  # 5Hz
@@ -44,12 +44,13 @@ class Task3Node:
         self.start_point = PoseStamped()
         self.step = 0 # 程序运行阶段
         self.target_posestamped = PoseStamped() # 期望位置消息定义
-        self.initial_yaw = None  # 初始yaw角度
+        self.init_yaw = None  # 初始yaw角度
         self.search_direction = 1  # 搜索方向：1表示正向，-1表示反向
         self.queue= [] # 用于保存目标列表
         self.grab_count = 0  # 记录抓取动作的次数
         self.pitch_offset = np.radians(1.5) # 固定1.5°俯仰
-
+        self.light = 60 # 固定60亮度
+        
         # 获取宏定义参数
         self.target_depth = rospy.get_param('~depth', 0.3)  # 下潜深度，单位米
         start_point_from_param = rospy.get_param('/task3_point0', [0.5, -0.5, 0.15, 0.0])  # 默认值        
@@ -298,6 +299,8 @@ class Task3Node:
         control_msg.led_green = 0
         control_msg.led_red = 0
         control_msg.servo = 100  # 张开夹爪
+        control_msg.light1 = self.light
+        control_msg.light2 = self.light        
         self.control_pub.publish(control_msg)
 
     def close_servo(self):
@@ -306,6 +309,8 @@ class Task3Node:
         control_msg.led_green = 0
         control_msg.led_red = 0
         control_msg.servo = 255  # 闭合夹爪
+        control_msg.light1 = self.light
+        control_msg.light2 = self.light
         self.control_pub.publish(control_msg)
 
     ###############################################驱动层#################################
@@ -319,51 +324,50 @@ class Task3Node:
         """
         rospy.loginfo(f"{NODE_NAME}: 收到目标检测消息 {msg.class_name},{msg.pose.pose.position.x},{msg.pose.pose.position.y},{msg.pose.pose.position.z}")
         if msg.class_name == self.target_color:
-            with self.lock:
-                point_in_camera = msg.pose.pose.position # 相机坐标系下目标点
-                origin_in_camera = Point(x=0, y=0, z=0)  # 相机坐标系下的原点
-                if self.xyz_distance(point_in_camera, origin_in_camera) < 5.0:
-                    try:
-                        # 将目标点从camera坐标系转换到各个坐标系
-                        self.tf_listener.waitForTransform("map", msg.pose.header.frame_id, msg.pose.header.stamp, rospy.Duration(1.0))
-                        target_in_map = self.tf_listener.transformPose("map", msg.pose) # 目标点在map下
-                        target_in_base = self.tf_listener.transformPose("base_link", msg.pose) # 目标点在base_link下
-                        
-                        # 获取auv当前位姿
-                        current_pose = self.get_current_pose()
-                        if current_pose is None:
-                            return
-                        # 根据target_in_map 和current_pose 计算两者的指向作为航向
-                        p0 = np.array([current_pose.pose.position.x, current_pose.pose.position.y, current_pose.pose.position.z])
-                        p1 = np.array([target_in_map.pose.position.x, target_in_map.pose.position.y, target_in_map.pose.position.z])
-                        direction = p1 - p0
-                        direction_xy = direction[:2]
-                        direction_xy_norm = np.linalg.norm(direction_xy)
-                        if direction_xy_norm > 0:
-                            direction_xy = direction_xy / direction_xy_norm
-                            # 计算期望的航向角(前进方向)
-                            desired_yaw = np.arctan2(direction_xy[1], direction_xy[0])
+            point_in_camera = msg.pose.pose.position # 相机坐标系下目标点
+            origin_in_camera = Point(x=0, y=0, z=0)  # 相机坐标系下的原点
+            if self.xyz_distance(point_in_camera, origin_in_camera) < 5.0:
+                try:
+                    # 将目标点从camera坐标系转换到各个坐标系
+                    self.tf_listener.waitForTransform("map", msg.pose.header.frame_id, msg.pose.header.stamp, rospy.Duration(1.0))
+                    target_in_map = self.tf_listener.transformPose("map", msg.pose) # 目标点在map下
+                    target_in_base = self.tf_listener.transformPose("base_link", msg.pose) # 目标点在base_link下
+                    
+                    # 获取auv当前位姿
+                    current_pose = self.get_current_pose()
+                    if current_pose is None:
+                        return
+                    # 根据target_in_map 和current_pose 计算两者的指向作为航向
+                    p0 = np.array([current_pose.pose.position.x, current_pose.pose.position.y, current_pose.pose.position.z])
+                    p1 = np.array([target_in_map.pose.position.x, target_in_map.pose.position.y, target_in_map.pose.position.z])
+                    direction = p1 - p0
+                    direction_xy = direction[:2]
+                    direction_xy_norm = np.linalg.norm(direction_xy)
+                    if direction_xy_norm > 0:
+                        direction_xy = direction_xy / direction_xy_norm
+                        # 计算期望的航向角(前进方向)
+                        desired_yaw = np.arctan2(direction_xy[1], direction_xy[0])
 
-                        # 将目标从camera坐标系转换到hand坐标系，然后再转到map坐标系
-                        # 这样可以直接得到hand应该到达的位置
-                        target_in_hand = self.tf_listener.transformPose("hand", msg.pose) # 目标点在hand下
-                        target_in_hand.header.frame_id = "base_link"
-                        rospy.loginfo(f"{NODE_NAME}: 目标点在hand下: {target_in_hand.pose.position.x:.2f}, {target_in_hand.pose.position.y:.2f}, {target_in_hand.pose.position.z:.2f}")
-                        hand_target_in_map = self.tf_listener.transformPose("map", target_in_hand)
-                        
-                        # 期望位姿就是让base_link移动到使得hand到达目标位置
-                        expected_pose = PoseStamped()
-                        expected_pose.header.frame_id = "map"
-                        expected_pose.header.stamp = rospy.Time.now()
-                        expected_pose.pose.position = hand_target_in_map.pose.position
-                        expected_pose.pose.orientation = Quaternion(*quaternion_from_euler(0,self.pitch_offset, desired_yaw)) # 期望航向是前进方向
+                    # 将目标从camera坐标系转换到hand坐标系，然后再转到map坐标系
+                    # 这样可以直接得到hand应该到达的位置
+                    target_in_hand = self.tf_listener.transformPose("hand", msg.pose) # 目标点在hand下
+                    target_in_hand.header.frame_id = "base_link"
+                    rospy.loginfo(f"{NODE_NAME}: 目标点在hand下: {target_in_hand.pose.position.x:.2f}, {target_in_hand.pose.position.y:.2f}, {target_in_hand.pose.position.z:.2f}")
+                    hand_target_in_map = self.tf_listener.transformPose("map", target_in_hand)
+                    
+                    # 期望位姿就是让base_link移动到使得hand到达目标位置
+                    expected_pose = PoseStamped()
+                    expected_pose.header.frame_id = "map"
+                    expected_pose.header.stamp = rospy.Time.now()
+                    expected_pose.pose.position = hand_target_in_map.pose.position
+                    expected_pose.pose.orientation = Quaternion(*quaternion_from_euler(0,self.pitch_offset, desired_yaw)) # 期望航向是前进方向
 
-                        # 加入队列
-                        self.queue.append((msg.conf, current_pose, expected_pose, target_in_map, target_in_base))
-                        rospy.loginfo(f"{NODE_NAME}: 加入队列 (conf={msg.conf:.2f})")
-                        
-                    except tf.Exception as e:
-                        rospy.logwarn(f"{NODE_NAME}: 坐标转换失败: {e}")
+                    # 加入队列
+                    self.queue.append((msg.conf, current_pose, expected_pose, target_in_map, target_in_base))
+                    rospy.loginfo(f"{NODE_NAME}: 加入队列 (conf={msg.conf:.2f})")
+                    
+                except tf.Exception as e:
+                    rospy.logwarn(f"{NODE_NAME}: 坐标转换失败: {e}")
     ###############################################回调层#################################
     
 

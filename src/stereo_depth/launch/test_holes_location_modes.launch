@@ -33,9 +33,11 @@
     <!-- 执行 YOLOv8 目标检测（使用 LD_PRELOAD） -->
     <!-- 新增参数需要对应修改yolo_wrapper.sh -->
     <node pkg="yolo_bridge" type="yolo_wrapper.sh" name="yolov8_detector" output="screen" launch-prefix="bash" >
-        <param name="detect_mode" value="3" />
+        <param name="detect_mode" value="2" />      <!-- 1：shapes, 2:holes, 3:balls-->
         <param name="top_k" value="3" />
-        <param name="visualization" value="False" />
+        <param name="visualization" value="0" />    <!-- 0代表关闭，1代表开启-->
+        <param name="conf_thre" value="0.2" />      <!-- confidence threshold -->
+        <param name="detc_type" value="bbox" />     <!-- center, bbox -->
     </node>
 
 

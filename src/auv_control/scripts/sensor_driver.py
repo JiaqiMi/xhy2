@@ -67,7 +67,7 @@ class SensorDriver:
                 self.sock = None
                 rospy.sleep(2)
 
-    def build_packet(self, led_red, led_green, servo):
+    def build_packet(self):
         """
         构造54字节控制报文
         41: 绿色LED
@@ -78,12 +78,12 @@ class SensorDriver:
         """
         packet = bytearray(54)
         packet[0:2] = b'\xFE\xFE'      # 报文头
-        packet[41] = led_green         # 绿色LED
-        packet[42] = led_red           # 红色LED
+        packet[41] = self.led_green         # 绿色LED
+        packet[42] = self.led_red           # 红色LED
         packet[43] = self.light1_brightness  # 补光灯1亮度
         packet[44] = self.light2_brightness  # 补光灯2亮度
         # 舵机角度限制在100到255
-        packet[46] = max(100, min(255, servo))
+        packet[46] = max(100, min(255, self.servo))
         # 校验和（0~50字节异或）
         xor = 0
         for i in range(51):
@@ -98,11 +98,13 @@ class SensorDriver:
         """
         try:
             # 验证数值范围
-            if 0 <= msg.led_red <= 1 and 0 <= msg.led_green <= 1 and 100 <= msg.servo <= 255:
+            if 0 <= msg.led_red <= 1 and 0 <= msg.led_green <= 1 and 100 <= msg.servo <= 255 and 0 <= msg.light1 <= 100 and 0 <= msg.light2 <= 100:
                 self.led_red = msg.led_red
                 self.led_green = msg.led_green
                 self.servo = msg.servo
-                rospy.loginfo(f"sensor driver: 更新控制值 LED_R={self.led_red}, LED_G={self.led_green}, Servo={self.servo}")
+                self.light1_brightness = msg.light1
+                self.light2_brightness = msg.light2
+                rospy.loginfo(f"sensor driver: 更新控制值 LED_R={self.led_red}, LED_G={self.led_green}, Servo={self.servo},light ={self.light1_brightness},{self.light2_brightness}")
             else:
                 rospy.logwarn("sensor driver: 控制值超出范围，忽略此次更新")
         except Exception as e:
@@ -118,7 +120,7 @@ class SensorDriver:
                 if self.sock is None:
                     self.connect()
                 else:
-                    packet = self.build_packet(self.led_red, self.led_green, self.servo)
+                    packet = self.build_packet()
                     self.sock.sendall(packet)
             except Exception as e:
                 rospy.logerr(f"sensor driver: 发送失败: {e}")
