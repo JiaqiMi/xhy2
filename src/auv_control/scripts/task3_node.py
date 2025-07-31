@@ -36,7 +36,7 @@ class Task3Node:
         self.target_pub = rospy.Publisher('/target', PoseStamped, queue_size=10)
         self.control_pub = rospy.Publisher('/control', Control, queue_size=10)
         self.finished_pub = rospy.Publisher('/finished', String, queue_size=10)
-        rospy.Subscriber('/target_detection', TargetDetection, self.target_detection_callback)
+        rospy.Subscriber('/obj/target_message', TargetDetection, self.target_detection_callback)
         self.rate = rospy.Rate(5)  # 5Hz
         self.tf_listener = tf.TransformListener()
         
