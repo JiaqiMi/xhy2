@@ -502,14 +502,14 @@ class Task2Node:
         3. 返回True
         """
         # 前5次张开夹爪
-        if self.pub_num < 25:
+        if self.pub_num < 30:
             self.sensor[2] = 100  # 打开舵机
             self.control_device() # 发布一次设备控制
             self.move_to_target()  # 也需要按时发布位姿控制
             self.pub_num += 1
             return False
         # 后5次关闭夹爪
-        elif self.pub_num < 50:
+        elif self.pub_num < 60:
             self.sensor[2] = 255 # 关闭舵机
             self.control_device() # 发布一次设备控制
             self.move_to_target()
@@ -526,9 +526,10 @@ class Task2Node:
             light1: int, 补光灯1的亮度(0~100)
             light2: int, 补光灯2的亮度(0~100)
         """
-        if self.pub_num < 5:
+        if self.pub_num < 10:
             self.sensor[3] = light1
             self.sensor[4] = light2
+            self.sensor[2] = 255
             self.control_device()
             self.move_to_target()
             self.pub_num += 1
@@ -561,7 +562,7 @@ class Task2Node:
                     rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 2
             elif self.step == 2:
-                if self.search_target(max_rotate_rad=np.radians(25),depth_bias = -0.1): # 记录到足够的目标点位置后，跳到step2                  
+                if self.search_target(max_rotate_rad=np.radians(25),depth_bias = -0.1,rotate_step=np.radians(0.75)): # 记录到足够的目标点位置后，跳到step2                  
                     rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 3
             elif self.step == 3:

@@ -42,7 +42,7 @@ class ArucoPosePublisher:
         
         # 控制推断频率
         self.last_infer_time = rospy.Time.now()
-        self.infer_interval = rospy.Duration(2)  # 单位秒 
+        self.infer_interval = rospy.Duration(0.3)  # 单位秒 
 
     def image_callback(self, img_msg):
         

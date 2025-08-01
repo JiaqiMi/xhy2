@@ -190,7 +190,7 @@ class PipelineDetector:
             rospy.loginfo(f"Processing point at pixel coordinates: idx={idx}, (u={u}, v={v})")
             # X, Y, Z = self.pixel_to_camera_coords(u, v, depth[y, x])
             X, Y, Z = get_stable_depth(u, v, depth, self.fx, self.fy, self.cx, self.cy)
-            if (-1 < X < 1) and (-1 < Y < 1) and (0 < Z < 4):
+            if (-1 < X < 1) and (-1 < Y < 1) and (0 < Z < 2):
                 rospy.loginfo("Valid target:  class=line -> X=%.2f Y=%.2f Z=%.2f", X, Y, Z)
                 coords_3d.append([X, Y, Z])
             else:

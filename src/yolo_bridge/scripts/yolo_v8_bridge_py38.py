@@ -24,7 +24,7 @@ class YOLOv8Detector:
         model_list = [
             "/home/xhy/catkin_ws/models/shapes_model0719.pt",
             "/home/xhy/catkin_ws/models/holes_model0719.pt",
-            "/home/xhy/catkin_ws/models/balls_model0719.pt" 
+            "/home/xhy/catkin_ws/models/balls_model0725.pt" 
         ]
         if self.DetectMode == 1:
             self.model = YOLO(model_list[0])
@@ -46,7 +46,7 @@ class YOLOv8Detector:
         
         # 控制推断频率
         self.last_infer_time = rospy.Time.now()
-        self.infer_interval = rospy.Duration(0.5)  # 单位秒 
+        self.infer_interval = rospy.Duration(0.2)  # 单位秒 
         
         rospy.loginfo("YOLOv8 Detector Node Started")
 

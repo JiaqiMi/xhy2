@@ -1,6 +1,7 @@
 #!/home/xhy/xhy_env/bin/python
 # -*- coding: utf-8 -*-
 
+# 使用opcv方法进行找球
 import rospy
 import cv2
 import numpy as np
@@ -223,11 +224,10 @@ class BallsDetector:
         # lower_blue = np.array([100, 70, 50])
         # upper_blue = np.array([130, 255, 255])
         
-        lower_blue = np.array([105, 150, 40])  # 更高的S，更低的V
-        upper_blue = np.array([125, 255, 200])
+        lower_blue = np.array([95, 239, 167])  # 更高的S，更低的V
+        upper_blue = np.array([109, 255, 190])
         
         mask = cv2.inRange(hsv, lower_blue, upper_blue)
-        
         
 
         # 形态学操作清除噪声
@@ -329,6 +329,7 @@ class BallsDetector:
                 done = True
 
         return skel
+
 
 if __name__ == '__main__':
     try:

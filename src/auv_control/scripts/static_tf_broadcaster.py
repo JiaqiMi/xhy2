@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env36/bin/python
+#! /home/xhy/xhy_env/bin/python
 """
 名称：static_tf_broadcaster.py
 功能：机器人内部刚体坐标系的静态变换发布器
