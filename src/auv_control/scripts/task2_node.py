@@ -16,16 +16,9 @@
     完整逻辑完成
 2025.7.30 17:56
     完成完成的一版，添加搜索逻辑的
+2025.8.1 02:17
+    完善注释和驱动
 """
-
-# target detect: red/green/black:对应小中大
-# 宏定义一个要的位置
-# 从参数列表读取到达第一个位姿
-# step0: 运动到初始作业位姿，到达后跳到step1
-# step1: 执行搜索，寻找目标，找到目标后跳到step2
-# step2: 闭环移动到目标点，判断是否可以释放，可以释放后跳到step3
-# step3: 释放后，运动到初始作业位姿，到达后跳到step4
-# step4: 任务完成，发送任务完成标志，关闭节点
 
 import rospy
 import tf
@@ -41,9 +34,9 @@ class Task2Node:
     """任务2节点: 到目标点释放钥匙"""
     def __init__(self):
         # ros相关的初始化
+        self.finished_pub = rospy.Publisher('/finished', String, queue_size=10) # 发布任务完成标志话题
         self.target_pub = rospy.Publisher('/target', PoseStamped, queue_size=10) # 发布期望位姿话题                  
         self.control_pub = rospy.Publisher('/sensor', Control, queue_size=10) # 发布控制话题
-        self.finished_pub = rospy.Publisher('/finished', String, queue_size=10) # 发布任务完成标志话题
         rospy.Subscriber('/obj/target_message', TargetDetection, self.target_detection_callback) # 订阅目标检测话题
         self.rate = rospy.Rate(5)  # 运行频率5Hz
         self.tf_listener = tf.TransformListener()
@@ -51,28 +44,29 @@ class Task2Node:
         # 变量定义
         self.step = 0 # 程序运行阶段
         self.target_posestamped = PoseStamped() # 期望位置消息定义
+        self.start_point = PoseStamped()
+        self.end_point = PoseStamped() # 结束点，和开始点一样
         self.queue = [] # 用于保存目标队列
         self.init_yaw = None  # 初始yaw角度
         self.search_direction = 1  # 搜索方向：1表示正向，-1表示反向
         self.pitch_offset = np.radians(1.5) # 固定1.5°俯仰
-        self.release_pub_num = 0  # 记录释放目标的次数
+        self.pub_num = 0  # 记录释放目标的次数
         self.step = 0 # 程序运行阶段
-
+        self.sensor = [0] * 5 # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
+        
         # 获取宏定义参数
         self.target_depth = rospy.get_param('/depth', 0.3)  # 下潜深度，单位米
         self.target_color = rospy.get_param('/task2_target_class', 'red')  # 目标颜色，默认为红色
         start_point_from_param = rospy.get_param('/task2_point1', [0.5, -0.5, 0.15, 0.0])  # 默认值
-        self.light = 60 # 该任务中灯光的亮度
 
-        # 准备执行任务的初始点
-        self.start_point = PoseStamped()
+        # 准备执行任务的初始点 
         self.start_point.header.frame_id = "map" # 设置坐标系为map
         self.start_point.pose.position = Point(*start_point_from_param[:3])
         self.start_point.pose.orientation = Quaternion(*quaternion_from_euler(0, 0, np.radians(start_point_from_param[3])))
         
         # 输出log
         rospy.loginfo(f"{NODE_NAME}: 初始化完成")
-        rospy.loginfo(f"{NODE_NAME}: 目标点1: n={self.start_point.pose.position.x}, e={self.start_point.pose.position.y}, d={self.start_point.pose.position.z}, ")
+        rospy.loginfo(f"{NODE_NAME}: 初始点: n={self.start_point.pose.position.x}, e={self.start_point.pose.position.y}, d={self.start_point.pose.position.z}")
     
     ###############################################驱动层#################################
     def is_arrival(self, current_pose:PoseStamped, target_pose:PoseStamped, max_xyz_dist=0.2, max_yaw_dist=np.radians(0.2)):
@@ -82,7 +76,7 @@ class Task2Node:
         Parameters:
             current_pose: PoseStamped, 当前位姿
             target_pose: PoseStamped, 目标位姿
-            max_dist: float, 最大位置误差(米)
+            max_xyz_dist: float, 最大位置误差(米)
             max_yaw_dist: float, 最大航向误差(弧度)
 
         Returns:
@@ -243,8 +237,8 @@ class Task2Node:
         # 设置下一个位置
         next_pose.pose.position.x = current_pose.pose.position.x + dp[0]
         next_pose.pose.position.y = current_pose.pose.position.y + dp[1]
-        next_pose.pose.position.z = target_pose.pose.position.z
-        
+        next_pose.pose.position.z = current_pose.pose.position.z + dp[2]
+
         # 设置姿态
         next_pose.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, next_yaw))
 
@@ -255,13 +249,17 @@ class Task2Node:
         
         return next_pose
 
-    def move_to_target(self,max_xyz_dist=0.2,max_xy_step = 0.8,max_yaw_step=np.radians(5),max_yaw_dist =np.radians(1)):
+    def move_to_target(self, max_xy_step=0.8, max_z_step=0.2, max_yaw_step=np.radians(5), max_xyz_dist=0.2, max_yaw_dist=np.radians(1)):
         """
         发送一次指令移动到目标位姿，通过生成平滑路径点实现
+        
         Parameters:
-            max_xyz_dist: float, 最大距离误差(米)
-            max_yaw_step: float, 最大偏航角步长(弧度)
-            max_yaw_dist: float, 最大航向误差(弧度)
+            max_xy_step: float, 最大水平步长(米)，用于平滑，超过这个距离后会先转向后移动
+            max_z_step: float, 最大深度步长(米)，用于平滑
+            max_yaw_step: float, 最大偏航角步长(弧度)，用于平滑
+            max_xyz_dist: float, 最大三维距离误差(米)，用于判断是否到达目标位置
+            max_yaw_dist: float, 最大航向误差(弧度)，用于判断是否到达目标位置
+        
         Returns:
             到达目标位置返回true, 未到达目标位置返回false
         """
@@ -276,7 +274,7 @@ class Task2Node:
                 return True
             
             # 航向控制和点控制统一起来
-            next_pose = self.generate_smooth_pose(current_pose, self.target_posestamped,max_xy_step=max_xy_step,max_yaw_step=max_yaw_step)
+            next_pose = self.generate_smooth_pose(current_pose, self.target_posestamped, max_xy_step=max_xy_step, max_z_step=max_z_step, max_yaw_step=max_yaw_step)
             dist_to_target = self.xyz_distance(current_pose.pose.position, self.target_posestamped.pose.position)
             yaw_to_target = self.yaw_distance(current_pose.pose.orientation, self.target_posestamped.pose.orientation)
             rospy.loginfo_throttle(2,f"{NODE_NAME}: 移动到目标点: 距离={dist_to_target:.3f}米, 航向差={np.degrees(yaw_to_target):.2f}度,高度差={current_pose.pose.position.z-self.target_posestamped.pose.position.z}")
@@ -298,35 +296,21 @@ class Task2Node:
             current_pose.header.stamp = rospy.Time.now()
             current_pose.pose.position = Point(*trans)
             current_pose.pose.orientation = Quaternion(*rot)
-            _,_,yaw = euler_from_quaternion([current_pose.pose.orientation.x,current_pose.pose.orientation.y,current_pose.pose.orientation.z,current_pose.pose.orientation.w])
-            rospy.loginfo_throttle(2,f"{NODE_NAME}: 当前位置为：n={current_pose.pose.position.x:.2f}m, e={current_pose.pose.position.y:.2f}m, d={current_pose.pose.position.z:.2f}m,yaw={np.degrees(yaw)}")
+
+            # NOTE 打印一下当前位置
+            _,_,yaw = euler_from_quaternion(rot)
+            rospy.loginfo_throttle(2,f"{NODE_NAME}: 当前位置为: n={current_pose.pose.position.x:.2f}m, e={current_pose.pose.position.y:.2f}m, d={current_pose.pose.position.z:.2f}m, yaw={np.degrees(yaw)}")
             return current_pose
         except tf.Exception as e:
             rospy.logwarn(f"{NODE_NAME}: 获取当前位姿失败: {e}")
             return None
         
-    def open_servo(self):
-        """张开夹爪"""
-        control_msg = Control()
-        control_msg.led_green = 0
-        control_msg.led_red = 0
-        control_msg.servo = 100  # 张开夹爪
-        control_msg.light1 = self.light
-        control_msg.light2 = self.light
-        rospy.loginfo(f"{NODE_NAME}: 张开夹爪")
+    def control_device(self):
+        """发布一次外设报文"""
+        control_msg = Control(*self.sensor)
         self.control_pub.publish(control_msg)
-
-    def close_servo(self):
-        """闭合夹爪"""
-        control_msg = Control()
-        control_msg.led_green = 0
-        control_msg.led_red = 0
-        control_msg.servo = 255  # 闭合夹爪
-        control_msg.light1 = self.light
-        control_msg.light2 = self.light
-        rospy.loginfo(f"{NODE_NAME}: 闭合夹爪")
-        self.control_pub.publish(control_msg)
-
+        # NOTE 打印一下命令
+        rospy.loginfo(f"{NODE_NAME}: 发布外设控制: 红色led={self.sensor[0]}, 绿色led={self.sensor[1]}, 舵机={self.sensor[2]}, 补光灯1={self.sensor[3]}, 补光灯2={self.sensor[4]}")
     ###############################################驱动层#################################
 
 
@@ -378,19 +362,29 @@ class Task2Node:
 
                     # 加入队列
                     self.queue.append((msg.conf, current_pose, expected_pose, target_in_map, target_in_base))
-                    rospy.loginfo(f"{NODE_NAME}: 加入队列 (conf={msg.conf:.2f})")
-                    
+                    # rospy.loginfo(f"{NODE_NAME}: 加入队列 (conf={msg.conf:.2f})")
+
                 except tf.Exception as e:
                     rospy.logwarn(f"{NODE_NAME}: 坐标转换失败: {e}")
     ###############################################回调层#################################
     
     
     ###############################################逻辑层#################################
-    def search_target(self, max_rotate_rad=np.radians(20),depth_bias = -0.05,max_time_interval=5.0, max_position_interval=0.5,rotate_step=np.radians(1),max_xyz_dist=0.3,max_yaw_dist=np.radians(0.2)):
+    def search_target(self, max_rotate_rad=np.radians(20),depth_bias = -0.05,max_time_interval=5.0, min_conf=0.5,max_position_interval=0.5,rotate_step=np.radians(1),max_xyz_dist=0.3,max_yaw_dist=np.radians(0.2)):
         """
         搜索目标：
         从队列中获取三个目标点，判断三个点的时间间隔和位置间隔(在map下的),如果间隔小于阈值，时间小于阈值
         则认为找到目标，将目标点更新到self.target_posestamped中，并返回True
+
+        Parameters:
+            max_rotate_rad: 最大旋转角度（弧度），用于搜索范围
+            depth_bias: 深度偏差（米）
+            max_time_interval: 最大时间间隔（秒），用于判断有效
+            min_conf: 最小置信度（0-1），用于判断有效
+            max_position_interval: 最大位置间隔（米），用于判断有效
+            rotate_step: 旋转步长（弧度），用于旋转速度
+            max_xyz_dist: 最大XYZ距离（米），用于判断是否到达
+            max_yaw_dist: 最大偏航距离（弧度），用于判断是否到达
         """
         # 如果处理的太快就会导致不连续的点
         # 定义三个空点
@@ -404,7 +398,7 @@ class Task2Node:
             target3 = self.queue[2]
             # rospy.loginfo(f"{NODE_NAME}: 当前队列长度: {len(self.queue)}")
             if target1 is not None and target2 is not None and target3 is not None:
-                if target1[0] > 0.5 and target2[0] > 0.5 and target3[0] > 0.5:
+                if target1[0] > min_conf and target2[0] > min_conf and target3[0] > min_conf:
                     if self.xyz_distance(target1[3].pose.position, target2[3].pose.position) < max_position_interval and \
                         self.xyz_distance(target2[3].pose.position, target3[3].pose.position) < max_position_interval and \
                         self.xyz_distance(target1[3].pose.position, target3[3].pose.position) < max_position_interval:
@@ -487,7 +481,19 @@ class Task2Node:
         """
         self.target_posestamped = self.start_point # 将宏定义的初始位置赋值给目标位置
         return self.move_to_target()
-    
+
+    def move_to_end_pose(self):
+        """
+        发送一次指令移动到结束位姿
+
+        Returns:
+            到达目标位置返回true,未到达目标位置返回false
+        """
+        self.end_point = self.start_point
+        self.end_point.pose.position.z = self.target_posestamped.pose.position.z  # 设置结束点的深度
+        self.target_posestamped = self.end_point # 将宏定义的初始位置赋值给目标位置
+        return self.move_to_target()
+        
     def release_target(self):
         """
         释放目标：
@@ -496,21 +502,40 @@ class Task2Node:
         3. 返回True
         """
         # 前5次张开夹爪
-        if self.release_pub_num < 25:
-            self.open_servo()
+        if self.pub_num < 25:
+            self.sensor[2] = 100  # 打开舵机
+            self.control_device() # 发布一次设备控制
             self.move_to_target()  # 也需要按时发布位姿控制
-            self.release_pub_num += 1
-            # rospy.loginfo(f"{NODE_NAME}: 发送关闭")
+            self.pub_num += 1
             return False
         # 后5次关闭夹爪
-        elif self.release_pub_num < 50:
-            self.close_servo()
+        elif self.pub_num < 50:
+            self.sensor[2] = 255 # 关闭舵机
+            self.control_device() # 发布一次设备控制
             self.move_to_target()
-            self.release_pub_num += 1
-            # rospy.loginfo(f"{NODE_NAME}: 发送关闭")
+            self.pub_num += 1
             return False 
+        self.pub_num = 0 # 重置发布次数
         return True
         
+    def open_light(self,light1:int,light2:int):
+        """
+        打开补光灯
+
+        Parameters:
+            light1: int, 补光灯1的亮度(0~100)
+            light2: int, 补光灯2的亮度(0~100)
+        """
+        if self.pub_num < 5:
+            self.sensor[3] = light1
+            self.sensor[4] = light2
+            self.control_device()
+            self.move_to_target()
+            self.pub_num += 1
+            return False
+        self.pub_num = 0 # 重置发布次数
+        return True
+
     def finish_task(self):
         """
         任务完成：
@@ -527,44 +552,38 @@ class Task2Node:
     ###############################################主循环#################################
     def run(self):
         while not rospy.is_shutdown():
-            # self.close_servo()
             if self.step == 0:
                 if self.move_to_init_pose(): #如果移动到了目标位置，则跳到step1
-                    self.step = 6
-                    rospy.loginfo(f"{NODE_NAME}: 阶段1已完成，进入阶段2")
-            elif self.step== 6:
-                i = 5
-                while i > 0:
-                    self.close_servo()
-                    self.move_to_target()
-                    i=i-1
-                    self.rate.sleep()
-                self.step = 1
-                rospy.loginfo(f"{NODE_NAME}: 阶段6已完成，进入阶段1")
-            elif self.step == 1:
-                if self.search_target(max_rotate_rad=np.radians(25),depth_bias = -0.1): # 记录到足够的目标点位置后，跳到step2
+                    rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
+                    self.step = 1
+            elif self.step== 1:
+                if self.open_light(light1=50,light2=50):                   
+                    rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 2
-                    rospy.loginfo(f"{NODE_NAME}: 阶段1已完成，进入阶段2")
             elif self.step == 2:
-                if self.move_to_target(max_xyz_dist=0.12,max_xy_step=1.8,max_yaw_dist=np.radians(1)): # 如果移动到了工作目标位置，则跳到step3
+                if self.search_target(max_rotate_rad=np.radians(25),depth_bias = -0.1): # 记录到足够的目标点位置后，跳到step2                  
+                    rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 3
-                    rospy.loginfo(f"{NODE_NAME}: 阶段2已完成，进入阶段3")
             elif self.step == 3:
-                if self.release_target(): # 释放目标后，移动到初始位置
+                if self.move_to_target(max_xyz_dist=0.12,max_xy_step=1.8,max_yaw_dist=np.radians(1)): # 如果移动到了工作目标位置，则跳到step3                
+                    rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 4
-                    rospy.loginfo(f"{NODE_NAME}: 阶段3已完成，进入阶段4")
             elif self.step == 4:
-                if self.move_to_init_pose():
-                    rospy.loginfo(f"{NODE_NAME}: 阶段4已完成，进入阶段5")
-                    self.step = 5
+                if self.release_target(): # 释放目标后，移动到初始位置                
+                    rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
+                    self.step = 5               
             elif self.step == 5:
+                if self.move_to_end_pose():
+                    rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
+                    self.step = 6
+            elif self.step == 6:
                 self.finish_task()
                 break
             self.rate.sleep()
     ###############################################主循环#################################
 
 if __name__ == '__main__':
-    rospy.init_node('task2_node')
+    rospy.init_node(f'{NODE_NAME}', anonymous=True) # 初始化ROS节点
     try:
         node = Task2Node()
         node.run()

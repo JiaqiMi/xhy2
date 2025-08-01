@@ -110,7 +110,8 @@ class AUV_tfhandler:
 
     def run(self):
         while not rospy.is_shutdown():
-            self.Rate.sleep()
+            # self.Rate.sleep()
+            rospy.spin() # 直接一直循环等待就行
 
 class WorldFrameManager:
     """
