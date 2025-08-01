@@ -63,11 +63,16 @@ class PipelineDetector:
         self.ts.registerCallback(self.image_callback)
 
         # # 相机内参（需替换为你的标定结果）
-        self.fx = 519.151900
-        self.fy = 519.712551
-        self.cx = 319.174292
-        self.cy = 277.976296
-        self.baseline = 34.309807 / 519.151900  # m
+        # self.fx = 519.151900
+        # self.fy = 519.712551
+        # self.cx = 319.174292
+        # self.cy = 277.976296
+        # self.baseline = 34.309807 / 519.151900  # m
+        self.fx = 798.731044
+        self.fy = 798.731044
+        self.cx = 348.127430
+        self.cy = 269.935493
+        self.baseline = 47.694354 / 798.731044  # m
         
         # air - new
         # self.fx = 572.993971
@@ -227,18 +232,12 @@ class PipelineDetector:
                 rospy.logerr("Error publishing depth: %s", str(e))
                 
         # ============================  可视化（归一化视差）   ============================ #
-        # disp_vis = cv2.normalize(disparity, None, 0, 255, cv2.NORM_MINMAX)
-        # disp_vis = np.uint8(disp_vis)
-        # cv2.imshow("Disparity", disp_vis)
-        # cv2.imshow("Left", left_img)
-        # cv2.waitKey(1)
-        
         # 可视化分割结果和骨架线
-        seg_vis = cv2.bitwise_and(left_img, left_img, mask=mask_clean)
+        # seg_vis = cv2.bitwise_and(left_img, left_img, mask=mask_clean)
 
-        skeleton_vis = left_img.copy()
-        for y, x in np.column_stack(np.where(largest_component > 0)):
-            cv2.circle(skeleton_vis, (x, y), 1, (0, 0, 255), -1)
+        # skeleton_vis = left_img.copy()
+        # for y, x in np.column_stack(np.where(largest_component > 0)):
+        #     cv2.circle(skeleton_vis, (x, y), 1, (0, 0, 255), -1)
 
         # 本地调试时可使用imshow
         # cv2.imshow("Segmented Region", seg_vis)
