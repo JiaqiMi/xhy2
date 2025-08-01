@@ -23,7 +23,7 @@
     <param name="task2_target_yaw" type="double" value="0.0" />
 
     <!-- 任务3：夹小球 -->
-    <param name="task3_point0" type="yaml" value="[0.02, -4.98, 0.00, 180]" />
+    <param name="task3_point0" type="yaml" value="[0.72, -4.98, 0.00, 0]" />
     <param name="task3_target_yaw" type="double" value="-180.0" />
     <param name="task3_target_class" type="string" value="$(arg color)"  />
 

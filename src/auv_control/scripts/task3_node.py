@@ -317,7 +317,8 @@ class Task3Node:
         存的时候就应该存减去夹爪之后的位置
         """
         rospy.loginfo(f"{NODE_NAME}: 收到目标检测消息 {msg.class_name},{msg.pose.pose.position.x},{msg.pose.pose.position.y},{msg.pose.pose.position.z}")
-        if msg.class_name == self.target_color:
+        
+        if msg.class_name == self.target_color and self.step == 10:
             point_in_camera = msg.pose.pose.position # 相机坐标系下目标点
             origin_in_camera = Point(x=0, y=0, z=0)  # 相机坐标系下的原点
             if self.xyz_distance(point_in_camera, origin_in_camera) < 5.0:
@@ -366,7 +367,7 @@ class Task3Node:
     
 
     ###############################################逻辑层#################################
-    def search_target(self, max_rotate_rad=np.radians(20),depth_bias = -0.05,max_time_interval=5.0, min_conf=0.5,max_position_interval=0.5,rotate_step=np.radians(1),max_xyz_dist=0.3,max_yaw_dist=np.radians(0.2)):
+    def search_target(self, max_rotate_rad=np.radians(20),depth_bias = -0.15,max_time_interval=5.0, min_conf=0.5,max_position_interval=0.5,rotate_step=np.radians(1),max_xyz_dist=0.3,max_yaw_dist=np.radians(0.2)):
         """
         搜索目标：
         从队列中获取三个目标点，判断三个点的时间间隔和位置间隔(在map下的),如果间隔小于阈值，时间小于阈值
@@ -524,6 +525,7 @@ class Task3Node:
         if self.pub_num < 10:
             self.pub_num += 1
             self.sensor[2] = 255 # 关闭舵机
+            self.control_device()
             self.move_to_target()  # 也需要按时发布位姿控制
             return False
         self.pub_num = 0
@@ -573,7 +575,7 @@ class Task3Node:
         Returns:
             到达目标位置返回true,未到达目标位置返回false
         """
-        self.target_posestamped.z = self.ball_depth
+        self.target_posestamped.pose.position.z = self.ball_depth
         return self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step,max_z_step=max_z_step,max_yaw_step=max_yaw_step)
     ###############################################逻辑层#################################
 
@@ -587,7 +589,7 @@ class Task3Node:
                     self.step = 1
                     rospy.loginfo(f"{NODE_NAME}: 到达初始位置，开始搜索目标")
             elif self.step == 1:  # 搜索目标
-                if self.open_light(50, 50):
+                if self.open_light(0, 0):
                     self.step = 10  # 张开夹爪s
             elif self.step == 10:
                 if self.search_target(max_rotate_rad=np.radians(15),min_conf=0.5,max_xyz_dist=0.3,depth_bias = -0.05,rotate_step=np.radians(0.5),max_yaw_dist=np.radians(0.2)):

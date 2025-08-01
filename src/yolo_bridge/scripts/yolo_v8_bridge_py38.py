@@ -17,7 +17,7 @@ class YOLOv8Detector:
         
         self.DetectMode = param.detect_mode            # 从命令行参数获取检测模式
         self.top_k = param.top_k                       # 从命令行参数获取 top_k
-        self.visualization = param.visualization       # 从命令行参数获取是否可视化
+        self.visualization = int(param.visualization)       # 从命令行参数获取是否可视化
         self.conf_thre = float(param.conf_thre)        # 置信度阈值
         self.detc_type = param.detc_type               # 检测类型（center 或 bbox）
         
