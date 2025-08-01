@@ -42,7 +42,11 @@ def get_stable_depth(u, v, depth, fx, fy, cx, cy, window_size=11):
     if valid.size < 3:
         return np.array([np.nan, np.nan, np.nan])  # too few valid points
 
-    Z = np.min(valid)  # or np.mean(valid)
+    # Z = np.min(valid)  # or np.mean(valid)
+    # 对候选点进行筛选
+    valid = valid[(valid <= 2)&(valid>=0.5)]  # 过滤掉大于3米的点
+    Z = np.mean(valid)
+    
     if Z == 0:
         rospy.logwarn("Invalid depth at pixel ({}, {}): Z = 0".format(u, v))
         return np.array([np.nan, np.nan, np.nan])
@@ -92,7 +96,7 @@ class StereoDepthNode:
         
         # 控制推断频率
         self.last_infer_time = rospy.Time.now()
-        self.infer_interval = rospy.Duration(0.5)  # 单位秒 
+        self.infer_interval = rospy.Duration(0.2)  # 单位秒 
         
         rospy.loginfo("Stereo Depth Node Initialized.")
 
