@@ -63,7 +63,8 @@ class Task2Node:
         self.start_point.header.frame_id = "map" # 设置坐标系为map
         self.start_point.pose.position = Point(*start_point_from_param[:3])
         self.start_point.pose.orientation = Quaternion(*quaternion_from_euler(0, 0, np.radians(start_point_from_param[3])))
-        
+        self.end_point.pose.position = self.start_point.pose.position
+        self.end_point.pose.orientation = self.start_point.pose.orientation
         # 输出log
         rospy.loginfo(f"{NODE_NAME}: 初始化完成")
         rospy.loginfo(f"{NODE_NAME}: 初始点: n={self.start_point.pose.position.x}, e={self.start_point.pose.position.y}, d={self.start_point.pose.position.z}")
@@ -271,6 +272,7 @@ class Task2Node:
 
             # 判断是否到达
             if self.is_arrival(current_pose, self.target_posestamped, max_xyz_dist, max_yaw_dist):
+                rospy.loginfo("{NODE_NAME}: 已到达目标位置")
                 return True
             
             # 航向控制和点控制统一起来
@@ -436,6 +438,7 @@ class Task2Node:
                                 
                                 # 设置完目标位姿后，跳转到下一步即可
                                 self.target_posestamped.pose.position = Point(x=avg_x,y=avg_y,z=avg_z+depth_bias)
+                                self.end_point.pose.position.z = avg_z +depth_bias
                                 self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, avg_yaw))
                                 # rospy.loginfo(f"{NODE_NAME}: 当前位置为：n={avg_x:.2f}m, e={avg_y:.2f}m, d={avg_z+depth_bias:.2f}m,yaw={np.degrees(avg_yaw)}")
                                 rospy.loginfo(f"{NODE_NAME}: 目标位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d={avg_z+depth_bias:.2f}m,yaw={np.degrees(avg_yaw)}°")
@@ -452,7 +455,7 @@ class Task2Node:
                                               current_pose.pose.orientation.z,
                                               current_pose.pose.orientation.w])[2]
         if self.init_yaw is None:
-            self.target_posestamped.pose = current_pose.pose
+            self.target_posestamped.pose = self.start_point.pose
             self.init_yaw = current_yaw
         next_yaw = current_yaw + (rotate_step * self.search_direction)
 
@@ -482,17 +485,17 @@ class Task2Node:
         self.target_posestamped = self.start_point # 将宏定义的初始位置赋值给目标位置
         return self.move_to_target()
 
-    def move_to_end_pose(self):
+    def move_to_end_pose(self,max_xyz_dist=0.1, max_yaw_dist=np.radians(0.5),max_xy_step=0.8):
         """
         发送一次指令移动到结束位姿
 
         Returns:
             到达目标位置返回true,未到达目标位置返回false
         """
-        self.end_point = self.start_point
-        self.end_point.pose.position.z = self.target_posestamped.pose.position.z  # 设置结束点的深度
-        self.target_posestamped = self.end_point # 将宏定义的初始位置赋值给目标位置
-        return self.move_to_target()
+        # self.end_point.pose.position.z = self.target_posestamped.pose.position.z  # 设置结束点的深度
+        self.target_posestamped.pose.position = self.end_point.pose.position # 将宏定义的初始位置赋值给目标位置
+        # rospy.loginfo(self.end_point.pose.position)
+        return self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step)
         
     def release_target(self):
         """
@@ -544,7 +547,7 @@ class Task2Node:
         2. 返回True
         """
         self.finished_pub.publish(f"{NODE_NAME} finished")
-        rospy.loginfo(f"{NODE_NAME}: 任务完成，发布完成消息")
+        # rospy.loginfo(f"{NODE_NAME}: 任务完成，发布完成消息")
         rospy.signal_shutdown("任务完成")
         return True
     ###############################################逻辑层#################################
@@ -562,11 +565,11 @@ class Task2Node:
                     rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 2
             elif self.step == 2:
-                if self.search_target(max_rotate_rad=np.radians(25),depth_bias = -0.1,rotate_step=np.radians(0.75)): # 记录到足够的目标点位置后，跳到step2                  
+                if self.search_target(max_rotate_rad=np.radians(25),depth_bias = -0.05,rotate_step=np.radians(0.5),max_yaw_dist=np.radians(0.2)): # 记录到足够的目标点位置后，跳到step2                  
                     rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 3
             elif self.step == 3:
-                if self.move_to_target(max_xyz_dist=0.12,max_xy_step=1.8,max_yaw_dist=np.radians(1)): # 如果移动到了工作目标位置，则跳到step3                
+                if self.move_to_target(max_xyz_dist=0.15,max_xy_step=1.8,max_yaw_dist=np.radians(1.5)): # 如果移动到了工作目标位置，则跳到step3                
                     rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 4
             elif self.step == 4:
@@ -574,7 +577,7 @@ class Task2Node:
                     rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 5               
             elif self.step == 5:
-                if self.move_to_end_pose():
+                if self.move_to_end_pose(max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2),max_xy_step=2):
                     rospy.loginfo(f"{NODE_NAME}: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 6
             elif self.step == 6:

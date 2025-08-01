@@ -31,11 +31,11 @@ class Static_tf_broadcaster:
         self.imu_rot = tf.transformations.quaternion_from_euler(0, 0, 0)
         
         # base_link到hand的变换参数
-        self.hand_trans = (1.0617, -0.00217, 0.021235)
+        self.hand_trans = (0.9017, -0.00217, 0.021235) #1.0617
         self.hand_rot = tf.transformations.quaternion_from_euler(0, 0, 0)
 
         # base_link到camera的变换参数
-        self.camera_trans = (0.62359, -0.03037, -0.18404)# suoduan 7cm
+        self.camera_trans = (0.69359, -0.03037, -0.18404)# suoduan 7cm -5
         self.camera_rot = tf.transformations.quaternion_from_euler(np.radians(75), 0, np.radians(90))
 
         # 发布频率 10Hz

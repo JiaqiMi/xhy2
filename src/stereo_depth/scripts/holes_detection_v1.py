@@ -55,7 +55,7 @@ def get_stable_depth(u, v, depth, fx, fy, cx, cy, window_size=11):
 def compute_pose_from_quad(P1, P2, P3, P4):
     """计算四个点的中心位置和姿态"""
     center = None
-    dis_thre = 2   # 单位米
+    dis_thre = 3   # 单位米
     if (P1[2] < dis_thre) and (P2[2] < dis_thre) and (P3[2] < dis_thre) and (P4[2] < dis_thre):
         center = (P1 + P2 + P3 + P4) / 4.0
     elif (P1[2] < dis_thre) and (P3[2] < dis_thre):
@@ -63,13 +63,13 @@ def compute_pose_from_quad(P1, P2, P3, P4):
     elif (P2[2] < dis_thre) and (P4[2] < dis_thre):
         center = (P2 + P4) / 2.0
     elif (P1[2] < dis_thre) and (P2[2] < dis_thre) and (P3[2]<dis_thre):
-        center = (P1 + P2 + P3) / 3.0
+        center = (P1 + P3) / 2.0
     elif (P1[2] < dis_thre) and (P2[2] < dis_thre) and (P4[2]<dis_thre):
-        center = (P1 + P2 + P4) / 3.0
+        center = (P2 + P4) / 2.0
     elif (P1[2] < dis_thre) and (P3[2] < dis_thre) and (P4[2]<dis_thre):
-        center = (P1 + P3 + P4) / 3.0
+        center = (P1 + P3) / 2.0
     elif (P2[2] < dis_thre) and (P3[2] < dis_thre) and (P4[2]<dis_thre):
-        center = (P2 + P3 + P4) / 3.0
+        center = (P2 + P4) / 2.0
     else:
         rospy.logwarn("Invalid depth for all points, cannot compute pose.")
         return None

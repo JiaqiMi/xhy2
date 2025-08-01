@@ -46,16 +46,17 @@ class Task3Node:
         self.pub_num = 0  # 记录释放目标的次数
         self.step = 0 # 程序运行阶段
         self.sensor = [0] * 5 # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
-          
+        self.ball_depth =None
         # 获取宏定义参数
         self.target_depth = rospy.get_param('~depth', 0.3)  # 下潜深度，单位米
         start_point_from_param = rospy.get_param('/task3_point0', [0.5, -0.5, 0.15, 0.0])  # 默认值        
-        self.target_color = rospy.get_param('/task3_target_color', 'red')  # 目标小球的颜色，默认红色        
+        self.target_color = rospy.get_param('/task1_target_color', 'red')  # 目标小球的颜色，默认红色        
         # 准备执行任务的初始点
         self.start_point.header.frame_id = "map"
         self.start_point.pose.position = Point(*start_point_from_param[:3]) 
         self.start_point.pose.orientation = Quaternion(*quaternion_from_euler(0, 0, np.radians(start_point_from_param[3])))
-
+        self.end_point.pose.position = self.start_point.pose.position
+        self.end_point.pose.orientation = self.start_point.pose.orientation
         # 输出log
         rospy.loginfo(f"{NODE_NAME}: 初始化完成")
         rospy.loginfo(f"{NODE_NAME}: 初始点: n={self.start_point.pose.position.x}, e={self.start_point.pose.position.y}, d={self.start_point.pose.position.z}")        
@@ -425,9 +426,10 @@ class Task3Node:
                                 ])
                                 avg_yaw = (yaw1 + yaw2 + yaw3) / 3.0
                                 avg_pitch = (pitch1 + pitch2 + pitch3) / 3.0
-                                
+                                if self.ball_depth == None:
+                                    self.ball_depth = avg_z +depth_bias
                                 # 设置完目标位姿后，跳转到下一步即可
-                                self.target_posestamped.pose.position = Point(x=avg_x,y=avg_y,z=avg_z+depth_bias)
+                                self.target_posestamped.pose.position = Point(x=avg_x,y=avg_y,z=self.start_point.pose.position.z)
                                 self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, avg_yaw))
                                 # rospy.loginfo(f"{NODE_NAME}: 当前位置为：n={avg_x:.2f}m, e={avg_y:.2f}m, d={avg_z+depth_bias:.2f}m,yaw={np.degrees(avg_yaw)}")
                                 rospy.loginfo(f"{NODE_NAME}: 目标位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d={avg_z+depth_bias:.2f}m,yaw={np.degrees(avg_yaw)}°")
@@ -474,17 +476,17 @@ class Task3Node:
         self.target_posestamped = self.start_point # 将宏定义的初始位置赋值给目标位置
         return self.move_to_target()
     
-    def move_to_end_pose(self):
+    def move_to_end_pose(self,max_xyz_dist=0.1, max_yaw_dist=np.radians(0.5),max_xy_step=0.8):
         """
         发送一次指令移动到结束位姿
 
         Returns:
             到达目标位置返回true,未到达目标位置返回false
         """
-        self.end_point = self.start_point
-        self.end_point.pose.position.z = self.target_posestamped.pose.position.z  # 设置结束点的深度
-        self.target_posestamped = self.end_point # 将宏定义的初始位置赋值给目标位置
-        return self.move_to_target()
+        # self.end_point.pose.position.z = self.target_posestamped.pose.position.z  # 设置结束点的深度
+        self.target_posestamped.pose.position = self.end_point.pose.position # 将宏定义的初始位置赋值给目标位置
+        # rospy.loginfo(self.end_point.pose.position)
+        return self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step)
         
     def grab_target(self):
         """
@@ -492,7 +494,7 @@ class Task3Node:
         1. 发布抓取指令
         2. 返回True
         """
-        if self.pub_num < 5:
+        if self.pub_num < 10:
             self.pub_num += 1
             self.sensor[2] = 255 # 关闭舵机
             self.move_to_target()  # 也需要按时发布位姿控制
@@ -508,7 +510,7 @@ class Task3Node:
             light1: int, 补光灯1的亮度(0~100)
             light2: int, 补光灯2的亮度(0~100)
         """
-        if self.pub_num < 5:
+        if self.pub_num < 10:
             self.sensor[2] = 100 # 同时打开舵机
             self.sensor[3] = light1
             self.sensor[4] = light2
@@ -528,7 +530,11 @@ class Task3Node:
         self.finished_pub.publish(f"{NODE_NAME} finished")
         rospy.loginfo(f"{NODE_NAME}: 任务完成，发布完成消息")
         rospy.signal_shutdown("任务完成")
-        return True
+        return True 
+    
+    def dive_to_ball():
+        self.target_posestamped.z = self.ball_depth
+        return self.move_to_target(max_xyz_dist=0.15,max_yaw_dist=np.radians(1.5))
     ###############################################逻辑层#################################
 
 
@@ -541,20 +547,26 @@ class Task3Node:
                     self.step = 1
                     rospy.loginfo("task3 node: 到达初始位置，开始搜索目标")
             elif self.step == 1:  # 搜索目标
-                self.open_light(50, 50)  # 张开夹爪
-                if self.search_target():
+                if self.open_light(50, 50):
+                    self.step = 10  # 张开夹爪s
+            elif self.step == 10:
+                if self.search_target(max_rotate_rad=np.radians(15),min_conf=0.5,max_xyz_dist=0.3,depth_bias = -0.05,rotate_step=np.radians(0.5),max_yaw_dist=np.radians(0.2)):
                     self.step = 2
                     rospy.loginfo("task3 node: 找到目标，开始移动到目标位置")
             elif self.step == 2:  # 移动到目标位置
-                if self.move_to_target(max_xyz_dist=0.1,max_yaw_dist=np.radians(1)):
-                    self.step = 3
+                if self.move_to_target(max_xyz_dist=0.1,max_xy_step=1.8,max_yaw_dist=np.radians(1)):
+                    self.step = 11
                     rospy.loginfo("task3 node: 到达目标位置，准备抓取")
+            elif self.step ==11:
+                if self.dive_to_ball():
+                    self.step == 3
+                    rospy.loginfo("task3 node: 下沉完毕")
             elif self.step == 3:  # 抓取目标
                 if self.grab_target():
                     self.step = 5
                     rospy.loginfo("task3 node: 抓取完成，返回初始位置")
             elif self.step == 5:  # 回到初始任务点
-                if self.move_to_end_pose():
+                if self.move_to_end_pose(max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2),max_xy_step=2):
                     self.step = 6
                     rospy.loginfo("task3 node: 返回结束位置，任务结束")
             elif self.step == 6:  # 完成任务
