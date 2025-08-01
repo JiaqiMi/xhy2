@@ -1,10 +1,12 @@
 <launch>
+    <arg name="color" default="red" />
+
     <!-- 下潜的深度-->
     <param name="depth" type ="double" value="0.2" />
     
     <!-- task1: 记录三个点 -->
     <param name="detect_door" type="bool" value="false" />
-    <param name="task1_target_class" type="string" value="red" />
+    <param name="task1_target_class" type="string" value="$(arg color)" />
 
     <!-- 第一个点，任务初始点 -->
     <param name="task1_point1" type="yaml" value="[0.5, -0.8, 0.2, -0.0]" /> 
@@ -21,9 +23,11 @@
     <param name="task2_target_yaw" type="double" value="0.0" />
 
     <!-- 任务3：夹小球 -->
-    <param name="task3_point0" type="yaml" value="[0.02, -4.98, 0.05, 180]" />
+    <param name="task3_point0" type="yaml" value="[0.02, -4.98, 0.00, 180]" />
     <param name="task3_target_yaw" type="double" value="-180.0" />
-    <param name="task3_target_class" type="string" value="red" />
+    <param name="task3_target_class" type="string" value="$(arg color)"  />
+
+
 
     <!-- 任务4 巡线 -->
     <param name="task4_point1" type="yaml" value="[0.02, -4.98, 0.2, 180]" />
