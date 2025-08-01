@@ -52,7 +52,26 @@ def get_stable_depth(u, v, depth, fx, fy, cx, cy, window_size=11):
 
 
 def compute_pose_from_quad(P1, P2, P3, P4):
-    center = (P1 + P2 + P3 + P4) / 4.0
+    """计算四个点的中心位置和姿态"""
+    center = None
+    dis_thre = 2   # 单位米
+    if (P1[2] < dis_thre) and (P2[2] < dis_thre) and (P3[2] < dis_thre) and (P4[2] < dis_thre):
+        center = (P1 + P2 + P3 + P4) / 4.0
+    elif (P1[2] < dis_thre) and (P3[2] < dis_thre):
+        center = (P1 + P3) / 2.0
+    elif (P2[2] < dis_thre) and (P4[2] < dis_thre):
+        center = (P2 + P4) / 2.0
+    elif (P1[2] < dis_thre) and (P2[2] < dis_thre) and (P3[2]<dis_thre):
+        center = (P1 + P2 + P3) / 3.0
+    elif (P1[2] < dis_thre) and (P2[2] < dis_thre) and (P4[2]<dis_thre):
+        center = (P1 + P2 + P4) / 3.0
+    elif (P1[2] < dis_thre) and (P3[2] < dis_thre) and (P4[2]<dis_thre):
+        center = (P1 + P3 + P4) / 3.0
+    elif (P2[2] < dis_thre) and (P3[2] < dis_thre) and (P4[2]<dis_thre):
+        center = (P2 + P3 + P4) / 3.0
+    else:
+        rospy.logwarn("Invalid depth for all points, cannot compute pose.")
+        return None
     vec1 = P2 - P1
     vec2 = P4 - P1
     z_axis = np.cross(vec1, vec2)
@@ -75,7 +94,7 @@ def compute_pose_from_quad(P1, P2, P3, P4):
     pose.pose.position.y = center[1]
     pose.pose.position.z = center[2]
     pose.pose.orientation = Quaternion(*quat)
-
+    
     return pose
 
 
@@ -239,6 +258,8 @@ class StereoDepthNode:
                 
                 # 计算中心点和姿态
                 pose_msg = compute_pose_from_quad(P1, P2, P3, P4)
+                if pose_msg is None:
+                    return 
                 
                 rospy.loginfo("pose_msg.pose.position.x: %.2f", pose_msg.pose.position.x)
                 rospy.loginfo("pose_msg.pose.position.y: %.2f", pose_msg.pose.position.y)

@@ -46,7 +46,7 @@ class YOLOv8Detector:
         
         # 控制推断频率
         self.last_infer_time = rospy.Time.now()
-        self.infer_interval = rospy.Duration(0.5)  # 单位秒 
+        self.infer_interval = rospy.Duration(0.1)  # 单位秒 
         
         rospy.loginfo("YOLOv8 Detector Node Started")
 
