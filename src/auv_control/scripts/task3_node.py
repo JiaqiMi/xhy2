@@ -12,6 +12,8 @@
 记录：
 2025.8.1 02:38
     同步task2 完善注释和驱动
+2025.8.1 23:00
+    完善夹球逻辑
 """
 import rospy
 import tf
@@ -47,10 +49,11 @@ class Task3Node:
         self.step = 0 # 程序运行阶段
         self.sensor = [0] * 5 # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
         self.ball_depth =None
+
         # 获取宏定义参数
-        self.target_depth = rospy.get_param('~depth', 0.3)  # 下潜深度，单位米
-        start_point_from_param = rospy.get_param('/task3_point0', [0.5, -0.5, 0.15, 0.0])  # 默认值        
-        self.target_color = rospy.get_param('/task1_target_color', 'red')  # 目标小球的颜色，默认红色        
+        self.target_depth = rospy.get_param('/depth', 0.3)  # 初始下潜深度，单位米
+        start_point_from_param = rospy.get_param('/task3_point0', [0.02, -4.98, 0.00, 180])  # 默认值        
+        self.target_color = rospy.get_param('/task3_target_class', 'red')  # 目标小球的颜色，默认红色        
         # 准备执行任务的初始点
         self.start_point.header.frame_id = "map"
         self.start_point.pose.position = Point(*start_point_from_param[:3]) 
@@ -270,7 +273,7 @@ class Task3Node:
             next_pose = self.generate_smooth_pose(current_pose, self.target_posestamped, max_xy_step=max_xy_step, max_z_step=max_z_step, max_yaw_step=max_yaw_step)
             dist_to_target = self.xyz_distance(current_pose.pose.position, self.target_posestamped.pose.position)
             yaw_to_target = self.yaw_distance(current_pose.pose.orientation, self.target_posestamped.pose.orientation)
-            rospy.loginfo_throttle(2,f"{NODE_NAME}: 移动到目标点: 距离={dist_to_target:.3f}米, 航向差={np.degrees(yaw_to_target):.2f}度,高度差={current_pose.pose.position.z-self.target_posestamped.pose.position.z}")
+            rospy.loginfo_throttle(5,f"{NODE_NAME}: 移动到目标点: 距离={dist_to_target:.3f}米, 航向差={np.degrees(yaw_to_target):.2f}度,高度差={current_pose.pose.position.z-self.target_posestamped.pose.position.z}")
             self.target_pub.publish(next_pose)
 
             return False
@@ -292,7 +295,7 @@ class Task3Node:
 
             # NOTE 打印一下当前位置
             _,_,yaw = euler_from_quaternion(rot)
-            rospy.loginfo_throttle(2,f"{NODE_NAME}: 当前位置为: n={current_pose.pose.position.x:.2f}m, e={current_pose.pose.position.y:.2f}m, d={current_pose.pose.position.z:.2f}m, yaw={np.degrees(yaw)}")
+            rospy.loginfo_throttle(5,f"{NODE_NAME}: 当前位置为: n={current_pose.pose.position.x:.2f}m, e={current_pose.pose.position.y:.2f}m, d={current_pose.pose.position.z:.2f}m, yaw={np.degrees(yaw)}")
             return current_pose
         except tf.Exception as e:
             rospy.logwarn(f"{NODE_NAME}: 获取当前位姿失败: {e}")
@@ -449,14 +452,24 @@ class Task3Node:
             self.target_posestamped.pose = current_pose.pose
             self.init_yaw = current_yaw
         next_yaw = current_yaw + (rotate_step * self.search_direction)
+        
+        # 角度标准化：将next_yaw限制在[-π, π]范围内
+        next_yaw = (next_yaw + np.pi) % (2 * np.pi) - np.pi
 
-        if next_yaw > self.init_yaw + max_rotate_rad:
+        # 需要加跨越180度判断
+        # 计算相对于初始角度的角度差，也需要处理跨越±π的情况
+        yaw_diff = next_yaw - self.init_yaw
+        yaw_diff = (yaw_diff + np.pi) % (2 * np.pi) - np.pi
+        
+        if yaw_diff > max_rotate_rad:
             self.search_direction = -1
             next_yaw = current_yaw + (rotate_step * self.search_direction)
+            next_yaw = (next_yaw + np.pi) % (2 * np.pi) - np.pi
             # rospy.loginfo(f"{NODE_NAME}: test search: 掉头顺时针搜索")
-        elif next_yaw < self.init_yaw - max_rotate_rad:
+        elif yaw_diff < -max_rotate_rad:
             self.search_direction = 1
             next_yaw = current_yaw + (rotate_step * self.search_direction)
+            next_yaw = (next_yaw + np.pi) % (2 * np.pi) - np.pi
             # rospy.loginfo(f"{NODE_NAME}: test search: 掉头逆时针搜索")
         
         # 设置目标位姿，位置不变，原地开始旋转加一个旋转角度
@@ -466,19 +479,33 @@ class Task3Node:
         self.move_to_target(max_xyz_dist=max_xyz_dist, max_yaw_step=rotate_step, max_yaw_dist=max_yaw_dist)
         return False
     
-    def move_to_init_pose(self):
+    def move_to_init_pose(self,max_xy_step=0.8,max_z_step=0.1,max_yaw_step=np.radians(5),max_xyz_dist=0.2,max_yaw_dist=np.radians(1)):
         """
         发送一次指令移动到初始位姿
+        
+        Parameters:
+            max_xy_step: float, 最大水平步长(米)，用于平滑，超过这个距离后会先转向后移动
+            max_z_step: float, 最大深度步长(米)，用于平滑
+            max_yaw_step: float, 最大偏航角步长(弧度)，用于平滑
+            max_xyz_dist: float, 最大三维距离误差(米)，用于判断是否到达目标位置
+            max_yaw_dist: float, 最大航向误差(弧度)，用于判断是否到达目标位置
 
         Returns:
             到达目标位置返回true,未到达目标位置返回false
         """
         self.target_posestamped = self.start_point # 将宏定义的初始位置赋值给目标位置
-        return self.move_to_target()
-    
-    def move_to_end_pose(self,max_xyz_dist=0.1, max_yaw_dist=np.radians(0.5),max_xy_step=0.8):
+        return self.move_to_target(max_xy_step=max_xy_step,max_z_step=max_z_step,max_yaw_step=max_yaw_step,max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist)
+
+    def move_to_end_pose(self,max_xy_step=0.8,max_z_step=0.1,max_yaw_step=np.radians(0.5),max_xyz_dist=0.1, max_yaw_dist=np.radians(0.5)):
         """
         发送一次指令移动到结束位姿
+
+        Parameters:
+            max_xy_step: float, 最大水平步长(米)，用于平滑，超过这个距离后会先转向后移动
+            max_z_step: float, 最大深度步长(米)，用于平滑
+            max_yaw_step: float, 最大偏航角步长(弧度)，用于平滑
+            max_xyz_dist: float, 最大三维距离误差(米)，用于判断是否到达目标位置
+            max_yaw_dist: float, 最大航向误差(弧度)，用于判断是否到达目标位置
 
         Returns:
             到达目标位置返回true,未到达目标位置返回false
@@ -486,8 +513,8 @@ class Task3Node:
         # self.end_point.pose.position.z = self.target_posestamped.pose.position.z  # 设置结束点的深度
         self.target_posestamped.pose.position = self.end_point.pose.position # 将宏定义的初始位置赋值给目标位置
         # rospy.loginfo(self.end_point.pose.position)
-        return self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step)
-        
+        return self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step,max_z_step=max_z_step,max_yaw_step=max_yaw_step)
+
     def grab_target(self):
         """
         抓取目标：
@@ -532,9 +559,22 @@ class Task3Node:
         rospy.signal_shutdown("任务完成")
         return True 
     
-    def dive_to_ball():
+    def dive_to_ball(self,max_xy_step=0.8,max_z_step=0.1,max_yaw_step=np.radians(5),max_xyz_dist=0.2,max_yaw_dist=np.radians(1)):
+        """
+        下降到球的位置
+        
+        Parameters:
+            max_xy_step: float, 最大水平步长(米)，用于平滑，超过这个距离后会先转向后移动
+            max_z_step: float, 最大深度步长(米)，用于平滑
+            max_yaw_step: float, 最大偏航角步长(弧度)，用于平滑
+            max_xyz_dist: float, 最大三维距离误差(米)，用于判断是否到达目标位置
+            max_yaw_dist: float, 最大航向误差(弧度)，用于判断是否到达目标位置
+        
+        Returns:
+            到达目标位置返回true,未到达目标位置返回false
+        """
         self.target_posestamped.z = self.ball_depth
-        return self.move_to_target(max_xyz_dist=0.15,max_yaw_dist=np.radians(1.5))
+        return self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step,max_z_step=max_z_step,max_yaw_step=max_yaw_step)
     ###############################################逻辑层#################################
 
 
@@ -545,30 +585,30 @@ class Task3Node:
             if self.step == 0:  # 移动到初始位置
                 if self.move_to_init_pose():
                     self.step = 1
-                    rospy.loginfo("task3 node: 到达初始位置，开始搜索目标")
+                    rospy.loginfo(f"{NODE_NAME}: 到达初始位置，开始搜索目标")
             elif self.step == 1:  # 搜索目标
                 if self.open_light(50, 50):
                     self.step = 10  # 张开夹爪s
             elif self.step == 10:
                 if self.search_target(max_rotate_rad=np.radians(15),min_conf=0.5,max_xyz_dist=0.3,depth_bias = -0.05,rotate_step=np.radians(0.5),max_yaw_dist=np.radians(0.2)):
                     self.step = 2
-                    rospy.loginfo("task3 node: 找到目标，开始移动到目标位置")
+                    rospy.loginfo(f"{NODE_NAME}: 找到目标，开始移动到目标位置上方")
             elif self.step == 2:  # 移动到目标位置
                 if self.move_to_target(max_xyz_dist=0.1,max_xy_step=1.8,max_yaw_dist=np.radians(1)):
                     self.step = 11
-                    rospy.loginfo("task3 node: 到达目标位置，准备抓取")
-            elif self.step ==11:
-                if self.dive_to_ball():
-                    self.step == 3
-                    rospy.loginfo("task3 node: 下沉完毕")
+                    rospy.loginfo(f"{NODE_NAME}: 到达目标位置，准备抓取")
+            elif self.step == 11:
+                if self.dive_to_ball(max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2),max_xy_step=1.8,max_z_step=0.1,max_yaw_step=np.radians(0.5)):
+                    self.step = 3
+                    rospy.loginfo(f"{NODE_NAME}: 下沉完毕")
             elif self.step == 3:  # 抓取目标
                 if self.grab_target():
                     self.step = 5
-                    rospy.loginfo("task3 node: 抓取完成，返回初始位置")
+                    rospy.loginfo(f"{NODE_NAME}: 抓取完成，返回初始位置")
             elif self.step == 5:  # 回到初始任务点
                 if self.move_to_end_pose(max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2),max_xy_step=2):
                     self.step = 6
-                    rospy.loginfo("task3 node: 返回结束位置，任务结束")
+                    rospy.loginfo(f"{NODE_NAME}: 返回结束位置，任务结束")
             elif self.step == 6:  # 完成任务
                 self.finish_task()
                 break
