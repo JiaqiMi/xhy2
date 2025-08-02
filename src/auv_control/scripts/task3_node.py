@@ -20,7 +20,7 @@ import tf
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 from std_msgs.msg import String
 from auv_control.msg import TargetDetection, Control # control是控制led和舵机
-from geometry_msgs.msg import PoseStamped, Quaternion,Point
+from geometry_msgs.msg import PoseStamped, Quaternion,Point,Pose
 import numpy as np
 
 NODE_NAME = "task3_node"
@@ -49,7 +49,7 @@ class Task3Node:
         self.step = 0 # 程序运行阶段
         self.sensor = [0] * 5 # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
         self.ball_depth =None
-
+        self.search2_max_dist = 0.8 # 第二个搜索阶段的最大距离
         # 获取宏定义参数
         self.target_depth = rospy.get_param('/depth', 0.3)  # 初始下潜深度，单位米
         start_point_from_param = rospy.get_param('/task3_point0', [0.02, -4.98, 0.00, 180])  # 默认值        
@@ -360,10 +360,10 @@ class Task3Node:
                     dist = self.xyz_distance(Point(x=0,y=0,z=0),target_in_hand.pose.position)
                     if self.step == 11: # if in search 2 step
                         # 判断一下距离小于0.5m                      
-                        if dist>0.5:
-                            rospy.loginfo("超出最大距离")
+                        if dist>self.search2_max_dist:
+                            rospy.loginfo(f"超出最大距离: {dist}")
                             return 
-                    rospy.loginfo(f"{NODE_NAME}: 目标点在hand下: {target_in_hand.pose.position.x:.2f}, {target_in_hand.pose.position.y:.2f}, {target_in_hand.pose.position.z:.2f}")
+                    
                     hand_target_in_map = self.tf_listener.transformPose("map", target_in_hand)
                     
                     # 期望位姿就是让base_link移动到使得hand到达目标位置
@@ -375,7 +375,8 @@ class Task3Node:
 
                     # 加入队列
                     self.queue.append((msg.conf, current_pose, expected_pose, target_in_map, target_in_base, target_in_hand))
-                    rospy.loginfo(f"{NODE_NAME}: 加入队列 (conf={msg.conf:.2f}),期望航向{np.degrees(desired_yaw)},distance in hand: {dist}")
+                    rospy.loginfo(f"{NODE_NAME}: 目标点在hand下: {target_in_hand.pose.position.x:.2f}, {target_in_hand.pose.position.y:.2f}, {target_in_hand.pose.position.z:.2f}")
+                    rospy.loginfo(f"{NODE_NAME}: 加入队列 (conf={msg.conf:.2f}), 期望航向{np.degrees(desired_yaw)}, distance in hand: {dist}")
                     
                 except tf.Exception as e:
                     rospy.logwarn(f"{NODE_NAME}: 坐标转换失败: {e}")
@@ -385,7 +386,7 @@ class Task3Node:
     ###############################################逻辑层#################################
     def search_target(self, max_rotate_rad=np.radians(20),depth_bias=-0.05,max_time_interval=5.0, 
                       min_conf=0.5,max_position_interval=0.5,rotate_step=np.radians(1),max_xyz_dist=0.3,
-                      max_yaw_dist=np.radians(0.2),forward_percent=0.3):
+                      max_yaw_dist=np.radians(0.2),forward_percent=0.3,point_num=3):
         """
         搜索目标：
         从队列中获取三个目标点，判断三个点的时间间隔和位置间隔(在map下的),如果间隔小于阈值，时间小于阈值
@@ -401,83 +402,99 @@ class Task3Node:
             max_yaw_dist: 最大偏航距离（弧度），用于判断是否到达
             forward_percent: 前进百分比，水平方向
             depth_bias: 深度偏差（米）
+            point_num: 检测点数量
         """
         # 如果处理的太快就会导致不连续的点
         # 定义三个空点
         # (msg.conf, current_pose, expected_pose, target_in_map, target_in_base,target_in_hand)
         # 循环直到队列为空或找到目标点
         # 如果这个占用很长时间呢？
-        while len(self.queue) >= 3:
-            # 只要有一个条件不满足，重新取点
-            target1 = self.queue[0]
-            target2 = self.queue[1]
-            target3 = self.queue[2]
+        def is_closed(points:list, max_position_interval:float):
+            n = len(points)
+            for i in range(n):
+                for j in range(i + 1, n):
+                    distance = self.xyz_distance(points[i].pose.position,points[j].pose.position)
+                    if distance >= max_position_interval:
+                        return False
+            return True
+            
+        def average(points:list):
+            # points是一个Posestamped列表
+            avg = [0,0,0,0,0,0]
+            n = len(points)
+            for i in range(n):
+                avg[0] = avg[0]+points[i].pose.position.x
+                avg[1] = avg[1]+points[i].pose.position.y
+                avg[2] = avg[2]+points[i].pose.position.z
+                roll,pitch,yaw = euler_from_quaternion([
+                            points[i].pose.orientation.x,
+                            points[i].pose.orientation.y,
+                            points[i].pose.orientation.z,
+                            points[i].pose.orientation.w
+                        ]) 
+                avg[3] = avg[3] + roll
+                avg[4] = avg[4] + pitch
+                avg[5] = avg[5] + yaw
+            avg = [x/n for x in avg]
+            return PoseStamped(
+                pose=Pose(
+                    position=Point(x=avg[0],y=avg[1],z=avg[2]),
+                    orientation=Quaternion(*quaternion_from_euler(0,self.pitch_offset,avg[5])))
+            )
+
+        while len(self.queue) >= point_num:# 队列长度大于检测点数量
+            # 放入point_num个点到target_list当中
+            target_point_list = [] # 定义临时变量列表
+            for i in range(point_num):
+                if self.queue[i][0]<min_conf:
+                    break
+                target_point_list.append(self.queue[i])
             # rospy.loginfo(f"{NODE_NAME}: 当前队列长度: {len(self.queue)}")
-            if target1 is not None and target2 is not None and target3 is not None:
-                if target1[0] > min_conf and target2[0] > min_conf and target3[0] > min_conf:
-                    if self.xyz_distance(target1[3].pose.position, target2[3].pose.position) < max_position_interval and \
-                        self.xyz_distance(target2[3].pose.position, target3[3].pose.position) < max_position_interval and \
-                        self.xyz_distance(target1[3].pose.position, target3[3].pose.position) < max_position_interval:
-                        # 间距满足要求
-                            # 置信度满足要求
-                            if abs(target1[3].header.stamp.to_sec() - target2[3].header.stamp.to_sec()) < max_time_interval and \
-                                abs(target2[3].header.stamp.to_sec() - target3[3].header.stamp.to_sec()) < max_time_interval:
-                                # 时间间隔满足要求
-                                rospy.loginfo(f"{NODE_NAME}: 找到目标点: {target1[4]}, {target2[4]}, {target3[4]}")
-                                
-                                rospy.loginfo(f"{NODE_NAME}: target in hand {target1[5]},{target2[5]},{target3[5]}")
-                                # 计算位置平均值：根据期望位姿
-                                avg_x = (target1[2].pose.position.x + target2[2].pose.position.x + target3[2].pose.position.x) / 3.0
-                                avg_y = (target1[2].pose.position.y + target2[2].pose.position.y + target3[2].pose.position.y) / 3.0
-                                avg_z = (target1[2].pose.position.z + target2[2].pose.position.z + target3[2].pose.position.z) / 3.0
-                                # 计算航向和俯仰平均值：根据期望位姿
-                                # 废弃：根据当前位姿
-                                _, pitch1, yaw1 = euler_from_quaternion([
-                                    target1[2].pose.orientation.x,
-                                    target1[2].pose.orientation.y,
-                                    target1[2].pose.orientation.z,
-                                    target1[2].pose.orientation.w
-                                ])
-                                _, pitch2, yaw2 = euler_from_quaternion([
-                                    target2[2].pose.orientation.x,
-                                    target2[2].pose.orientation.y,
-                                    target2[2].pose.orientation.z,
-                                    target2[2].pose.orientation.w
-                                ])
-                                _, pitch3, yaw3 = euler_from_quaternion([
-                                    target3[2].pose.orientation.x,
-                                    target3[2].pose.orientation.y,
-                                    target3[2].pose.orientation.z,
-                                    target3[2].pose.orientation.w
-                                ])
-                                # 航向直接更新，位姿更新forward_percent
-                                avg_yaw = (yaw1 + yaw2 + yaw3) / 3.0
-                                avg_pitch = (pitch1 + pitch2 + pitch3) / 3.0
-                                # 
-                                current_pose = self.get_current_pose()
-                                if current_pose == None:
-                                    return False
-                                # 计算当前yaw和目标yaw的差值
-                                current_yaw = euler_from_quaternion([current_pose.pose.orientation.x,
-                                              current_pose.pose.orientation.y,
-                                              current_pose.pose.orientation.z,
-                                              current_pose.pose.orientation.w])[2]
-                                    
-                                # 设置完目标位姿后，跳转到下一步即可
-                                self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_x-self.target_posestamped.pose.position.x)*forward_percent, 
-                                                                              y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
-                                                                              z=self.start_point.pose.position.z) # X,Y前进一个百分比，z不变，但把z赋值给最终目标
-                                # 深度会被赋值2次
-                                self.ball_depth = avg_z + depth_bias
-                                self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, avg_yaw))
-                                
-                                # 清空队列
-                                self.queue = []
-                                self.init_yaw = None
-                                # 打印log
-                                rospy.loginfo(f"{NODE_NAME}: 目标位置: n={avg_x:.2f}m, e={avg_y:.2f}m, d={avg_z+depth_bias:.2f}m,yaw={np.degrees(avg_yaw)}°")
-                                rospy.loginfo(f"{NODE_NAME}: 运动目标: n={self.target_posestamped.pose.position.x:.2f}, e={self.target_posestamped.pose.position.y:.2f}, d={self.ball_depth:.2f}")
-                                return True
+            # 只要有一个条件不满足，重新取点
+            # if target1[0] > min_conf and target2[0] > min_conf and target3[0] > min_conf:
+            if is_closed([row[3]for row in target_point_list],max_position_interval):
+                    # 点与点之间足够接近
+                # if self.xyz_distance(target1[3].pose.position, target2[3].pose.position) < max_position_interval and \
+                #     self.xyz_distance(target2[3].pose.position, target3[3].pose.position) < max_position_interval and \
+                #     self.xyz_distance(target1[3].pose.position, target3[3].pose.position) < max_position_interval:
+                    # 间距满足要求
+                    # 置信度满足要求
+                if abs(target_point_list[0][3].header.stamp.to_sec() - target_point_list[point_num-1][3].header.stamp.to_sec()) < max_time_interval:
+                    # 时间间隔满足要求
+                    # rospy.loginfo(f"{NODE_NAME}: 找到目标点: {target1[4]}, {target2[4]}, {target3[4]}")  
+                    # rospy.loginfo(f"{NODE_NAME}: target in hand {target1[5]},{target2[5]},{target3[5]}")
+                    # 计算位置平均值：根据期望位姿
+                    avg_pose = average([row[2] for row in target_point_list]) # 返回一个PoseStamped
+                    
+                    # current_pose = self.get_current_pose()
+                    # if current_pose == None:
+                    #     return False
+                    # # 计算当前yaw和目标yaw的差值
+                    # current_yaw = euler_from_quaternion([current_pose.pose.orientation.x,
+                    #                 current_pose.pose.orientation.y,
+                    #                 current_pose.pose.orientation.z,
+                    #                 current_pose.pose.orientation.w])[2]
+                        
+                    # 设置完目标位姿后，跳转到下一步即可
+                    self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_pose.pose.position.x-self.target_posestamped.pose.position.x)*forward_percent, 
+                                                                    y=self.target_posestamped.pose.position.y + (avg_pose.pose.position.y-self.target_posestamped.pose.position.y)*forward_percent, 
+                                                                    z=self.start_point.pose.position.z) # X,Y前进一个百分比，z不变，但把z赋值给最终目标
+                    # 深度会被赋值2次
+                    self.ball_depth = avg_pose.pose.position.z + depth_bias
+                    self.target_posestamped.pose.orientation = avg_pose.pose.orientation
+                    
+                    # 清空队列，清空初始位置
+                    self.queue = []
+                    self.init_yaw = None
+
+                    # 打印log
+                    avg_yaw =euler_from_quaternion([avg_pose.pose.orientation.x,
+                                    avg_pose.pose.orientation.y,
+                                    avg_pose.pose.orientation.z,
+                                    avg_pose.pose.orientation.w])[2] 
+                    rospy.loginfo(f"{NODE_NAME}: target in map: n={avg_pose.pose.position.x:.2f}m, e={avg_pose.pose.position.y:.2f}m, d={avg_pose.pose.position.z+depth_bias:.2f}m,yaw={np.degrees(avg_yaw)}°")
+                    rospy.loginfo(f"{NODE_NAME}: target pose: n={self.target_posestamped.pose.position.x:.2f}, e={self.target_posestamped.pose.position.y:.2f}, d={self.ball_depth:.2f}")
+                    return True
             # 如果没有找到目标点，删除队列中的第一个元素
             self.queue.pop(0)
 
@@ -600,7 +617,7 @@ class Task3Node:
         rospy.signal_shutdown("任务完成")
         return True 
     
-    def dive_to_ball(self,max_xy_step=0.8,max_z_step=0.1,max_yaw_step=np.radians(5),max_xyz_dist=0.2,max_yaw_dist=np.radians(1)):
+    def dive_to_ball(self,max_xy_step=0.8,max_z_step=0.1,max_yaw_step=np.radians(5),max_xyz_dist=0.2,max_yaw_dist=np.radians(1),open=False):
         """
         下降到球的位置
         
@@ -610,12 +627,20 @@ class Task3Node:
             max_yaw_step: float, 最大偏航角步长(弧度)，用于平滑
             max_xyz_dist: float, 最大三维距离误差(米)，用于判断是否到达目标位置
             max_yaw_dist: float, 最大航向误差(弧度)，用于判断是否到达目标位置
-        
+            open:是否开环，开环的话发送n包数据就返回True
+
         Returns:
             到达目标位置返回true,未到达目标位置返回false
         """
-        self.target_posestamped.pose.position.z = self.ball_depth
-        return self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step,max_z_step=max_z_step,max_yaw_step=max_yaw_step)
+        if open == 0: # 闭环
+            self.target_posestamped.pose.position.z = self.ball_depth
+            return self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step,max_z_step=max_z_step,max_yaw_step=max_yaw_step)
+        else: # 开环
+            while open>0:
+                self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step,max_z_step=max_z_step,max_yaw_step=max_yaw_step)
+                open = open -1
+            return True
+
     ###############################################逻辑层#################################
 
 
@@ -634,21 +659,21 @@ class Task3Node:
             elif self.step == 10: # 搜索目标
                 if self.search_target(max_rotate_rad=np.radians(15),rotate_step=np.radians(0.5), # 搜索运动设置
                                       min_conf=0.5,max_time_interval=5.0,max_position_interval=0.5, # 目标阈值设置
-                                      depth_bias = -0.05,forward_percent=0.4, # 目标点设置，深度偏置和水平偏置
-                                      max_xyz_dist=0.25,max_yaw_dist=np.radians(0.2)):
+                                      depth_bias = -0.05,forward_percent=0.35, # 目标点设置，深度偏置和水平偏置
+                                      max_xyz_dist=0.15,max_yaw_dist=np.radians(0.2),point_num=3):
                     self.target_posestamped.pose.position.z =self.target_posestamped.pose.position.z +0.05
                     self.step = 2
                     rospy.loginfo(f"{NODE_NAME}: 找到目标，开始移动第一次")
             elif self.step == 2:  # 贴近
                 if self.move_to_target(max_xy_step=1.8,max_z_step=0.1,max_yaw_step=np.radians(5), # 运动步长设置
-                                       max_xyz_dist=0.1,max_yaw_dist=np.radians(0.5)): # 到达判断设置
+                                       max_xyz_dist=0.15,max_yaw_dist=np.radians(0.5)): # 到达判断设置
                     self.step = 11
                     rospy.loginfo(f"{NODE_NAME}: 到达目标位置，search twice")
             elif self.step == 11: # 第二次搜索，运动90%，搜索角度变小
                 if self.search_target(max_rotate_rad=np.radians(2.5),rotate_step=np.radians(0.5), # 搜索运动设置
                                       min_conf=0.5,max_time_interval=5.0,max_position_interval=0.5, # 目标阈值设置
-                                      depth_bias = -0.05,forward_percent=1.2, # 目标点设置，深度偏置和水平偏置
-                                      max_xyz_dist=0.25,max_yaw_dist=np.radians(0.2)):
+                                      depth_bias = 0.05,forward_percent=1.02, # 目标点设置，深度偏置和水平偏置
+                                      max_xyz_dist=0.15,max_yaw_dist=np.radians(0.2),point_num=5):
                     self.step = 12
                     rospy.loginfo(f"{NODE_NAME}: 找到目标，开始移动第二次")
             elif self.step == 12:  # 移动到目标位置
@@ -657,8 +682,8 @@ class Task3Node:
                     self.step = 13
                     rospy.loginfo(f"{NODE_NAME}: 到达目标位置，准备抓取")
             elif self.step == 13:
-                if self.dive_to_ball(max_xy_step=1.8,max_z_step=0.1,max_yaw_step=np.radians(0.5), # 运动步长设置
-                                     max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2)): # 到达判断设置
+                if self.dive_to_ball(max_xy_step=1.8,max_z_step=0.13,max_yaw_step=np.radians(0.5), # 运动步长设置
+                                     max_xyz_dist=0.1,max_yaw_dist=np.radians(5),open=0): # 到达判断设置
                     self.step = 3
                     rospy.loginfo(f"{NODE_NAME}: 下沉完毕")
             elif self.step == 3:  # 抓取目标
@@ -667,7 +692,7 @@ class Task3Node:
                     rospy.loginfo(f"{NODE_NAME}: 抓取完成，返回初始位置")
             elif self.step == 5:  # 回到初始任务点
                 if self.move_to_end_pose(max_xy_step=2,max_z_step=0.1,max_yaw_step=np.radians(5), # 运动步长设置
-                                         max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2)):
+                                         max_xyz_dist=0.2,max_yaw_dist=np.radians(0.2)):
                     self.step = 6
                     rospy.loginfo(f"{NODE_NAME}: 返回结束位置，任务结束")
             elif self.step == 6:  # 完成任务

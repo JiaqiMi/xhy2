@@ -18,10 +18,10 @@
     <node pkg="yolo_bridge" type="mask_wrapper.sh" name="mask_detector" output="screen" launch-prefix="bash" >
         <param name="detect_mode" value="4" />
         <param name="top_k" value="3" />
-        <param name="visualization" value="False" />
+        <param name="visualization" value="0" />
         <param name="conf_thre" value="0.2" />
         <param name="detc_type" value="quartiles" />
-        <param name="output_type" value="0">    
+        <param name="output_type" value="0"/>    
     </node>
 
 </launch>

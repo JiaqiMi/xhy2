@@ -13,7 +13,7 @@
         <param name="debug_ip" value="192.168.1.115" />
         <param name="debug_port" value="5063" />
         <param name="save_path" type="string" value="/home/xhy/catkin_ws/debug_data0729-1.csv" />
-        <param name="save_data" type="bool" value="true" />
+        <param name="save_data" type="bool" value="false" />
     </node>
 
     <node pkg="auv_control" type="map_initer.py" name="map_initer" output="screen"/>

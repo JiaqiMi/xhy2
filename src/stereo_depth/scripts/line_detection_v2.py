@@ -9,7 +9,7 @@ import numpy as np
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 # from auv_control.msg import TargetDetection
-from stereo_depth.msg import TargetDetection, BoundingBox, LineBox, TargetDetection
+from stereo_depth.msg import TargetDetection, BoundingBox, LineBox, TargetDetection3
 from geometry_msgs.msg import PointStamped,PoseStamped,Quaternion
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from geometry_msgs.msg import Quaternion
@@ -146,6 +146,9 @@ class LineDepthNode:
         # self.cy = 279.42833
         # self.baseline = 47.694354 / 686.32092  # m
         
+        self.is_visual = rospy.get_param("~is_visual", 0)
+        rospy.loginfo(f"is_visual: {self.is_visual}")
+    
         
         self.bridge = CvBridge()
         self.target_uv = None  
@@ -239,9 +242,9 @@ class LineDepthNode:
 
         # 判断是否有来自YOLO的像素坐标
         P1, P2, P3 = None, None, None
-        if self.target_conf >= 0.5:
+        if self.target_conf >= 0.2:
             
-            rospy.loginfo("Target detected: class=%s, conf=%.2f, x1: %d, y1: %d, x2: %d, y2: %d",
+            rospy.loginfo("Target detected: class=%s, conf=%.2f, x1: %d, y1: %d, x2: %d, y2: %d, x3: %d, y3: %d",
                           self.target_class, self.target_conf, 
                           self.target_x1, self.target_y1, self.target_x2, self.target_y2,  self.target_x3, self.target_y3)
         
@@ -258,29 +261,46 @@ class LineDepthNode:
                 rospy.loginfo("class_name: %s, P2.X: %.2f, P2.Y: %.2f, P2.Z: %.2f", self.target_class, P2[0], P2[1], P2[2])
                 rospy.loginfo("class_name: %s, P3.X: %.2f, P3.Y: %.2f, P3.Z: %.2f", self.target_class, P3[0], P3[1], P3[2])
                 
-                
-                # 计算中心点和姿态
-                # pose_msg = compute_pose_from_quad(P1, P2, P3, P4)
-                # if pose_msg is None:
-                #     return 
-                
-                # rospy.loginfo("pose_msg.pose.position.x: %.2f", pose_msg.pose.position.x)
-                # rospy.loginfo("pose_msg.pose.position.y: %.2f", pose_msg.pose.position.y)
-                # rospy.loginfo("pose_msg.pose.position.z: %.2f", pose_msg.pose.position.z)
-                
                 # 发布点序列
-                
-                
-                if (-1.0 < pose_msg.pose.position.x < 1.0) and (-1.0 < pose_msg.pose.position.y < 1.0):
+                if (-1 < P1[0] < 1) and  (-1 < P1[1] < 1) and (0 < P1[2] < 2) and  (-1 < P2[0] < 1) and  (-1 < P2[1] < 1) and (0 < P2[2] < 2) and (-1 < P3[0] < 1) and  (-1 < P3[1] < 1) and (0 < P3[2] < 2) and (P1[2] < P2[2] < P3[2]):            
+                    pose1 = PoseStamped()
+                    pose1.header.stamp = self.target_check_time
+                    pose1.header.frame_id = "camera"
+                    pose1.pose.position.x = P1[0]
+                    pose1.pose.position.y = P1[1]
+                    pose1.pose.position.z = P1[2]
+                    pose1.pose.orientation = Quaternion(0, 0, 0, 1)
+                    
+                    pose2 = PoseStamped()
+                    pose2.header.stamp = self.target_check_time
+                    pose2.header.frame_id = "camera"
+                    pose2.pose.position.x = P2[0]
+                    pose2.pose.position.y = P2[1]
+                    pose2.pose.position.z = P2[2]
+                    pose2.pose.orientation = Quaternion(0, 0, 0, 1)
+                    
+                    pose3 = PoseStamped()
+                    pose3.header.stamp = self.target_check_time
+                    pose3.header.frame_id = "camera"
+                    pose3.pose.position.x = P3[0]
+                    pose3.pose.position.y = P3[1]
+                    pose3.pose.position.z = P3[2]
+                    pose3.pose.orientation = Quaternion(0, 0, 0, 1)
+                    
+                    
                     rospy.loginfo(
-                        "Valid target: time=%s, class=%s conf=%.2f -> X=%.2f Y=%.2f Z=%.2f", \
+                        "Valid target: time=%s, class=%s conf=%.2f -> P1: X=%.2f Y=%.2f Z=%.2f, P2: X=%.2f Y=%.2f Z=%.2f, P3: X=%.2f Y=%.2f Z=%.2f", \
                         self.target_check_time, self.target_class, self.target_conf,  \
-                        pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z)
+                        pose1.pose.position.x, pose1.pose.position.y, pose1.pose.position.z, \
+                            pose2.pose.position.x, pose2.pose.position.y, pose2.pose.position.z, \
+                                pose3.pose.position.x, pose3.pose.position.y, pose3.pose.position.z)
                     
                     # 发布target message
                     try:
-                        msg = TargetDetection()
-                        msg.pose = pose_msg
+                        msg = TargetDetection3()
+                        msg.pose1 = pose1
+                        msg.pose2 = pose2
+                        msg.pose3 = pose3
                         msg.type = 'center'
                         msg.conf = self.target_conf
                         msg.class_name = self.target_class
@@ -291,9 +311,9 @@ class LineDepthNode:
                 else:
                     # rospy.logwarn("Invalid location of objection.")
                     rospy.loginfo(
-                        "InValid target: time=%s, class=%s conf=%.2f -> X=%.2f Y=%.2f Z=%.2f", \
+                        "InValid target: time=%s, class=%s conf=%.2f -> P1: X=%.2f Y=%.2f Z=%.2f, P2: X=%.2f Y=%.2f Z=%.2f, P3: X=%.2f Y=%.2f Z=%.2f", \
                         self.target_check_time, self.target_class, self.target_conf,  \
-                        pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z)
+                        P1[0], P1[1], P1[2], P2[0], P2[1], P2[2], P3[0], P3[1], P3[2])
             else:
                 rospy.logwarn("Target pixel coordinates are out of bounds.")
         
@@ -325,11 +345,46 @@ class LineDepthNode:
         #     rospy.logerr("Error publishing depth: %s", str(e))
 
         # 可视化（归一化视差）
-        # disp_vis = cv2.normalize(disparity, None, 0, 255, cv2.NORM_MINMAX)
-        # disp_vis = np.uint8(disp_vis)
-        # cv2.imshow("Disparity", disp_vis)
-        # cv2.imshow("Left", left_img)
-        # cv2.waitKey(1)
+        if self.is_visual:
+            # 可视化视差图（灰度）
+            # disp_vis = cv2.normalize(disparity, None, 0, 255, cv2.NORM_MINMAX)
+            # disp_vis = np.uint8(disp_vis)
+            # cv2.imshow("Disparity", disp_vis)
+
+            # 拷贝一份图像用于绘图
+            vis_img = left_img.copy()
+
+            # 如果检测到了目标，并且像素点合法，绘制关键点和连线
+            if self.target_conf >= 0.2:
+                h, w = left_img.shape[:2]
+                points_valid = all([
+                    0 <= self.target_x1 < w and 0 <= self.target_y1 < h,
+                    0 <= self.target_x2 < w and 0 <= self.target_y2 < h,
+                    0 <= self.target_x3 < w and 0 <= self.target_y3 < h
+                ])
+
+                if points_valid:
+                    pt1 = (self.target_x1, self.target_y1)
+                    pt2 = (self.target_x2, self.target_y2)
+                    pt3 = (self.target_x3, self.target_y3)
+
+                    # 绘制点（绿色小圆圈）
+                    cv2.circle(vis_img, pt1, 5, (0, 255, 0), -1)
+                    cv2.circle(vis_img, pt2, 5, (0, 255, 0), -1)
+                    cv2.circle(vis_img, pt3, 5, (0, 255, 0), -1)
+
+                    # 连接三点为三角形（红色线）
+                    cv2.line(vis_img, pt1, pt2, (0, 0, 255), 2)
+                    cv2.line(vis_img, pt2, pt3, (0, 0, 255), 2)
+                    cv2.line(vis_img, pt3, pt1, (0, 0, 255), 2)
+
+                    # 可选：标记置信度和类别
+                    label = f"{self.target_class} ({self.target_conf:.2f})"
+                    cv2.putText(vis_img, label, (pt1[0]+10, pt1[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+            cv2.imshow("Left with Detections", vis_img)
+            cv2.waitKey(1)
+
 
 if __name__ == '__main__':
     try:
