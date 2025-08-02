@@ -55,7 +55,9 @@ find_package(catkin REQUIRED COMPONENTS
 add_message_files(
     FILES
     TargetDetection.msg
+    TargetDetection3.msg
     BoundingBox.msg
+    LineBox.msg
 )
 
 ## Generate services in the 'srv' folder

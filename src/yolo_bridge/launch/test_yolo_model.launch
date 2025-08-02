@@ -9,10 +9,19 @@
 
     <!-- 执行 YOLOv8 目标检测（使用 LD_PRELOAD） -->
     <!-- 新增参数需要对应修改yolo_wrapper.sh -->
-    <node pkg="yolo_bridge" type="yolo_wrapper.sh" name="yolov8_detector" output="screen" launch-prefix="bash" >
+    <!-- <node pkg="yolo_bridge" type="yolo_wrapper.sh" name="yolov8_detector" output="screen" launch-prefix="bash" >
         <param name="detect_mode" value="3" />
         <param name="top_k" value="3" />
         <param name="visualization" value="False" />
+    </node> -->
+
+    <node pkg="yolo_bridge" type="mask_wrapper.sh" name="mask_detector" output="screen" launch-prefix="bash" >
+        <param name="detect_mode" value="4" />
+        <param name="top_k" value="3" />
+        <param name="visualization" value="False" />
+        <param name="conf_thre" value="0.2" />
+        <param name="detc_type" value="quartiles" />
+        <param name="output_type" value="0">    
     </node>
 
 </launch>

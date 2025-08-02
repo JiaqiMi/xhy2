@@ -8,7 +8,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped
-from stereo_depth.msg import BoundingBox
+from stereo_depth.msg import BoundingBox,LineBox
 
 
 class YOLOv8Mask:
@@ -17,9 +17,11 @@ class YOLOv8Mask:
         
         self.DetectMode = param.detect_mode            # 从命令行参数获取检测模式
         self.top_k = param.top_k                       # 从命令行参数获取 top_k
-        self.visualization = param.visualization       # 从命令行参数获取是否可视化
+        self.visualization = int(param.visualization)       # 从命令行参数获取是否可视化
         self.conf_thre = float(param.conf_thre)        # 置信度阈值
         self.detc_type = param.detc_type               # 检测类型（center 或 bbox）
+        self.output_type = int(param.output_type)
+        
         
         model_list = [
             "/home/xhy/catkin_ws/models/shapes_model0719.pt",
@@ -33,6 +35,8 @@ class YOLOv8Mask:
             self.model = YOLO(model_list[1])
         elif self.DetectMode == 3:
             self.model = YOLO(model_list[2])
+        elif self.DetectMode == 4:
+            self.model = YOLO(model_list[3])
         else:
             rospy.logwarn("DetectMode error: %s", str(self.DetectMode))
             return 
@@ -42,8 +46,10 @@ class YOLOv8Mask:
         rospy.Subscriber("/left/image_raw", Image, self.image_callback)
         if self.DetectMode in (1, 3):
             self.center_pub = rospy.Publisher("/yolov8/target_center", PointStamped, queue_size=1)
-        else:
+        elif self.DetectMode == 2:
             self.center_pub = rospy.Publisher("/yolov8/target_bbox", BoundingBox, queue_size=1)
+        elif self.DetectMode == 4:
+            self.center_pub = rospy.Publisher("/yolov8/line_bbox", LineBox, queue_size=1)
         
         # 控制推断频率
         self.last_infer_time = rospy.Time.now()
@@ -102,22 +108,45 @@ class YOLOv8Mask:
                 points = np.column_stack(np.where(largest_component > 0))
 
                 # 选取最多10个点发布
-                if len(points) > 0:
-                    indices = np.linspace(0, len(points) - 1, min(10, len(points)), dtype=int)
-                    for idx in indices:
-                        y, x = points[idx]
-                        pt = PointStamped()
-                        pt.header = msg.header
-                        pt.header.frame_id = cls_name
-                        pt.header.stamp = self.last_infer_time
-                        pt.point.x = float(x)
-                        pt.point.y = float(y)
-                        pt.point.z = float(conf)
-                        self.center_pub.publish(pt)
+                if len(points) >= 3:
+                    rospy.loginfo(f"skeleton points num: {len(points)}")
+                    # 按照 y 坐标升序排序
+                    points_sorted = sorted(points, key=lambda p: p[0])  # y,x 格式
 
-                    rospy.loginfo("Segmented object: %s, points: %d, conf: %.2f", cls_name, len(points), conf)
+                    if self.detc_type == "quartiles":
+                        # 获取下四分位、中位数、上四分位点
+                        q1_idx = len(points_sorted) // 4
+                        q2_idx = len(points_sorted) // 2
+                        q3_idx = 3 * len(points_sorted) // 4
+                        rospy.loginfo(f"q1_idx: {q1_idx}, q2_idx: {q2_idx}, q3_idx: {q3_idx}")
+                        selected_points = [
+                            points_sorted[q1_idx],
+                            points_sorted[q2_idx],
+                            points_sorted[q3_idx]
+                        ]
+                    else:
+                        rospy.logwarn("Unknown output_mode: %s", self.detc_type)
+                        selected_points = []
+
+                    
+                    pt = LineBox()
+                    pt.header = msg.header
+                    pt.header.frame_id = cls_name
+                    pt.header.stamp = self.last_infer_time
+                    pt.x1 = int(selected_points[0][1])
+                    pt.y1 = int(selected_points[0][0])
+                    pt.x2 = int(selected_points[1][1])
+                    pt.y2 = int(selected_points[1][0])
+                    pt.x3 = int(selected_points[2][1])
+                    pt.y3 = int(selected_points[2][0])
+                    pt.conf = float(conf)
+                    self.center_pub.publish(pt)
+
+                    rospy.loginfo("Segmented object: %s, mode: %s, selected points: %d, conf: %.2f",
+                                cls_name, self.detc_type, len(selected_points), conf)
                 else:
                     rospy.logwarn("No skeleton points found for %s", cls_name)
+
 
         else:
             # 如果是检测模型，就走原始的bbox/center逻辑
@@ -157,6 +186,27 @@ class YOLOv8Mask:
             annotated = results[0].plot()
             cv2.imshow("YOLOv8 Detection", annotated)
             cv2.waitKey(1)
+            
+            
+    def get_skeleton(self, binary_img):
+        size = np.size(binary_img)
+        skel = np.zeros(binary_img.shape, np.uint8)
+
+        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+        done = False
+
+        while not done:
+            eroded = cv2.erode(binary_img, element)
+            temp = cv2.dilate(eroded, element)
+            temp = cv2.subtract(binary_img, temp)
+            skel = cv2.bitwise_or(skel, temp)
+            binary_img = eroded.copy()
+
+            zeros = size - cv2.countNonZero(binary_img)
+            if zeros == size:
+                done = True
+
+        return skel
 
 
 if __name__ == "__main__":
@@ -166,6 +216,8 @@ if __name__ == "__main__":
     parser.add_argument('--visualization', default=0)
     parser.add_argument('--conf_thre', default=0.2)
     parser.add_argument('--detc_type', default='center')
+    parser.add_argument('--output_type', default='output_type')
+    
     args = parser.parse_args()
     try:
         YOLOv8Mask(param = args)
