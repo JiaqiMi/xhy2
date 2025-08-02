@@ -9,7 +9,7 @@ import numpy as np
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 # from auv_control.msg import TargetDetection
-from stereo_depth.msg import TargetDetection, BoundingBox, LineBox
+from stereo_depth.msg import TargetDetection, BoundingBox, LineBox, TargetDetection
 from geometry_msgs.msg import PointStamped,PoseStamped,Quaternion
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from geometry_msgs.msg import Quaternion
@@ -166,7 +166,7 @@ class LineDepthNode:
         # self.depth_pub = rospy.Publisher("/stereo/depth_image", Image, queue_size=1)
 
         # Publish the target message
-        self.target_message = rospy.Publisher("/obj/target_message", TargetDetection, queue_size=1)
+        self.target_message = rospy.Publisher("/obj/line_message", TargetDetection3, queue_size=1)
 
         rospy.loginfo("Stereo Depth Node Initialized.")
 
@@ -181,6 +181,8 @@ class LineDepthNode:
         self.target_y1 = int(msg.y1)
         self.target_x2 = int(msg.x2)
         self.target_y2 = int(msg.y2)
+        self.target_x3 = int(msg.x3)
+        self.target_y3 = int(msg.y3)
         self.target_conf = float(msg.conf)
         self.target_class = msg.header.frame_id
         self.target_check_time = msg.header.stamp
@@ -236,35 +238,38 @@ class LineDepthNode:
         # print("X: {}, Y: {}, Z:{}".format(X, Y, Z))
 
         # 判断是否有来自YOLO的像素坐标
-        P1, P2, P3, P4 = None, None, None, None
-        if self.target_conf >= 0.6:
+        P1, P2, P3 = None, None, None
+        if self.target_conf >= 0.5:
             
             rospy.loginfo("Target detected: class=%s, conf=%.2f, x1: %d, y1: %d, x2: %d, y2: %d",
-                          self.target_class, self.target_conf,
-                          self.target_x1, self.target_y1, self.target_x2, self.target_y2)
+                          self.target_class, self.target_conf, 
+                          self.target_x1, self.target_y1, self.target_x2, self.target_y2,  self.target_x3, self.target_y3)
         
             if (0 <= self.target_x1 <= disparity.shape[1]) and (0 <= self.target_y1 <= disparity.shape[0]) and \
                 (0 <= self.target_x2 <= disparity.shape[1]) and (0 <= self.target_y2 <= disparity.shape[0]):
                
-                # 获取每个角点的相机坐标
-                P1 = get_stable_depth(self.target_x1, self.target_y1, depth, self.fx, self.fy, self.cx, self.cy)
-                P2 = get_stable_depth(self.target_x2, self.target_y1, depth, self.fx, self.fy, self.cx, self.cy)
-                P3 = get_stable_depth(self.target_x2, self.target_y2, depth, self.fx, self.fy, self.cx, self.cy)
-                P4 = get_stable_depth(self.target_x1, self.target_y2, depth, self.fx, self.fy, self.cx, self.cy)
+                # 获取每个角点的相机坐标: 由近及远
+                P1 = get_stable_depth(self.target_x3, self.target_y3, depth, self.fx, self.fy, self.cx, self.cy)
+                P2 = get_stable_depth(self.target_x2, self.target_y2, depth, self.fx, self.fy, self.cx, self.cy)
+                P3 = get_stable_depth(self.target_x1, self.target_y1, depth, self.fx, self.fy, self.cx, self.cy)
+                
                 
                 rospy.loginfo("class_name: %s, P1.X: %.2f, P1.Y: %.2f, P1.Z: %.2f", self.target_class, P1[0], P1[1], P1[2])
                 rospy.loginfo("class_name: %s, P2.X: %.2f, P2.Y: %.2f, P2.Z: %.2f", self.target_class, P2[0], P2[1], P2[2])
                 rospy.loginfo("class_name: %s, P3.X: %.2f, P3.Y: %.2f, P3.Z: %.2f", self.target_class, P3[0], P3[1], P3[2])
-                rospy.loginfo("class_name: %s, P4.X: %.2f, P4.Y: %.2f, P4.Z: %.2f", self.target_class, P4[0], P4[1], P4[2])
+                
                 
                 # 计算中心点和姿态
-                pose_msg = compute_pose_from_quad(P1, P2, P3, P4)
-                if pose_msg is None:
-                    return 
+                # pose_msg = compute_pose_from_quad(P1, P2, P3, P4)
+                # if pose_msg is None:
+                #     return 
                 
-                rospy.loginfo("pose_msg.pose.position.x: %.2f", pose_msg.pose.position.x)
-                rospy.loginfo("pose_msg.pose.position.y: %.2f", pose_msg.pose.position.y)
-                rospy.loginfo("pose_msg.pose.position.z: %.2f", pose_msg.pose.position.z)
+                # rospy.loginfo("pose_msg.pose.position.x: %.2f", pose_msg.pose.position.x)
+                # rospy.loginfo("pose_msg.pose.position.y: %.2f", pose_msg.pose.position.y)
+                # rospy.loginfo("pose_msg.pose.position.z: %.2f", pose_msg.pose.position.z)
+                
+                # 发布点序列
+                
                 
                 if (-1.0 < pose_msg.pose.position.x < 1.0) and (-1.0 < pose_msg.pose.position.y < 1.0):
                     rospy.loginfo(

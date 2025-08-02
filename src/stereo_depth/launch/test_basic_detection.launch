@@ -2,10 +2,10 @@
 
 <launch>
     <!-- 启动 USB 相机 -->
-    <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
+    <!-- <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" /> -->
 
     <!-- 图像左右分割节点 -->
-    <node pkg="stereo_splitter" type="split_stereo_image.py" name="split_stereo_image" output="screen" />
+    <!-- <node pkg="stereo_splitter" type="split_stereo_image.py" name="split_stereo_image" output="screen" /> -->
 
     <!-- 执行目标检测模型 -->
     <!-- 新增参数需要对应修改yolo_wrapper.sh -->
