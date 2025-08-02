@@ -33,10 +33,17 @@ detect_mode= [1, 2, 3] # 对应: 形状 颜色洞 球
 
 TASKS = [
     ['rosrun', 'auv_control', 'test1.py'],
-    ['rosrun', 'auv_control', 'task1_node.py'],
-    ['rosrun', 'auv_control', 'task2_node.py'],
-    ['rosrun', 'auv_control', 'task3_node.py'],
-    ['rosrun', 'auv_control', 'task4_node.py'],
+    ['rosrun', 'auv_control', 'task1_node.py'], # 过门
+    ['rosrun', 'auv_control', 'task2_node.py'], # 钻洞
+    ['rosrun', 'auv_control', 'task3_node.py'], # 抓球
+    ['rosrun', 'auv_control', 'task4_node.py'], # 巡线
+]
+VISION= [
+    [],
+    [], # 过门
+    ['rosrun', 'stereo', 'vision_task2.py'], # 钻洞
+    [], # 抓球
+    [], # 巡线
 ]
 
 class StateControl:
@@ -46,7 +53,8 @@ class StateControl:
         self.last_key_msg = Keyboard()  # 初始化最新的键盘消息
         self.last_key_time = None  # 新增：记录时间
         self.current_task = 0
-        self.process = None
+        self.task_process = None
+        self.vision_process = None  # 视觉任务进程
         rospy.loginfo("state control: 已启动")
         
     def keyboard_callback(self, msg):
@@ -79,10 +87,14 @@ class StateControl:
         if msg.run == 2: # 结束自动运行，并将状态变为待机
             rospy.loginfo("state control: 收到结束自动运行指令")
             self.current_task = 0
-            if self.process:
-                self.process.terminate()
-                self.process.wait()
-                self.process = None # 关闭任务
+            if self.task_process:
+                self.task_process.terminate()
+                self.task_process.wait()
+                self.task_process = None # 关闭任务
+            if self.vision_process:
+                self.vision_process.terminate()
+                self.vision_process.wait()
+                self.vision_process = None # 关闭视觉
             return
         # 手动切换状态
         if msg.mode != self.current_task:
@@ -96,11 +108,12 @@ class StateControl:
         启动指定任务
         :param task_name: 任务序号
         """
-        if self.process:
+        if self.task_process or self.vision_process:
             rospy.logwarn("state control: 当前有任务正在运行，无法启动新任务")
             return
         try:
-            self.process = subprocess.Popen(TASKS[task_name])
+            self.task_process = subprocess.Popen(TASKS[task_name])
+            self.vision_process = subprocess.Popen(VISION[task_name])
             rospy.loginfo(f"state control: 已启动任务: {TASKS[task_name]}")
         except Exception as e:
             rospy.logerr(f"state control: 启动任务失败: {e}")
@@ -118,9 +131,12 @@ class StateControl:
         rospy.loginfo(f"Received finished signal: {msg.data}")
         if msg.data == "finished":
             rospy.loginfo(f"state control: 任务 {self.current_task} 完成, 终止当前任务线程")
-            if self.process:
-                self.process.terminate()
-                self.process.wait()
+            if self.task_process:
+                self.task_process.terminate()
+                self.task_process.wait()
+            if self.vision_process:
+                self.vision_process.terminate()
+                self.vision_process.wait()
             self.start_next_task()
 
     def run(self):
