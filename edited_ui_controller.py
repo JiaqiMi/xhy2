@@ -75,6 +75,19 @@ CONTROL_MODE = {
 DEVICE_LIST = [
     "惯导", "DVL", "PC机"
 ]
+
+# 在SenderUI类之前添加传感器数据结构体
+class SensorData:
+    """
+    17字节传感器数据结构体
+    """
+    def __init__(self):
+        self.control_voltage = 0.0  # 控制电压
+        self.power_voltage = 0.0    # 动力电压
+        self.control_current = 0.0  # 控制电流
+        self.power_current = 0.0    # 动力电流
+        self.servo_angle = 0        # 舵机角度
+
 class Auv: # 用于存储auv的状态信息
     def __init__(self):
         self.yaw = 0.0             # 航向角，单位：角度
@@ -488,6 +501,9 @@ class SenderUI:
         self.sensor_packet_hex = tk.StringVar(value="")
         self.is_sensor_sending = False
         self.sensor_send_thread = None
+        # 补光灯控制变量
+        self.light1_value = tk.IntVar(value=0)  # 补光灯1亮度
+        self.light2_value = tk.IntVar(value=0)  # 补光灯2亮度
 
         # UI布局
         row = 0
@@ -616,15 +632,29 @@ class SenderUI:
 
         row += 1
 
+        # 补光灯控制UI
+        # 补光灯（紧凑排列）
+        ttk.Label(self.sidebar_bottom, text="补光灯:").grid(row=row, column=0, sticky="e", padx=2, pady=3)
+        light_frame = ttk.Frame(self.sidebar_bottom)
+        light_frame.grid(row=row, column=1, columnspan=6, sticky="w", pady=3)
+        # 补光灯1
+        ttk.Label(light_frame, text="补光灯1(0-100):").pack(side="left", padx=(0, 2), pady=3)
+        ttk.Entry(light_frame, textvariable=self.light1_value, width=6).pack(side="left", padx=(0, 6), pady=3)
+        # 补光灯2
+        ttk.Label(light_frame, text="补光灯2(0-100):").pack(side="left", padx=(0, 2), pady=3)
+        ttk.Entry(light_frame, textvariable=self.light2_value, width=6).pack(side="left", padx=(0, 2), pady=3)
+
+        row +=1
+
         # ========== 点控制 UI（X/Y/Z） ==========
-        ttk.Label(self.sidebar_bottom, text="点控制位置(m):").grid(row=row, column=0, sticky="e", padx=2,pady=3)
+        ttk.Label(self.sidebar_bottom, text="点控制X:").grid(row=row, column=0, sticky="e", padx=2,pady=3)
         point_frame = ttk.Frame(self.sidebar_bottom)
         point_frame.grid(row=row, column=1, columnspan=6, sticky="w",pady=3)
-        ttk.Label(point_frame, text="X(前):").pack(side="left", padx=(0, 2),pady=3)
+        ttk.Label(point_frame, text="X(前,m):").pack(side="left", padx=(0, 2),pady=3)
         ttk.Entry(point_frame, textvariable=self.point_x, width=6).pack(side="left", padx=(0, 6),pady=3)
-        ttk.Label(point_frame, text="Y(右):").pack(side="left", padx=(0, 2),pady=3)
+        ttk.Label(point_frame, text="Y(右,m):").pack(side="left", padx=(0, 2),pady=3)
         ttk.Entry(point_frame, textvariable=self.point_y, width=6).pack(side="left", padx=(0, 6),pady=3)
-        ttk.Label(point_frame, text="Z(下):").pack(side="left", padx=(0, 2),pady=3)
+        ttk.Label(point_frame, text="Z(下,m):").pack(side="left", padx=(0, 2),pady=3)
         ttk.Entry(point_frame, textvariable=self.point_z, width=6).pack(side="left", padx=(0, 2),pady=3)
         row += 1
 
@@ -633,13 +663,13 @@ class SenderUI:
         attitude_frame = ttk.Frame(self.sidebar_bottom)
         attitude_frame.grid(row=row, column=1, columnspan=6, sticky="w",pady=3)
         self.point_roll = tk.DoubleVar(value=0.0)
-        ttk.Label(attitude_frame, text="横滚:").pack(side="left", padx=(0, 2),pady=3)
+        ttk.Label(attitude_frame, text="横滚偏移:").pack(side="left", padx=(0, 2),pady=3)
         ttk.Entry(attitude_frame, textvariable=self.point_roll, width=6).pack(side="left", padx=(0, 6),pady=3)
         self.point_pitch = tk.DoubleVar(value=0.0)
-        ttk.Label(attitude_frame, text="俯仰:").pack(side="left", padx=(0, 2),pady=3)
+        ttk.Label(attitude_frame, text="俯仰偏移:").pack(side="left", padx=(0, 2),pady=3)
         ttk.Entry(attitude_frame, textvariable=self.point_pitch, width=6).pack(side="left", padx=(0, 6),pady=3)
         self.point_yaw = tk.DoubleVar(value=0.0)
-        ttk.Label(attitude_frame, text="航向:").pack(side="left", padx=(0, 2),pady=3)
+        ttk.Label(attitude_frame, text="航向偏移:").pack(side="left", padx=(0, 2),pady=3)
         ttk.Entry(attitude_frame, textvariable=self.point_yaw, width=6).pack(side="left", padx=(0, 2),pady=3)
         row += 1
 
@@ -672,13 +702,20 @@ class SenderUI:
         # self.debug_recv_text.grid(row=1, column=3, sticky="w")
         self.debug_recv_text.grid(row=3, column=1, sticky="w")
 
-
+        # 在frame中添加传感器数据显示区域
+        ttk.Label(main_content, text="传感器数据:").grid(row=4, column=0, sticky="ne")
+        self.sensor_text = tk.Text(main_content, width=55, height=5)
+        self.sensor_text.grid(row=4, column=1, sticky="w")
 
         # 线程相关初始化
         self.recv_thread = None
         self.is_receiving = False
         self.debug_recv_thread = None
         self.is_debug_receiving = False
+
+        # 新增：传感器接收相关变量
+        self.is_sensor_receiving = False
+        self.sensor_recv_thread = None
 
     # ==== UI: 绘制背景 ====
     def createWidget(self):
@@ -1423,5 +1460,5 @@ if __name__ == "__main__":
 
     #root = tk.Tk()
     app = SenderUI(root)
-    root.geometry("1350x750")
+    root.geometry("1350x825")
     root.mainloop()
