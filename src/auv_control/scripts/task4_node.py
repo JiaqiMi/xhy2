@@ -885,7 +885,8 @@ class Task4Node:
             self.sensor[0] = 1  # 打开红灯
             self.sensor[2] = 255  # 保持舵机关闭
             self.control_device() # 发布一次设备控制
-            self.move_to_target()  # 也需要按时发布位姿控制
+            # 测试先关闭运动
+            # self.move_to_target()  # 也需要按时发布位姿控制
             self.red_count += 1
             return False
         return True
@@ -900,7 +901,8 @@ class Task4Node:
             self.sensor[1] = 1  # 打开绿灯
             self.sensor[2] = 255  # 保持舵机关闭
             self.control_device()  # 发布一次设备控制
-            self.move_to_target()  # 也需要按时发布位姿控制
+            # 测试先关闭运动
+            # self.move_to_target()  # 也需要按时发布位姿控制
             self.green_count += 1
             return False
         return True
@@ -917,7 +919,8 @@ class Task4Node:
             self.sensor[3] = light1
             self.sensor[4] = light2
             self.control_device()
-            self.move_to_target()
+            # 测试先关闭运动
+            # self.move_to_target()
             self.pub_num += 1
             return False
         self.pub_num = 0 # 重置发布次数
@@ -954,23 +957,23 @@ class Task4Node:
                     rospy.loginfo("task4 node: 找到黄色三方形目标点，开始移动到目标位置")
                     if self.detecte_yellow_triangle():
                         self.step = 3
-                        if self.move_to_target():
-                            # self.step = 3
-                            pass  # 测试改动
+                        # if self.move_to_target():
+                        #     # self.step = 3
+                        #     pass  # 测试改动
                 if len(self.black_rectangle_queue) > 0 and self.red_count==0:
                     rospy.loginfo("task4 node: 找到黑色方形目标点，开始移动到目标位置")
                     if self.detecte_black_rectangle():
                         self.step = 4
-                        if self.move_to_target():
-                            # self.step = 4
-                            pass  # 测试改动
+                        # if self.move_to_target():
+                        #     # self.step = 4
+                        #     pass  # 测试改动
                 if len(self.green_circle_queue) > 0 and self.green_count==0:
                     rospy.loginfo("task4 node: 找到绿色圆形目标点，开始移动到目标位置")
                     if self.detecte_green_circle():
                         self.step = 5
-                        if self.move_to_target():
-                            # self.step = 5
-                            pass  # 测试改动
+                        # if self.move_to_target():
+                        #     # self.step = 5
+                        #     pass  # 测试改动
                 else:
                     self.step = 1  # 防止误判进入后出不去
             elif self.step == 3:
