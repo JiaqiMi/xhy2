@@ -12,12 +12,16 @@
 2025.7.22 17:38
     添加base_link到hand的变换
     添加base_link到camera的变换
+2025.8.3 11:32
+    改为 10s的心跳包
 """
 
 import rospy
 import tf
 from geometry_msgs.msg import TransformStamped, Quaternion
 import numpy as np
+
+NODE_NAME = "static_tf_broadcaster"
 
 class Static_tf_broadcaster:
     """静态变换发布器
@@ -40,7 +44,7 @@ class Static_tf_broadcaster:
 
         # 发布频率 10Hz
         self.rate = rospy.Rate(10)
-        rospy.loginfo("static_tfbc: 已启动")
+        rospy.loginfo(f"{NODE_NAME}: 已启动")
 
     def run(self):
         """主循环：发布静态变换"""
@@ -50,12 +54,12 @@ class Static_tf_broadcaster:
             self.tf_broadcaster.sendTransform(self.imu_trans, self.imu_rot, current_time, "imu", "base_link")
             self.tf_broadcaster.sendTransform(self.hand_trans, self.hand_rot, current_time, "hand", "base_link")
             self.tf_broadcaster.sendTransform(self.camera_trans, self.camera_rot, current_time, "camera", "base_link")
-            rospy.loginfo_throttle(1, "static_tfbc: 机器人tf广播完成")
+            rospy.loginfo_throttle(10, f"{NODE_NAME}: AUV 静态tf广播完成")
             self.rate.sleep()
 
 if __name__ == "__main__":
     try:
-        rospy.init_node('static_tfbroadcaster')
+        rospy.init_node(f'{NODE_NAME}',anonymous=True)
         bd = Static_tf_broadcaster()
         bd.run()
     except rospy.ROSInterruptException:

@@ -39,6 +39,7 @@ class Task3Node:
         # 变量定义
         self.step = 0 # 程序运行阶段
         self.target_posestamped = PoseStamped() # 期望位置消息定义
+        self.target_posestamped.header.frame_id = "map"  # 设置坐标系
         self.start_point = PoseStamped()
         self.end_point = PoseStamped() # 结束点，和开始点一样
         self.queue = [] # 用于保存目标队列
@@ -46,10 +47,10 @@ class Task3Node:
         self.search_direction = 1  # 搜索方向：1表示正向，-1表示反向
         self.pitch_offset = np.radians(1.5) # 固定1.5°俯仰
         self.pub_num = 0  # 记录释放目标的次数
-        self.step = 0 # 程序运行阶段
         self.sensor = [0] * 5 # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
-        self.ball_depth =None
+        self.ball_depth = None
         self.search2_max_dist = 0.8 # 第二个搜索阶段的最大距离
+        
         # 获取宏定义参数
         self.target_depth = rospy.get_param('/depth', 0.3)  # 初始下潜深度，单位米
         start_point_from_param = rospy.get_param('/task3_point0', [0.02, -4.98, 0.00, 180])  # 默认值        
@@ -357,6 +358,8 @@ class Task3Node:
                     # 这样可以直接得到hand应该到达的位置
                     target_in_hand = self.tf_listener.transformPose("hand", msg.pose) # 目标点在hand下
                     target_in_hand.header.frame_id = "base_link"
+
+                    # search2阶段需要判断距离
                     dist = self.xyz_distance(Point(x=0,y=0,z=0),target_in_hand.pose.position)
                     if self.step == 11: # if in search 2 step
                         # 判断一下距离小于0.5m                      
@@ -405,10 +408,8 @@ class Task3Node:
             point_num: 检测点数量
         """
         # 如果处理的太快就会导致不连续的点
-        # 定义三个空点
-        # (msg.conf, current_pose, expected_pose, target_in_map, target_in_base,target_in_hand)
+        # 队列元素结构: (conf, current_pose, expected_pose, target_in_map, target_in_base, target_in_hand)
         # 循环直到队列为空或找到目标点
-        # 如果这个占用很长时间呢？
         def is_closed(points:list, max_position_interval:float):
             n = len(points)
             for i in range(n):
@@ -508,7 +509,8 @@ class Task3Node:
                                               current_pose.pose.orientation.w])[2]
         if self.init_yaw is None:
             # 赋值初始位姿：位置不变。航向更正
-            # self.target_posestamped.pose = current_pose.pose
+            # self.target_posestamped.pose.position = current_pose.pose.position
+            # self.target_posestamped.pose.orientation = current_pose.pose.orientation
             self.init_yaw = current_yaw
         next_yaw = current_yaw + (rotate_step * self.search_direction)
         
@@ -617,7 +619,7 @@ class Task3Node:
         rospy.signal_shutdown("任务完成")
         return True 
     
-    def dive_to_ball(self,max_xy_step=0.8,max_z_step=0.1,max_yaw_step=np.radians(5),max_xyz_dist=0.2,max_yaw_dist=np.radians(1),open=False):
+    def dive_to_ball(self,max_xy_step=0.8,max_z_step=0.1,max_yaw_step=np.radians(5),max_xyz_dist=0.2,max_yaw_dist=np.radians(1),open_loop_steps=0):
         """
         下降到球的位置
         
@@ -627,19 +629,31 @@ class Task3Node:
             max_yaw_step: float, 最大偏航角步长(弧度)，用于平滑
             max_xyz_dist: float, 最大三维距离误差(米)，用于判断是否到达目标位置
             max_yaw_dist: float, 最大航向误差(弧度)，用于判断是否到达目标位置
-            open:是否开环，开环的话发送n包数据就返回True
+            open_loop_steps: int, 开环模式发送的步数，0表示闭环模式
 
         Returns:
             到达目标位置返回true,未到达目标位置返回false
         """
-        if open == 0: # 闭环
+        # 安全检查：确保ball_depth已设置
+        if self.ball_depth is None:
+            rospy.logwarn(f"{NODE_NAME}: ball_depth未设置，使用默认深度")
+            self.ball_depth = self.target_depth
+            
+        if open_loop_steps == 0: # 闭环模式
             self.target_posestamped.pose.position.z = self.ball_depth
             return self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step,max_z_step=max_z_step,max_yaw_step=max_yaw_step)
-        else: # 开环
-            while open>0:
-                self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step,max_z_step=max_z_step,max_yaw_step=max_yaw_step)
-                open = open -1
-            return True
+        else: # 开环模式
+            if not hasattr(self, 'dive_step_count'):
+                self.dive_step_count = 0
+                self.target_posestamped.pose.position.z = self.ball_depth
+            
+            self.move_to_target(max_xyz_dist=max_xyz_dist,max_yaw_dist=max_yaw_dist,max_xy_step=max_xy_step,max_z_step=max_z_step,max_yaw_step=max_yaw_step)
+            self.dive_step_count += 1
+            
+            if self.dive_step_count >= open_loop_steps:
+                del self.dive_step_count  # 清理计数器
+                return True
+            return False
 
     ###############################################逻辑层#################################
 
@@ -683,7 +697,7 @@ class Task3Node:
                     rospy.loginfo(f"{NODE_NAME}: 到达目标位置，准备抓取")
             elif self.step == 13:
                 if self.dive_to_ball(max_xy_step=1.8,max_z_step=0.13,max_yaw_step=np.radians(0.5), # 运动步长设置
-                                     max_xyz_dist=0.1,max_yaw_dist=np.radians(5),open=0): # 到达判断设置
+                                     max_xyz_dist=0.1,max_yaw_dist=np.radians(5),open_loop_steps=0): # 到达判断设置
                     self.step = 3
                     rospy.loginfo(f"{NODE_NAME}: 下沉完毕")
             elif self.step == 3:  # 抓取目标
