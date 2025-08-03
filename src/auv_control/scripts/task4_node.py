@@ -18,7 +18,7 @@ import tf
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 from std_msgs.msg import String
 from auv_control.msg import TargetDetection, Control,TargetDetection3 # control是控制led和舵机
-from geometry_msgs.msg import PoseStamped, Quaternion, Point
+from geometry_msgs.msg import PoseStamped, Quaternion,Point
 import numpy as np
 
 NODE_NAME = "task4_node"
@@ -41,13 +41,13 @@ class Task4Node:
         self.finished_pub = rospy.Publisher('/finished', String, queue_size=10)
         rospy.Subscriber('/obj/target_message', TargetDetection, self.target_detection_callback)
         rospy.Subscriber('/obj/line_message', TargetDetection3, self.track_detection_callback)
-        # rospy.Subscriber('/obj/arco_message', ArcoDetection, self.arco_detection_callback)
+        rospy.Subscriber('/obj/arco_message',  self.arco_detection_callback)
         self.rate = rospy.Rate(5)  # 5Hz
         self.tf_listener = tf.TransformListener()
 
         # 变量定义
         self.start_point = PoseStamped()
-        self.step = 1  # 程序运行阶段
+        self.step = 0  # 程序运行阶段
         self.target_posestamped = PoseStamped()  # 期望位置消息定义
         self.init_yaw = None  # 初始yaw角度
         self.search_direction = 1  # 搜索方向：1表示正向，-1表示反向
@@ -62,7 +62,7 @@ class Task4Node:
         self.track_count = 0  # 记录巡线轨迹段数
         self.pub_num = 0 # 关灯控制
         self.pitch_offset = np.radians(1.5)  # 固定1.5°俯仰
-        self.light = 0  # 固定60亮度
+        self.light = 60  # 固定60亮度
         self.round = False # 判断是否执行过转圈任务
         self.sensor = [0] * 5  # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
 
@@ -883,6 +883,7 @@ class Task4Node:
         """
         if self.red_count < 10:
             self.sensor[0] = 1  # 打开红灯
+            self.sensor[2] = 255  # 保持舵机关闭
             self.control_device() # 发布一次设备控制
             self.move_to_target()  # 也需要按时发布位姿控制
             self.red_count += 1
@@ -897,6 +898,7 @@ class Task4Node:
         """
         if self.green_count < 10:
             self.sensor[1] = 1  # 打开绿灯
+            self.sensor[2] = 255  # 保持舵机关闭
             self.control_device()  # 发布一次设备控制
             self.move_to_target()  # 也需要按时发布位姿控制
             self.green_count += 1
