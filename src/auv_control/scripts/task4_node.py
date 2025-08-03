@@ -47,7 +47,7 @@ class Task4Node:
 
         # 变量定义
         self.start_point = PoseStamped()
-        self.step = 1  # 程序运行阶段
+        self.step = 0  # 程序运行阶段
         self.target_posestamped = PoseStamped()  # 期望位置消息定义
         self.init_yaw = None  # 初始yaw角度
         self.search_direction = 1  # 搜索方向：1表示正向，-1表示反向
@@ -55,13 +55,13 @@ class Task4Node:
         self.black_rectangle_queue = []  # 用于保存方形目标列表
         self.green_circle_queue = []  # 用于保存圆形目标列表
         self.track_target = None  # 存储转换后的轨迹目标
-        self.lineupdate = 25
+        # self.lineupdate = 25
         self.target_depth = 0.2 # 宏定义深度
         self.red_count = 0  # 记录红灯动作的次数
         self.green_count = 0  # 记录绿灯动作的次数
         self.track_count = 0  # 记录巡线轨迹段数
         self.pub_num = 0 # 关灯控制
-        self.pitch_offset = np.radians(1.5)  # 固定1.5°俯仰
+        self.pitch_offset = np.radians(2)  # 固定1.5°俯仰
         self.light = 0  # 固定60亮度
         self.round = False # 判断是否执行过转圈任务
         self.sensor = [0] * 5  # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
@@ -72,7 +72,7 @@ class Task4Node:
         self.step_rad = np.radians(self.step_deg) * self.direction
 
         # 获取宏定义参数
-        self.target_depth = rospy.get_param('~depth', 0.3)  # 下潜深度，单位米
+        self.target_depth = rospy.get_param('/depth', 0.3)  # 下潜深度，单位米
         start_point_from_param = rospy.get_param('/task4_point0', [0.5, -0.5, 0.15, 0.0])  # 默认值
         self.yellow_triangle = rospy.get_param('/task4_target_shape1', 'triangle')  # 检测目标名称
         self.black_rectangle = rospy.get_param('/task4_target_shape2', 'rectangle')  # 检测目标名称
@@ -83,11 +83,11 @@ class Task4Node:
         self.start_point.header.frame_id = "map"
         self.start_point.pose.position = Point(*start_point_from_param[:3])
         self.start_point.pose.orientation = Quaternion(
-            *quaternion_from_euler(0, 0, np.radians(start_point_from_param[3])))
+            *quaternion_from_euler(0, self.pitch_offset, np.radians(start_point_from_param[3])))
 
         # 输出log
         rospy.loginfo(f"{NODE_NAME}: 初始化完成")
-        rospy.loginfo(f"{NODE_NAME}: 目标点1: n={self.start_point.pose.position.x}, e={self.start_point.pose.position.y}, d={self.start_point.pose.position.z}, ")
+        rospy.loginfo(f"{NODE_NAME}: 目标点1: n={self.start_point.pose.position.x}, e={self.start_point.pose.position.y}, d={self.start_point.pose.position.z},{start_point_from_param[3]} ")
 
         self.count = 1
 
@@ -297,7 +297,7 @@ class Task4Node:
 
             # 判断是否到达
             if self.is_arrival(current_pose, self.target_posestamped, max_xyz_dist, max_yaw_dist):
-                rospy.loginfo("{NODE_NAME}: 已到达目标位置")
+                rospy.loginfo(f"{NODE_NAME}: 已到达目标位置")
                 return True
 
             # 航向控制和点控制统一起来
@@ -305,8 +305,8 @@ class Task4Node:
                                                   max_z_step=max_z_step, max_yaw_step=max_yaw_step)
             dist_to_target = self.xyz_distance(current_pose.pose.position, self.target_posestamped.pose.position)
             yaw_to_target = self.yaw_distance(current_pose.pose.orientation, self.target_posestamped.pose.orientation)
-            rospy.loginfo_throttle(2,
-                                   f"{NODE_NAME}: 移动到目标点: 距离={dist_to_target:.3f}米, 航向差={np.degrees(yaw_to_target):.2f}度,高度差={current_pose.pose.position.z - self.target_posestamped.pose.position.z}")
+            rospy.loginfo_throttle(5,
+                                   f"{NODE_NAME}: 移动到目标位置: 距离={dist_to_target:.3f}米, 航向差={np.degrees(yaw_to_target):.2f}度,高度差={current_pose.pose.position.z - self.target_posestamped.pose.position.z}")
             self.target_pub.publish(next_pose)
 
             return False
@@ -336,15 +336,6 @@ class Task4Node:
         self.control_pub.publish(control_msg)
         # NOTE 打印一下命令
         rospy.loginfo(f"{NODE_NAME}: 发布外设控制: 红色led={self.sensor[0]}, 绿色led={self.sensor[1]}, 舵机={self.sensor[2]}, 补光灯1={self.sensor[3]}, 补光灯2={self.sensor[4]}")
-
-    def red_led_on(self):
-        self.sensor[0] = 1
-    def red_led_off(self):
-        self.sensor[0]= 0
-    def red_green_on(self):
-        self.sensor[1] = 1
-    def red_green_off(self):
-        self.sensor[1]= 0
 
     # def light_red_led(self):
     #     """亮红灯"""
@@ -387,8 +378,8 @@ class Task4Node:
         加入队列中的是体到达目标点
         """
         rospy.loginfo(
-            f"{NODE_NAME}: 收到目标检测消息 {msg.class_name},{msg.pose.pose.position.x},{msg.pose.pose.position.y},{msg.pose.pose.position.z}")
-
+            f"{NODE_NAME}: 检测到{msg.class_name}: {msg.pose.pose.position.x},{msg.pose.pose.position.y},{msg.pose.pose.position.z}")
+        # rospy.loginfo(f"{rospy.Time.now()},{msg.pose.header.stamp}")
         point_in_camera = msg.pose.pose.position  # 相机坐标系下目标点
         origin_in_camera = Point(x=0, y=0, z=0)  # 相机坐标系下的原点
         if self.xyz_distance(point_in_camera, origin_in_camera) < 5.0:
@@ -429,8 +420,8 @@ class Task4Node:
                 # 这样可以直接得到hand应该到达的位置
                 target_in_hand = self.tf_listener.transformPose("hand", msg.pose)  # 目标点在hand下
                 target_in_hand.header.frame_id = "base_link"
-                rospy.loginfo(
-                    f"{NODE_NAME}: 目标点在hand下: {target_in_hand.pose.position.x:.2f}, {target_in_hand.pose.position.y:.2f}, {target_in_hand.pose.position.z:.2f}")
+                # rospy.loginfo(
+                #    f"{NODE_NAME}: 目标点在hand下: {target_in_hand.pose.position.x:.2f}, {target_in_hand.pose.position.y:.2f}, {target_in_hand.pose.position.z:.2f}")
                 hand_target_in_map = self.tf_listener.transformPose("map", target_in_hand)
 
                 # 期望位姿就是让base_link移动到使得hand到达目标位置
@@ -468,17 +459,17 @@ class Task4Node:
         if msg.conf < 0.5:
             return
         rospy.loginfo(
-            f"{NODE_NAME}: 收到track 1 {msg.class_name},{msg.pose1.pose.position.x},{msg.pose1.pose.position.y},{msg.pose1.pose.position.z}")
+            f"{NODE_NAME}: 收到track 1, {msg.pose1.pose.position.x},{msg.pose1.pose.position.y},{msg.pose1.pose.position.z}")
         rospy.loginfo(
-            f"{NODE_NAME}: 收到track 2{msg.class_name},{msg.pose2.pose.position.x},{msg.pose2.pose.position.y},{msg.pose2.pose.position.z}")
+            f"{NODE_NAME}: 收到track 2, {msg.pose2.pose.position.x},{msg.pose2.pose.position.y},{msg.pose2.pose.position.z}")
         rospy.loginfo(
-            f"{NODE_NAME}: 收到track 3{msg.class_name},{msg.pose3.pose.position.x},{msg.pose3.pose.position.y},{msg.pose3.pose.position.z}")
+            f"{NODE_NAME}: 收到track 3, {msg.pose3.pose.position.x},{msg.pose3.pose.position.y},{msg.pose3.pose.position.z}")
 
 
         point3_in_camera = msg.pose3.pose.position  # 相机坐标系下目标点
         origin_in_camera = Point(x=0, y=0, z=0)  # 相机坐标系下的原点
         if self.xyz_distance(point3_in_camera, origin_in_camera) < 5.0: # 保证第三个点在5m以内
-            self.lineupdate = 25
+            # self.lineupdate = 25
             try:
                 # 将目标点从camera坐标系转换到各个坐标系
                 # self.tf_listener.waitForTransform("map", msg.pose1.header.frame_id, msg.pose1.header.stamp,
@@ -527,8 +518,8 @@ class Task4Node:
                 # 这样可以直接得到hand应该到达的位置
                 target2_in_hand = self.tf_listener.transformPose("hand", msg.pose2)  # 目标点在hand下
                 target2_in_hand.header.frame_id = "base_link"
-                rospy.loginfo(
-                    f"{NODE_NAME}: 目标点在hand下: {target2_in_hand.pose.position.x:.2f}, {target2_in_hand.pose.position.y:.2f}, {target2_in_hand.pose.position.z:.2f}")
+                # rospy.loginfo(
+                #    f"{NODE_NAME}: 目标点在hand下: {target2_in_hand.pose.position.x:.2f}, {target2_in_hand.pose.position.y:.2f}, {target2_in_hand.pose.position.z:.2f}")
                 hand_target2_in_map = self.tf_listener.transformPose("map", target2_in_hand)
 
                 # 创建目标位姿
@@ -560,7 +551,7 @@ class Task4Node:
 
     ###############################################逻辑层#################################
 
-    def follow_track(self, max_rotate_rad=np.radians(30), rotate_step=np.radians(1), max_xyz_dist=0.3, max_yaw_dist=np.radians(0.2)):
+    def follow_track(self, max_rotate_rad=np.radians(30), rotate_step=np.radians(1), max_xyz_dist=0.3, max_yaw_dist=np.radians(0.2),forward_percent=0.8):
         """
         跟踪轨迹：
         1. 如果有track_target，移动到第二个点位置，航向指向第三个点
@@ -572,7 +563,10 @@ class Task4Node:
         
         # 如果有轨迹目标，跟踪轨迹
         if self.track_target:
-            self.target_posestamped = self.track_target
+            self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (self.track_target.pose.position.x-self.target_posestamped.pose.position.x)*forward_percent, 
+                                                        y=self.target_posestamped.pose.position.y + (self.track_target.pose.position.y-self.target_posestamped.pose.position.y)*forward_percent, 
+                                                        z=self.target_depth)    
+            self.target_posestamped.pose.position.z = self.target_depth
             rospy.loginfo(f"{NODE_NAME}: 跟踪轨迹目标更新")
             # 运动到目标点
             # self.move_to_target(max_xyz_dist=max_xyz_dist, max_yaw_dist=max_yaw_dist)
@@ -631,7 +625,7 @@ class Task4Node:
         self.move_to_target(max_xyz_dist=max_xyz_dist, max_yaw_step=rotate_step, max_yaw_dist=max_yaw_dist)
         return False
 
-    def move_to_init_pose(self):
+    def move_to_init_pose(self, max_xy_step=0.5, max_z_step=0.1, max_yaw_step=np.radians(5), max_xyz_dist=0.3, max_yaw_dist=np.radians(0.2)):
         """
         发送一次指令移动到初始位姿
 
@@ -639,9 +633,12 @@ class Task4Node:
             到达目标位置返回true,未到达目标位置返回false
         """
         self.target_posestamped = self.start_point  # 将宏定义的初始位置赋值给目标位置
-        return self.move_to_target()
+        # rospy.loginfo(self.target_posestamped)
+        # rospy.loginfo(self.start_point)
+        return self.move_to_target(max_xy_step=max_xy_step, max_z_step=max_z_step, max_yaw_step=max_yaw_step, max_xyz_dist=max_xyz_dist, max_yaw_dist=max_yaw_dist)
 
-    def detect_yellow_triangle(self, max_time_interval=5.0, max_position_interval=0.5, rotate_step=np.radians(1), max_xyz_dist=0.3, max_yaw_dist=np.radians(0.2)):
+    def detect_yellow_triangle(self, max_time_interval=5.0, max_position_interval=0.5, rotate_step=np.radians(1), max_xyz_dist=0.3, max_yaw_dist=np.radians(0.2)
+                               ,forward_percent=0.8):
         """
         探测到任务点目标：
         1. 停止巡线
@@ -652,7 +649,7 @@ class Task4Node:
             target1 = self.yellow_triangle_queue[0]
             target2 = self.yellow_triangle_queue[1]
             target3 = self.yellow_triangle_queue[2]
-            rospy.loginfo(f"{NODE_NAME}: 当前队列长度: {len(self.yellow_triangle_queue)}")
+            # rospy.loginfo(f"{NODE_NAME}: 当前队列长度: {len(self.yellow_triangle_queue)}")
             if target1 is not None and target2 is not None and target3 is not None:
                 if target1[0] > 0.5 and target2[0] > 0.5 and target3[0] > 0.5:
                     if self.xyz_distance(target1[3].pose.position, target2[3].pose.position) < max_position_interval and \
@@ -667,7 +664,7 @@ class Task4Node:
                                 abs(target2[3].header.stamp.to_sec() - target3[
                                     3].header.stamp.to_sec()) < max_time_interval:
                             # 时间间隔满足要求
-                            rospy.loginfo(f"{NODE_NAME}: 找到目标点: {target1[4]}, {target2[4]}, {target3[4]}")
+                            rospy.loginfo(f"{NODE_NAME}: 找到yellow triangle: {target1[4]}, {target2[4]}, {target3[4]}")
                             # 计算位置平均值：根据期望位姿
                             avg_x = (target1[2].pose.position.x + target2[2].pose.position.x + target3[
                                 2].pose.position.x) / 3.0
@@ -696,19 +693,24 @@ class Task4Node:
                             ])
                             avg_yaw = (yaw1 + yaw2 + yaw3) / 3.0
                             avg_pitch = (pitch1 + pitch2 + pitch3) / 3.0
-
+                            # 清空队列，清空初始位置
+                            self.yellow_triangle_queue= []
                             # 设置完目标位姿后，跳转到下一步即可
-                            self.target_posestamped.pose.position = Point(x=avg_x, y=avg_y, z=0)
+                            self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_x-self.target_posestamped.pose.position.x)*forward_percent, 
+                                                                    y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
+                                                                    z =self.target_depth)
+                            # self.target_posestamped.pose.position = Point(x=avg_x, y=avg_y, z=self.target_depth)
                             self.target_posestamped.pose.orientation = Quaternion(
                                 *quaternion_from_euler(0, self.pitch_offset, avg_yaw))
                             rospy.loginfo(
-                                f"{NODE_NAME}: 目标位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d=0.00m,yaw={np.degrees(avg_yaw)}°")
+                                f"{NODE_NAME}: 三角形位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d={self.target_depth}m,yaw={np.degrees(avg_yaw)}°")
                             return True
             self.yellow_triangle_queue.pop(0)
         return False
 
 
-    def detect_black_rectangle(self, max_time_interval=5.0, max_position_interval=0.5, rotate_step=np.radians(1), max_xyz_dist=0.3, max_yaw_dist=np.radians(0.2)):
+    def detect_black_rectangle(self, max_time_interval=5.0, max_position_interval=0.5, rotate_step=np.radians(1), max_xyz_dist=0.3, max_yaw_dist=np.radians(0.2),
+                               forward_percent=0.8):
         """
         探测到任务点目标：
         1. 停止巡线
@@ -734,7 +736,7 @@ class Task4Node:
                                 abs(target2[3].header.stamp.to_sec() - target3[
                                     3].header.stamp.to_sec()) < max_time_interval:
                             # 时间间隔满足要求
-                            rospy.loginfo(f"{NODE_NAME}: 找到目标点: {target1[4]}, {target2[4]}, {target3[4]}")
+                            rospy.loginfo(f"{NODE_NAME}: 找到black rectangle: {target1[4]}, {target2[4]}, {target3[4]}")
                             # 计算位置平均值：根据期望位姿
                             avg_x = (target1[2].pose.position.x + target2[2].pose.position.x + target3[
                                 2].pose.position.x) / 3.0
@@ -765,16 +767,21 @@ class Task4Node:
                             avg_pitch = (pitch1 + pitch2 + pitch3) / 3.0
 
                             # 设置完目标位姿后，跳转到下一步即可
-                            self.target_posestamped.pose.position = Point(x=avg_x, y=avg_y, z=0)
+                            self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_x-self.target_posestamped.pose.position.x)*forward_percent, 
+                                                                    y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
+                                                                    z=self.target_depth)
+                            # self.target_posestamped.pose.position = Point(x=avg_x, y=avg_y, z=self.target_depth)
                             self.target_posestamped.pose.orientation = Quaternion(
                                 *quaternion_from_euler(0, self.pitch_offset, avg_yaw))
+                            # 清空队列，清空初始位置
+                            self.black_rectangle_queue = []
                             rospy.loginfo(
-                                f"{NODE_NAME}: 目标位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d=0.00m,yaw={np.degrees(avg_yaw)}°")
+                                f"{NODE_NAME}: 黑色长方形位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d=0.00m,yaw={np.degrees(avg_yaw)}°")
                             return True
             self.black_rectangle_queue.pop(0)
         return False
 
-    def detect_green_circle(self, min_conf=0.5, max_time_interval=5.0, max_position_interval=0.5):
+    def detect_green_circle(self, min_conf=0.5, max_time_interval=5.0, max_position_interval=0.5,forward_percent=0.8):
         """
         检测绿色圆形目标，不控制运动，检测到了之后返回True
         """
@@ -802,14 +809,15 @@ class Task4Node:
                         avg_yaw = (yaw1 + yaw2 + yaw3) / 3.0
                         
                         # 设置目标位置
-                        self.target_posestamped.header.frame_id = "map"
-                        self.target_posestamped.header.stamp = rospy.Time.now()
-                        self.target_posestamped.pose.position = Point(x=avg_x, y=avg_y, z=avg_z)
+                        self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_x-self.target_posestamped.pose.position.x)*forward_percent, 
+                                                                    y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
+                                                                    z=self.start_point.pose.position.z) # X,Y前进一个百分比，z不变，但把z赋值给最终目标
                         self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, avg_yaw))
                         
                         # 清空队列
                         self.green_circle_queue = []
-                        rospy.loginfo(f"{NODE_NAME}: 检测到绿色圆形，位置: ({avg_x:.2f}, {avg_y:.2f}, {avg_z:.2f})")
+                        rospy.loginfo(
+                                f"{NODE_NAME}: 绿色圆形位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d={self.target_depth}m,yaw={np.degrees(avg_yaw)}°")
                         return True
                             
             self.green_circle_queue.pop(0)
@@ -861,13 +869,13 @@ class Task4Node:
 
         # 设置新的目标姿态
         self.rotate_target_yaw = current_yaw + (self.step_rad * self.direction)
-        self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, 0, self.rotate_target_yaw))
+        self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, self.rotate_target_yaw))
 
         # 发布新姿态
-        self.move_to_target(max_xyz_dist=0.1, max_yaw_step=self.step_rad, max_yaw_dist=self.step_rad)
+        self.move_to_target(max_xyz_dist=0.2, max_yaw_step=self.step_rad, max_yaw_dist=np.radians(1))
         if current_yaw is not None:
             rospy.loginfo_throttle(1,
-                                   f"{NODE_NAME}: 目标航向: {np.degrees(self.rotate_target_yaw)}度, 当前航向: {np.degrees(current_yaw)}度,delta yaw {delta_yaw}")
+                                   f"{NODE_NAME}: 目标航向: {np.degrees(self.rotate_target_yaw)}度, 当前航向: {np.degrees(current_yaw)}度,delta yaw {np.degrees(delta_yaw)}")
         else:
             rospy.loginfo_throttle(1, f"{NODE_NAME}: 目标航向: {np.degrees(self.rotate_target_yaw)}度")
 
@@ -877,7 +885,7 @@ class Task4Node:
 
         # 判断是否完成一圈旋转（360度）
         if self.total_rotated >= 2 * np.pi:
-            rospy.loginfo(f"{NODE_NAME}: 完成360度旋转 {self.total_rotated},{np.pi}")
+            rospy.loginfo(f"{NODE_NAME}: 完成360度旋转 {np.degrees(self.total_rotated)},{np.degrees(np.pi)}")
             # 清理旋转相关变量
             del self.rotate_start_yaw
             del self.rotate_target_yaw
@@ -890,14 +898,21 @@ class Task4Node:
         """
         移动到目标位置，并控制led灯开关，发布20次后停止
         Parameters:
-            light1: int, 补光灯1的亮度(0~100)
-            light2: int, 补光灯2的亮度(0~100)
+            light1: int, 红色LED
+            light2: int, 绿色LED
         """
-        if self.move_to_target(): # 移动到目标点后
+        if self.move_to_target(max_xyz_dist=0.2,max_yaw_dist=np.radians(5)): # 移动到目标点后
             if self.pub_num < 20:
                 self.sensor[2] = 255 # 保持舵机关闭
-                self.sensor[3] = light1
-                self.sensor[4] = light2
+                self.sensor[0] = light1
+                self.sensor[1] = light2
+                self.control_device()
+                self.pub_num += 1
+                return False # 到了目标点但还没发布完
+            elif self.pub_num < 40: # 发布20次后停止
+                self.sensor[2] = 255 # 保持舵机关闭
+                self.sensor[0] = 0 # 关闭红灯
+                self.sensor[1] = 0 # 关闭绿灯
                 self.control_device()
                 self.pub_num += 1
                 return False # 到了目标点但还没发布完
@@ -921,19 +936,25 @@ class Task4Node:
     ###############################################主循环#################################
     def run(self):
         """主循环"""
+        self.step = 0
+        self.sensor[2] = 255 # 保持舵机关闭
+        self.sensor[0] = 0 # 关闭红灯
+        self.sensor[1] = 0 # 关闭绿灯
+        self.control_device()
         while not rospy.is_shutdown():
+            # rospy.loginfo(self.target_posestamped)
             if self.step == 0:  # 移动到初始位置
                 if self.move_to_init_pose(): #如果移动到初始位置，开始轨迹跟踪
                     self.step = 1
                     rospy.loginfo("task4 node: 到达初始位置，开始跟踪轨迹")
             elif self.step == 1:  # 跟踪轨迹
-                if self.detect_green_circle() and not self.done[0]: # 如果检测到绿色圆形目标点，则进入5
+                if self.detect_green_circle(forward_percent=0.7) and not self.done[0]: # 如果检测到绿色圆形目标点，则进入5
                     self.step = 5
-                if self.detect_black_rectangle() and not self.done[1]: # 如果检测到黑色方形目标点，则进入4
+                if self.detect_black_rectangle(forward_percent=0.7) and not self.done[1]: # 如果检测到黑色方形目标点，则进入4
                     self.step = 4
-                if self.detect_yellow_triangle() and not self.done[2]: # 如果检测到黄色三角形目标点，则进入3
+                if self.detect_yellow_triangle(forward_percent=0.7) and not self.done[2]: # 如果检测到黄色三角形目标点，则进入3
                     self.step = 3
-                if self.move_to_target(): # 移动到目标点，不管到没到达，都开始下一次搜索，如果搜索到了就会回来，否则就会继续搜索，
+                if self.move_to_target(max_xyz_dist=0.15,max_yaw_dist=np.radians(2)): # 移动到目标点，不管到没到达，都开始下一次搜索，如果搜索到了就会回来，否则就会继续搜索，
                     self.step = 2
                 # if self.track_count==3:
                 #     self.step = 6
@@ -942,7 +963,11 @@ class Task4Node:
                 # if len(self.yellow_triangle_queue) > 0 or len(self.black_rectangle_queue) > 0 or len(self.green_circle_queue) > 0:
                 #     self.step = 2
             elif self.step == 2:  # 移动到目标位置
-                if self.follow_track(max_rotate_rad=np.radians(15),rotate_step = np.radians(0.5)): # 原地搜索轨迹，找到目标返回True，否则原地搜索
+                rospy.loginfo_throttle(10, f"{NODE_NAME}: {self.done}")
+                if self.done[0] and self.done[1] and self.done[2]:  # 如果所有任务都完成了
+                    self.step = 7 # 进入完成任务步骤
+                    rospy.loginfo("task4 node: 所有任务完成，进入完成任务步骤")
+                if self.follow_track(max_rotate_rad=np.radians(17.5),rotate_step = np.radians(0.5),forward_percent=1): # 原地搜索轨迹，找到目标返回True，否则原地搜索
                     self.step = 1
                 # if len(self.yellow_triangle_queue) > 0 and self.round==False:
                 #     rospy.loginfo("task4 node: 找到黄色三方形目标点，开始移动到目标位置")
@@ -969,7 +994,7 @@ class Task4Node:
                 #     self.step = 1  # 防止误判进入后出不去
             elif self.step == 3:
                 # if self.rotate360():
-                if self.move_to_target():
+                if self.move_to_target(max_xyz_dist=0.15,max_yaw_dist=np.radians(1)):
                     self.step = 6 # 搜索目标
                 # if True:
                 #     rospy.loginfo("task4 node: 旋转360度")
@@ -978,16 +1003,16 @@ class Task4Node:
                 #     self.step = 1
                 #     self.track_count += 1
             elif self.step == 4:
-                if self.control_light(0, 100):  # 点亮红灯
-                    self.done[0] =True # 红色方形任务完成
-                    rospy.loginfo("task4 node: 点亮红灯")
+                if self.control_light(0, 1):  # 点亮红灯
+                    self.done[0] = True # 红色方形任务完成
+                    rospy.loginfo("task4 node: 点亮绿灯")
                     # self.black_rectangle_queue.clear()  # 清空,防止有多余的检测点造成误判
                     self.step = 2
                     # self.track_count += 1
                     # rospy.sleep(2) # 非阻塞延时亮灯2s
             elif self.step == 5:
-                if self.control_light(100,0):
-                    rospy.loginfo("task4 node: 点亮绿灯")
+                if self.control_light(1,0):
+                    rospy.loginfo("task4 node: 点亮红灯")
                     self.done[1] = True # 绿色圆形任务完成
                     # self.green_circle_queue.clear()  # 清空,防止有多余的检测点造成误判
                     self.step = 2
@@ -997,7 +1022,7 @@ class Task4Node:
                 if self.rotate360():
                     rospy.loginfo("task4 node: 旋转360度完成")
                     self.done[2] = True # 黄色三角形任务完成
-                    self.step = 1
+                    self.step = 2
             elif self.step == 7:
                 self.finish_task()
                 break

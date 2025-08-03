@@ -42,7 +42,9 @@
 
 
     <!-- 目标点空间定位 -->
-    <node pkg="stereo_depth" type="holes_detection_v1.py" name="holes_location" output="screen" />
+    <!-- <node pkg="stereo_depth" type="holes_detection_v1.py" name="holes_location" output="screen" /> -->
+    <node pkg="stereo_depth" type="holes_detection_v1.py" name="holes_location" output="screen" /> 
+
 
 </launch>
 

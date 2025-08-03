@@ -1,106 +1,254 @@
 #!/home/xhy/xhy_env/bin/python
 # -*- coding: utf-8 -*-
 
+# 基于四个矩形边角的像素点的目标位姿计算
 import rospy
-import numpy as np
+import cv2
 import tf
-from sensor_msgs.msg import PointCloud2
-import sensor_msgs.point_cloud2 as pc2
+import numpy as np
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
+# from auv_control.msg import TargetDetection
 from stereo_depth.msg import TargetDetection, BoundingBox
-from geometry_msgs.msg import PoseStamped, Quaternion
+from geometry_msgs.msg import PointStamped,PoseStamped,Quaternion
+from message_filters import ApproximateTimeSynchronizer, Subscriber
+from geometry_msgs.msg import Quaternion
 
 
-class PoseEstimatorNode:
+def pixel_to_camera_coords(u, v, depth, fx, fy, cx, cy):
+    """calculate the location in camera axis of any pixel in picture."""
+    Z = depth[v][u]  # 注意 OpenCV 顺序是 (row, col) = (v, u)
+    if Z == 0:
+        return None  # 无效深度
+    X = (u - cx) * Z / fx
+    Y = (v - cy) * Z / fy
+    return np.array([X, Y, Z])
+
+
+def get_stable_depth(u, v, depth, fx, fy, cx, cy, window_size=11):
+    half_w = window_size // 2
+    h, w = depth.shape
+
+    u, v = int(u), int(v)
+
+    umin = max(u - half_w, 0)
+    umax = min(u + half_w + 1, w)
+    vmin = max(v - half_w, 0)
+    vmax = min(v + half_w + 1, h)
+
+    region = depth[vmin:vmax, umin:umax]
+    valid = region[np.isfinite(region) & (region > 0)]
+
+    if valid.size < 3:
+        return np.array([np.nan, np.nan, np.nan])  # too few valid points
+
+    Z = np.min(valid)  # or np.mean(valid)
+    if Z == 0:
+        rospy.logwarn("Invalid depth at pixel ({}, {}): Z = 0".format(u, v))
+        return np.array([np.nan, np.nan, np.nan])
+    X = (u - cx) * Z / fx
+    Y = (v - cy) * Z / fy
+    return np.array([X, Y, Z])
+
+
+def compute_pose_from_quad(P1, P2, P3, P4):
+    """计算四个点的中心位置和姿态"""
+    center = None
+    dis_thre = 3   # 单位米
+    if (P1[2] < dis_thre) and (P2[2] < dis_thre) and (P3[2] < dis_thre) and (P4[2] < dis_thre):
+        center = (P1 + P2 + P3 + P4) / 4.0
+    elif (P1[2] < dis_thre) and (P3[2] < dis_thre):
+        center = (P1 + P3) / 2.0
+    elif (P2[2] < dis_thre) and (P4[2] < dis_thre):
+        center = (P2 + P4) / 2.0
+    elif (P1[2] < dis_thre) and (P2[2] < dis_thre) and (P3[2]<dis_thre):
+        center = (P1 + P3) / 2.0
+    elif (P1[2] < dis_thre) and (P2[2] < dis_thre) and (P4[2]<dis_thre):
+        center = (P2 + P4) / 2.0
+    elif (P1[2] < dis_thre) and (P3[2] < dis_thre) and (P4[2]<dis_thre):
+        center = (P1 + P3) / 2.0
+    elif (P2[2] < dis_thre) and (P3[2] < dis_thre) and (P4[2]<dis_thre):
+        center = (P2 + P4) / 2.0
+    else:
+        rospy.logwarn("Invalid depth for all points, cannot compute pose.")
+        return None
+    vec1 = P2 - P1
+    vec2 = P4 - P1
+    z_axis = np.cross(vec1, vec2)
+    z_axis /= np.linalg.norm(z_axis)
+
+    x_axis = vec1 / np.linalg.norm(vec1)
+    y_axis = np.cross(z_axis, x_axis)
+    y_axis /= np.linalg.norm(y_axis)
+
+    R = np.stack([x_axis, y_axis, z_axis], axis=1)
+
+    T = np.eye(4)
+    T[:3, :3] = R
+    quat = tf.transformations.quaternion_from_matrix(T)
+
+    pose = PoseStamped()
+    pose.header.stamp = rospy.Time.now()
+    pose.header.frame_id = "camera"
+    pose.pose.position.x = center[0]
+    pose.pose.position.y = center[1]
+    pose.pose.position.z = center[2]
+    pose.pose.orientation = Quaternion(*quat)
+    return pose
+
+
+class StereoDepthNode:
     def __init__(self):
-        rospy.init_node("target_pose_estimator", anonymous=True)
+        rospy.init_node("holes_location", anonymous=True)
 
-        # 订阅点云和目标检测框
-        self.pc_sub = rospy.Subscriber("/points2", PointCloud2, self.pc_callback)
-        self.box_sub = rospy.Subscriber("/yolov8/target_bbox", BoundingBox, self.box_callback)
+        # 相机参数（来自你的标定结果）
+        # water - new - 0727 - P
+        self.fx = 798.731044
+        self.fy = 798.731044
+        self.cx = 348.127430
+        self.cy = 269.935493
+        self.baseline = 47.694354 / 798.731044  
+        self.rate = rospy.Rate(5.0) 
+        self.bridge = CvBridge()
+        self.target_x1 = None
+        self.target_y1 = None
+        self.target_x2 = None
+        self.target_y2 = None
+        self.target_conf = None
+        self.target_class = None
+        self.target_check_time = None
+        self.left_img = None
+        self.right_img = None
 
-        # 发布目标位姿
-        self.pose_pub = rospy.Publisher("/obj/target_message", TargetDetection, queue_size=1)
+        # 图像订阅（注意：需要有两个图像 topic）
+        self.left_sub = Subscriber("/left/image_raw", Image)
+        self.right_sub = Subscriber("/right/image_raw", Image)
+        self.ts = ApproximateTimeSynchronizer([self.left_sub, self.right_sub], queue_size=5, slop=0.1)
+        self.ts.registerCallback(self.callback)
+        # 订阅目标检测话题
+        rospy.Subscriber("/yolov8/target_bbox", BoundingBox, self.target_callback)
+        
+        # 发布话题
+        # self.depth_pub = rospy.Publisher("/stereo/depth_image", Image, queue_size=1)
+        self.target_message = rospy.Publisher("/obj/target_message", TargetDetection, queue_size=1)
 
-        self.latest_box = None
-        self.latest_stamp = rospy.Time.now()
+        rospy.loginfo("Stereo Depth Node Initialized.")
 
-        rospy.loginfo("Pose Estimator Node Initialized.")
 
-    def box_callback(self, msg):
-        self.latest_box = msg
-        self.latest_stamp = msg.header.stamp
+    def target_callback(self, msg):
+        """保存最新目标的像素位置"""
+        self.target_x1 = int(msg.x1)
+        self.target_y1 = int(msg.y1)
+        self.target_x2 = int(msg.x2)
+        self.target_y2 = int(msg.y2)
+        self.target_conf = float(msg.conf)
+        self.target_class = msg.header.frame_id
+        self.target_check_time = msg.header.stamp
+        
 
-    def pc_callback(self, cloud_msg):
-        if self.latest_box is None:
+    def callback(self, left_img_msg, right_img_msg):
+        try:
+            self.left_img = self.bridge.imgmsg_to_cv2(left_img_msg, "bgr8")
+            self.right_img = self.bridge.imgmsg_to_cv2(right_img_msg, "bgr8")
+        except Exception as e:
+            rospy.logerr("cv_bridge error: %s", str(e))
             return
 
-        # 提取边界框
-        x1, y1, x2, y2 = self.latest_box.x1, self.latest_box.y1, self.latest_box.x2, self.latest_box.y2
 
-        points = []
-        # for u in range(x1, x2):
-        #     for v in range(y1, y2):
-        #         gen = pc2.read_points(cloud_msg, field_names=("x", "y", "z"), uvs=[[u, v]])
-        #         for p in gen:
-        #             if not any(np.isnan(p)) and not all(np.isclose(p, [0, 0, 0])):
-        #                 points.append(np.array(p))
-        #                 print(f"Point at ({u}, {v}): {p}")
-        p1 = pc2.read_points(cloud_msg, field_names=("x", "y", "z"), uvs=[[x1, y1]])
-        p2 = pc2.read_points(cloud_msg, field_names=("x", "y", "z"), uvs=[[x2, y1]])
-        p3 = pc2.read_points(cloud_msg, field_names=("x", "y", "z"), uvs=[[x1, y2]])
-        p4 = pc2.read_points(cloud_msg, field_names=("x", "y", "z"), uvs=[[x2, y2]])
-        
-        print(f"Points at corners: {list(p1)}, {list(p2)}, {list(p3)}, {list(p4)}")
-        
-        if len(points) < 10:
-            rospy.logwarn("Too few valid points in bounding box.")
-            return
+    def run(self):
+        while not rospy.is_shutdown():
+            # 没有图像和目标检测信息传入则重复检测；
+            if self.left_img is None or self.target_conf is None:
+                continue
+            
+            # 转灰度
+            grayL = cv2.cvtColor(self.left_img, cv2.COLOR_BGR2GRAY)
+            grayR = cv2.cvtColor(self.right_img, cv2.COLOR_BGR2GRAY)
+            # print("grayL", grayL.shape)
 
-        points_np = np.array(points)
-        center = np.mean(points_np, axis=0)
+            # 创建 StereoSGBM 匹配器
+            stereo = cv2.StereoSGBM_create(
+                minDisparity=0,
+                numDisparities=16 * 6,  # 必须是16的倍数
+                blockSize=7,
+                P1=8 * 3 * 7 ** 2,
+                P2=32 * 3 * 7 ** 2,
+                disp12MaxDiff=1,
+                uniquenessRatio=10,
+                speckleWindowSize=100,
+                speckleRange=32
+            )
 
-        # 姿态估计：计算法向量作为 Z 轴方向
-        if len(points_np) >= 3:
-            cov = np.cov(points_np.T)
-            eig_vals, eig_vecs = np.linalg.eig(cov)
-            z_axis = eig_vecs[:, np.argmin(eig_vals)]  # 最小特征值对应法向量
-            z_axis /= np.linalg.norm(z_axis)
-        else:
-            z_axis = np.array([0, 0, 1])
+            disparity = stereo.compute(grayL, grayR).astype(np.float32) / 16.0
+            # print("disparity", disparity.shape)
 
-        x_axis = np.array([1, 0, 0])
-        y_axis = np.cross(z_axis, x_axis)
-        y_axis /= np.linalg.norm(y_axis)
-        x_axis = np.cross(y_axis, z_axis)
+            # 避免除以0
+            disparity[disparity <= 0.0] = 0.1
 
-        R = np.column_stack((x_axis, y_axis, z_axis))
-        T = np.eye(4)
-        T[:3, :3] = R
-        quat = tf.transformations.quaternion_from_matrix(T)
+            # 计算深度（Z = fx * baseline / disparity）
+            depth = self.fx * self.baseline / disparity  # 单位：米
 
-        pose = PoseStamped()
-        pose.header.stamp = self.latest_stamp
-        pose.header.frame_id = cloud_msg.header.frame_id
-        pose.pose.position.x = center[0]
-        pose.pose.position.y = center[1]
-        pose.pose.position.z = center[2]
-        pose.pose.orientation = Quaternion(*quat)
+            # 判断是否有来自YOLO的像素坐标
+            P1, P2, P3, P4 = None, None, None, None
+            if self.target_conf >= 0.6:
+                rospy.loginfo("Target detected: class=%s, conf=%.2f, x1: %d, y1: %d, x2: %d, y2: %d",
+                            self.target_class, self.target_conf,
+                            self.target_x1, self.target_y1, self.target_x2, self.target_y2)
+            
+                if (0 <= self.target_x1 <= disparity.shape[1]) and (0 <= self.target_y1 <= disparity.shape[0]) and \
+                    (0 <= self.target_x2 <= disparity.shape[1]) and (0 <= self.target_y2 <= disparity.shape[0]):
+                
+                    # 获取每个角点的相机坐标
+                    P1 = get_stable_depth(self.target_x1, self.target_y1, depth, self.fx, self.fy, self.cx, self.cy)
+                    P2 = get_stable_depth(self.target_x2, self.target_y1, depth, self.fx, self.fy, self.cx, self.cy)
+                    P3 = get_stable_depth(self.target_x2, self.target_y2, depth, self.fx, self.fy, self.cx, self.cy)
+                    P4 = get_stable_depth(self.target_x1, self.target_y2, depth, self.fx, self.fy, self.cx, self.cy)
+                    
+                    rospy.loginfo("class_name: %s, P1.X: %.2f, P1.Y: %.2f, P1.Z: %.2f", self.target_class, P1[0], P1[1], P1[2])
+                    rospy.loginfo("class_name: %s, P2.X: %.2f, P2.Y: %.2f, P2.Z: %.2f", self.target_class, P2[0], P2[1], P2[2])
+                    rospy.loginfo("class_name: %s, P3.X: %.2f, P3.Y: %.2f, P3.Z: %.2f", self.target_class, P3[0], P3[1], P3[2])
+                    rospy.loginfo("class_name: %s, P4.X: %.2f, P4.Y: %.2f, P4.Z: %.2f", self.target_class, P4[0], P4[1], P4[2])
+                    
+                    # 计算中心点和姿态
+                    pose_msg = compute_pose_from_quad(P1, P2, P3, P4)
+                    if pose_msg is None:
+                        return 
+                    
+                    rospy.loginfo("pose_msg.pose.position.x: %.2f", pose_msg.pose.position.x)
+                    rospy.loginfo("pose_msg.pose.position.y: %.2f", pose_msg.pose.position.y)
+                    rospy.loginfo("pose_msg.pose.position.z: %.2f", pose_msg.pose.position.z)
+                    
+                    if (-1.0 < pose_msg.pose.position.x < 1.0) and (-1.0 < pose_msg.pose.position.y < 1.0):
+                        rospy.loginfo(
+                            "Valid target: time=%s, class=%s conf=%.2f -> X=%.2f Y=%.2f Z=%.2f", \
+                            self.target_check_time, self.target_class, self.target_conf,  \
+                            pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z)
+                        
+                        # 发布target message
+                        try:
+                            msg = TargetDetection()
+                            msg.pose = pose_msg
+                            msg.type = 'center'
+                            msg.conf = self.target_conf
+                            msg.class_name = self.target_class
+                            self.target_message.publish(msg)
+                        except Exception as e:
+                            rospy.logerr("Error publishing depth: %s", str(e))
+                    else:
+                        rospy.loginfo(
+                            "InValid target: time=%s, class=%s conf=%.2f -> X=%.2f Y=%.2f Z=%.2f", \
+                            self.target_check_time, self.target_class, self.target_conf,  \
+                            pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z)
+                else:
+                    rospy.logwarn("Target pixel coordinates are out of bounds.")
+                    
+            self.rate.sleep()
 
-        msg = TargetDetection()
-        msg.pose = pose
-        msg.type = "center"
-        msg.conf = self.latest_box.conf
-        msg.class_name = self.latest_box.header.frame_id
-
-        self.pose_pub.publish(msg)
-        rospy.loginfo("Published pose: class=%s, conf=%.2f, X=%.2f Y=%.2f Z=%.2f",
-                      msg.class_name, msg.conf,
-                      pose.pose.position.x, pose.pose.position.y, pose.pose.position.z)
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
-        PoseEstimatorNode()
-        rospy.spin()
+        node = StereoDepthNode()
+        # rospy.spin()
+        node.run()
     except rospy.ROSInterruptException:
         pass
+

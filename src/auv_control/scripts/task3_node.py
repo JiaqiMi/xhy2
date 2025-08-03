@@ -268,6 +268,7 @@ class Task3Node:
 
             # 判断是否到达
             if self.is_arrival(current_pose, self.target_posestamped, max_xyz_dist, max_yaw_dist):
+                rospy.loginfo(f"{NODE_NAME}: 已到达目标位置")
                 return True
             
             # 航向控制和点控制统一起来
@@ -317,7 +318,7 @@ class Task3Node:
         收到目标检测消息，将消息加入队列，不做操作
         存的时候就应该存减去夹爪之后的位置
         """
-        rospy.loginfo(f"{NODE_NAME}: 收到目标检测消息 {msg.class_name},{msg.pose.pose.position.x},{msg.pose.pose.position.y},{msg.pose.pose.position.z}")
+        rospy.loginfo(f"{NODE_NAME}: 检测到{msg.class_name}:{msg.pose.pose.position.x},{msg.pose.pose.position.y},{msg.pose.pose.position.z}")
         
         if msg.class_name == self.target_color and (self.step == 10 or self.step ==11):
             point_in_camera = msg.pose.pose.position # 相机坐标系下目标点

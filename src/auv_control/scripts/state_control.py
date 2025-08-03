@@ -198,16 +198,22 @@ class StateControl:
         """
         检查当前任务是否超时
         """
-        if not self.auto_mode or self.task_start_time is None or self.current_task == 0:
+        # rospy.loginfo_throttle(2,f"{NODE_NAME}: {self.task_start_time},{self.auto_mode},{self.current_task}")
+        #TODO 这个判断有问题
+        # 如果没有在进行任务，就直接返回
+        if not (self.auto_mode or (self.task_start_time is not None and self.current_task != 0)):
+            #   不在自动运行模式或者开始时间没有或者当前任务是0，返回false
             return False
+        
             
         current_time = time.time()
         elapsed_time = current_time - self.task_start_time
+        rospy.loginfo_throttle(2, f"{NODE_NAME}:{elapsed_time},{current_time}")
         timeout = TASK_TIMEOUTS[self.current_task-1]
         
         if elapsed_time > timeout:
             rospy.logwarn(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) 超时 "
-                         f"({elapsed_time:.1f}s > {timeout}s)，强制进入下一任务")
+                         f"({elapsed_time:.1f}s > {timeout}s)，强制进入下一任务或退出")
             return True
         
         # 每30秒输出一次剩余时间提醒
@@ -236,6 +242,7 @@ class StateControl:
         """主循环"""
         while not rospy.is_shutdown():
             # 检查任务超时
+           #  rospy.loginfo("statein loop")
             if self.check_task_timeout():
                 rospy.logwarn(f"{NODE_NAME}: 任务超时，强制进入下一任务")
                 self.terminate_current_task()

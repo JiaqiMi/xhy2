@@ -2,7 +2,7 @@
     <arg name="color" default="red" />
 
     <!-- 下潜的深度-->
-    <param name="depth" type ="double" value="0.2" />
+    <param name="depth" type ="double" value="0.15" />
     
     <!-- task1: 记录三个点 -->
     <param name="detect_door" type="bool" value="false" />
@@ -28,9 +28,8 @@
     <param name="task3_target_class" type="string" value="$(arg color)"  />
 
 
-
     <!-- 任务4 巡线 -->
-    <param name="task4_point0" type="yaml" value="[1.02, -4.98, 0.2, -90]" />
+    <param name="task4_point0" type="yaml" value="[2.02, -0.98, 0.15, -110]" />
 
     <!-- 任务5 上浮目标点 -->
     <param name="task5_point1" type="yaml" value="[-1.55, -7.97, 0.2, 90]" />

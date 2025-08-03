@@ -263,7 +263,7 @@ class LineDepthNode:
                 rospy.loginfo("class_name: %s, P3.X: %.2f, P3.Y: %.2f, P3.Z: %.2f", self.target_class, P3[0], P3[1], P3[2])
                 
                 # 发布点序列
-                if (-1 < P1[0] < 1) and  (-1 < P1[1] < 1) and (0 < P1[2] < 2) and  (-1 < P2[0] < 1) and  (-1 < P2[1] < 1) and (0 < P2[2] < 2) and (-1 < P3[0] < 1) and  (-1 < P3[1] < 1) and (0 < P3[2] < 2) and (P1[2] < P2[2] < P3[2]):            
+                if (-1 < P1[0] < 1) and  (-1 < P1[1] < 1) and (0 < P1[2] < 2) and  (-1 < P2[0] < 1) and  (-1 < P2[1] < 1) and (0 < P2[2] < 2) and (-1 < P3[0] < 1) and  (-1 < P3[1] < 1) and (0 < P3[2] < 2) and (P1[2] <= P2[2] <= P3[2]):            
                     pose1 = PoseStamped()
                     pose1.header.stamp = self.target_check_time
                     pose1.header.frame_id = "camera"

@@ -369,7 +369,7 @@ class debugdriver:
             self.target.speed = getattr(msg, 'speed', 0.0)
             self.target.valid = True
             self.last_control_time = time.time()
-            rospy.loginfo_throttle(2, "debug_driver: 接收到控制消息")
+            rospy.loginfo_throttle(5, "debug_driver: 接收到控制消息")
         except Exception as e:
             rospy.logerr(f"debug_driver: 控制消息接收错误: {e}")
 
