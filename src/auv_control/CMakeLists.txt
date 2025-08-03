@@ -59,6 +59,7 @@ add_message_files(
   Keyboard.msg # 键盘节点到主控节点的消息
   Control.msg # 主控节点到驱动节点的消息
   TargetDetection.msg
+  TargetDetection3.msg
 )
 
 ## Generate services in the 'srv' folder

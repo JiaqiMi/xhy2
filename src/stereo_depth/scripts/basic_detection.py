@@ -83,11 +83,11 @@ class StereoDepthNode:
         # Book the image message
         self.bridge = CvBridge()
         self.last_target_msg = None
-        self.left_sub = Subscriber("/left/image_raw", Image)
-        self.right_sub = Subscriber("/right/image_raw", Image)
         self.target_sub = Subscriber("/yolov8/target_center", PointStamped)
         self.target_cache = Cache(self.target_sub, cache_size=100)
-        # rospy.Subscriber("/yolov8/target_center", PointStamped, self.target_callback)
+        
+        self.left_sub = Subscriber("/left/image_raw", Image)
+        self.right_sub = Subscriber("/right/image_raw", Image)
         self.ts = ApproximateTimeSynchronizer([self.left_sub, self.right_sub], queue_size=5, slop=0.1)
         self.ts.registerCallback(self.callback)
 
@@ -95,10 +95,10 @@ class StereoDepthNode:
         self.target_message = rospy.Publisher("/obj/target_message", TargetDetection, queue_size=1)
         
         # 控制推断频率
-        self.last_infer_time = rospy.Time.now()
-        self.infer_interval = rospy.Duration(0.2)  # 单位秒 
+        # self.last_infer_time = rospy.Time.now()
+        # self.infer_interval = rospy.Duration(0.2)  # 单位秒 
         
-        rospy.loginfo("Stereo Depth Node Initialized.")
+        rospy.loginfo(f"Stereo Depth Node Initialized. ")
 
 
     def target_callback(self, msg):
@@ -110,10 +110,10 @@ class StereoDepthNode:
 
     def callback(self, left_img_msg, right_img_msg):
         
-        now = rospy.Time.now()
-        if now - self.last_infer_time < self.infer_interval:
-            return  # 距离上次推理太近，跳过此次图像
-        self.last_infer_time = now
+        # now = rospy.Time.now()
+        # if now - self.last_infer_time < self.infer_interval:
+        #     return  # 距离上次推理太近，跳过此次图像
+        # self.last_infer_time = now
         
         try:
             left_img = self.bridge.imgmsg_to_cv2(left_img_msg, "bgr8")
@@ -122,6 +122,8 @@ class StereoDepthNode:
             rospy.logerr("cv_bridge error: %s", str(e))
             return
 
+
+    
         # ============================  计算立体匹配的视差图   ============================ #
         # 转灰度
         grayL = cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY)

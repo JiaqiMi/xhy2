@@ -30,7 +30,7 @@
 
 
     <!-- 任务4 巡线 -->
-    <param name="task4_point1" type="yaml" value="[0.02, -4.98, 0.2, 180]" />
+    <param name="task4_point0" type="yaml" value="[1.02, -4.98, 0.2, -90]" />
 
     <!-- 任务5 上浮目标点 -->
     <param name="task5_point1" type="yaml" value="[-1.55, -7.97, 0.2, 90]" />

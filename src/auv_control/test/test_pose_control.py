@@ -248,6 +248,20 @@ class PoseControlUI:
         self.send_target()  # 发送一次数据
         self.root.after(200, self.send_loop)  # 5Hz循环发送
 
+    def numpy_distance(self, p1:Point, p2:Point):
+        """
+        使用NumPy计算NED距离
+
+        Parameters:
+            p1: Point 第一个点
+            p2: Point 第二个点
+
+        Returns:
+            out: float 两个点之间的距离
+        """
+        a = np.array([p1.x, p1.y, p1.z])
+        b = np.array([p2.x, p2.y, p2.z])
+        return np.linalg.norm(a - b)
     def generate_smooth_pose(self, current_pose, target_pose,max_xy_step=0.8, max_z_step=0.1, max_yaw_step=np.radians(5)):
         """
         使用三阶贝塞尔曲线生成平滑的路径点，采用先前向移动再调整航向的策略

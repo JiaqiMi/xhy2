@@ -1,0 +1,48 @@
+<launch>
+    <!-- 启动 USB 相机 -->
+    <!-- <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" /> -->
+
+    <!-- 图像左右分割节点 -->
+    <!-- <node pkg="stereo_splitter" type="split_image_info.py" name="split_stereo_image" output="screen" />
+        <param name="left_camera_yaml" value="/home/xhy/catkin_ws/camera/left_nc_water_0727.yaml"/>
+        <param name="right_camera_yaml" value="/home/xhy/catkin_ws/camera/right_nc_water_0727.yaml"/>
+        <param name="input_image_topic" value="/usb_cam/image_raw"/> -->
+
+    <!-- 左目图像去畸变 -->
+    <!-- <node pkg="image_proc" type="image_proc" name="left_image_proc" output="screen">
+        <remap from="image_raw" to="/left/image_raw"/>
+        <remap from="camera_info" to="/left/camera_info"/>
+    </node> -->
+
+    <!-- 右目图像去畸变 -->
+    <!-- <node pkg="image_proc" type="image_proc" name="right_image_proc" output="screen">
+        <remap from="image_raw" to="/right/image_raw"/>
+        <remap from="camera_info" to="/right/camera_info"/>
+    </node> -->
+
+   
+    <!-- stereo_image_proc 用于立体匹配，生成 disparity 和 point cloud -->
+    <!-- <node pkg="stereo_image_proc" type="stereo_image_proc" name="stereo_proc" output="screen">
+        <remap from="left/image_rect" to="/left/image_raw/image_rect_color"/>
+        <remap from="right/image_rect" to="/right/image_raw/image_rect_color"/>
+        <remap from="left/camera_info" to="/left/camera_info"/>
+        <remap from="right/camera_info" to="/right/camera_info"/>
+    </node> -->
+
+
+    <!-- 执行 YOLOv8 目标检测（使用 LD_PRELOAD） -->
+    <!-- 新增参数需要对应修改yolo_wrapper.sh -->
+    <node pkg="yolo_bridge" type="yolo_wrapper.sh" name="yolov8_detector" output="screen" launch-prefix="bash" >
+        <param name="detect_mode" value="2" />      <!-- 1：shapes, 2:holes, 3:balls-->
+        <param name="top_k" value="3" />
+        <param name="visualization" value="0" />    <!-- 0代表关闭，1代表开启-->
+        <param name="conf_thre" value="0.2" />      <!-- confidence threshold -->
+        <param name="detc_type" value="bbox" />     <!-- center, bbox -->
+    </node>
+
+
+    <!-- 目标点空间定位 -->
+    <node pkg="stereo_depth" type="holes_detection_v1.py" name="holes_location" output="screen" />
+
+</launch>
+

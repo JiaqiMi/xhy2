@@ -9,7 +9,8 @@ import numpy as np
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 # from auv_control.msg import TargetDetection
-from stereo_depth.msg import TargetDetection, BoundingBox, LineBox, TargetDetection3
+from stereo_depth.msg import TargetDetection, BoundingBox, LineBox
+from auv_control.msg import TargetDetection3
 from geometry_msgs.msg import PointStamped,PoseStamped,Quaternion
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from geometry_msgs.msg import Quaternion
