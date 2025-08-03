@@ -51,7 +51,6 @@ class Task2Node:
         self.search_direction = 1  # 搜索方向：1表示正向，-1表示反向
         self.pitch_offset = np.radians(1.5) # 固定1.5°俯仰
         self.pub_num = 0  # 记录释放目标的次数
-        self.step = 0 # 程序运行阶段
         self.sensor = [0] * 5 # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
         
         # 获取宏定义参数
