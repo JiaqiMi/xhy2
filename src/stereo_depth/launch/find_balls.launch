@@ -8,7 +8,7 @@
 
     <!-- 执行目标检测模型 -->
     <!-- 新增参数需要对应修改yolo_wrapper.sh -->
-    <node pkg="yolo_bridge" type="yolo_wrapper.sh" name="yolov8_detector" output="screen" launch-prefix="bash" >
+    <node pkg="yolo_bridge" type="yolo_wrapper.sh" name="yolov8_detector" output="log" launch-prefix="bash" >
         <param name="detect_mode" value="3" />      <!-- 1：shapes, 2:holes, 3:balls-->
         <param name="top_k" value="3" />
         <param name="visualization" value="0" />    <!-- 0代表关闭，1代表开启-->
@@ -17,7 +17,7 @@
     </node>
 
     <!-- 目标点空间定位 -->
-    <node pkg="stereo_depth" type="basic_detection.py" name="object_detection_locate" output="screen" >
+    <node pkg="stereo_depth" type="basic_detection.py" name="object_detection_locate" output="log" >
         <param name="exp_env" value="water" />        <!-- water or air -->
         <param name="visualization" value="0" />    <!-- 0代表关闭，1代表开启-->
         <param name="conf_thre" value="0.5" />      <!-- confidence threshold -->

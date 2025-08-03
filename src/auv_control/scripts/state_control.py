@@ -53,7 +53,7 @@ VISION= [
 # 每个任务的超时时间（秒）
 TASK_TIMEOUTS = [
     300,  # 过门 - 5分钟
-    300,  # 巡线 - 5分钟
+    480,  # 巡线 - 5分钟
     300,  # 钻洞 - 5分钟
     300,  # 抓球 - 5分钟
     120,  # 上浮 - 2分钟
@@ -164,6 +164,8 @@ class StateControl:
             return
             
         try:
+            # 记录任务开始时间
+            self.task_start_time = time.time()
             # 启动任务进程
             self.task_process = subprocess.Popen(TASKS[task_index-1])
             rospy.loginfo(f"{NODE_NAME}: 已启动任务: {task_name[task_index-1]} - {TASKS[task_index-1]}")
@@ -173,8 +175,7 @@ class StateControl:
                 self.vision_process = subprocess.Popen(VISION[task_index-1])
                 rospy.loginfo(f"{NODE_NAME}: 已启动视觉: {VISION[task_index-1]}")
             
-            # 记录任务开始时间
-            self.task_start_time = time.time()
+            
             
         except Exception as e:
             rospy.logerr(f"{NODE_NAME}: 启动任务失败: {e}")
@@ -193,36 +194,74 @@ class StateControl:
             self.auto_mode = False
             self.current_task = 0
             rospy.signal_shutdown("所有任务已完成")
-
+    
     def check_task_timeout(self):
         """
         检查当前任务是否超时
         """
-        # rospy.loginfo_throttle(2,f"{NODE_NAME}: {self.task_start_time},{self.auto_mode},{self.current_task}")
-        #TODO 这个判断有问题
-        # 如果没有在进行任务，就直接返回
-        if not (self.auto_mode or (self.task_start_time is not None and self.current_task != 0)):
-            #   不在自动运行模式或者开始时间没有或者当前任务是0，返回false
+        try:
+            # 安全检查：确保所有必要的条件都满足
+            if not self.auto_mode:
+                return False
+                
+            if self.current_task == 0:
+                return False
+                
+            if self.task_start_time is None:
+                rospy.logwarn(f"{NODE_NAME}: 任务 {self.current_task} 没有开始时间记录")
+                return False
+                
+            if self.current_task > len(TASK_TIMEOUTS):
+                rospy.logerr(f"{NODE_NAME}: 任务索引 {self.current_task} 超出超时配置范围")
+                return False
+                
+            # 计算已运行时间
+            current_time = time.time()
+            elapsed_time = current_time - self.task_start_time
+            timeout = TASK_TIMEOUTS[self.current_task-1]
+            
+            # 检查是否超时
+            if elapsed_time > timeout:
+                rospy.logwarn(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) 超时 "
+                             f"({elapsed_time:.1f}s > {timeout}s)，强制进入下一任务")
+                return True
+            
+            # 每30秒输出一次剩余时间提醒
+            if int(elapsed_time) % 30 == 0 and int(elapsed_time) > 0:
+                remaining_time = timeout - elapsed_time
+                rospy.loginfo(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) "
+                             f"剩余时间: {remaining_time:.0f}s")
+            
             return False
+    # def check_task_timeout(self):
+    #     """
+    #     检查当前任务是否超时
+    #     """
+    #     # rospy.loginfo_throttle(2,f"{NODE_NAME}: {self.task_start_time},{self.auto_mode},{self.current_task}")
+    #     #TODO 这个判断有问题
+    #     # 如果没有在进行任务，就直接返回
+    #     if not (self.auto_mode or (self.task_start_time is not None and self.current_task != 0)):
+    #         #   不在自动运行模式或者开始时间没有或者当前任务是0，返回false
+    #         return False
         
             
-        current_time = time.time()
-        elapsed_time = current_time - self.task_start_time
-        rospy.loginfo_throttle(2, f"{NODE_NAME}:{elapsed_time},{current_time}")
-        timeout = TASK_TIMEOUTS[self.current_task-1]
+    #     current_time = time.time()
+    #     elapsed_time = current_time - self.task_start_time
+    #     rospy.loginfo_throttle(2, f"{NODE_NAME}:{elapsed_time},{current_time}")
+    #     timeout = TASK_TIMEOUTS[self.current_task-1]
         
-        if elapsed_time > timeout:
-            rospy.logwarn(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) 超时 "
-                         f"({elapsed_time:.1f}s > {timeout}s)，强制进入下一任务或退出")
-            return True
+    #     if elapsed_time > timeout:
+    #         rospy.logwarn(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) 超时 "
+    #                      f"({elapsed_time:.1f}s > {timeout}s)，强制进入下一任务或退出")
+    #         return True
         
-        # 每30秒输出一次剩余时间提醒
-        if int(elapsed_time) % 30 == 0 and int(elapsed_time) > 0:
-            remaining_time = timeout - elapsed_time
-            rospy.loginfo(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) "
-                         f"剩余时间: {remaining_time:.0f}s")
+    #     # 每30秒输出一次剩余时间提醒
+    #     if int(elapsed_time) % 30 == 0 and int(elapsed_time) > 0:
+    #         remaining_time = timeout - elapsed_time
+    #         rospy.loginfo(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) "
+    #                      f"剩余时间: {remaining_time:.0f}s")
         
-        return False
+    #     return False
 
     def finished_callback(self, msg):
         """任务完成回调"""
@@ -238,22 +277,41 @@ class StateControl:
             else:
                 self.current_task = 0  # 手动模式下回到待机状态
 
+    # def run(self):
+    #     """主循环"""
+    #     while not rospy.is_shutdown():
+    #         # 检查任务超时
+    #        #  rospy.loginfo("statein loop")
+    #         if self.check_task_timeout():
+    #             rospy.logwarn(f"{NODE_NAME}: 任务超时，强制进入下一任务")
+    #             self.terminate_current_task()
+    #             if self.auto_mode:
+    #                 self.start_next_task()
+    #             else:
+    #                 self.current_task = 0  # 手动模式下回到待机状态
+            
+    #         # 不再发布Control消息，只做状态管理
+    #         self.rate.sleep()
     def run(self):
         """主循环"""
         while not rospy.is_shutdown():
-            # 检查任务超时
-           #  rospy.loginfo("statein loop")
-            if self.check_task_timeout():
-                rospy.logwarn(f"{NODE_NAME}: 任务超时，强制进入下一任务")
-                self.terminate_current_task()
-                if self.auto_mode:
-                    self.start_next_task()
-                else:
-                    self.current_task = 0  # 手动模式下回到待机状态
+            try:
+                # 检查任务超时
+                if self.auto_mode and self.current_task > 0:  # 只在自动模式且有任务运行时检查超时
+                    if self.check_task_timeout():
+                        rospy.logwarn(f"{NODE_NAME}: 任务超时，强制进入下一任务")
+                        self.terminate_current_task()
+                        if self.auto_mode:  # 再次确认是否还在自动模式
+                            self.start_next_task()
+                            continue  # 跳过本次循环剩余部分，避免检查刚刚初始化的任务
+                        else:
+                            self.current_task = 0  # 手动模式下回到待机状态
+            except Exception as e:
+                rospy.logerr(f"{NODE_NAME}: 主循环出错: {e}")
             
             # 不再发布Control消息，只做状态管理
             self.rate.sleep()
-
+            
 if __name__ == "__main__":
     rospy.init_node(f'{NODE_NAME}',anonymous=True)
     try:

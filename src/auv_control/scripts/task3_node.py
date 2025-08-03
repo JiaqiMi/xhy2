@@ -53,7 +53,8 @@ class Task3Node:
         
         # 获取宏定义参数
         self.target_depth = rospy.get_param('/depth', 0.3)  # 初始下潜深度，单位米
-        start_point_from_param = rospy.get_param('/task3_point0', [0.02, -4.98, 0.00, 180])  # 默认值        
+        start_point_from_param = rospy.get_param('/task3_point0', [0.02, -4.98, 0.00, 180])  # 默认值 
+        start_point_from_param[2] = start_point_from_param[2]-0.03   
         self.target_color = rospy.get_param('/task3_target_class', 'red')  # 目标小球的颜色，默认红色        
         # 准备执行任务的初始点
         self.start_point.header.frame_id = "map"
@@ -662,6 +663,7 @@ class Task3Node:
     ###############################################主循环#################################
     def run(self):
         """主循环"""
+        
         while not rospy.is_shutdown():
             if self.step == 0:  # 移动到初始位置
                 if self.move_to_init_pose(max_xy_step=0.8,max_z_step=0.1,max_yaw_step=np.radians(5), # 运动步长设置
@@ -687,7 +689,7 @@ class Task3Node:
             elif self.step == 11: # 第二次搜索，运动90%，搜索角度变小
                 if self.search_target(max_rotate_rad=np.radians(2.5),rotate_step=np.radians(0.5), # 搜索运动设置
                                       min_conf=0.5,max_time_interval=5.0,max_position_interval=0.5, # 目标阈值设置
-                                      depth_bias = 0.05,forward_percent=1.02, # 目标点设置，深度偏置和水平偏置
+                                      depth_bias = 0.05,forward_percent=0.95, # 目标点设置，深度偏置和水平偏置
                                       max_xyz_dist=0.15,max_yaw_dist=np.radians(0.2),point_num=5):
                     self.step = 12
                     rospy.loginfo(f"{NODE_NAME}: 找到目标，开始移动第二次")

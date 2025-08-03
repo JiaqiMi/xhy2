@@ -42,7 +42,7 @@
     </node>
 
     <!-- 目标点空间定位 -->
-    <node pkg="stereo_depth" type="line_detection_v3.py" name="line_location" output="screen" >
+    <node pkg="stereo_depth" type="line_detection_v3.py" name="line_location" output="log" >
         <param name="is_visual" value="0"/>
     </node>
  
@@ -63,7 +63,7 @@
     <!-- water or air -->
     <!-- 0代表关闭，1代表开启-->
     <!-- confidence threshold -->
-    <node pkg="stereo_depth" type="basic_detection.py" name="object_detection_locate" output="screen" >
+    <node pkg="stereo_depth" type="basic_detection.py" name="object_detection_locate" output="log" >
         <param name="exp_env" value="water" />        
         <param name="visualization" value="0" />    
         <param name="conf_thre" value="0.5" />       

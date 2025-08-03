@@ -88,7 +88,7 @@ class Task1Node:
 
         # 旋转方向：红色门顺时针（-），蓝色门逆时针（+）
         self.direction = 1 if self.door_color == 'blue' else -1
-        self.step_deg = 5
+        self.step_deg = 10 #NOTE 旋转加速
         self.step_rad = np.radians(self.step_deg) * self.direction
         
         # 输出log

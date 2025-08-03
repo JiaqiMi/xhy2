@@ -65,7 +65,7 @@ class Task4Node:
         self.light = 0  # 固定60亮度
         self.round = False # 判断是否执行过转圈任务
         self.sensor = [0] * 5  # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
-        self.done = [False, False, False]  # 任务完成标志，分别代表红色方形、绿色圆形、黄色三角形任务是否完成
+        self.done = [0, 0, 0]  # 任务完成标志，分别代表红色方形、绿色圆形、黄色三角形任务是否完成
 
         self.direction = 1
         self.step_deg = 5
@@ -253,8 +253,9 @@ class Task4Node:
         # 应用步长限制
         dp = next_point - p0
         dist_xy = np.sqrt(dp[0] ** 2 + dp[1] ** 2)
-        if dist_xy > max_xy_step:
-            scale = max_xy_step / dist_xy
+        # NOTE 8.4 12:17 缩小最大速度
+        if dist_xy > max_xy_step*0.6: # NOTE 0.48m max
+            scale = max_xy_step*0.6 / dist_xy
             dp[0] *= scale
             dp[1] *= scale
         dp[2] = np.clip(dp[2], -max_z_step, max_z_step)
@@ -941,6 +942,7 @@ class Task4Node:
         self.sensor[0] = 0 # 关闭红灯
         self.sensor[1] = 0 # 关闭绿灯
         self.control_device()
+        self.target_depth = self.target_depth + 0.07
         while not rospy.is_shutdown():
             # rospy.loginfo(self.target_posestamped)
             if self.step == 0:  # 移动到初始位置
@@ -948,11 +950,11 @@ class Task4Node:
                     self.step = 1
                     rospy.loginfo("task4 node: 到达初始位置，开始跟踪轨迹")
             elif self.step == 1:  # 跟踪轨迹
-                if self.detect_green_circle(forward_percent=0.7) and not self.done[0]: # 如果检测到绿色圆形目标点，则进入5
+                if self.detect_green_circle(forward_percent=0.7) and not self.done[0] == 1: # 如果检测到绿色圆形目标点，则进入5
                     self.step = 5
-                if self.detect_black_rectangle(forward_percent=0.7) and not self.done[1]: # 如果检测到黑色方形目标点，则进入4
+                if self.detect_black_rectangle(forward_percent=0.7) and not self.done[1] == 1: # 如果检测到黑色方形目标点，则进入4
                     self.step = 4
-                if self.detect_yellow_triangle(forward_percent=0.7) and not self.done[2]: # 如果检测到黄色三角形目标点，则进入3
+                if self.detect_yellow_triangle(forward_percent=0.7) and not self.done[2] == 1: # 如果检测到黄色三角形目标点，则进入3
                     self.step = 3
                 if self.move_to_target(max_xyz_dist=0.15,max_yaw_dist=np.radians(2)): # 移动到目标点，不管到没到达，都开始下一次搜索，如果搜索到了就会回来，否则就会继续搜索，
                     self.step = 2
@@ -964,10 +966,10 @@ class Task4Node:
                 #     self.step = 2
             elif self.step == 2:  # 移动到目标位置
                 rospy.loginfo_throttle(10, f"{NODE_NAME}: {self.done}")
-                if self.done[0] and self.done[1] and self.done[2]:  # 如果所有任务都完成了
+                if self.done[0]==1 and self.done[1]==1 and self.done[2]==1:  # 如果所有任务都完成了
                     self.step = 7 # 进入完成任务步骤
                     rospy.loginfo("task4 node: 所有任务完成，进入完成任务步骤")
-                if self.follow_track(max_rotate_rad=np.radians(17.5),rotate_step = np.radians(0.5),forward_percent=1): # 原地搜索轨迹，找到目标返回True，否则原地搜索
+                if self.follow_track(max_rotate_rad=np.radians(17.5),rotate_step = np.radians(0.5),forward_percent=0.9): # 原地搜索轨迹，找到目标返回True，否则原地搜索
                     self.step = 1
                 # if len(self.yellow_triangle_queue) > 0 and self.round==False:
                 #     rospy.loginfo("task4 node: 找到黄色三方形目标点，开始移动到目标位置")
@@ -1003,17 +1005,17 @@ class Task4Node:
                 #     self.step = 1
                 #     self.track_count += 1
             elif self.step == 4:
-                if self.control_light(0, 1):  # 点亮红灯
-                    self.done[0] = True # 红色方形任务完成
-                    rospy.loginfo("task4 node: 点亮绿灯")
+                if self.control_light(1, 0):  # 点亮红灯
+                    self.done[0] = 1 # 红色方形任务完成
+                    rospy.loginfo("task4 node: 点亮红灯")
                     # self.black_rectangle_queue.clear()  # 清空,防止有多余的检测点造成误判
                     self.step = 2
                     # self.track_count += 1
                     # rospy.sleep(2) # 非阻塞延时亮灯2s
             elif self.step == 5:
-                if self.control_light(1,0):
-                    rospy.loginfo("task4 node: 点亮红灯")
-                    self.done[1] = True # 绿色圆形任务完成
+                if self.control_light(0,1):
+                    rospy.loginfo("task4 node: 点亮绿灯")
+                    self.done[1] = 1 # 绿色圆形任务完成
                     # self.green_circle_queue.clear()  # 清空,防止有多余的检测点造成误判
                     self.step = 2
                     # self.track_count += 1
@@ -1021,7 +1023,7 @@ class Task4Node:
             elif self.step == 6:
                 if self.rotate360():
                     rospy.loginfo("task4 node: 旋转360度完成")
-                    self.done[2] = True # 黄色三角形任务完成
+                    self.done[2] = 1 # 黄色三角形任务完成
                     self.step = 2
             elif self.step == 7:
                 self.finish_task()

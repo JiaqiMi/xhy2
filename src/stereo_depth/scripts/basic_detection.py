@@ -67,6 +67,7 @@ class StereoDepthNode:
         self.target_conf = None
         self.target_class = None
         self.target_check_time = None
+        self.update = 0
         
         if self.exp_env == "air":
             self.fx = 572.993971
@@ -116,6 +117,7 @@ class StereoDepthNode:
         self.target_conf = msg.point.z
         self.target_class = msg.header.frame_id
         self.target_check_time = msg.header.stamp
+        self.update = 1
 
 
     def callback(self, left_img_msg, right_img_msg):
@@ -135,7 +137,7 @@ class StereoDepthNode:
     def run(self, ):
         while not rospy.is_shutdown():
             # ============================  计算立体匹配的视差图   ============================ #
-            if self.left_img is None or self.right_img is None:
+            if self.left_img is None or self.right_img is None or self.update == 0:
                 continue
             # 转灰度
             grayL = cv2.cvtColor(self.left_img, cv2.COLOR_BGR2GRAY)
@@ -203,7 +205,7 @@ class StereoDepthNode:
                     try:
                         msg = TargetDetection()
                         pos_msg = PoseStamped()
-                        pos_msg.header.stamp = check_time
+                        pos_msg.header.stamp = rospy.Time.now()
                         pos_msg.header.frame_id = "camera"
                         pos_msg.pose.position.x = X
                         pos_msg.pose.position.y = Y
@@ -234,8 +236,10 @@ class StereoDepthNode:
                 # 可视化目标检测结果
                 if X is not None and Y is not None:
                     cv2.circle(left_img, (u, v), 5, (0, 255, 0), -1)
-            
-            self.rate.sleep()   
+                    
+            self.update = 0
+            self.rate.sleep() 
+             
 
 if __name__ == '__main__':
     try:

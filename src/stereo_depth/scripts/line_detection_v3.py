@@ -196,8 +196,8 @@ class LineDepthNode:
         self.target_y3 = int(msg.y3)
         self.target_conf = float(msg.conf)
         self.target_class = msg.header.frame_id
-        self.target_check_time = msg.header.stamp
-        
+        # self.target_check_time = msg.header.stamp
+        self.target_check_time = rospy.Time.now()
 
 
     def callback(self, left_img_msg, right_img_msg):

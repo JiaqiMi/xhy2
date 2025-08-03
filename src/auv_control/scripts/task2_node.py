@@ -468,10 +468,10 @@ class Task2Node:
                     # if current_pose == None:
                     #     return False
                     # # 计算当前yaw和目标yaw的差值
-                    # current_yaw = euler_from_quaternion([current_pose.pose.orientation.x,
-                    #                 current_pose.pose.orientation.y,
-                    #                 current_pose.pose.orientation.z,
-                    #                 current_pose.pose.orientation.w])[2]
+                    avg_yaw = euler_from_quaternion([avg_pose.pose.orientation.x,
+                                    avg_pose.pose.orientation.y,
+                                    avg_pose.pose.orientation.z,
+                                    avg_pose.pose.orientation.w])[2]
                         
                     # 设置完目标位姿后，跳转到下一步即可
                     self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_pose.pose.position.x-self.target_posestamped.pose.position.x)*forward_percent, 
@@ -481,6 +481,10 @@ class Task2Node:
                     self.ball_depth = avg_pose.pose.position.z + depth_bias
                     self.target_posestamped.pose.orientation = avg_pose.pose.orientation
                     
+                    # 再退后一米
+                    self.end_point.pose.position =Point(x=self.end_point.pose.position.x - np.cos(avg_yaw)*0.8,
+                                                        y=self.end_point.pose.position.y - np.sin(avg_yaw)*0.8,
+                                                        z=self.end_point.pose.position.z)
                     # 清空队列，清空初始位置
                     self.queue = []
                     self.init_yaw = None
@@ -626,7 +630,9 @@ class Task2Node:
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 2
             elif self.step == 2:
-                if self.search_target(max_rotate_rad=np.radians(25),depth_bias = -0.05,rotate_step=np.radians(0.5),max_yaw_dist=np.radians(0.2)): # 记录到足够的目标点位置后，跳到step2                  
+                if self.search_target(max_rotate_rad=np.radians(25),depth_bias = -0.05,rotate_step=np.radians(0.5),max_yaw_dist=np.radians(0.2),
+                                      point_num =5): # 记录到足够的目标点位置后，跳到step2              
+                    # NOTE 点的数量增加2个    
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 3
             elif self.step == 3:
@@ -638,7 +644,7 @@ class Task2Node:
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 5               
             elif self.step == 5:
-                if self.move_to_end_pose(max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2),max_xy_step=2):
+                if self.move_to_end_pose(max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2),max_xy_step=3):
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 6
             elif self.step == 6:
