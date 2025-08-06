@@ -1,0 +1,46 @@
+# python3.8
+catkin_make   -DPYTHON_EXECUTABLE=/home/xhy/xhy_env/bin/python   -DPYTHON_INCLUDE_DIR=/usr/include/python3.8   -DPYTHON_LIBRARY=/usr/lib/aarch64-linux-gnu/libpython3.8.so   -DCMAKE_INSTALL_PYTHONDIR=lib/python3.8/site-packages -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+# python3.6
+catkin_make   -DPYTHON_EXECUTABLE=/home/xhy/xhy_env36/bin/python   -DPYTHON_INCLUDE_DIR=/usr/include/python3.6m   -DPYTHON_LIBRARY=/usr/lib/aarch64-linux-gnu/libpython3.6m.so   -DCMAKE_INSTALL_PYTHONDIR=lib/python3.6/site-packages
+
+
+3、小黄鱼操作指令
+# 启动ros核a
+roscore
+
+# 打开相机
+rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480
+
+rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=YUYV _image_width:=1280 _image_height:=480  _framerate:=5.0
+
+rosrun v4l2_camera v4l2_camera_node _video_device:=/dev/video0 _image_width:=1280 _image_height:=480 _pixel_format:=yuyv
+
+rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 _io_method:=mmap
+
+
+rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 _framerate:=10.0 _image_encoding:=yuv422 _auto_white_balance:=false
+
+rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=yuyv _image_width:=1280 _image_height:=480 _framerate:=10.0 _image_encoding:=yuv422p _auto_white_balance:=false
+
+
+1、rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2> /dev/null
+
+
+
+# 划分相机话题
+2、rosrun stereo_splitter split_stereo_image.py
+
+# 生成深度图(非必须)
+# rosrun stereo_depth stereo_depth_node.py
+
+# 执行目标检测
+# python /home/xhy/catkin_ws/src/yolo_bridge/scripts/yolo_v8_ros_bridge.py
+# python /home/xhy/catkin_ws/src/yolo_bridge/scripts/yolo_v8_ros_bridge2.py
+LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libgomp.so.1 python /home/xhy/catkin_ws/src/yolo_bridge/scripts/yolo_v8_ros_bridge.py
+
+3、python /home/xhy/catkin_ws/src/yolo_bridge/scripts/yolo_v8_bridge_py38.py
+
+# 计算目标点深度信息
+4、rosrun stereo_depth object_detection_locate.py
+
