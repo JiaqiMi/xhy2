@@ -1,0 +1,41 @@
+<launch>
+    <!-- 启动 USB 相机 -->
+    <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
+
+    <!-- 图像左右分割节点 -->
+    <node pkg="stereo_splitter" type="split_stereo_image.py" name="split_stereo_image" output="screen" />
+
+    <!-- 执行 YOLOv8 目标检测（使用 LD_PRELOAD） -->
+    <!-- 
+        detect_mode: 检测模型, 1:shapes, 2:holes, 3:balls, 4:line 
+        top_k: 目标检测结果的数量 
+        visualization: 是否可视化 
+        conf_thre: 置信度阈值
+        detc_type: 检测类型, center: 中心点检测, bbox: 边界框检测, quartiles: 四分位检测
+    -->
+    <node pkg="yolo_bridge" type="yolo_bridge_wrapper.sh" name="yolov8_node" output="screen" launch-prefix="bash" >
+        <param name="detect_mode" value="1" />
+        <param name="top_k" value="3" />
+        <param name="visualization" value="0" />
+        <param name="conf_thre" value="0.2" />
+        <param name="detc_type" value="center" />   
+    </node>
+
+    <!-- 立体视觉深度估计节点 -->
+    <!-- 
+        mode: mode: 1=center, 2=quad corners, 3=line points
+        exp_env: air|water
+        conf_thre: confidence threshold
+        is_visual: 0|1
+    -->
+    <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node" output="screen" launch-prefix="bash" >
+        <param name="mode" value="1" />
+        <param name="exp_env" value="air" />
+        <param name="is_visual" value="0" />
+        <param name="conf_thre" value="0.5" />
+    </node>
+
+
+
+</launch>
+
