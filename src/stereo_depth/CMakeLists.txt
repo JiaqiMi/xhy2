@@ -169,7 +169,8 @@ include_directories(
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
 catkin_install_python(PROGRAMS
-  scripts/basic_detection.py
+  # scripts/basic_detection.py
+  scripts/stereo_depth_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -180,7 +181,7 @@ catkin_install_python(PROGRAMS
 # )
 
 install(
-  DIRECTORY src/stereo_depth
+  DIRECTORY src/stereo_depth/
   DESTINATION ${CATKIN_PACKAGE_PYTHON_DESTINATION}
   FILES_MATCHING PATTERN "*.py"
 )

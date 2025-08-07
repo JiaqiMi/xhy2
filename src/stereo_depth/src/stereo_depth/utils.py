@@ -1,3 +1,5 @@
+#!/home/xhy/xhy_env/bin/python
+# -*- coding: utf-8 -*-
 import re
 import tf
 import numpy as np
