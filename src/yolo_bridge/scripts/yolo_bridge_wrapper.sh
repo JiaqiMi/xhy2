@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 获取 detect_mode 参数
-DETECT_MODE=$(rosparam get /yolov8_detector/detect_mode)
-TOP_K=$(rosparam get /yolov8_detector/top_k)
-VISUALIZATION=$(rosparam get /yolov8_detector/visualization)
-CONF_THRE=$(rosparam get /yolov8_detector/conf_thre)
-DETC_TYPE=$(rosparam get /yolov8_detector/detc_type)
+DETECT_MODE=$(rosparam get /yolov8_node/detect_mode)
+TOP_K=$(rosparam get /yolov8_node/top_k)
+VISUALIZATION=$(rosparam get /yolov8_node/visualization)
+CONF_THRE=$(rosparam get /yolov8_node/conf_thre)
+DETC_TYPE=$(rosparam get /yolov8_node/detc_type)
 
 
 # 启动 Python 脚本并传入参数

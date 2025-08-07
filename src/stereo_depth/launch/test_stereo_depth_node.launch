@@ -14,11 +14,11 @@
         detc_type: 检测类型, center: 中心点检测, bbox: 边界框检测, quartiles: 四分位检测
     -->
     <node pkg="yolo_bridge" type="yolo_bridge_wrapper.sh" name="yolov8_node" output="screen" launch-prefix="bash" >
-        <param name="detect_mode" value="1" />
+        <param name="detect_mode" value="4" />
         <param name="top_k" value="3" />
         <param name="visualization" value="0" />
         <param name="conf_thre" value="0.2" />
-        <param name="detc_type" value="center" />   
+        <param name="detc_type" value="quartiles" /> 
     </node>
 
     <!-- 立体视觉深度估计节点 -->
@@ -28,8 +28,8 @@
         conf_thre: confidence threshold
         is_visual: 0|1
     -->
-    <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node" output="screen" launch-prefix="bash" >
-        <param name="mode" value="1" />
+    <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node" output="screen">
+        <param name="mode" value="3" />
         <param name="exp_env" value="air" />
         <param name="is_visual" value="0" />
         <param name="conf_thre" value="0.5" />

@@ -93,18 +93,59 @@ class StereoDepthNode:
         self.is_visual = rospy.get_param('~is_visual', 0)
 
         # Camera intrinsics
-        if self.exp_env == 'air':
-            self.fx = 572.993971
-            self.fy = 572.993971
-            self.cx = 374.534946
-            self.cy = 271.474743
-            self.baseline = 34.309807 / self.fx
-        else:
-            self.fx = 798.731044
-            self.fy = 798.731044
-            self.cx = 348.127430
-            self.cy = 269.935493
-            self.baseline = 47.694354 / self.fx
+        # if self.exp_env == 'air':
+        #     self.fx = 572.993971
+        #     self.fy = 572.993971
+        #     self.cx = 374.534946
+        #     self.cy = 271.474743
+        #     self.baseline = 34.309807 / self.fx
+        # elif self.exp_env == 'water':
+        #     self.fx = 798.731044
+        #     self.fy = 798.731044
+        #     self.cx = 348.127430
+        #     self.cy = 269.935493
+        #     self.baseline = 47.694354 / self.fx
+        # else:
+        #     rospy.logerr(f"Invalid exp_env: {self.exp_env}, use water or air.")
+        #     return 
+        
+        # 相机标定参数（从你的 YAML 拷贝过来）
+        # 左相机
+        K1 = np.array([[519.1519, 0,       319.174292],
+                       [0,        519.712551,277.976296],
+                       [0,        0,         1]], dtype=np.float64)
+        D1 = np.array([-0.019985, 0.106889, 0.000070, 0.002679, 0], dtype=np.float64)
+        R1 = np.array([[0.997406,  0.009347, -0.071366],
+                       [-0.009146, 0.999953,  0.003147],
+                       [0.071392, -0.002486,  0.997445]], dtype=np.float64)
+        P1 = np.array([[572.993971, 0,         374.534946, 0],
+                       [0,          572.993971,271.474743, 0],
+                       [0,          0,         1,          0]], dtype=np.float64)
+        # 右相机
+        K2 = np.array([[523.139499, 0,         319.655966],
+                       [0,          523.394088,267.733782],
+                       [0,          0,         1]], dtype=np.float64)
+        D2 = np.array([0.000599, 0.071806, 0.002352, 0.001851, 0], dtype=np.float64)
+        R2 = np.array([[0.996861,  0.008680, -0.078688],
+                       [-0.008901, 0.999957, -0.002469],
+                       [0.078663,  0.003162,  0.996896]], dtype=np.float64)
+        P2 = np.array([[572.993971, 0,         374.534946, -34.309807],
+                       [0,          572.993971,271.474743,  0],
+                       [0,          0,         1,           0]], dtype=np.float64)
+
+        # 初始化去畸变+校正映射表
+        img_size = (640, 480)
+        self.left_map1, self.left_map2   = cv2.initUndistortRectifyMap(
+            K1, D1, R1, P1[:3,:3], img_size, cv2.CV_16SC2)
+        self.right_map1, self.right_map2 = cv2.initUndistortRectifyMap(
+            K2, D2, R2, P2[:3,:3], img_size, cv2.CV_16SC2)
+
+        # 基线（只要一个就行）
+        self.fx       = P1[0,0]
+        self.fy       = P1[1,1]
+        self.cx       = P1[0,2]
+        self.cy       = P1[1,2]
+        self.baseline = abs(P2[0,3]) / self.fx
 
         self.bridge = CvBridge()
         self.rate = rospy.Rate(5.0)
@@ -162,19 +203,35 @@ class StereoDepthNode:
     def run(self):
         while not rospy.is_shutdown():
             if self.left_img is None or self.conf is None:
-                # self.rate.sleep(); 
+                self.rate.sleep(); 
                 continue
 
-            grayL = cv2.cvtColor(self.left_img, cv2.COLOR_BGR2GRAY)
-            grayR = cv2.cvtColor(self.right_img, cv2.COLOR_BGR2GRAY)
+            # grayL = cv2.cvtColor(self.left_img, cv2.COLOR_BGR2GRAY)
+            # grayR = cv2.cvtColor(self.right_img, cv2.COLOR_BGR2GRAY)
+            # stereo = cv2.StereoSGBM_create(
+            #     minDisparity=0, numDisparities=96, blockSize=7,
+            #     P1=8*3*7**2, P2=32*3*7**2,
+            #     disp12MaxDiff=1, uniquenessRatio=10,
+            #     speckleWindowSize=100, speckleRange=32)
+            # disp = stereo.compute(grayL, grayR).astype(np.float32) / 16.0
+            # disp[disp <= 0] = 0.1
+            # depth = self.fx * self.baseline / disp
+            
+            # 1) 去畸变+校正
+            left_rect  = cv2.remap(self.left_img,  self.left_map1,  self.left_map2,  cv2.INTER_LINEAR)
+            right_rect = cv2.remap(self.right_img, self.right_map1, self.right_map2, cv2.INTER_LINEAR)
+
+            # 2) 生成视差 & 深度
+            grayL = cv2.cvtColor(left_rect,  cv2.COLOR_BGR2GRAY)
+            grayR = cv2.cvtColor(right_rect, cv2.COLOR_BGR2GRAY)
             stereo = cv2.StereoSGBM_create(
                 minDisparity=0, numDisparities=96, blockSize=7,
                 P1=8*3*7**2, P2=32*3*7**2,
                 disp12MaxDiff=1, uniquenessRatio=10,
                 speckleWindowSize=100, speckleRange=32)
-            disp = stereo.compute(grayL, grayR).astype(np.float32) / 16.0
+            disp  = stereo.compute(grayL, grayR).astype(np.float32) / 16.0
             disp[disp <= 0] = 0.1
-            depth = self.fx * self.baseline / disp
+            depth = self.fx * self.baseline / disp            
 
             if self.mode == 1:
                 if self.conf < self.conf_thre:
