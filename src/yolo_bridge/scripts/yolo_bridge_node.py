@@ -16,14 +16,14 @@ class YOLOv8Node:
         rospy.init_node("yolov8_node", anonymous=True)
 
         # 参数设置
-        self.detect_mode = param.detect_mode           # 模型模式
-        self.top_k = param.top_k                       # 最大输出数
-        self.visualization = int(param.visualization)  # 是否可视化
-        self.conf_thre = float(param.conf_thre)        # 置信度阈值
-        self.detc_type = param.detc_type               # 输出类型（center, bbox, quartiles）
-        self.rate = rospy.Rate(5.0)                    # 推断频率
-        self.bridge = CvBridge()
-        self.left_img = None
+        self.detect_mode   = param.detect_mode             # 模型模式
+        self.top_k         = param.top_k                   # 最大输出数
+        self.visualization = int(param.visualization)      # 是否可视化
+        self.conf_thre     = float(param.conf_thre)        # 置信度阈值
+        self.detc_type     = param.detc_type               # 输出类型（center, bbox, quartiles）
+        self.rate          = rospy.Rate(5.0)               # 推断频率
+        self.bridge        = CvBridge()
+        self.left_img      = None
 
         # 模型列表
         model_list = [
@@ -56,12 +56,14 @@ class YOLOv8Node:
         rospy.loginfo("YOLOv8 Node initialized")
 
     def image_callback(self, msg):
+        """Convert ROS Image message to OpenCV image """
         try:
             self.left_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         except Exception as e:
             rospy.logerr("cv_bridge error: %s", str(e))
 
     def get_skeleton(self, binary_img):
+        """提取二值图像的骨架 """
         size = np.size(binary_img)
         skel = np.zeros(binary_img.shape, np.uint8)
         element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
@@ -78,6 +80,7 @@ class YOLOv8Node:
         return skel
 
     def run(self):
+        """主循环，进行推断并发布结果 """
         while not rospy.is_shutdown():
             if self.left_img is None:
                 continue
@@ -158,20 +161,17 @@ class YOLOv8Node:
             if self.visualization == 1:
                 annotated = res.plot()
                 cv2.imshow("YOLOv8 Detection", annotated)
-                cv2.waitKey(1)
-                
+                cv2.waitKey(1)  
             
             self.rate.sleep()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='YOLOv8 Unified Node')
-    parser.add_argument('--detect_mode', type=int, default=1,
-                        help='1: shapes, 2: holes, 3: balls, 4: line mask')
+    parser.add_argument('--detect_mode', type=int, default=1, help='1: shapes, 2: holes, 3: balls, 4: line mask')
     parser.add_argument('--top_k', type=int, default=5)
     parser.add_argument('--visualization', type=int, default=0)
     parser.add_argument('--conf_thre', type=float, default=0.2)
-    parser.add_argument('--detc_type', type=str, default='center',
-                        help='center | bbox | quartiles')
+    parser.add_argument('--detc_type', type=str, default='center', help='center | bbox | quartiles')
     args = parser.parse_args()
     try:
         node = YOLOv8Node(param=args)

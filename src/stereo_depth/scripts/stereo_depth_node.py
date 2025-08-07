@@ -31,9 +31,9 @@ from utils import get_stable_depth, load_stereo_params, compute_pose_from_quad
 class StereoDepthNode:
     def __init__(self):
         rospy.init_node('stereo_depth_node', anonymous=True)
-        # Load parameters via rospy.get_param
-        self.mode = rospy.get_param('~mode', 1)
-        self.exp_env = rospy.get_param('~exp_env', 'water')
+        
+        self.mode      = rospy.get_param('~mode', 1)
+        self.exp_env   = rospy.get_param('~exp_env', 'water')
         self.conf_thre = rospy.get_param('~conf_thre', 0.5)
         self.is_visual = rospy.get_param('~is_visual', 0)
         
@@ -52,10 +52,8 @@ class StereoDepthNode:
         
         # 初始化去畸变+校正映射表
         img_size = (640, 480)
-        self.left_map1, self.left_map2   = cv2.initUndistortRectifyMap(
-            K1, D1, R1, P1[:3,:3], img_size, cv2.CV_16SC2)
-        self.right_map1, self.right_map2 = cv2.initUndistortRectifyMap(
-            K2, D2, R2, P2[:3,:3], img_size, cv2.CV_16SC2)     
+        self.left_map1, self.left_map2   = cv2.initUndistortRectifyMap(K1, D1, R1, P1[:3,:3], img_size, cv2.CV_16SC2)
+        self.right_map1, self.right_map2 = cv2.initUndistortRectifyMap(K2, D2, R2, P2[:3,:3], img_size, cv2.CV_16SC2)     
 
         # 基线（只要一个就行）
         self.fx       = P1[0,0]
@@ -64,9 +62,9 @@ class StereoDepthNode:
         self.cy       = P1[1,2]
         self.baseline = abs(P2[0,3]) / self.fx
 
-        self.bridge = CvBridge()
-        self.rate = rospy.Rate(5.0)
-        self.left_img = None
+        self.bridge    = CvBridge()
+        self.rate      = rospy.Rate(5.0)
+        self.left_img  = None
         self.right_img = None
         self.reset_target()
 
@@ -93,52 +91,80 @@ class StereoDepthNode:
         rospy.loginfo('StereoDepthNode initialized in mode %d (%s env)', self.mode, self.exp_env)
 
     def reset_target(self):
-        self.u1 = self.v1 = self.u2 = self.v2 = self.u3 = self.v3 = None
-        self.conf = None; self.cls = None; self.tstamp = None
+        """重置目标检测相关变量"""
+        self.u1 = self.v1 = None
+        self.u2 = self.v2 = None 
+        self.u3 = self.v3 = None
+        self.conf   = None
+        self.cls    = None
+        self.tstamp = None
 
     def cb_center(self, msg):
-        self.u1, self.v1 = int(msg.point.x), int(msg.point.y)
-        self.conf = msg.point.z; self.cls = msg.header.frame_id; self.tstamp = msg.header.stamp
+        """处理中心点检测消息"""
+        self.u1     = int(msg.point.x)
+        self.v1     = int(msg.point.y)
+        self.conf   = msg.point.z
+        self.cls    = msg.header.frame_id
+        self.tstamp = msg.header.stamp
 
     def cb_bbox(self, msg):
-        self.u1, self.v1, self.u2, self.v2 = msg.x1, msg.y1, msg.x2, msg.y2
-        self.conf, self.cls, self.tstamp = msg.conf, msg.header.frame_id, msg.header.stamp
+        """处理矩形框四个顶点检测消息"""
+        self.u1     = msg.x1
+        self.v1     = msg.y1
+        self.u2     = msg.x2
+        self.v2     = msg.y2
+        self.conf   = msg.conf
+        self.cls    = msg.header.frame_id
+        self.tstamp = msg.header.stamp
 
     def cb_line(self, msg):
+        """处理线段三个四分位点检测消息"""
         self.u1, self.v1 = msg.x1, msg.y1
         self.u2, self.v2 = msg.x2, msg.y2
         self.u3, self.v3 = msg.x3, msg.y3
-        self.conf, self.cls, self.tstamp = msg.conf, msg.header.frame_id, msg.header.stamp
+        self.conf        = msg.conf
+        self.cls         = msg.header.frame_id
+        self.tstamp      = msg.header.stamp
 
     def img_callback(self, left_msg, right_msg):
+        """处理图像消息回调"""
         try:
-            self.left_img = self.bridge.imgmsg_to_cv2(left_msg, 'bgr8')
+            self.left_img  = self.bridge.imgmsg_to_cv2(left_msg, 'bgr8')
             self.right_img = self.bridge.imgmsg_to_cv2(right_msg, 'bgr8')
         except cv2.error as e:
             rospy.logerr('cv_bridge error: %s', str(e))
 
     def run(self):
+        """主循环，处理图像和目标的深度计算"""
         while not rospy.is_shutdown():
             if self.left_img is None or self.conf is None:
                 self.rate.sleep(); 
                 continue
             
+            # ===============================  STEP 1: 计算全局深度图  =============================== #
             # 1) 去畸变+校正
             left_rect  = cv2.remap(self.left_img,  self.left_map1,  self.left_map2,  cv2.INTER_LINEAR)
             right_rect = cv2.remap(self.right_img, self.right_map1, self.right_map2, cv2.INTER_LINEAR)
 
             # 2) 生成视差 & 深度
-            grayL = cv2.cvtColor(left_rect,  cv2.COLOR_BGR2GRAY)
-            grayR = cv2.cvtColor(right_rect, cv2.COLOR_BGR2GRAY)
+            grayL  = cv2.cvtColor(left_rect,  cv2.COLOR_BGR2GRAY)
+            grayR  = cv2.cvtColor(right_rect, cv2.COLOR_BGR2GRAY)
             stereo = cv2.StereoSGBM_create(
-                minDisparity=0, numDisparities=96, blockSize=7,
-                P1=8*3*7**2, P2=32*3*7**2,
-                disp12MaxDiff=1, uniquenessRatio=10,
-                speckleWindowSize=100, speckleRange=32)
+                minDisparity       = 0,
+                numDisparities     = 96,
+                blockSize          = 7,
+                P1                 = 8*3*7**2,
+                P2                 = 32*3*7**2,
+                disp12MaxDiff      = 1,
+                uniquenessRatio    = 10,
+                speckleWindowSize  = 100,
+                speckleRange       = 32
+            )
             disp  = stereo.compute(grayL, grayR).astype(np.float32) / 16.0
             disp[disp <= 0] = 0.1
-            depth = self.fx * self.baseline / disp            
-
+            depth = self.fx * self.baseline / disp   
+            
+            # ==============================  STEP 2: 计算目标深度信息  ============================== #
             if self.mode == 1:
                 if self.conf < self.conf_thre:
                     rospy.logwarn('Low conf center: %.2f', self.conf)
@@ -146,12 +172,16 @@ class StereoDepthNode:
                     P = get_stable_depth(self.u1, self.v1, depth, self.fx, self.fy, self.cx, self.cy)
                     if np.all(np.isfinite(P)):
                         msg = TargetDetection()
-                        pose = PoseStamped(); pose.header.stamp = self.tstamp; pose.header.frame_id = 'camera'
+                        pose = PoseStamped()
+                        pose.header.stamp = self.tstamp
+                        pose.header.frame_id = 'camera'
                         pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = P
                         pose.pose.orientation = Quaternion(0,0,0,1)
-                        msg.pose = pose; msg.type = 'center'; msg.conf = self.conf; msg.class_name = self.cls
+                        msg.pose = pose
+                        msg.type = 'center'
+                        msg.conf = self.conf
+                        msg.class_name = self.cls
                         self.pub.publish(msg)
-
             elif self.mode == 2:
                 if self.conf < self.conf_thre:
                     rospy.logwarn('Low conf bbox: %.2f', self.conf)
@@ -163,9 +193,11 @@ class StereoDepthNode:
                     pose = compute_pose_from_quad(P1, P2, P3, P4)
                     if pose:
                         msg = TargetDetection()
-                        msg.pose = pose; msg.type = 'center'; msg.conf = self.conf; msg.class_name = self.cls
+                        msg.pose = pose
+                        msg.type = 'center'
+                        msg.conf = self.conf
+                        msg.class_name = self.cls
                         self.pub.publish(msg)
-
             else:
                 if self.conf < self.conf_thre:
                     rospy.logwarn('Low conf line: %.2f', self.conf)
@@ -183,8 +215,11 @@ class StereoDepthNode:
                         msg.pose3 = PoseStamped(header=rospy.Header(stamp=self.tstamp, frame_id='camera'))
                         msg.pose3.pose.position.x, msg.pose3.pose.position.y, msg.pose3.pose.position.z = P3
                         # set orientations
-                        for p in (msg.pose1, msg.pose2, msg.pose3): p.pose.orientation = Quaternion(0,0,0,1)
-                        msg.type = 'center'; msg.conf = self.conf; msg.class_name = self.cls
+                        for p in (msg.pose1, msg.pose2, msg.pose3): 
+                            p.pose.orientation = Quaternion(0,0,0,1)
+                        msg.type = 'center'
+                        msg.conf = self.conf
+                        msg.class_name = self.cls
                         self.pub.publish(msg)
 
             if self.is_visual:

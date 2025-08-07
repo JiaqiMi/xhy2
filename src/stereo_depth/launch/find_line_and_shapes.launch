@@ -20,7 +20,6 @@
         <remap from="camera_info" to="/right/camera_info"/>
     </node> -->
 
-   
     <!-- stereo_image_proc 用于立体匹配，生成 disparity 和 point cloud -->
     <!-- <node pkg="stereo_image_proc" type="stereo_image_proc" name="stereo_proc" output="screen">
         <remap from="left/image_rect" to="/left/image_raw/image_rect_color"/>
@@ -29,45 +28,67 @@
         <remap from="right/camera_info" to="/right/camera_info"/>
     </node> -->
 
-
-    <!-- 执行 YOLOv8 目标检测 -->
-    <!-- 新增参数需要对应修改yolo_wrapper.sh -->
-    <node pkg="yolo_bridge" type="mask_wrapper.sh" name="mask_detector" output="log" launch-prefix="bash" >
+    <!-- 管线检测 -->
+    <!-- 
+        detect_mode: 检测模型, 1:shapes, 2:holes, 3:balls, 4:line 
+        top_k: 目标检测结果的数量 
+        visualization: 是否可视化 
+        conf_thre: 置信度阈值
+        detc_type: 检测类型, center: 中心点检测, bbox: 边界框检测, quartiles: 四分位检测
+    -->
+    <node pkg="yolo_bridge" type="yolo_bridge_wrapper.sh" name="yolov8_node" output="screen" launch-prefix="bash" >
         <param name="detect_mode" value="4" />
         <param name="top_k" value="3" />
         <param name="visualization" value="0" />
         <param name="conf_thre" value="0.2" />
-        <param name="detc_type" value="quartiles" />
-        <param name="output_type" value="0"/>    
+        <param name="detc_type" value="quartiles" /> 
     </node>
 
-    <!-- 目标点空间定位 -->
-    <node pkg="stereo_depth" type="line_detection_v3.py" name="line_location" output="log" >
-        <param name="is_visual" value="0"/>
+    <!-- 立体视觉深度估计节点 -->
+    <!-- 
+        mode: mode: 1=center, 2=quad corners, 3=line points
+        exp_env: air|water
+        conf_thre: confidence threshold
+        is_visual: 0|1
+    -->
+    <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node" output="screen">
+        <param name="mode" value="3" />
+        <param name="exp_env" value="water" />
+        <param name="is_visual" value="0" />
+        <param name="conf_thre" value="0.3" />
     </node>
- 
-    
-    <!-- 1：shapes, 2:holes, 3:balls-->
-    <!-- 0代表关闭，1代表开启-->
-    <!-- confidence threshold -->
-    <!-- center, bbox -->
-    <node pkg="yolo_bridge" type="yolo_wrapper.sh" name="yolov8_detector" output="log" launch-prefix="bash" >
-        <param name="detect_mode" value="1" />      
+
+    <!-- 形状检测 -->
+    <!-- 
+        detect_mode: 检测模型, 1:shapes, 2:holes, 3:balls, 4:line 
+        top_k: 目标检测结果的数量 
+        visualization: 是否可视化 
+        conf_thre: 置信度阈值
+        detc_type: 检测类型, center: 中心点检测, bbox: 边界框检测, quartiles: 四分位检测
+    -->
+    <node pkg="yolo_bridge" type="yolo_bridge_wrapper.sh" name="yolov8_node" output="screen" launch-prefix="bash" >
+        <param name="detect_mode" value="1" />
         <param name="top_k" value="3" />
-        <param name="visualization" value="0" />    
-        <param name="conf_thre" value="0.2" />      
-        <param name="detc_type" value="center" />   
+        <param name="visualization" value="0" />
+        <param name="conf_thre" value="0.2" />
+        <param name="detc_type" value="center" /> 
     </node>
 
-    <!-- 目标点空间定位 -->
-    <!-- water or air -->
-    <!-- 0代表关闭，1代表开启-->
-    <!-- confidence threshold -->
-    <node pkg="stereo_depth" type="basic_detection.py" name="object_detection_locate" output="log" >
-        <param name="exp_env" value="water" />        
-        <param name="visualization" value="0" />    
-        <param name="conf_thre" value="0.5" />       
-    </node> 
+    <!-- 立体视觉深度估计节点 -->
+    <!-- 
+        mode: mode: 1=center, 2=quad corners, 3=line points
+        exp_env: air|water
+        conf_thre: confidence threshold
+        is_visual: 0|1
+    -->
+    <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node" output="screen">
+        <param name="mode" value="1" />
+        <param name="exp_env" value="water" />
+        <param name="is_visual" value="0" />
+        <param name="conf_thre" value="0.5" />
+    </node>
+
+
 
 
 </launch>
