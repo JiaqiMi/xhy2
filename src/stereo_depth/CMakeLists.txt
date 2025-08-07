@@ -179,6 +179,12 @@ catkin_install_python(PROGRAMS
 #   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 # )
 
+install(
+  DIRECTORY src/stereo_depth
+  DESTINATION ${CATKIN_PACKAGE_PYTHON_DESTINATION}
+  FILES_MATCHING PATTERN "*.py"
+)
+
 ## Mark libraries for installation
 ## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_libraries.html
 # install(TARGETS ${PROJECT_NAME}
