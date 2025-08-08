@@ -21,6 +21,8 @@
 2025.7.16 16:37
     1. 添加了状态控制节点，支持自动运行和手动切换状态
     2. 修改了Keyboard.msg，添加了run字段，表示是否开启自动运行
+2025.8.5 15:20
+    修复空指针bug，记录时间戳
 """
 
 
@@ -233,12 +235,15 @@ class StateControl:
                              f"剩余时间: {remaining_time:.0f}s")
             
             return False
+        except Exception as e:
+            rospy.logerr(f"{NODE_NAME}: 检查任务超时出错: {e}")
+            return False
     # def check_task_timeout(self):
     #     """
     #     检查当前任务是否超时
     #     """
     #     # rospy.loginfo_throttle(2,f"{NODE_NAME}: {self.task_start_time},{self.auto_mode},{self.current_task}")
-    #     #TODO 这个判断有问题
+    #     # 这个判断有问题
     #     # 如果没有在进行任务，就直接返回
     #     if not (self.auto_mode or (self.task_start_time is not None and self.current_task != 0)):
     #         #   不在自动运行模式或者开始时间没有或者当前任务是0，返回false
