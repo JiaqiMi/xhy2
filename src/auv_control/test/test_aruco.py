@@ -12,7 +12,7 @@ from std_msgs.msg import String
 from auv_control.msg import TargetDetection, Control
 from geometry_msgs.msg import PoseStamped, Quaternion, Point
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+# from scipy.spatial.transform import Rotation as R
 # from queue import Queue
 # from threading import Lock
 
@@ -22,7 +22,8 @@ class testaAruco:
     def __init__(self):
         # self.lock = Lock()
         self.queue = []
-        self.target_detection_sub = rospy.Subscriber("/aruco/pose", PoseStamped, self.target_detection_callback)
+        # self.target_detection_sub = rospy.Subscriber("/aruco/pose", PoseStamped, self.target_detection_callback)
+        self.target_detection_sub = rospy.Subscriber("/obj/target_message", TargetDetection, self.test_target_detection_callback)
         self.target_posestamped = PoseStamped() # 记录最终目标位置
         self.target_pub = rospy.Publisher('/target', PoseStamped, queue_size=10) # 发布期望位姿话题
         self.control_pub = rospy.Publisher('/control', Control, queue_size=10) # 发布控制话题
@@ -102,39 +103,39 @@ class testaAruco:
         return np.linalg.norm(a - b)
     
     
-    def yaw_cvt(self, yaw, pitch, roll):
-        """
-        依据arocu标记提供的坐标系确定小黄鱼的目标航向
+    # def yaw_cvt(self, yaw, pitch, roll):
+    #     """
+    #     依据arocu标记提供的坐标系确定小黄鱼的目标航向
         
-        Parameters:
-            yaw: 从导航坐标系到二维码坐标系的欧拉角中的偏航角(度)
-            pitch: 从导航坐标系到二维码坐标系的欧拉角中的俯仰角(度)
-            roll: 从导航坐标系到二维码坐标系的欧拉角中的横滚角(度)
+    #     Parameters:
+    #         yaw: 从导航坐标系到二维码坐标系的欧拉角中的偏航角(度)
+    #         pitch: 从导航坐标系到二维码坐标系的欧拉角中的俯仰角(度)
+    #         roll: 从导航坐标系到二维码坐标系的欧拉角中的横滚角(度)
         
-        Returns:
-            angle_deg: float, 小黄鱼在导航坐标系下的航向角(度)
-        """
-        euler_nav2qr = [yaw, pitch, roll]  # ZYX 顺序
-        r = R.from_euler('zyx', euler_nav2qr, degrees=True)
-        R_nav2qr = r.as_matrix()
+    #     Returns:
+    #         angle_deg: float, 小黄鱼在导航坐标系下的航向角(度)
+    #     """
+    #     euler_nav2qr = [yaw, pitch, roll]  # ZYX 顺序
+    #     r = R.from_euler('zyx', euler_nav2qr, degrees=True)
+    #     R_nav2qr = r.as_matrix()
 
-        R_qr2nav = R_nav2qr.T
+    #     R_qr2nav = R_nav2qr.T
 
-        v_qr = np.array([0, 0, -1])  # 二维码坐标系的Z轴
-        v_nav = R_qr2nav @ v_qr     # 在导航系下的表示
+    #     v_qr = np.array([0, 0, -1])  # 二维码坐标系的Z轴
+    #     v_nav = R_qr2nav @ v_qr     # 在导航系下的表示
 
-        # 在导航坐标系xy平面上的投影向量 K
-        K = v_nav.copy()
-        K[2] = 0
+    #     # 在导航坐标系xy平面上的投影向量 K
+    #     K = v_nav.copy()
+    #     K[2] = 0
 
-        # 单位化投影向量
-        K_unit = K / np.linalg.norm(K)
+    #     # 单位化投影向量
+    #     K_unit = K / np.linalg.norm(K)
 
-        x_axis = np.array([1, 0, 0])
-        cos_theta = np.dot(K_unit, x_axis)
-        angle_deg = np.degrees(np.arccos(cos_theta))
+    #     x_axis = np.array([1, 0, 0])
+    #     cos_theta = np.dot(K_unit, x_axis)
+    #     angle_deg = np.degrees(np.arccos(cos_theta))
         
-        return angle_deg
+    #     return angle_deg
     
     
     def generate_smooth_pose(self, current_pose:PoseStamped, target_pose:PoseStamped, max_xy_step=0.8, max_z_step=0.1, max_yaw_step=np.radians(5)):
@@ -371,6 +372,58 @@ class testaAruco:
         
         self.queue.append([roll,pitch,yaw])
     ############################################### 回调层 #########################################
+
+    def test_target_detection_callback(self, msg: TargetDetection):
+        """
+        收到目标检测消息，将消息加入队列，不做操作
+        存的时候就应该存减去夹爪之后的位置
+        """
+        rospy.loginfo(f"current time : {rospy.Time.now()}, message time : {msg.pose.header.stamp}, delta time :{msg.pose.header.stamp.to_sec()-rospy.Time.now().to_sec()}")
+        
+        
+        # with self.lock:
+        # self.tf_listener.waitForTransform("map", "camera", msg.header.stamp, rospy.Duration(1.0))
+        # pose_in_camera = msg
+        # pose_in_map = self.tf_listener.transformPose("map", pose_in_camera)
+        # roll,pitch,yaw = euler_from_quaternion([
+        #     pose_in_map.pose.orientation.x,
+        #     pose_in_map.pose.orientation.y,
+        #     pose_in_map.pose.orientation.z,
+        #     pose_in_map.pose.orientation.w
+        # ])
+        
+        # rospy.loginfo(f"{NODE_NAME}: 目标检测到aruco标记, 位置={pose_in_map.pose.position}, 欧拉角=({np.degrees(roll)}, {np.degrees(pitch)}, {np.degrees(yaw)})")
+        
+        # changed by Rice 
+        
+        # current_pose = self.get_current_pose()
+        # 获取当前位姿在map下的表示
+        # if current_pose is not None:
+        #     q = current_pose.pose.orientation
+        #     roll_c, pitch_c, yaw_c = euler_from_quaternion([q.x, q.y, q.z, q.w])
+        #     rospy.loginfo(f"{NODE_NAME}: 当前位姿欧拉角 (roll, pitch, yaw) = ({np.degrees(roll_c):.2f}, {np.degrees(pitch_c):.2f}, {np.degrees(yaw_c):.2f})")
+
+      
+        # target_raw = np.degrees(yaw) + 90      # 目标航向角，注意这里是从二维码坐标系到小黄鱼坐标系的转换
+        # if target_raw > 180:
+        #     target_raw -= 360
+        # rospy.loginfo(f"{NODE_NAME}: 目标航向角 (raw) = {target_raw:.2f}度")
+        # matrix = euler_matrix(yaw, pitch, roll, 'szyx')
+        # #rospy.loginfo(f"matrix={matrix}")
+        # vector = [matrix[0][2], matrix[1][2], matrix[2][2]]  # 假设前进方向是x轴
+        # # rospy.loginfo(f"vector={vector}")
+        # yaw = np.arctan2(vector[0], vector[1])  # 计算航向角
+        # rospy.loginfo(f"yaw={np.degrees(yaw)}")
+        
+        # target_angle = self.yaw_cvt(yaw, pitch, roll)
+        
+        # rospy.loginfo(f"{NODE_NAME}: 转换后的目标航向={target_angle:.2f}度")
+        
+        
+        # self.queue.append([roll,pitch,yaw])
+        
+    ############################################### 回调层 #########################################
+
 
 
     ############################################### 逻辑层 #########################################
