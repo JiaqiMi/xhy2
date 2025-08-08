@@ -15,7 +15,7 @@ def get_stable_depth(u, v, depth, fx, fy, cx, cy, window_size=11):
     valid = region[np.isfinite(region) & (region > 0)]
     if valid.size < 3:
         return np.array([np.nan, np.nan, np.nan])
-    valid = valid[(valid >= 0.5) & (valid <= 3)]
+    valid = valid[(valid >= 0.5) & (valid <= 2.5)]
     Z = np.mean(valid)
     if Z <= 0:
         return np.array([np.nan, np.nan, np.nan])

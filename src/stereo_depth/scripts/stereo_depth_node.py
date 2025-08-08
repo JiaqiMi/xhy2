@@ -105,7 +105,8 @@ class StereoDepthNode:
         self.v1     = int(msg.point.y)
         self.conf   = msg.point.z
         self.cls    = msg.header.frame_id
-        self.tstamp = msg.header.stamp
+        # self.tstamp = msg.header.stamp
+        self.tstamp = rospy.Time.now()
 
     def cb_bbox(self, msg):
         """处理矩形框四个顶点检测消息"""
@@ -115,7 +116,8 @@ class StereoDepthNode:
         self.v2     = msg.y2
         self.conf   = msg.conf
         self.cls    = msg.header.frame_id
-        self.tstamp = msg.header.stamp
+        # self.tstamp = msg.header.stamp
+        self.tstamp = rospy.Time.now()
 
     def cb_line(self, msg):
         """处理线段三个四分位点检测消息"""
@@ -124,7 +126,8 @@ class StereoDepthNode:
         self.u3, self.v3 = msg.x3, msg.y3
         self.conf        = msg.conf
         self.cls         = msg.header.frame_id
-        self.tstamp      = msg.header.stamp
+        # self.tstamp      = msg.header.stamp
+        self.tstamp = rospy.Time.now()
 
     def img_callback(self, left_msg, right_msg):
         """处理图像消息回调"""
@@ -167,10 +170,10 @@ class StereoDepthNode:
             # ==============================  STEP 2: 计算目标深度信息  ============================== #
             if self.mode == 1:
                 if self.conf < self.conf_thre:
-                    rospy.logwarn('Low conf center: %.2f', self.conf)
+                    rospy.loginfo_throttle(2, 'Low conf center: %.2f', self.conf)
                 else:
                     P = get_stable_depth(self.u1, self.v1, depth, self.fx, self.fy, self.cx, self.cy)
-                    if np.all(np.isfinite(P)):
+                    if (-1 < P[0] < 1) and (-1 < P[1] < 1) and (0 < P[2] < 3):
                         msg = TargetDetection()
                         pose = PoseStamped()
                         pose.header.stamp = self.tstamp
@@ -182,9 +185,12 @@ class StereoDepthNode:
                         msg.conf = self.conf
                         msg.class_name = self.cls
                         self.pub.publish(msg)
+                        rospy.loginfo_throttle(2, 'Published center target at %.2f, %.2f, %.2f', P[0], P[1], P[2])
+                    else:
+                        rospy.loginfo_throttle(2, 'Invalid depth for center target: %.2f, %.2f, %.2f', P[0], P[1], P[2])
             elif self.mode == 2:
                 if self.conf < self.conf_thre:
-                    rospy.logwarn('Low conf bbox: %.2f', self.conf)
+                    rospy.loginfo_throttle(2, 'Low conf bbox: %.2f', self.conf)
                 else:
                     P1 = get_stable_depth(self.u1, self.v1, depth, self.fx, self.fy, self.cx, self.cy)
                     P2 = get_stable_depth(self.u2, self.v1, depth, self.fx, self.fy, self.cx, self.cy)
@@ -198,14 +204,19 @@ class StereoDepthNode:
                         msg.conf = self.conf
                         msg.class_name = self.cls
                         self.pub.publish(msg)
+                        rospy.loginfo_throttle(2, 'Valid Class %s target at X: %.2f, Y: %.2f, Z: %.2f', msg.class_name,
+                                    pose.pose.position.x, pose.pose.position.y, pose.pose.position.z)
             else:
                 if self.conf < self.conf_thre:
-                    rospy.logwarn('Low conf line: %.2f', self.conf)
+                    rospy.loginfo_throttle(2, 'Low conf line: %.2f', self.conf)
                 else:
                     P1 = get_stable_depth(self.u3, self.v3, depth, self.fx, self.fy, self.cx, self.cy)
                     P2 = get_stable_depth(self.u2, self.v2, depth, self.fx, self.fy, self.cx, self.cy)
                     P3 = get_stable_depth(self.u1, self.v1, depth, self.fx, self.fy, self.cx, self.cy)
-                    if np.all(np.isfinite(P1)) and np.all(np.isfinite(P2)) and np.all(np.isfinite(P3)):
+                    if (-1 < P1[0] < 1) and (-1 < P1[1] < 1) and (0 < P1[2] < 2) and \
+                        (-1 < P2[0] < 1) and (-1 < P2[1] < 1) and (0 < P2[2] < 2) and \
+                        (-1 < P3[0] < 1) and  (-1 < P3[1] < 1) and (0 < P3[2] < 2) and \
+                        (P1[2] <= P2[2] <= P3[2]):            
                         msg = TargetDetection3()
                         # fill poses
                         msg.pose1 = PoseStamped(header=rospy.Header(stamp=self.tstamp, frame_id='camera'))
@@ -221,7 +232,11 @@ class StereoDepthNode:
                         msg.conf = self.conf
                         msg.class_name = self.cls
                         self.pub.publish(msg)
-
+                        rospy.loginfo_throttle(2, 'Valid line target at P1: (%.2f, %.2f, %.2f); P2: (%.2f, %.2f, %.2f); P3: (%.2f, %.2f, %.2f)',
+                                    P1[0], P1[1], P1[2], P2[0], P2[1], P2[2], P3[0], P3[1], P3[2])
+                    else:
+                        rospy.loginfo_throttle(2, 'Invalid depth for line target: P1(%.2f, %.2f, %.2f), P2(%.2f, %.2f, %.2f), P3(%.2f, %.2f, %.2f)',
+                                    P1[0], P1[1], P1[2], P2[0], P2[1], P2[2], P3[0], P3[1], P3[2])
             if self.is_visual:
                 # visualization omitted for brevity
                 pass
