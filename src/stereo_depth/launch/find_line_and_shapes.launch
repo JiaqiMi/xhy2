@@ -88,8 +88,5 @@
         <param name="conf_thre" value="0.5" />
     </node>
 
-
-
-
 </launch>
 

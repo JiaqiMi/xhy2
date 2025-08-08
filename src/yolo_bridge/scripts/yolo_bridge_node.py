@@ -85,7 +85,7 @@ class YOLOv8Node:
             if self.left_img is None:
                 continue
 
-            results = self.model(self.left_img)
+            results = self.model(self.left_img, verbose=False)
             res = results[0]
 
             # Mask 模式

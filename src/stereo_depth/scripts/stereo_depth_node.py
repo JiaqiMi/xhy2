@@ -39,16 +39,18 @@ class StereoDepthNode:
         
         # 相机标定参数
         if self.exp_env == 'air':
-            params = load_stereo_params('/home/xhy/catkin_ws/cameras/ost_new_camera_air.txt')
-            K1, D1, R1, P1 = params['K1'], params['D1'], params['R1'], params['P1']
-            K2, D2, R2, P2 = params['K2'], params['D2'], params['R2'], params['P2']
+            camera_params_file = '/home/xhy/catkin_ws/cameras/ost_new_camera_air.txt'
         elif self.exp_env == 'water':
-            params = load_stereo_params('/home/xhy/catkin_ws/cameras/ost_new_camera_water_640.txt')
-            K1, D1, R1, P1 = params['K1'], params['D1'], params['R1'], params['P1']
-            K2, D2, R2, P2 = params['K2'], params['D2'], params['R2'], params['P2']
+            camera_params_file = '/home/xhy/catkin_ws/cameras/ost_new_camera_water_0807.txt'
         else:
             rospy.logerr(f"Invalid exp_env: {self.exp_env}, use water or air.")
             return
+        
+        rospy.loginfo(f"camera params file: {camera_params_file}.")
+        # 初始化模型参数
+        params = load_stereo_params(camera_params_file)
+        K1, D1, R1, P1 = params['K1'], params['D1'], params['R1'], params['P1']
+        K2, D2, R2, P2 = params['K2'], params['D2'], params['R2'], params['P2']
         
         # 初始化去畸变+校正映射表
         img_size = (640, 480)
@@ -141,6 +143,7 @@ class StereoDepthNode:
         """主循环，处理图像和目标的深度计算"""
         while not rospy.is_shutdown():
             if self.left_img is None or self.conf is None:
+                rospy.loginfo_throttle(2, "No valid target in Left Image.")
                 self.rate.sleep(); 
                 continue
             
@@ -173,7 +176,7 @@ class StereoDepthNode:
                     rospy.loginfo_throttle(2, 'Low conf center: %.2f', self.conf)
                 else:
                     P = get_stable_depth(self.u1, self.v1, depth, self.fx, self.fy, self.cx, self.cy)
-                    if (-1 < P[0] < 1) and (-1 < P[1] < 1) and (0 < P[2] < 3):
+                    if (-1 < P[0] < 1) and (-1 < P[1] < 1):
                         msg = TargetDetection()
                         pose = PoseStamped()
                         pose.header.stamp = self.tstamp
@@ -185,9 +188,9 @@ class StereoDepthNode:
                         msg.conf = self.conf
                         msg.class_name = self.cls
                         self.pub.publish(msg)
-                        rospy.loginfo_throttle(2, 'Published center target at %.2f, %.2f, %.2f', P[0], P[1], P[2])
+                        rospy.loginfo_throttle(2, 'Valid center target at (%.2f, %.2f, %.2f)', P[0], P[1], P[2])
                     else:
-                        rospy.loginfo_throttle(2, 'Invalid depth for center target: %.2f, %.2f, %.2f', P[0], P[1], P[2])
+                        rospy.loginfo_throttle(2, 'Invalid center target at (%.2f, %.2f, %.2f)', P[0], P[1], P[2])
             elif self.mode == 2:
                 if self.conf < self.conf_thre:
                     rospy.loginfo_throttle(2, 'Low conf bbox: %.2f', self.conf)
@@ -206,16 +209,16 @@ class StereoDepthNode:
                         self.pub.publish(msg)
                         rospy.loginfo_throttle(2, 'Valid Class %s target at X: %.2f, Y: %.2f, Z: %.2f', msg.class_name,
                                     pose.pose.position.x, pose.pose.position.y, pose.pose.position.z)
-            else:
+            elif self.mode == 3:
                 if self.conf < self.conf_thre:
                     rospy.loginfo_throttle(2, 'Low conf line: %.2f', self.conf)
                 else:
                     P1 = get_stable_depth(self.u3, self.v3, depth, self.fx, self.fy, self.cx, self.cy)
                     P2 = get_stable_depth(self.u2, self.v2, depth, self.fx, self.fy, self.cx, self.cy)
                     P3 = get_stable_depth(self.u1, self.v1, depth, self.fx, self.fy, self.cx, self.cy)
-                    if (-1 < P1[0] < 1) and (-1 < P1[1] < 1) and (0 < P1[2] < 2) and \
-                        (-1 < P2[0] < 1) and (-1 < P2[1] < 1) and (0 < P2[2] < 2) and \
-                        (-1 < P3[0] < 1) and  (-1 < P3[1] < 1) and (0 < P3[2] < 2) and \
+                    if (-1 < P1[0] < 1) and (-1 < P1[1] < 1) and (0 < P1[2] < 2.5) and \
+                        (-1 < P2[0] < 1) and (-1 < P2[1] < 1) and (0 < P2[2] < 2.5) and \
+                        (-1 < P3[0] < 1) and  (-1 < P3[1] < 1) and (0 < P3[2] < 2.5) and \
                         (P1[2] <= P2[2] <= P3[2]):            
                         msg = TargetDetection3()
                         # fill poses
@@ -237,6 +240,10 @@ class StereoDepthNode:
                     else:
                         rospy.loginfo_throttle(2, 'Invalid depth for line target: P1(%.2f, %.2f, %.2f), P2(%.2f, %.2f, %.2f), P3(%.2f, %.2f, %.2f)',
                                     P1[0], P1[1], P1[2], P2[0], P2[1], P2[2], P3[0], P3[1], P3[2])
+            else:
+                rospy.logerr('Invalid mode: %d. Use 1, 2, or 3.', self.mode)
+                return 
+            
             if self.is_visual:
                 # visualization omitted for brevity
                 pass

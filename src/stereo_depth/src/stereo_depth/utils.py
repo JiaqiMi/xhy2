@@ -12,10 +12,17 @@ def get_stable_depth(u, v, depth, fx, fy, cx, cy, window_size=11):
     h, w = depth.shape
     u, v = int(u), int(v)
     region = depth[max(v-half, 0):min(v+half+1, h), max(u-half, 0):min(u+half+1, w)]
+    
+    # 有效深度区域面积判断
     valid = region[np.isfinite(region) & (region > 0)]
     if valid.size < 3:
         return np.array([np.nan, np.nan, np.nan])
-    valid = valid[(valid >= 0.5) & (valid <= 2.5)]
+    
+    # 添加距离过滤条件
+    valid = valid[(valid >= 0.3) & (valid <= 2.5)]
+    if valid.size == 0:
+        return np.array([np.nan, np.nan, np.nan])
+    
     Z = np.mean(valid)
     if Z <= 0:
         return np.array([np.nan, np.nan, np.nan])
@@ -66,7 +73,7 @@ def load_stereo_params(txt_path):
 def compute_pose_from_quad(P1, P2, P3, P4):
     """计算四个点的中心位置和姿态"""
     center = None
-    dis_thre = 3   # 单位米
+    dis_thre = 2.5   # 单位米
     if (P1[2] < dis_thre) and (P2[2] < dis_thre) and (P3[2] < dis_thre) and (P4[2] < dis_thre):
         center = (P1 + P2 + P3 + P4) / 4.0
     elif (P1[2] < dis_thre) and (P3[2] < dis_thre):
