@@ -2,6 +2,9 @@
 """
 名称: task4_node.py
 功能: 巡线 作业
+    黄色三角形：机器人需水平旋转一周完成巡视。
+    黑色正方形：机器人需要有一个外置能被轻易看到的LED灯，在黑色正方形处机器人需要亮红灯
+    绿色圆形：机器人任意部位触碰传感器并亮绿灯
 作者: buyegaid
 监听：  /target_detection (来自视觉节点) 检测目标对应颜色的标志
         /tf (来自tf树)
@@ -12,6 +15,14 @@
 记录：
 2025.8.6 21:53
     final check
+2025.8.11 02:50
+    add(arrive_end): 判断是否到达终点附近，直接跳转到结束
+    TODO 根据实际顺序调整检测顺序
+    fix(target_detection_callback): 修复目标检测回调函数，添加step判断
+    fix(track_detection_callback): 修复轨迹检测回调函数，添加step判断
+    fix(detect_yellow_triangle): 删掉置信度判断
+    fix(detect_black_rectangle): 删掉置信度判断
+    fix(detect_green_circle): 删掉置信度判断
 """
 import rospy
 import tf
@@ -93,6 +104,7 @@ class Task4Node:
         
         # 输出log
         rospy.loginfo(f"{NODE_NAME}: 初始化完成")
+        rospy.loginfo(f"{NODE_NAME}: 作业深度: {self.target_depth}米")
         rospy.loginfo(f"{NODE_NAME}: 初始点: n={self.start_point.pose.position.x}, e={self.start_point.pose.position.y}, d={self.start_point.pose.position.z},{start_point_from_param[3]} ")
         rospy.loginfo(f"{NODE_NAME}: 结束点: n={self.end_point.pose.position.x}, e={self.end_point.pose.position.y}, d={self.end_point.pose.position.z},{end_point_from_param[3]} ")
     
@@ -395,9 +407,10 @@ class Task4Node:
         rospy.loginfo(
             f"{NODE_NAME}: 检测到{msg.class_name}: {msg.pose.pose.position.x},{msg.pose.pose.position.y},{msg.pose.pose.position.z}")
         # rospy.loginfo(f"{rospy.Time.now()},{msg.pose.header.stamp}")
-        point_in_camera = msg.pose.pose.position  # 相机坐标系下目标点
-        origin_in_camera = Point(x=0, y=0, z=0)  # 相机坐标系下的原点
-        if self.xyz_distance(point_in_camera, origin_in_camera) < 5.0: # 最远距离小于5m
+        # point_in_camera = msg.pose.pose.position  # 相机坐标系下目标点
+        # origin_in_camera = Point(x=0, y=0, z=0)  # 相机坐标系下的原点
+        # if self.xyz_distance(point_in_camera, origin_in_camera) < 5.0 and self.step > 0: # 最远距离小于5m, 并且不在初始阶段
+        if self.step > 0: # 不在初始阶段
             try:
                 # 将目标点从camera坐标系转换到各个坐标系
                 self.tf_listener.waitForTransform("map", msg.pose.header.frame_id, msg.pose.header.stamp, rospy.Duration(1.0))
@@ -479,10 +492,11 @@ class Task4Node:
         rospy.loginfo(
             f"{NODE_NAME}: 收到track 3, {msg.pose3.pose.position.x},{msg.pose3.pose.position.y},{msg.pose3.pose.position.z}")
 
-        point3_in_camera = msg.pose3.pose.position  # 相机坐标系下目标点
-        origin_in_camera = Point(x=0, y=0, z=0)  # 相机坐标系下的原点
-        if self.xyz_distance(point3_in_camera, origin_in_camera) < 5.0: # 保证第三个点在5m以内
+        # point3_in_camera = msg.pose3.pose.position  # 相机坐标系下目标点
+        # origin_in_camera = Point(x=0, y=0, z=0)  # 相机坐标系下的原点
+        # if self.xyz_distance(point3_in_camera, origin_in_camera) < 5.0: # 保证第三个点在5m以内
             # self.lineupdate = 25
+        if self.step > 0:
             try:
                 # 将目标点从camera坐标系转换到各个坐标系
                 # self.tf_listener.waitForTransform("map", msg.pose1.header.frame_id, msg.pose1.header.stamp,
@@ -665,58 +679,58 @@ class Task4Node:
             target3 = self.yellow_triangle_queue[2]
             # rospy.loginfo(f"{NODE_NAME}: 当前队列长度: {len(self.yellow_triangle_queue)}")
             if target1 is not None and target2 is not None and target3 is not None:
-                if target1[0] > 0.5 and target2[0] > 0.5 and target3[0] > 0.5:
-                    if self.xyz_distance(target1[3].pose.position, target2[3].pose.position) < max_position_interval and \
-                            self.xyz_distance(target2[3].pose.position, target3[3].pose.position) < max_position_interval and \
-                            self.xyz_distance(target1[3].pose.position, target3[3].pose.position) < max_position_interval:
-                        # 间距满足要求
-                        # 置信度满足要求
-                        if abs(target1[3].header.stamp.to_sec() - target2[
-                            3].header.stamp.to_sec()) < max_time_interval and \
-                                abs(target2[3].header.stamp.to_sec() - target3[
-                                    3].header.stamp.to_sec()) < max_time_interval:
-                            # 时间间隔满足要求
-                            rospy.loginfo(f"{NODE_NAME}: 找到yellow triangle: {target1[4]}, {target2[4]}, {target3[4]}")
-                            # 计算位置平均值：根据期望位姿
-                            avg_x = (target1[2].pose.position.x + target2[2].pose.position.x + target3[
-                                2].pose.position.x) / 3.0
-                            avg_y = (target1[2].pose.position.y + target2[2].pose.position.y + target3[
-                                2].pose.position.y) / 3.0
-                            avg_z = (target1[2].pose.position.z + target2[2].pose.position.z + target3[
-                                2].pose.position.z) / 3.0
-                            # 计算航向和俯仰平均值：根据当前位姿
-                            _, pitch1, yaw1 = euler_from_quaternion([
-                                target1[1].pose.orientation.x,
-                                target1[1].pose.orientation.y,
-                                target1[1].pose.orientation.z,
-                                target1[1].pose.orientation.w
-                            ])
-                            _, pitch2, yaw2 = euler_from_quaternion([
-                                target2[1].pose.orientation.x,
-                                target2[1].pose.orientation.y,
-                                target2[1].pose.orientation.z,
-                                target2[1].pose.orientation.w
-                            ])
-                            _, pitch3, yaw3 = euler_from_quaternion([
-                                target3[1].pose.orientation.x,
-                                target3[1].pose.orientation.y,
-                                target3[1].pose.orientation.z,
-                                target3[1].pose.orientation.w
-                            ])
-                            avg_yaw = (yaw1 + yaw2 + yaw3) / 3.0
-                            avg_pitch = (pitch1 + pitch2 + pitch3) / 3.0
-                            # 清空队列，清空初始位置
-                            self.yellow_triangle_queue= []
-                            # 设置完目标位姿后，跳转到下一步即可
-                            self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_x-self.target_posestamped.pose.position.x)*forward_percent, 
-                                                                    y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
-                                                                    z =self.target_depth)
-                            # self.target_posestamped.pose.position = Point(x=avg_x, y=avg_y, z=self.target_depth)
-                            self.target_posestamped.pose.orientation = Quaternion(
-                                *quaternion_from_euler(0, self.pitch_offset, avg_yaw))
-                            rospy.loginfo(
-                                f"{NODE_NAME}: 三角形位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d={self.target_depth}m,yaw={np.degrees(avg_yaw)}°")
-                            return True
+                # if target1[0] > 0.5 and target2[0] > 0.5 and target3[0] > 0.5:
+                if self.xyz_distance(target1[3].pose.position, target2[3].pose.position) < max_position_interval and \
+                        self.xyz_distance(target2[3].pose.position, target3[3].pose.position) < max_position_interval and \
+                        self.xyz_distance(target1[3].pose.position, target3[3].pose.position) < max_position_interval:
+                    # 间距满足要求
+                    # 置信度满足要求
+                    if abs(target1[3].header.stamp.to_sec() - target2[
+                        3].header.stamp.to_sec()) < max_time_interval and \
+                            abs(target2[3].header.stamp.to_sec() - target3[
+                                3].header.stamp.to_sec()) < max_time_interval:
+                        # 时间间隔满足要求
+                        rospy.loginfo(f"{NODE_NAME}: 找到yellow triangle: {target1[4]}, {target2[4]}, {target3[4]}")
+                        # 计算位置平均值：根据期望位姿
+                        avg_x = (target1[2].pose.position.x + target2[2].pose.position.x + target3[
+                            2].pose.position.x) / 3.0
+                        avg_y = (target1[2].pose.position.y + target2[2].pose.position.y + target3[
+                            2].pose.position.y) / 3.0
+                        avg_z = (target1[2].pose.position.z + target2[2].pose.position.z + target3[
+                            2].pose.position.z) / 3.0
+                        # 计算航向和俯仰平均值：根据当前位姿
+                        _, pitch1, yaw1 = euler_from_quaternion([
+                            target1[1].pose.orientation.x,
+                            target1[1].pose.orientation.y,
+                            target1[1].pose.orientation.z,
+                            target1[1].pose.orientation.w
+                        ])
+                        _, pitch2, yaw2 = euler_from_quaternion([
+                            target2[1].pose.orientation.x,
+                            target2[1].pose.orientation.y,
+                            target2[1].pose.orientation.z,
+                            target2[1].pose.orientation.w
+                        ])
+                        _, pitch3, yaw3 = euler_from_quaternion([
+                            target3[1].pose.orientation.x,
+                            target3[1].pose.orientation.y,
+                            target3[1].pose.orientation.z,
+                            target3[1].pose.orientation.w
+                        ])
+                        avg_yaw = (yaw1 + yaw2 + yaw3) / 3.0
+                        avg_pitch = (pitch1 + pitch2 + pitch3) / 3.0
+                        # 清空队列，清空初始位置
+                        self.yellow_triangle_queue= []
+                        # 设置完目标位姿后，跳转到下一步即可
+                        self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_x-self.target_posestamped.pose.position.x)*forward_percent, 
+                                                                y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
+                                                                z =self.target_depth)
+                        # self.target_posestamped.pose.position = Point(x=avg_x, y=avg_y, z=self.target_depth)
+                        self.target_posestamped.pose.orientation = Quaternion(
+                            *quaternion_from_euler(0, self.pitch_offset, avg_yaw))
+                        rospy.loginfo(
+                            f"{NODE_NAME}: 三角形位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d={self.target_depth}m,yaw={np.degrees(avg_yaw)}°")
+                        return True
             self.yellow_triangle_queue.pop(0)
         return False
 
@@ -734,59 +748,59 @@ class Task4Node:
             target3 = self.black_rectangle_queue[2]
             rospy.loginfo(f"{NODE_NAME}: 当前队列长度: {len(self.black_rectangle_queue)}")
             if target1 is not None and target2 is not None and target3 is not None:
-                if target1[0] > 0.5 and target2[0] > 0.5 and target3[0] > 0.5:
-                    if self.xyz_distance(target1[3].pose.position, target2[3].pose.position) < max_position_interval and \
-                            self.xyz_distance(target2[3].pose.position, target3[3].pose.position) < max_position_interval and \
-                            self.xyz_distance(target1[3].pose.position, target3[3].pose.position) < max_position_interval:
-                        # 间距满足要求
-                        # 置信度满足要求
-                        if abs(target1[3].header.stamp.to_sec() - target2[
-                            3].header.stamp.to_sec()) < max_time_interval and \
-                                abs(target2[3].header.stamp.to_sec() - target3[
-                                    3].header.stamp.to_sec()) < max_time_interval:
-                            # 时间间隔满足要求
-                            rospy.loginfo(f"{NODE_NAME}: 找到black rectangle: {target1[4]}, {target2[4]}, {target3[4]}")
-                            # 计算位置平均值：根据期望位姿
-                            avg_x = (target1[2].pose.position.x + target2[2].pose.position.x + target3[
-                                2].pose.position.x) / 3.0
-                            avg_y = (target1[2].pose.position.y + target2[2].pose.position.y + target3[
-                                2].pose.position.y) / 3.0
-                            avg_z = (target1[2].pose.position.z + target2[2].pose.position.z + target3[
-                                2].pose.position.z) / 3.0
-                            # 计算航向和俯仰平均值：根据当前位姿
-                            _, pitch1, yaw1 = euler_from_quaternion([
-                                target1[1].pose.orientation.x,
-                                target1[1].pose.orientation.y,
-                                target1[1].pose.orientation.z,
-                                target1[1].pose.orientation.w
-                            ])
-                            _, pitch2, yaw2 = euler_from_quaternion([
-                                target2[1].pose.orientation.x,
-                                target2[1].pose.orientation.y,
-                                target2[1].pose.orientation.z,
-                                target2[1].pose.orientation.w
-                            ])
-                            _, pitch3, yaw3 = euler_from_quaternion([
-                                target3[1].pose.orientation.x,
-                                target3[1].pose.orientation.y,
-                                target3[1].pose.orientation.z,
-                                target3[1].pose.orientation.w
-                            ])
-                            avg_yaw = (yaw1 + yaw2 + yaw3) / 3.0
-                            avg_pitch = (pitch1 + pitch2 + pitch3) / 3.0
+                # if target1[0] > 0.5 and target2[0] > 0.5 and target3[0] > 0.5:
+                if self.xyz_distance(target1[3].pose.position, target2[3].pose.position) < max_position_interval and \
+                        self.xyz_distance(target2[3].pose.position, target3[3].pose.position) < max_position_interval and \
+                        self.xyz_distance(target1[3].pose.position, target3[3].pose.position) < max_position_interval:
+                    # 间距满足要求
+                    # 置信度满足要求
+                    if abs(target1[3].header.stamp.to_sec() - target2[
+                        3].header.stamp.to_sec()) < max_time_interval and \
+                            abs(target2[3].header.stamp.to_sec() - target3[
+                                3].header.stamp.to_sec()) < max_time_interval:
+                        # 时间间隔满足要求
+                        rospy.loginfo(f"{NODE_NAME}: 找到black rectangle: {target1[4]}, {target2[4]}, {target3[4]}")
+                        # 计算位置平均值：根据期望位姿
+                        avg_x = (target1[2].pose.position.x + target2[2].pose.position.x + target3[
+                            2].pose.position.x) / 3.0
+                        avg_y = (target1[2].pose.position.y + target2[2].pose.position.y + target3[
+                            2].pose.position.y) / 3.0
+                        avg_z = (target1[2].pose.position.z + target2[2].pose.position.z + target3[
+                            2].pose.position.z) / 3.0
+                        # 计算航向和俯仰平均值：根据当前位姿
+                        _, pitch1, yaw1 = euler_from_quaternion([
+                            target1[1].pose.orientation.x,
+                            target1[1].pose.orientation.y,
+                            target1[1].pose.orientation.z,
+                            target1[1].pose.orientation.w
+                        ])
+                        _, pitch2, yaw2 = euler_from_quaternion([
+                            target2[1].pose.orientation.x,
+                            target2[1].pose.orientation.y,
+                            target2[1].pose.orientation.z,
+                            target2[1].pose.orientation.w
+                        ])
+                        _, pitch3, yaw3 = euler_from_quaternion([
+                            target3[1].pose.orientation.x,
+                            target3[1].pose.orientation.y,
+                            target3[1].pose.orientation.z,
+                            target3[1].pose.orientation.w
+                        ])
+                        avg_yaw = (yaw1 + yaw2 + yaw3) / 3.0
+                        avg_pitch = (pitch1 + pitch2 + pitch3) / 3.0
 
-                            # 设置完目标位姿后，跳转到下一步即可
-                            self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_x-self.target_posestamped.pose.position.x)*forward_percent, 
-                                                                    y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
-                                                                    z=self.target_depth)
-                            # self.target_posestamped.pose.position = Point(x=avg_x, y=avg_y, z=self.target_depth)
-                            self.target_posestamped.pose.orientation = Quaternion(
-                                *quaternion_from_euler(0, self.pitch_offset, avg_yaw))
-                            # 清空队列，清空初始位置
-                            self.black_rectangle_queue = []
-                            rospy.loginfo(
-                                f"{NODE_NAME}: 黑色长方形位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d=0.00m,yaw={np.degrees(avg_yaw)}°")
-                            return True
+                        # 设置完目标位姿后，跳转到下一步即可
+                        self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_x-self.target_posestamped.pose.position.x)*forward_percent, 
+                                                                y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
+                                                                z=self.target_depth)
+                        # self.target_posestamped.pose.position = Point(x=avg_x, y=avg_y, z=self.target_depth)
+                        self.target_posestamped.pose.orientation = Quaternion(
+                            *quaternion_from_euler(0, self.pitch_offset, avg_yaw))
+                        # 清空队列，清空初始位置
+                        self.black_rectangle_queue = []
+                        rospy.loginfo(
+                            f"{NODE_NAME}: 黑色长方形位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d=0.00m,yaw={np.degrees(avg_yaw)}°")
+                        return True
             self.black_rectangle_queue.pop(0)
         return False
 
@@ -798,37 +812,37 @@ class Task4Node:
             target1 = self.green_circle_queue[0]
             target2 = self.green_circle_queue[1] 
             target3 = self.green_circle_queue[2]
-            if target1[0] > min_conf and target2[0] > min_conf and target3[0] > min_conf:
-                if (self.xyz_distance(target1[3].pose.position, target2[3].pose.position) < max_position_interval and 
-                    self.xyz_distance(target2[3].pose.position, target3[3].pose.position) < max_position_interval and 
-                    self.xyz_distance(target1[3].pose.position, target3[3].pose.position) < max_position_interval):
+            # if target1[0] > min_conf and target2[0] > min_conf and target3[0] > min_conf:
+            if (self.xyz_distance(target1[3].pose.position, target2[3].pose.position) < max_position_interval and 
+                self.xyz_distance(target2[3].pose.position, target3[3].pose.position) < max_position_interval and 
+                self.xyz_distance(target1[3].pose.position, target3[3].pose.position) < max_position_interval):
+                
+                if (abs(target1[3].header.stamp.to_sec() - target2[3].header.stamp.to_sec()) < max_time_interval and 
+                    abs(target2[3].header.stamp.to_sec() - target3[3].header.stamp.to_sec()) < max_time_interval):
                     
-                    if (abs(target1[3].header.stamp.to_sec() - target2[3].header.stamp.to_sec()) < max_time_interval and 
-                        abs(target2[3].header.stamp.to_sec() - target3[3].header.stamp.to_sec()) < max_time_interval):
+                    # 计算平均位置
+                    avg_x = (target1[2].pose.position.x + target2[2].pose.position.x + target3[2].pose.position.x) / 3.0
+                    avg_y = (target1[2].pose.position.y + target2[2].pose.position.y + target3[2].pose.position.y) / 3.0
+                    avg_z = (target1[2].pose.position.z + target2[2].pose.position.z + target3[2].pose.position.z) / 3.0
+                    
+                    # 计算平均航向
+                    _, _, yaw1 = euler_from_quaternion([target1[1].pose.orientation.x, target1[1].pose.orientation.y, target1[1].pose.orientation.z, target1[1].pose.orientation.w])
+                    _, _, yaw2 = euler_from_quaternion([target2[1].pose.orientation.x, target2[1].pose.orientation.y, target2[1].pose.orientation.z, target2[1].pose.orientation.w])
+                    _, _, yaw3 = euler_from_quaternion([target3[1].pose.orientation.x, target3[1].pose.orientation.y, target3[1].pose.orientation.z, target3[1].pose.orientation.w])
+                    avg_yaw = (yaw1 + yaw2 + yaw3) / 3.0
+                    
+                    # 设置目标位置
+                    self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_x-self.target_posestamped.pose.position.x)*forward_percent, 
+                                                                y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
+                                                                z=self.start_point.pose.position.z) # X,Y前进一个百分比，z不变，但把z赋值给最终目标
+                    self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, avg_yaw))
+                    
+                    # 清空队列
+                    self.green_circle_queue = []
+                    rospy.loginfo(
+                            f"{NODE_NAME}: 绿色圆形位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d={self.target_depth}m,yaw={np.degrees(avg_yaw)}°")
+                    return True
                         
-                        # 计算平均位置
-                        avg_x = (target1[2].pose.position.x + target2[2].pose.position.x + target3[2].pose.position.x) / 3.0
-                        avg_y = (target1[2].pose.position.y + target2[2].pose.position.y + target3[2].pose.position.y) / 3.0
-                        avg_z = (target1[2].pose.position.z + target2[2].pose.position.z + target3[2].pose.position.z) / 3.0
-                        
-                        # 计算平均航向
-                        _, _, yaw1 = euler_from_quaternion([target1[1].pose.orientation.x, target1[1].pose.orientation.y, target1[1].pose.orientation.z, target1[1].pose.orientation.w])
-                        _, _, yaw2 = euler_from_quaternion([target2[1].pose.orientation.x, target2[1].pose.orientation.y, target2[1].pose.orientation.z, target2[1].pose.orientation.w])
-                        _, _, yaw3 = euler_from_quaternion([target3[1].pose.orientation.x, target3[1].pose.orientation.y, target3[1].pose.orientation.z, target3[1].pose.orientation.w])
-                        avg_yaw = (yaw1 + yaw2 + yaw3) / 3.0
-                        
-                        # 设置目标位置
-                        self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_x-self.target_posestamped.pose.position.x)*forward_percent, 
-                                                                    y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
-                                                                    z=self.start_point.pose.position.z) # X,Y前进一个百分比，z不变，但把z赋值给最终目标
-                        self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, avg_yaw))
-                        
-                        # 清空队列
-                        self.green_circle_queue = []
-                        rospy.loginfo(
-                                f"{NODE_NAME}: 绿色圆形位置设置为: n={avg_x:.2f}m, e={avg_y:.2f}m, d={self.target_depth}m,yaw={np.degrees(avg_yaw)}°")
-                        return True
-                            
             self.green_circle_queue.pop(0)
         return False
 
@@ -939,6 +953,20 @@ class Task4Node:
         rospy.loginfo(f"{NODE_NAME}: 任务完成，发布完成消息")
         rospy.signal_shutdown("任务完成")
         return True
+    
+    def arrive_end(self,max_xyz_dist=0.5,max_yaw_dist=np.radians(15)):
+        """
+        判断是否到达终点
+        通过当前位姿和目标位姿的距离判断
+
+        Parameters:
+            max_xyz_dist: 最大位置误差，用于判断是否到达
+            max_yaw_dist: 最大航向误差，用于判断是否到达
+        """
+        current_pose = self.get_current_pose()
+        if current_pose is None:
+            return False
+        return self.is_arrival(current_pose=current_pose,target_pose=self.end_point, max_xyz_dist=max_xyz_dist, max_yaw_dist=max_yaw_dist)
     ###############################################逻辑层#################################
 
     ###############################################主循环#################################
@@ -948,6 +976,8 @@ class Task4Node:
         self.sensor[2] = 255 # 保持舵机关闭
         self.sensor[0] = 0 # 关闭红灯
         self.sensor[1] = 0 # 关闭绿灯
+        self.sensor[3] = 0 # 关闭补光灯1
+        self.sensor[4] = 0 # 关闭补光灯2
         self.control_device()
         # self.target_depth = self.target_depth + 0.07
         while not rospy.is_shutdown():
@@ -957,14 +987,18 @@ class Task4Node:
                     self.step = 1
                     rospy.loginfo("task4 node: 到达初始位置，开始跟踪轨迹")
             elif self.step == 1:  # 跟踪轨迹
+                # TODO 根据实际顺序调整检测顺序
                 if self.detect_green_circle(forward_percent=0.7) and not self.done[0] == 1: # 如果检测到绿色圆形目标点，则进入5
                     self.step = 5
                 if self.detect_black_rectangle(forward_percent=0.7) and not self.done[1] == 1: # 如果检测到黑色方形目标点，则进入4
                     self.step = 4
                 if self.detect_yellow_triangle(forward_percent=0.7) and not self.done[2] == 1: # 如果检测到黄色三角形目标点，则进入3
                     self.step = 3
+                if self.arrive_end(max_xyz_dist=0.5,max_yaw_dist=np.radians(20)):
+                    self.step = 7 # 如果到达终点，进入7
                 if self.move_to_target(max_xyz_dist=0.15,max_yaw_dist=np.radians(2)): # 移动到目标点，不管到没到达，都开始下一次搜索，如果搜索到了就会回来，否则就会继续搜索，
                     self.step = 2
+                
                 # if self.track_count==3:
                 #     self.step = 6
                 #     continue

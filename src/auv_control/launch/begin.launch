@@ -1,6 +1,7 @@
 <launch>
     <!-- <include file="$(find auv_control)/launch/param.launch" /> -->
-    <include file="$(find auv_control)/launch/param2.launch" />
+    <!-- <include file="$(find auv_control)/launch/param_test.launch" /> -->
+    <include file="$(find auv_control)/launch/param_competition.launch" />
     <!-- <node pkg="auv_control" type="main_driver.py" name="main_driver" output="screen" /> -->
     <node pkg="auv_control" type="sensor_driver.py" name="sensor_driver" output="screen" >
         <param name="sensor_ip" value="192.168.1.115" />

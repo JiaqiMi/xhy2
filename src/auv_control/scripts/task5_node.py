@@ -12,6 +12,8 @@
     完成初版task5_node.py
 2025.8.6 22:06
     final check
+2025.8.11 03:14
+    update(ascend): 更新阈值为0.15
 """
 
 import rospy
@@ -316,7 +318,7 @@ class Task5Node:
             self.target_posestamped = current_pose
             self.target_posestamped.pose.position.z = 0.0  # 上浮到水面
             
-            return self.move_to_target(max_dist=0.1)  # 使用更小的距离阈值
+            return self.move_to_target(max_dist=0.15)  # 使用更小的距离阈值
             
         except tf.Exception as e:
             rospy.logwarn(f"{NODE_NAME}: 上浮失败: {e}")
