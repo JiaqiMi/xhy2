@@ -20,6 +20,9 @@
     完善注释和驱动
 2025.8.6 17:04
     final check
+2025.8.11 03:24
+    fix(target_detection_callback): 删掉距离判断
+    fix(run): 关闭补光灯
 """
 
 import rospy
@@ -334,61 +337,61 @@ class Task2Node:
         """
         rospy.loginfo(f"{NODE_NAME}: 检测到 {msg.class_name},{msg.pose.pose.position.x},{msg.pose.pose.position.y},{msg.pose.pose.position.z}")
         if msg.class_name == self.target_color: # 是对应的颜色
-            point_in_camera = msg.pose.pose.position # 相机坐标系下目标点
-            origin_in_camera = Point(x=0, y=0, z=0)  # 相机坐标系下的原点
-            if self.xyz_distance(point_in_camera, origin_in_camera) < 5.0: # 最远距离小于5m
-                try:
-                    # 将目标点从camera坐标系转换到各个坐标系
-                    self.tf_listener.waitForTransform("map", msg.pose.header.frame_id, msg.pose.header.stamp, rospy.Duration(1.0))
-                    target_in_map = self.tf_listener.transformPose("map", msg.pose) # 目标点在map下
-                    target_in_base = self.tf_listener.transformPose("base_link", msg.pose) # 目标点在base_link下
-                    
-                    # 获取auv当前位姿
-                    current_pose = self.get_current_pose()
-                    if current_pose is None:
-                        return
-                    # 根据target_in_map 和current_pose 计算两者的指向作为航向
-                    p0 = np.array([current_pose.pose.position.x, current_pose.pose.position.y, current_pose.pose.position.z])
-                    p1 = np.array([target_in_map.pose.position.x, target_in_map.pose.position.y, target_in_map.pose.position.z])
-                    direction = p1 - p0
-                    direction_xy = direction[:2]
-                    direction_xy_norm = np.linalg.norm(direction_xy)
-                    # 计算期望的航向角(前进方向)
-                    if direction_xy_norm > 0:
-                        # 直接使用向量计算航向角，np.arctan2已经返回[-π, π]范围的角度
-                        desired_yaw = np.arctan2(direction_xy[1], direction_xy[0])
-                    else:
-                        # 如果水平距离为0（目标在正上方或正下方），保持当前航向
-                        current_yaw = euler_from_quaternion([
-                            current_pose.pose.orientation.x,
-                            current_pose.pose.orientation.y,
-                            current_pose.pose.orientation.z,
-                            current_pose.pose.orientation.w
-                        ])[2]
-                        desired_yaw = current_yaw
+            # point_in_camera = msg.pose.pose.position # 相机坐标系下目标点
+            # origin_in_camera = Point(x=0, y=0, z=0)  # 相机坐标系下的原点
+            # if self.xyz_distance(point_in_camera, origin_in_camera) < 5.0: # 最远距离小于5m
+            try:
+                # 将目标点从camera坐标系转换到各个坐标系
+                self.tf_listener.waitForTransform("map", msg.pose.header.frame_id, msg.pose.header.stamp, rospy.Duration(1.0))
+                target_in_map = self.tf_listener.transformPose("map", msg.pose) # 目标点在map下
+                target_in_base = self.tf_listener.transformPose("base_link", msg.pose) # 目标点在base_link下
+                
+                # 获取auv当前位姿
+                current_pose = self.get_current_pose()
+                if current_pose is None:
+                    return
+                # 根据target_in_map 和current_pose 计算两者的指向作为航向
+                p0 = np.array([current_pose.pose.position.x, current_pose.pose.position.y, current_pose.pose.position.z])
+                p1 = np.array([target_in_map.pose.position.x, target_in_map.pose.position.y, target_in_map.pose.position.z])
+                direction = p1 - p0
+                direction_xy = direction[:2]
+                direction_xy_norm = np.linalg.norm(direction_xy)
+                # 计算期望的航向角(前进方向)
+                if direction_xy_norm > 0:
+                    # 直接使用向量计算航向角，np.arctan2已经返回[-π, π]范围的角度
+                    desired_yaw = np.arctan2(direction_xy[1], direction_xy[0])
+                else:
+                    # 如果水平距离为0（目标在正上方或正下方），保持当前航向
+                    current_yaw = euler_from_quaternion([
+                        current_pose.pose.orientation.x,
+                        current_pose.pose.orientation.y,
+                        current_pose.pose.orientation.z,
+                        current_pose.pose.orientation.w
+                    ])[2]
+                    desired_yaw = current_yaw
 
-                    # 将目标从camera坐标系转换到hand坐标系，然后再转到map坐标系
-                    # 这样可以直接得到hand应该到达的位置
-                    target_in_hand = self.tf_listener.transformPose("hand", msg.pose) # 目标点在hand下
-                    target_in_hand.header.frame_id = "base_link"
-                    dist = self.xyz_distance(Point(x=0,y=0,z=0),target_in_hand.pose.position)                    
-                    # rospy.loginfo(f"{NODE_NAME}: 目标点在hand下: {target_in_hand.pose.position.x:.2f}, {target_in_hand.pose.position.y:.2f}, {target_in_hand.pose.position.z:.2f}")
-                    hand_target_in_map = self.tf_listener.transformPose("map", target_in_hand)
-                    
-                    # 期望位姿就是让base_link移动到使得hand到达目标位置
-                    expected_pose = PoseStamped()
-                    expected_pose.header.frame_id = "map"
-                    expected_pose.header.stamp = rospy.Time.now()
-                    expected_pose.pose.position = hand_target_in_map.pose.position
-                    expected_pose.pose.orientation = Quaternion(*quaternion_from_euler(0,self.pitch_offset, desired_yaw)) # 期望航向是前进方向
+                # 将目标从camera坐标系转换到hand坐标系，然后再转到map坐标系
+                # 这样可以直接得到hand应该到达的位置
+                target_in_hand = self.tf_listener.transformPose("hand", msg.pose) # 目标点在hand下
+                target_in_hand.header.frame_id = "base_link"
+                dist = self.xyz_distance(Point(x=0,y=0,z=0),target_in_hand.pose.position)                    
+                # rospy.loginfo(f"{NODE_NAME}: 目标点在hand下: {target_in_hand.pose.position.x:.2f}, {target_in_hand.pose.position.y:.2f}, {target_in_hand.pose.position.z:.2f}")
+                hand_target_in_map = self.tf_listener.transformPose("map", target_in_hand)
+                
+                # 期望位姿就是让base_link移动到使得hand到达目标位置
+                expected_pose = PoseStamped()
+                expected_pose.header.frame_id = "map"
+                expected_pose.header.stamp = rospy.Time.now()
+                expected_pose.pose.position = hand_target_in_map.pose.position
+                expected_pose.pose.orientation = Quaternion(*quaternion_from_euler(0,self.pitch_offset, desired_yaw)) # 期望航向是前进方向
 
-                    # 加入队列
-                    self.queue.append((msg.conf, current_pose, expected_pose, target_in_map, target_in_base, target_in_hand))
-                    # rospy.loginfo(f"{NODE_NAME}: 加入队列 (conf={msg.conf:.2f})")
-                    rospy.loginfo(f"{NODE_NAME}: 目标点在hand下: {target_in_hand.pose.position.x:.2f}, {target_in_hand.pose.position.y:.2f}, {target_in_hand.pose.position.z:.2f}")
-                    rospy.loginfo(f"{NODE_NAME}: 加入队列 (conf={msg.conf:.2f}), 期望航向{np.degrees(desired_yaw)}, distance in hand: {dist}")
-                except tf.Exception as e:
-                    rospy.logwarn(f"{NODE_NAME}: 坐标转换失败: {e}")
+                # 加入队列
+                self.queue.append((msg.conf, current_pose, expected_pose, target_in_map, target_in_base, target_in_hand))
+                # rospy.loginfo(f"{NODE_NAME}: 加入队列 (conf={msg.conf:.2f})")
+                rospy.loginfo(f"{NODE_NAME}: 目标点在hand下: {target_in_hand.pose.position.x:.2f}, {target_in_hand.pose.position.y:.2f}, {target_in_hand.pose.position.z:.2f}")
+                rospy.loginfo(f"{NODE_NAME}: 加入队列 (conf={msg.conf:.2f}), 期望航向{np.degrees(desired_yaw)}, distance in hand: {dist}")
+            except tf.Exception as e:
+                rospy.logwarn(f"{NODE_NAME}: 坐标转换失败: {e}")
     ###############################################回调层#################################
     
     
@@ -646,7 +649,7 @@ class Task2Node:
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 1
             elif self.step== 1:
-                if self.open_light(light1=50,light2=50):                   
+                if self.open_light(light1=0,light2=0):                   
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 2
             elif self.step == 2:
