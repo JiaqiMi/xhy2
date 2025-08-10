@@ -55,7 +55,7 @@
     -->
     <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node" output="screen">
         <param name="mode" value="2" />
-        <param name="exp_env" value="water" />
+        <param name="exp_env" value="air" />
         <param name="is_visual" value="0" />
         <param name="conf_thre" value="0.5" />
     </node>

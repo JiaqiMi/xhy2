@@ -1,0 +1,44 @@
+<launch>
+    <arg name="color" default="red" />
+
+    <!-- 下潜的深度-->
+    <param name="depth" type ="double" value="0.0" />
+    <param name="pitch_offset" type="double" value="1.5" />
+    
+    <!-- task1: 记录三个点 -->
+    <param name="detect_door" type="bool" value="false" />
+    <param name="task1_target_class" type="string" value="$(arg color)" />
+    <!-- task1：第一个点，任务初始点 -->
+    <param name="task1_point0" type="yaml" value="[0.0, -0.0, 0.0, 108.9]" /> 
+    <!-- task1：第二个点，红色门的点 -->
+    <param name="task1_pointred" type="yaml" value="[0.0, -0, 0.0, 108.9]" />
+    <!-- task1：第三个点，蓝色门的点 -->
+    <param name="task1_pointblue" type="yaml" value="[0.0, -0.0, 0.0, 108.9]" />
+
+    <!-- task2：寻找目标释放作业任务：点1 单位 m/m/m/° -->
+    <param name="task2_point0" type="yaml" value="[0.0, -0.0, 0.0, 108.9]" />
+    <!-- task2：寻找目标释放作业任务：目标监测class -->
+    <param name="task2_target_class" type="string" value="black" />
+    <!-- <param name="task2_target_yaw" type="double" value="0.0" /> -->
+
+    <!-- 任务3：夹小球 -->
+    <!-- 夹球的高度要比其他的高度高3cm -->
+    <param name="task3_point0" type="yaml" value="[0.0, -0.0, 0.0, 108.9]" />
+    <!-- 高度提高3cm -->
+    <!-- <param name="task3_target_yaw" type="double" value="-180.0" /> -->
+    <param name="task3_target_class" type="string" value="red"  />
+    <param name="search2_max_dist" type="double" value="0.8" />
+
+    <!-- 任务4 巡线 --> 
+    <!-- 深度应该比标准深度深10cm -->
+    <param name="task4_point0" type="yaml" value="[0.0, -0.0, 0.0, 108.9]" />
+    <param name="task4_point1" type="yaml" value="[0.0, -0.0, 0.0, 108.9]" />
+    <param name="task4_target_shape1" type="string" value="triangle" />
+    <param name="task4_target_shape2" type="string" value="rectangle" />
+    <param name="task4_target_shape3" type="string" value="circle" />  
+    <param name="task4_target_shape" type="string" value="track" />
+
+    <!-- 任务5 上浮目标点 -->
+    <param name="task5_point0" type="yaml" value="[0.0, -0.0, 0.0, 108.9]" />
+    
+</launch>

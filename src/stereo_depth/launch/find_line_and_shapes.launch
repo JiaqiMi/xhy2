@@ -3,10 +3,7 @@
     <!-- <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" /> -->
 
     <!-- 图像左右分割节点 -->
-    <!-- <node pkg="stereo_splitter" type="split_image_info.py" name="split_stereo_image" output="screen" />
-        <param name="left_camera_yaml" value="/home/xhy/catkin_ws/camera/left_nc_water_0727.yaml"/>
-        <param name="right_camera_yaml" value="/home/xhy/catkin_ws/camera/right_nc_water_0727.yaml"/>
-        <param name="input_image_topic" value="/usb_cam/image_raw"/> -->
+    <!-- <node pkg="stereo_splitter" type="split_stereo_image.py" name="split_stereo_image" output="screen" /> -->
 
     <!-- 左目图像去畸变 -->
     <!-- <node pkg="image_proc" type="image_proc" name="left_image_proc" output="screen">
@@ -36,7 +33,7 @@
         conf_thre: 置信度阈值
         detc_type: 检测类型, center: 中心点检测, bbox: 边界框检测, quartiles: 四分位检测
     -->
-    <node pkg="yolo_bridge" type="yolo_bridge_wrapper.sh" name="yolov8_node" output="screen" launch-prefix="bash" >
+    <node pkg="yolo_bridge" type="yolo_bridge_wrapper1.sh" name="yolov8_node1" output="screen" launch-prefix="bash" >
         <param name="detect_mode" value="4" />
         <param name="top_k" value="3" />
         <param name="visualization" value="0" />
@@ -51,9 +48,9 @@
         conf_thre: confidence threshold
         is_visual: 0|1
     -->
-    <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node" output="screen">
+    <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node1" output="screen">
         <param name="mode" value="3" />
-        <param name="exp_env" value="water" />
+        <param name="exp_env" value="air" />
         <param name="is_visual" value="0" />
         <param name="conf_thre" value="0.3" />
     </node>
@@ -66,7 +63,7 @@
         conf_thre: 置信度阈值
         detc_type: 检测类型, center: 中心点检测, bbox: 边界框检测, quartiles: 四分位检测
     -->
-    <node pkg="yolo_bridge" type="yolo_bridge_wrapper.sh" name="yolov8_node" output="screen" launch-prefix="bash" >
+    <node pkg="yolo_bridge" type="yolo_bridge_wrapper2.sh" name="yolov8_node2" output="screen" launch-prefix="bash" >
         <param name="detect_mode" value="1" />
         <param name="top_k" value="3" />
         <param name="visualization" value="0" />
@@ -81,9 +78,9 @@
         conf_thre: confidence threshold
         is_visual: 0|1
     -->
-    <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node" output="screen">
+    <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node2" output="screen">
         <param name="mode" value="1" />
-        <param name="exp_env" value="water" />
+        <param name="exp_env" value="air" />
         <param name="is_visual" value="0" />
         <param name="conf_thre" value="0.5" />
     </node>
