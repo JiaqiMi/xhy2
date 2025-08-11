@@ -719,10 +719,10 @@ class Task3Node:
                     rospy.loginfo(f"{NODE_NAME}: 下沉完毕")
             elif self.step == 3:  # 抓取目标
                 if self.grab_target():
-                    self.step = 5
+                    self.step = 6 # NOTE 直接跳转到6
                     rospy.loginfo(f"{NODE_NAME}: 抓取完成，返回初始位置")
             elif self.step == 5:  # 回到初始任务点
-                if self.move_to_end_pose(max_xy_step=2,max_z_step=0.1,max_yaw_step=np.radians(5), # 运动步长设置
+                if self.move_to_end_pose(max_xy_step=2,Wmax_z_step=0.1,max_yaw_step=np.radians(5), # 运动步长设置
                                         max_xyz_dist=0.2,max_yaw_dist=np.radians(0.2)):
                     self.step = 6
                     rospy.loginfo(f"{NODE_NAME}: 返回结束位置，任务结束")

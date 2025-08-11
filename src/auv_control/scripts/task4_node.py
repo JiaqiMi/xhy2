@@ -1010,8 +1010,8 @@ class Task4Node:
                 if self.done[0]==1 and self.done[1]==1 and self.done[2]==1:  # 如果所有任务都完成了
                     self.step = 7 # 进入完成任务步骤
                     rospy.loginfo("task4 node: 所有任务完成，进入完成任务步骤")
-                if self.follow_track(max_rotate_rad=np.radians(17.5),rotate_step = np.radians(0.5),forward_percent=0.9): # 原地搜索轨迹，找到目标返回True，否则原地搜索
-                    self.step = 1
+                if self.follow_track(max_rotate_rad=np.radians(25),rotate_step = np.radians(0.5),forward_percent=0.9): # 原地搜索轨迹，找到目标返回True，否则原地搜索
+                    self.step = 1 # NOTE 扩大搜索角度
                 # if len(self.yellow_triangle_queue) > 0 and self.round==False:
                 #     rospy.loginfo("task4 node: 找到黄色三方形目标点，开始移动到目标位置")
                 #     if self.detecte_yellow_triangle():

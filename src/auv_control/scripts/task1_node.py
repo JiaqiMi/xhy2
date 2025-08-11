@@ -605,7 +605,7 @@ class Task1Node:
                 rospy.loginfo(f"{NODE_NAME}: 已计算前进1米后的目标点, 进入步骤5")
             elif self.step == 5:
                 if self.move_to_target(): # 运动到目标点
-                    self.step = 6
+                    self.step = 8 # NOTE 直接跳转到8
                     rospy.loginfo(f"{NODE_NAME}: 已到达目标点, 进入步骤6")
             elif self.step == 6:
                 if self.rotate360(): # 原地旋转一圈
