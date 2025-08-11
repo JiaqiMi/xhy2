@@ -41,7 +41,7 @@ class StereoDepthNode:
         if self.exp_env == 'air':
             camera_params_file = '/home/xhy/catkin_ws/cameras/ost_new_camera_air.txt'
         elif self.exp_env == 'water':
-            camera_params_file = '/home/xhy/catkin_ws/cameras/ost_new_camera_water_0807.txt'
+            camera_params_file = '/home/xhy/catkin_ws/cameras/ost_new_camera_water_0811.txt'
         else:
             rospy.logerr(f"Invalid exp_env: {self.exp_env}, use water or air.")
             return

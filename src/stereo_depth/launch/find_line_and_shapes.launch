@@ -50,9 +50,9 @@
     -->
     <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node1" output="screen">
         <param name="mode" value="3" />
-        <param name="exp_env" value="air" />
+        <param name="exp_env" value="water" />
         <param name="is_visual" value="0" />
-        <param name="conf_thre" value="0.3" />
+        <param name="conf_thre" value="0.5" />
     </node>
 
     <!-- 形状检测 -->
@@ -80,7 +80,7 @@
     -->
     <node pkg="stereo_depth" type="stereo_depth_node.py" name="stereo_depth_node2" output="screen">
         <param name="mode" value="1" />
-        <param name="exp_env" value="air" />
+        <param name="exp_env" value="water" />
         <param name="is_visual" value="0" />
         <param name="conf_thre" value="0.5" />
     </node>
