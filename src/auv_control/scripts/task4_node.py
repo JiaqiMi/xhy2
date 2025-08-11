@@ -23,6 +23,8 @@
     fix(detect_yellow_triangle): 删掉置信度判断
     fix(detect_black_rectangle): 删掉置信度判断
     fix(detect_green_circle): 删掉置信度判断
+2025.8.12 19:21
+    add(update_depth): 增加深度插值
 """
 import rospy
 import tf
@@ -85,6 +87,10 @@ class Task4Node:
         start_point_from_param = rospy.get_param('/task4_point0', [0.5, -0.5, 0.15, 0.0])  # 默认值
         end_point_from_param = rospy.get_param('/task4_point1', [0.5, -0.5, 0.15, 0.0])  # 默认值
         self.target_depth = start_point_from_param[2]  # 任务深度，单位米
+        self.e0 = start_point_from_param[1]
+        self.e1 = end_point_from_param[1]
+        self.d0 = start_point_from_param[2]
+        self.d1 = end_point_from_param[2]
         self.yellow_triangle = rospy.get_param('/task4_target_shape1', 'triangle')  # 检测目标名称
         self.black_rectangle = rospy.get_param('/task4_target_shape2', 'rectangle')  # 检测目标名称
         self.green_circle = rospy.get_param('/task4_target_shape3', 'circle')  # 检测目标名称
@@ -592,6 +598,7 @@ class Task4Node:
                                                         y=self.target_posestamped.pose.position.y + (self.track_target.pose.position.y-self.target_posestamped.pose.position.y)*forward_percent, 
                                                         z=self.target_depth)    
             self.target_posestamped.pose.position.z = self.target_depth
+            self.update_depth()
             rospy.loginfo(f"{NODE_NAME}: 跟踪轨迹目标更新 n={self.target_posestamped.pose.position.x:.2f}, e={self.target_posestamped.pose.position.y:.2f}, d={self.target_posestamped.pose.position.z:.2f}")
             # 运动到目标点
             # self.move_to_target(max_xyz_dist=max_xyz_dist, max_yaw_dist=max_yaw_dist)
@@ -726,6 +733,7 @@ class Task4Node:
                                                                 y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
                                                                 z =self.target_depth)
                         # self.target_posestamped.pose.position = Point(x=avg_x, y=avg_y, z=self.target_depth)
+                        self.update_depth()
                         self.target_posestamped.pose.orientation = Quaternion(
                             *quaternion_from_euler(0, self.pitch_offset, avg_yaw))
                         rospy.loginfo(
@@ -794,6 +802,7 @@ class Task4Node:
                                                                 y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
                                                                 z=self.target_depth)
                         # self.target_posestamped.pose.position = Point(x=avg_x, y=avg_y, z=self.target_depth)
+                        self.update_depth()
                         self.target_posestamped.pose.orientation = Quaternion(
                             *quaternion_from_euler(0, self.pitch_offset, avg_yaw))
                         # 清空队列，清空初始位置
@@ -835,6 +844,7 @@ class Task4Node:
                     self.target_posestamped.pose.position = Point(x=self.target_posestamped.pose.position.x + (avg_x-self.target_posestamped.pose.position.x)*forward_percent, 
                                                                 y=self.target_posestamped.pose.position.y + (avg_y-self.target_posestamped.pose.position.y)*forward_percent, 
                                                                 z=self.start_point.pose.position.z) # X,Y前进一个百分比，z不变，但把z赋值给最终目标
+                    self.update_depth()
                     self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, avg_yaw))
                     
                     # 清空队列
@@ -967,6 +977,35 @@ class Task4Node:
         if current_pose is None:
             return False
         return self.is_arrival(current_pose=current_pose,target_pose=self.end_point, max_xyz_dist=max_xyz_dist, max_yaw_dist=max_yaw_dist)
+    
+    def update_depth(self):
+        # 根据target_posestamped的e来线性化一个深度
+        current_y = self.target_posestamped.pose.position.y
+        
+        # 线性插值计算深度
+        # 当y=e0时，深度为d0；当y=e1时，深度为d1
+        if self.e1 != self.e0:  # 避免除零错误
+            # 计算插值比例
+            ratio = (current_y - self.e0) / (self.e1 - self.e0)
+            # 线性插值计算深度
+            interpolated_depth = self.d0 + ratio * (self.d1 - self.d0)
+        else:
+            # 如果e0和e1相等，使用d0作为深度
+            interpolated_depth = self.d0
+        
+        if current_y < self.e0:
+            # 如果当前y小于e0，使用d0作为深度
+            interpolated_depth = self.d0
+        if current_y > self.e1:
+            # 如果当前y大于e1，使用d1作为深度
+            interpolated_depth = self.d1
+
+        # 更新目标位置的深度
+        self.target_posestamped.pose.position.z = interpolated_depth
+        
+        # 可选：输出调试信息
+        rospy.loginfo_throttle(5, f"{NODE_NAME}: 位置y={current_y:.2f}, 插值深度={interpolated_depth:.3f} (e0={self.e0}, e1={self.e1}, d0={self.d0}, d1={self.d1})")
+
     ###############################################逻辑层#################################
 
     ###############################################主循环#################################
@@ -990,11 +1029,11 @@ class Task4Node:
                 # TODO 根据实际顺序调整检测顺序
                 if self.detect_green_circle(forward_percent=0.7) and not self.done[0] == 1: # 如果检测到绿色圆形目标点，则进入5
                     self.step = 5
-                if self.detect_black_rectangle(forward_percent=0.7) and not self.done[1] == 1: # 如果检测到黑色方形目标点，则进入4
+                elif self.detect_black_rectangle(forward_percent=0.7) and not self.done[1] == 1: # 如果检测到黑色方形目标点，则进入4
                     self.step = 4
-                if self.detect_yellow_triangle(forward_percent=0.7) and not self.done[2] == 1: # 如果检测到黄色三角形目标点，则进入3
+                elif self.detect_yellow_triangle(forward_percent=0.7) and not self.done[2] == 1: # 如果检测到黄色三角形目标点，则进入3
                     self.step = 3
-                if self.arrive_end(max_xyz_dist=0.5,max_yaw_dist=np.radians(20)):
+                elif self.arrive_end(max_xyz_dist=0.25,max_yaw_dist=np.radians(30)): # 判断的条件宽泛一些
                     self.step = 7 # 如果到达终点，进入7
                 if self.move_to_target(max_xyz_dist=0.15,max_yaw_dist=np.radians(2)): # 移动到目标点，不管到没到达，都开始下一次搜索，如果搜索到了就会回来，否则就会继续搜索，
                     self.step = 2
@@ -1006,11 +1045,11 @@ class Task4Node:
                 # if len(self.yellow_triangle_queue) > 0 or len(self.black_rectangle_queue) > 0 or len(self.green_circle_queue) > 0:
                 #     self.step = 2
             elif self.step == 2:  # 移动到目标位置
-                rospy.loginfo_throttle(10, f"{NODE_NAME}: {self.done}")
+                # rospy.loginfo_throttle(10, f"{NODE_NAME}: {self.done}")
                 if self.done[0]==1 and self.done[1]==1 and self.done[2]==1:  # 如果所有任务都完成了
                     self.step = 7 # 进入完成任务步骤
                     rospy.loginfo("task4 node: 所有任务完成，进入完成任务步骤")
-                if self.follow_track(max_rotate_rad=np.radians(25),rotate_step = np.radians(0.5),forward_percent=0.9): # 原地搜索轨迹，找到目标返回True，否则原地搜索
+                if self.follow_track(max_rotate_rad=np.radians(30),rotate_step = np.radians(0.5),forward_percent=0.9): # 原地搜索轨迹，找到目标返回True，否则原地搜索
                     self.step = 1 # NOTE 扩大搜索角度
                 # if len(self.yellow_triangle_queue) > 0 and self.round==False:
                 #     rospy.loginfo("task4 node: 找到黄色三方形目标点，开始移动到目标位置")

@@ -29,6 +29,8 @@
     同步task2完善注释和驱动
 2025.8.6 16:10
     final check
+2025.8.11 19:22
+    fix(run):跳过旋转步骤，直接结束
 """
 
 import rospy
@@ -289,7 +291,7 @@ class Task1Node:
         
         return next_pose
 
-    def move_to_target(self, max_xy_step=0.8, max_z_step=0.2, max_yaw_step=np.radians(5), max_xyz_dist=0.2, max_yaw_dist=np.radians(1)):
+    def move_to_target(self, max_xy_step=0.8, max_z_step=0.15, max_yaw_step=np.radians(5), max_xyz_dist=0.2, max_yaw_dist=np.radians(1)):
         """
         发送一次指令移动到目标位姿，通过生成平滑路径点实现
         
