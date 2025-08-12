@@ -31,6 +31,8 @@
     final check
 2025.8.11 19:22
     fix(run):跳过旋转步骤，直接结束
+2025.8.12 22:07
+    update(run):初始的下潜步长改为0.1
 """
 
 import rospy
@@ -583,7 +585,7 @@ class Task1Node:
                 self.step = 1 # 进入步骤1
                 rospy.loginfo(f"{NODE_NAME}: 已获取初始位姿, 进入步骤1")
             elif self.step == 1: # 第一步，下潜到指定深度，由宏定义确定，位置和姿态保持不变
-                if self.move_to_target():
+                if self.move_to_target(max_z_step=0.1):
                     self.step = 2 # 进入步骤2
                     rospy.loginfo(f"{NODE_NAME}: 已到达下潜位置, 进入步骤2")
             elif self.step == 2: # 第二步，移动到门前位置

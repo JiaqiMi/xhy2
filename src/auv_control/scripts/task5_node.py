@@ -14,11 +14,16 @@
     final check
 2025.8.11 03:14
     update(ascend): 更新阈值为0.15
+2025.8.12 21:33
+    fix(run): 持续上浮，不再进入完成阶段，直到超时
+    fix(run): 关闭各种传感器
+    update(ascend): 使用更慢的速度和更小的步长
 """
 
 import rospy
 import tf
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
+from auv_control.msg import TargetDetection, Control
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped, Point, Quaternion
 import numpy as np
@@ -38,7 +43,7 @@ class Task5Node:
         self.step = 0  # 程序运行阶段
         self.target_posestamped = PoseStamped()  # 期望位置消息定义
         self.start_point = PoseStamped()
-
+        self.sensor = [0] * 5 # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
         # 从参数服务器获取目标点位置
         self.start_point.header.frame_id = "map"
         start_point_from_param = rospy.get_param('/task5_point0', [-1.55, -7.97, 0.2, 90])  # 默认值
@@ -277,7 +282,7 @@ class Task5Node:
 
             # 判断是否到达
             if self.is_arrival(current_pose, self.target_posestamped, max_xyz_dist, max_yaw_dist):
-                rospy.loginfo("{NODE_NAME}: 已到达目标位置")
+                rospy.loginfo(f"{NODE_NAME}: 已到达目标位置")
                 return True
             
             # 航向控制和点控制统一起来
@@ -292,6 +297,13 @@ class Task5Node:
         except tf.Exception as e:
             rospy.logwarn(f"{NODE_NAME}: 移动失败: {e}")
             return False
+        
+    def control_device(self):
+        """发布一次外设报文"""
+        control_msg = Control(*self.sensor)
+        self.control_pub.publish(control_msg)
+        # NOTE 打印一下命令
+        rospy.loginfo(f"{NODE_NAME}: 发布外设控制: 红色led={self.sensor[0]}, 绿色led={self.sensor[1]}, 舵机={self.sensor[2]}, 补光灯1={self.sensor[3]}, 补光灯2={self.sensor[4]}")
     ############################################### 驱动层 #########################################        
 
     ############################################### 逻辑层 #########################################
@@ -305,7 +317,7 @@ class Task5Node:
         # self.target_posestamped = self.start_point
         self.target_posestamped.pose.position = self.start_point.pose.position
         self.target_posestamped.pose.orientation = self.start_point.pose.orientation
-        return self.move_to_target(max_yaw_dist=np.radians(120), max_xyz_dist=0.3)  # 使用更大的距离阈值和航向阈值
+        return self.move_to_target(max_yaw_dist=np.radians(120), max_xyz_dist=0.2)  # 使用更大的距离阈值和航向阈值
 
     def ascend(self):
         """上浮到水面"""
@@ -316,9 +328,9 @@ class Task5Node:
             
             # 设置上浮目标点（保持当前xy位置和姿态，改变z坐标）
             self.target_posestamped = current_pose
-            self.target_posestamped.pose.position.z = 0.0  # 上浮到水面
+            self.target_posestamped.pose.position.z = 0.12  # 只漏一个小头就可以
             
-            return self.move_to_target(max_dist=0.15)  # 使用更小的距离阈值
+            return self.move_to_target(max_dist=0.04,max_z_step=0.08,max_yaw_dist=np.radians(120))  # 使用更小的距离阈值
             
         except tf.Exception as e:
             rospy.logwarn(f"{NODE_NAME}: 上浮失败: {e}")
@@ -335,15 +347,19 @@ class Task5Node:
     ############################################### 主循环 #########################################
     def run(self):
         """主循环"""
+        self.sensor = [0,0,255,0,0]
+        self.control_device()
         while not rospy.is_shutdown():
             if self.step == 0:  # 移动到起始点
                 if self.move_to_start_point():
                     self.step = 1
                     rospy.loginfo("task5 node: 到达起始点，准备上浮")
             elif self.step == 1:  # 上浮
-                if self.ascend():
-                    self.step = 2
-                    rospy.loginfo("task5 node: 上浮完成，任务结束")
+                # if self.ascend():
+                self.ascend()
+                # self.step = 2
+                # rospy.loginfo("task5 node: 上浮完成，任务结束")
+                rospy.loginfo_throttle(2,f"{NODE_NAME}: 上浮中...")
             elif self.step == 2:  # 完成任务
                 self.finish_task()
                 break

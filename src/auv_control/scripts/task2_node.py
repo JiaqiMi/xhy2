@@ -23,6 +23,9 @@
 2025.8.11 03:24
     fix(target_detection_callback): 删掉距离判断
     fix(run): 关闭补光灯
+2025.8.12 21:51
+    update(run): 搜索的高度偏置改为-0.03
+    update(run): 最后倒退的平滑长度为3m
 """
 
 import rospy
@@ -285,7 +288,7 @@ class Task2Node:
 
             # 判断是否到达
             if self.is_arrival(current_pose, self.target_posestamped, max_xyz_dist, max_yaw_dist):
-                rospy.loginfo("{NODE_NAME}: 已到达目标位置")
+                rospy.loginfo(f"{NODE_NAME}: 已到达目标位置")
                 return True
             
             # 航向控制和点控制统一起来
@@ -653,13 +656,13 @@ class Task2Node:
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 2
             elif self.step == 2:
-                if self.search_target(max_rotate_rad=np.radians(25),depth_bias = -0.05,rotate_step=np.radians(0.5),max_yaw_dist=np.radians(0.2),
+                if self.search_target(max_rotate_rad=np.radians(25),depth_bias = -0.03,rotate_step=np.radians(0.5),max_yaw_dist=np.radians(0.2),
                                     point_num =5): # 记录到足够的目标点位置后，跳到step2              
                     # NOTE 点的数量增加2个    
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 3
             elif self.step == 3:
-                if self.move_to_target(max_xyz_dist=0.15,max_xy_step=1.8,max_yaw_dist=np.radians(1.5)): # 如果移动到了工作目标位置，则跳到step3                
+                if self.move_to_target(max_z_step=0.1,max_xyz_dist=0.15,max_xy_step=3,max_yaw_dist=np.radians(1.5)): # 如果移动到了工作目标位置，则跳到step3                
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 4
             elif self.step == 4:
@@ -667,7 +670,7 @@ class Task2Node:
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 5               
             elif self.step == 5:
-                if self.move_to_end_pose(max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2),max_xy_step=3):
+                if self.move_to_end_pose(max_z_step=0.1,max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2),max_xy_step=3):
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 6
             elif self.step == 6:

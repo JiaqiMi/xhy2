@@ -23,8 +23,10 @@
     fix(detect_yellow_triangle): 删掉置信度判断
     fix(detect_black_rectangle): 删掉置信度判断
     fix(detect_green_circle): 删掉置信度判断
-2025.8.12 19:21
+2025.8.11 19:21
     add(update_depth): 增加深度插值
+2025.8.12 21:37
+    update(run): 修改搜索角度为正负50度
 """
 import rospy
 import tf
@@ -1049,7 +1051,7 @@ class Task4Node:
                 if self.done[0]==1 and self.done[1]==1 and self.done[2]==1:  # 如果所有任务都完成了
                     self.step = 7 # 进入完成任务步骤
                     rospy.loginfo("task4 node: 所有任务完成，进入完成任务步骤")
-                if self.follow_track(max_rotate_rad=np.radians(30),rotate_step = np.radians(0.5),forward_percent=0.9): # 原地搜索轨迹，找到目标返回True，否则原地搜索
+                if self.follow_track(max_rotate_rad=np.radians(50),rotate_step = np.radians(0.5),forward_percent=0.9): # 原地搜索轨迹，找到目标返回True，否则原地搜索
                     self.step = 1 # NOTE 扩大搜索角度
                 # if len(self.yellow_triangle_queue) > 0 and self.round==False:
                 #     rospy.loginfo("task4 node: 找到黄色三方形目标点，开始移动到目标位置")

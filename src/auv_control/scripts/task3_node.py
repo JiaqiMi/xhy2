@@ -16,8 +16,9 @@
     完善夹球逻辑
 2025.8.6 17:35
     final check
-2025.8.11 19:22
-    TODO 二阶段前进55%，待确认
+2025.8.12 21:45
+    二阶段前进70%
+    update(run): 两个阶段的搜索角度改为正负20和正负4°，目标深度零偏改为0.08
 """
 import rospy
 import tf
@@ -690,7 +691,7 @@ class Task3Node:
                 if self.open_light(0, 0): 
                     self.step = 10  
             elif self.step == 10: # 搜索目标
-                if self.search_target(max_rotate_rad=np.radians(15),rotate_step=np.radians(0.5), # 搜索运动设置
+                if self.search_target(max_rotate_rad=np.radians(20),rotate_step=np.radians(0.5), # 搜索运动设置
                                     min_conf=0.5,max_time_interval=5.0,max_position_interval=0.5, # 目标阈值设置
                                     depth_bias = -0.05,forward_percent=0.35, # 目标点设置，深度偏置和水平偏置
                                     max_xyz_dist=0.15,max_yaw_dist=np.radians(0.2),point_num=3):
@@ -705,7 +706,7 @@ class Task3Node:
             elif self.step == 11: # 第二次搜索，运动90%，搜索角度变小
                 if self.search_target(max_rotate_rad=np.radians(2.5),rotate_step=np.radians(0.5), # 搜索运动设置
                                     min_conf=0.5,max_time_interval=5.0,max_position_interval=0.5, # 目标阈值设置
-                                    depth_bias = 0.05,forward_percent=0.7, # 目标点设置，深度偏置和水平偏置 NOTE 改成80%了
+                                    depth_bias = 0.08,forward_percent=0.7, # 目标点设置，深度偏置和水平偏置 NOTE 改成70%了
                                     max_xyz_dist=0.15,max_yaw_dist=np.radians(0.2),point_num=5):
                     self.step = 12
                     rospy.loginfo(f"{NODE_NAME}: 找到目标，开始移动第二次")
