@@ -29,7 +29,7 @@ class YOLOv8Node:
         model_list = [
             "/home/xhy/catkin_ws/models/shapes_model0811_eve.pt",
             "/home/xhy/catkin_ws/models/holes_model0811.pt",
-            "/home/xhy/catkin_ws/models/balls_model0812.pt",
+            "/home/xhy/catkin_ws/models/balls_model0813.pt",
             "/home/xhy/catkin_ws/models/line_mask_0811_eve.pt",
         ]
         if 1 <= self.detect_mode <= len(model_list):

@@ -143,7 +143,7 @@ class StereoDepthNode:
         """主循环，处理图像和目标的深度计算"""
         while not rospy.is_shutdown():
             if self.left_img is None or self.conf is None:
-                rospy.loginfo_throttle(2, "No valid target in Left Image.")
+                rospy.loginfo_throttle(2, "No valid target in left image.")
                 self.rate.sleep(); 
                 continue
             
@@ -188,9 +188,9 @@ class StereoDepthNode:
                         msg.conf = self.conf
                         msg.class_name = self.cls
                         self.pub.publish(msg)
-                        rospy.loginfo_throttle(2, 'Valid center target at (%.2f, %.2f, %.2f)', P[0], P[1], P[2])
+                        rospy.loginfo_throttle(2, 'Valid Class %s center target at (%.2f, %.2f, %.2f)', self.cls, P[0], P[1], P[2])
                     else:
-                        rospy.loginfo_throttle(2, 'Invalid center target at (%.2f, %.2f, %.2f)', P[0], P[1], P[2])
+                        rospy.loginfo_throttle(2, 'Invalid Class %s center target at (%.2f, %.2f, %.2f)', self.cls, P[0], P[1], P[2])
             elif self.mode == 2:
                 if self.conf < self.conf_thre:
                     rospy.loginfo_throttle(2, 'Low conf bbox: %.2f', self.conf)
