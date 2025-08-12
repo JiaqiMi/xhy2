@@ -304,7 +304,7 @@ class Task5Node:
         """
         # self.target_posestamped = self.start_point
         self.target_posestamped.pose.position = self.start_point.pose.position
-        self.target_posestamped.pose.orientation = self.start_point.pose.orientations
+        self.target_posestamped.pose.orientation = self.start_point.pose.orientation
         return self.move_to_target(max_yaw_dist=np.radians(120), max_xyz_dist=0.3)  # 使用更大的距离阈值和航向阈值
 
     def ascend(self):

@@ -1027,13 +1027,13 @@ class Task4Node:
                     rospy.loginfo("task4 node: 到达初始位置，开始跟踪轨迹")
             elif self.step == 1:  # 跟踪轨迹
                 # TODO 根据实际顺序调整检测顺序
-                if self.detect_green_circle(forward_percent=0.7) and not self.done[0] == 1: # 如果检测到绿色圆形目标点，则进入5
-                    self.step = 5
-                elif self.detect_black_rectangle(forward_percent=0.7) and not self.done[1] == 1: # 如果检测到黑色方形目标点，则进入4
+                if self.detect_black_rectangle(forward_percent=0.7) and not self.done[1] == 1: # 如果检测到黑色方形目标点，则进入4
                     self.step = 4
                 elif self.detect_yellow_triangle(forward_percent=0.7) and not self.done[2] == 1: # 如果检测到黄色三角形目标点，则进入3
                     self.step = 3
-                elif self.arrive_end(max_xyz_dist=0.25,max_yaw_dist=np.radians(30)): # 判断的条件宽泛一些
+                elif self.detect_green_circle(forward_percent=0.7) and not self.done[0] == 1: # 如果检测到绿色圆形目标点，则进入5
+                    self.step = 5
+                elif self.arrive_end(max_xyz_dist=0.8,max_yaw_dist=np.radians(30)): # 判断的条件宽泛一些
                     self.step = 7 # 如果到达终点，进入7
                 if self.move_to_target(max_xyz_dist=0.15,max_yaw_dist=np.radians(2)): # 移动到目标点，不管到没到达，都开始下一次搜索，如果搜索到了就会回来，否则就会继续搜索，
                     self.step = 2

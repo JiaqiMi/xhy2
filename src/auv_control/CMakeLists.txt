@@ -148,6 +148,7 @@ include_directories(
   test/test_task2_1.py
   test/test_targetdetection.py
   test/test_search2.py
+  test/test_depth_liner.py
   ${catkin_INCLUDE_DIRS}
 )
 

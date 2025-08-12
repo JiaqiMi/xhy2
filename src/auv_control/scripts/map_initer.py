@@ -29,6 +29,7 @@ class map_initer:
         # 只看pose和sensor中的ahrs有效
         if not self.done:
             if (msg.sensor.sensor_valid>>6)!=0:
+            # if True:
                 rospy.loginfo_throttle(2,"map_initer:  惯导数据有效") # TODO 打开DVL后能不能init
                 if len(init_lon_list) < 50: # 保存前50帧作为世界坐标系原点
                     init_lat_list.append(msg.pose.latitude)

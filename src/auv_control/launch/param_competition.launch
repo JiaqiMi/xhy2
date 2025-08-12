@@ -9,11 +9,11 @@
     <param name="detect_door" type="bool" value="false" />
     <param name="task1_target_class" type="string" value="$(arg color)" />
     <!-- task1：第一个点，任务初始点 -->
-    <param name="task1_point0" type="yaml" value="[-1.295, 2.9, 0.51, 165.0]" /> 
+    <param name="task1_point0" type="yaml" value="[-1.295, 2.4, 0.51, 165.0]" /> 
     <!-- task1：第二个点，红色门的点 -->
-    <param name="task1_pointred" type="yaml" value="[-3.210, 2.5, 0.58, 165.0]" />
+    <param name="task1_pointred" type="yaml" value="[-3.210, 2.0, 0.58, 165.0]" />
     <!-- task1：第三个点，蓝色门的点 -->
-    <param name="task1_pointblue" type="yaml" value="[-2.8, 3.7, 0.55, 165.0]" />
+    <param name="task1_pointblue" type="yaml" value="[-2.8, 3.2, 0.55, 165.0]" />
 
     <!-- task2：寻找目标释放作业任务：点1 单位 m/m/m/° -->
     <param name="task2_point0" type="yaml" value="[0.9, 7.9, 0.43, -15.0]" />

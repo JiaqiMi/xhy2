@@ -705,7 +705,7 @@ class Task3Node:
             elif self.step == 11: # 第二次搜索，运动90%，搜索角度变小
                 if self.search_target(max_rotate_rad=np.radians(2.5),rotate_step=np.radians(0.5), # 搜索运动设置
                                     min_conf=0.5,max_time_interval=5.0,max_position_interval=0.5, # 目标阈值设置
-                                    depth_bias = 0.05,forward_percent=0.55, # 目标点设置，深度偏置和水平偏置 NOTE 改成55%了
+                                    depth_bias = 0.05,forward_percent=0.7, # 目标点设置，深度偏置和水平偏置 NOTE 改成80%了
                                     max_xyz_dist=0.15,max_yaw_dist=np.radians(0.2),point_num=5):
                     self.step = 12
                     rospy.loginfo(f"{NODE_NAME}: 找到目标，开始移动第二次")

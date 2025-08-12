@@ -313,7 +313,7 @@ class Task1Node:
 
             # 判断是否到达
             if self.is_arrival(current_pose, self.target_posestamped, max_xyz_dist, max_yaw_dist):
-                rospy.loginfo("{NODE_NAME}: 已到达目标位置")
+                rospy.loginfo(f"{NODE_NAME}: 已到达目标位置")
                 return True
             
             # 航向控制和点控制统一起来
