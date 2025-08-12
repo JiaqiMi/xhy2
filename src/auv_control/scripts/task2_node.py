@@ -670,7 +670,7 @@ class Task2Node:
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 5               
             elif self.step == 5:
-                if self.move_to_end_pose(max_z_step=0.1,max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2),max_xy_step=3):
+                if self.move_to_end_pose(max_xyz_dist=0.1,max_yaw_dist=np.radians(0.2),max_xy_step=3):
                     rospy.loginfo(f"{NODE_NAME}: run: 阶段{self.step}已完成，进入阶段{self.step+1}")
                     self.step = 6
             elif self.step == 6:

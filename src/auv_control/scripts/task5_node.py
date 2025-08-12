@@ -44,6 +44,7 @@ class Task5Node:
         self.target_posestamped = PoseStamped()  # 期望位置消息定义
         self.start_point = PoseStamped()
         self.sensor = [0] * 5 # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
+        self.control_pub = rospy.Publisher('/sensor', Control, queue_size=10) # 发布外设控制
         # 从参数服务器获取目标点位置
         self.start_point.header.frame_id = "map"
         start_point_from_param = rospy.get_param('/task5_point0', [-1.55, -7.97, 0.2, 90])  # 默认值
@@ -330,7 +331,7 @@ class Task5Node:
             self.target_posestamped = current_pose
             self.target_posestamped.pose.position.z = 0.12  # 只漏一个小头就可以
             
-            return self.move_to_target(max_dist=0.04,max_z_step=0.08,max_yaw_dist=np.radians(120))  # 使用更小的距离阈值
+            return self.move_to_target(max_xyz_dist=0.04,max_z_step=0.08,max_yaw_dist=np.radians(120))  # 使用更小的距离阈值
             
         except tf.Exception as e:
             rospy.logwarn(f"{NODE_NAME}: 上浮失败: {e}")
@@ -347,9 +348,9 @@ class Task5Node:
     ############################################### 主循环 #########################################
     def run(self):
         """主循环"""
-        self.sensor = [0,0,255,0,0]
-        self.control_device()
+        self.sensor = [0,0,255,0,0]   
         while not rospy.is_shutdown():
+            self.control_device()        
             if self.step == 0:  # 移动到起始点
                 if self.move_to_start_point():
                     self.step = 1

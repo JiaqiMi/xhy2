@@ -195,7 +195,7 @@ class StateControl:
             rospy.loginfo(f"{NODE_NAME}: 所有任务已完成")
             self.auto_mode = False
             self.current_task = 0
-            rospy.signal_shutdown("所有任务已完成")
+            # rospy.signal_shutdown("所有任务已完成")
     
     def check_task_timeout(self):
         """

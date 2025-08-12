@@ -13,7 +13,7 @@
     <!-- task1：第二个点，红色门的点 -->
     <param name="task1_pointred" type="yaml" value="[-3.210, 2.0, 0.58, 165.0]" />
     <!-- task1：第三个点，蓝色门的点 -->
-    <param name="task1_pointblue" type="yaml" value="[-2.5, 3.75, 0.58, 165.0]" />
+    <param name="task1_pointblue" type="yaml" value="[-2.5, 3.25, 0.58, 165.0]" />
 
     <!-- task2：寻找目标释放作业任务：点1 单位 m/m/m/° -->
     <param name="task2_point0" type="yaml" value="[0.2, 8.3, 0.49, -15.0]" />
