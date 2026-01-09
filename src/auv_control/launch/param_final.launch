@@ -9,11 +9,11 @@
     <param name="detect_door" type="bool" value="false" />
     <param name="task1_target_class" type="string" value="$(arg color)" />
     <!-- task1：第一个点，任务初始点 -->
-    <param name="task1_point0" type="yaml" value="[-1.295, 2.4, 0.55, 165.0]" /> 
+    <param name="task1_point0" type="yaml" value="[-1.295, 2.0, 0.55, 165.0]" /> 
     <!-- task1：第二个点，红色门的点 -->
-    <param name="task1_pointred" type="yaml" value="[-3.210, 2.0, 0.58, 165.0]" />
+    <param name="task1_pointred" type="yaml" value="[-3.210, 1.6, 0.58, 165.0]" />
     <!-- task1：第三个点，蓝色门的点 -->
-    <param name="task1_pointblue" type="yaml" value="[-2.5, 3.25, 0.58, 165.0]" />
+    <param name="task1_pointblue" type="yaml" value="[-2.5, 2.5, 0.58, 165.0]" />
 
     <!-- task2：寻找目标释放作业任务：点1 单位 m/m/m/° -->
     <param name="task2_point0" type="yaml" value="[0.2, 8.3, 0.49, -15.0]" />
@@ -34,15 +34,15 @@
     <!-- 任务4 巡线 --> 
     <!-- 深度应该比标准深度深10cm -->
     <!-- point0 初始点 -->
-    <param name="task4_point0" type="yaml" value="[-4, 2.5, 0.75, 150]" />
+    <param name="task4_point0" type="yaml" value="[-3.9, 3.0, 0.7, 125]" />
     <!-- point1 结束点 -->
-    <param name="task4_point1" type="yaml" value="[-2.69, 6.6, 0.51, 67.1]" />
+    <param name="task4_point1" type="yaml" value="[-4.69, 8.6, 0.48, 67.1]" />
     <param name="task4_target_shape1" type="string" value="triangle" />
     <param name="task4_target_shape2" type="string" value="rectangle" />
     <param name="task4_target_shape3" type="string" value="circle" />  
     <param name="task4_target_shape" type="string" value="track" />
 
     <!-- 任务5 上浮目标点 -->
-    <param name="task5_point0" type="yaml" value="[0.507, 5.6, 0.4, -90]" />
+    <param name="task5_point0" type="yaml" value="[0.507, 5.3, 0.4, -90]" />
     
 </launch>
