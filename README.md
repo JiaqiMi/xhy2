@@ -32,4 +32,14 @@
 - 海底构造巡检；
 - 水下管线识别与定位；
 - 自主作业中的目标引导与姿态校准任务。
-
+## quick start
+`git clone git@github.com:JiaqiMi/xhy2.git`
+`cd xhy2`
+`catkin_make`
+## 分支说明
+- main 主分支
+- main-backup 实际部署分支备份
+- control 控制更新分支
+- lxy
+- WolfFoox
+- rice-local
