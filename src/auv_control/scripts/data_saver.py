@@ -1,1 +1,0 @@
-#! /home/xhy/xhy_env36/bin/python

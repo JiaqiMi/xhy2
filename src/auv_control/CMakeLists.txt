@@ -58,6 +58,7 @@ add_message_files(
   AUVData.msg
   Keyboard.msg # 键盘节点到主控节点的消息
   Control.msg # 主控节点到驱动节点的消息
+  NavData.msg 
   TargetDetection.msg
   TargetDetection3.msg
 )
@@ -133,6 +134,7 @@ include_directories(
   scripts/sensor_driver.py
   scripts/state_control.py
   scripts/debug_driver.py
+  scripts/nav_driver.py
   scripts/task1_node.py
   scripts/task2_node.py
   scripts/task3_node.py
