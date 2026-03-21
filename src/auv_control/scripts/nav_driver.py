@@ -33,8 +33,8 @@ class NavDriver:
     """
 
     def __init__(self):
-        self.ip = rospy.get_param('~nav_ip', '192.168.1.115')
-        self.port = rospy.get_param('~nav_port', 5066)
+        self.ip = rospy.get_param('~nav_ip', '47.104.21.115')
+        self.port = rospy.get_param('~nav_port', 5326)
         self.server_addr = (self.ip, self.port)
 
         self.sock = None
@@ -222,7 +222,6 @@ class NavDriver:
         msg.dvl_vz = mmps_to_mps(i16(55))
         msg.dvl_altitude = mm_to_m(i32(57))
         msg.dvl_status = u8(61)
-        set_u8_bits("dvl_status", msg.dvl_status)
 
         # ----------------------------
         # IMU原始采样
