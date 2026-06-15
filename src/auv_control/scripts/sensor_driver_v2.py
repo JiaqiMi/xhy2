@@ -74,7 +74,7 @@ class SensorDriverV2:
             'packet_len': len(packet),
             'checksum_ok': bool(checksum_ok),
             'report_type': packet[4] if len(packet) > 4 else None,
-            'packet_hex': packet.hex(' '),
+            'packet_hex': ' '.join('{:02x}'.format(byte) for byte in packet),
         }
 
         try:

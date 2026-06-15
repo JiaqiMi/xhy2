@@ -349,7 +349,7 @@ class NavDriver:
             'checksum_ok': bool(checksum_ok),
             'calc_checksum': calc_sum,
             'recv_checksum': recv_sum,
-            'packet_hex': packet.hex(' '),
+            'packet_hex': ' '.join('{:02x}'.format(byte) for byte in packet),
         }
 
         try:

@@ -188,7 +188,7 @@ class debugdriver:
             "source": "debug",
             "packet_len": len(packet),
             "checksum_ok": bool(checksum_ok),
-            "packet_hex": packet.hex(" "),
+            "packet_hex": " ".join("{:02x}".format(byte) for byte in packet),
         }
 
         try:
