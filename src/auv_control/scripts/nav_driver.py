@@ -17,9 +17,14 @@
     5. 发布完整ROS消息
 """
 
+import json
+import os
 import socket
 import struct
+from datetime import datetime
+
 import rospy
+from genpy import Message
 from std_msgs.msg import Header
 from auv_control.msg import NavData
 
@@ -44,9 +49,27 @@ class NavDriver:
         self.HEADER = b'\xAA\x55\x5A\xA5'
 
         self.pub = rospy.Publisher('/nav', NavData, queue_size=10)
+        self.save_data = rospy.get_param('~save_data', False)
+        self.save_dir = os.path.expanduser(rospy.get_param('~save_dir', '~/.ros/auv_logs'))
+        self.save_file_name = rospy.get_param('~save_file', '')
+        self.flush_every = max(1, int(rospy.get_param('~flush_every', 1)))
+        self.write_count = 0
+        self.save_file = None
+
+        if self.save_data:
+            self.open_save_file()
 
         self.connect()
         rospy.loginfo("nav driver: 已启动")
+
+    def open_save_file(self):
+        if not self.save_file_name:
+            self.save_file_name = datetime.now().strftime('nav_data_%Y%m%d_%H%M%S.jsonl')
+
+        os.makedirs(self.save_dir, exist_ok=True)
+        path = os.path.join(self.save_dir, self.save_file_name)
+        self.save_file = open(path, 'a', encoding='utf-8')
+        rospy.loginfo(f"nav driver: 数据将保存到 {path}")
 
     def connect(self):
         while not rospy.is_shutdown():
@@ -255,9 +278,56 @@ class NavDriver:
         # ----------------------------
         msg.update_flags = u8(137)
         self.pub.publish(msg)
+        self.save_nav_msg(msg)
+
+    def message_to_dict(self, msg):
+        if isinstance(msg, Message):
+            result = {}
+            for field in msg.__slots__:
+                result[field] = self.message_to_dict(getattr(msg, field))
+            return result
+
+        if isinstance(msg, rospy.Time):
+            return {
+                'secs': msg.secs,
+                'nsecs': msg.nsecs,
+                'time': msg.to_sec(),
+            }
+
+        if isinstance(msg, (list, tuple)):
+            return [self.message_to_dict(item) for item in msg]
+
+        return msg
+
+    def save_nav_msg(self, msg):
+        if not self.save_data or self.save_file is None:
+            return
+
+        event = {
+            'pc_time': rospy.Time.now().to_sec(),
+            'source': 'nav',
+            'topic': '/nav',
+            'msg_type': msg._type,
+            'stamp': self.message_to_dict(msg.header.stamp),
+            'data': self.message_to_dict(msg),
+        }
+
+        try:
+            self.save_file.write(json.dumps(event, ensure_ascii=False) + '\n')
+            self.write_count += 1
+            if self.write_count % self.flush_every == 0:
+                self.save_file.flush()
+        except Exception as e:
+            rospy.logerr(f"nav driver: 保存数据失败: {e}")
 
     def spin(self):
-        self.recv_loop()
+        try:
+            self.recv_loop()
+        finally:
+            if self.save_file:
+                self.save_file.flush()
+                self.save_file.close()
+                rospy.loginfo("nav driver: 数据文件已保存并关闭")
 
 
 if __name__ == "__main__":
