@@ -3,7 +3,7 @@
 
 """
 名称：data_saver.py
-功能：将 debug/sensor 两类 ROS 消息保存为同一个 JSONL 事件流文件
+功能：将 debug/sensor/nav 三类 ROS 消息保存为同一个 JSONL 事件流文件
 """
 
 import json
@@ -13,7 +13,7 @@ from datetime import datetime
 import rospy
 from genpy import Message
 
-from auv_control.msg import AUVData, SensorStatus
+from auv_control.msg import AUVData, NavData, SensorStatus
 
 
 class DataSaver:
@@ -35,6 +35,7 @@ class DataSaver:
 
         rospy.Subscriber('/debug_auv_data', AUVData, self.debug_callback)
         rospy.Subscriber('/sensor_status', SensorStatus, self.sensor_callback)
+        rospy.Subscriber('/nav', NavData, self.nav_callback)
 
         rospy.loginfo("data_saver: 已启动")
 
@@ -96,6 +97,9 @@ class DataSaver:
 
     def sensor_callback(self, msg):
         self.write_event('sensor', '/sensor_status', msg)
+
+    def nav_callback(self, msg):
+        self.write_event('nav', '/nav', msg)
 
     def spin(self):
         try:

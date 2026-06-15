@@ -8,8 +8,11 @@
 发布：/sensor_status (SensorStatus.msg)
 """
 
+import json
+import os
 import socket
 import struct
+from datetime import datetime
 
 import rospy
 from std_msgs.msg import Header
@@ -39,9 +42,48 @@ class SensorDriverV2:
         self.sock = None
         self.buffer = bytearray()
         self.pub = rospy.Publisher('/sensor_status', SensorStatus, queue_size=10)
+        self.raw_saving_enable = rospy.get_param('~save_raw_data', False)
+        self.raw_save_dir = os.path.expanduser(rospy.get_param('~raw_save_dir', '~/.ros/auv_logs'))
+        self.raw_save_file_name = rospy.get_param('~raw_save_file', '')
+        self.raw_flush_every = max(1, int(rospy.get_param('~raw_flush_every', 1)))
+        self.raw_write_count = 0
+        self.raw_save_file = None
+
+        if self.raw_saving_enable:
+            self.open_raw_save_file()
 
         self.connect()
         rospy.loginfo("sensor_driver_v2: 已启动")
+
+    def open_raw_save_file(self):
+        if not self.raw_save_file_name:
+            self.raw_save_file_name = datetime.now().strftime('sensor_raw_%Y%m%d_%H%M%S.jsonl')
+
+        os.makedirs(self.raw_save_dir, exist_ok=True)
+        path = os.path.join(self.raw_save_dir, self.raw_save_file_name)
+        self.raw_save_file = open(path, 'a', encoding='utf-8')
+        rospy.loginfo(f"sensor_driver_v2: 原始报文将保存到 {path}")
+
+    def save_raw_packet(self, packet, checksum_ok):
+        if not self.raw_saving_enable or self.raw_save_file is None:
+            return
+
+        event = {
+            'pc_time': rospy.Time.now().to_sec(),
+            'source': 'sensor',
+            'packet_len': len(packet),
+            'checksum_ok': bool(checksum_ok),
+            'report_type': packet[4] if len(packet) > 4 else None,
+            'packet_hex': packet.hex(' '),
+        }
+
+        try:
+            self.raw_save_file.write(json.dumps(event, ensure_ascii=False) + '\n')
+            self.raw_write_count += 1
+            if self.raw_write_count % self.raw_flush_every == 0:
+                self.raw_save_file.flush()
+        except Exception as e:
+            rospy.logerr(f"sensor_driver_v2: 保存原始报文失败: {e}")
 
     def connect(self):
         while not rospy.is_shutdown():
@@ -112,7 +154,11 @@ class SensorDriverV2:
                 return
 
             packet = bytes(self.buffer[:self.PACKET_LEN])
-            if self.verify_packet(packet):
+            checksum_ok = self.verify_packet(packet)
+            if packet[62:64] == self.TAIL:
+                self.save_raw_packet(packet, checksum_ok)
+
+            if checksum_ok:
                 self.parse_and_publish(packet)
                 del self.buffer[:self.PACKET_LEN]
             else:
@@ -153,7 +199,13 @@ class SensorDriverV2:
         self.pub.publish(msg)
 
     def spin(self):
-        self.recv_loop()
+        try:
+            self.recv_loop()
+        finally:
+            if self.raw_save_file:
+                self.raw_save_file.flush()
+                self.raw_save_file.close()
+                rospy.loginfo("sensor_driver_v2: 原始报文文件已保存并关闭")
 
 
 if __name__ == "__main__":

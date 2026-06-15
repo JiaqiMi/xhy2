@@ -55,9 +55,17 @@ class NavDriver:
         self.flush_every = max(1, int(rospy.get_param('~flush_every', 1)))
         self.write_count = 0
         self.save_file = None
+        self.raw_saving_enable = rospy.get_param('~save_raw_data', False)
+        self.raw_save_dir = os.path.expanduser(rospy.get_param('~raw_save_dir', '~/.ros/auv_logs'))
+        self.raw_save_file_name = rospy.get_param('~raw_save_file', '')
+        self.raw_flush_every = max(1, int(rospy.get_param('~raw_flush_every', 1)))
+        self.raw_write_count = 0
+        self.raw_save_file = None
 
         if self.save_data:
             self.open_save_file()
+        if self.raw_saving_enable:
+            self.open_raw_save_file()
 
         self.connect()
         rospy.loginfo("nav driver: 已启动")
@@ -70,6 +78,15 @@ class NavDriver:
         path = os.path.join(self.save_dir, self.save_file_name)
         self.save_file = open(path, 'a', encoding='utf-8')
         rospy.loginfo(f"nav driver: 数据将保存到 {path}")
+
+    def open_raw_save_file(self):
+        if not self.raw_save_file_name:
+            self.raw_save_file_name = datetime.now().strftime('nav_raw_%Y%m%d_%H%M%S.jsonl')
+
+        os.makedirs(self.raw_save_dir, exist_ok=True)
+        path = os.path.join(self.raw_save_dir, self.raw_save_file_name)
+        self.raw_save_file = open(path, 'a', encoding='utf-8')
+        rospy.loginfo(f"nav driver: 原始报文将保存到 {path}")
 
     def connect(self):
         while not rospy.is_shutdown():
@@ -126,6 +143,7 @@ class NavDriver:
             packet = bytes(self.buffer[:self.PACKET_LEN])
 
             checksum_ok, calc_sum, recv_sum = self.verify_packet(packet)
+            self.save_raw_packet(packet, checksum_ok, calc_sum, recv_sum)
             if checksum_ok:
                 self.parse_and_publish(packet, calc_sum, recv_sum, checksum_ok)
                 del self.buffer[:self.PACKET_LEN]
@@ -320,6 +338,28 @@ class NavDriver:
         except Exception as e:
             rospy.logerr(f"nav driver: 保存数据失败: {e}")
 
+    def save_raw_packet(self, packet, checksum_ok, calc_sum, recv_sum):
+        if not self.raw_saving_enable or self.raw_save_file is None:
+            return
+
+        event = {
+            'pc_time': rospy.Time.now().to_sec(),
+            'source': 'nav',
+            'packet_len': len(packet),
+            'checksum_ok': bool(checksum_ok),
+            'calc_checksum': calc_sum,
+            'recv_checksum': recv_sum,
+            'packet_hex': packet.hex(' '),
+        }
+
+        try:
+            self.raw_save_file.write(json.dumps(event, ensure_ascii=False) + '\n')
+            self.raw_write_count += 1
+            if self.raw_write_count % self.raw_flush_every == 0:
+                self.raw_save_file.flush()
+        except Exception as e:
+            rospy.logerr(f"nav driver: 保存原始报文失败: {e}")
+
     def spin(self):
         try:
             self.recv_loop()
@@ -328,6 +368,10 @@ class NavDriver:
                 self.save_file.flush()
                 self.save_file.close()
                 rospy.loginfo("nav driver: 数据文件已保存并关闭")
+            if self.raw_save_file:
+                self.raw_save_file.flush()
+                self.raw_save_file.close()
+                rospy.loginfo("nav driver: 原始报文文件已保存并关闭")
 
 
 if __name__ == "__main__":
