@@ -281,18 +281,18 @@ class NavDriver:
         self.save_nav_msg(msg)
 
     def message_to_dict(self, msg):
-        if isinstance(msg, Message):
-            result = {}
-            for field in msg.__slots__:
-                result[field] = self.message_to_dict(getattr(msg, field))
-            return result
-
-        if isinstance(msg, rospy.Time):
+        if hasattr(msg, 'secs') and hasattr(msg, 'nsecs') and callable(getattr(msg, 'to_sec', None)):
             return {
                 'secs': msg.secs,
                 'nsecs': msg.nsecs,
                 'time': msg.to_sec(),
             }
+
+        if isinstance(msg, Message):
+            result = {}
+            for field in msg.__slots__:
+                result[field] = self.message_to_dict(getattr(msg, field))
+            return result
 
         if isinstance(msg, (list, tuple)):
             return [self.message_to_dict(item) for item in msg]

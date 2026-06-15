@@ -4,8 +4,6 @@
 
     <include file="$(find auv_control)/launch/param.launch" />
 
-    <node pkg="auv_control" type="main_driver.py" name="main_driver" output="screen" />
-
     <node pkg="auv_control" type="debug_driver.py" name="debug_driver" output="screen">
         <param name="debug_ip" value="$(arg vehicle_ip)" />
         <param name="debug_port" value="5063" />
