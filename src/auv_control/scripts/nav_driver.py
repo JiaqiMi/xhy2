@@ -33,8 +33,8 @@ class NavDriver:
     """
 
     def __init__(self):
-        self.ip = rospy.get_param('~nav_ip', '47.104.21.115')
-        self.port = rospy.get_param('~nav_port', 5326)
+        self.ip = rospy.get_param('~nav_ip', '192.168.1.115')
+        self.port = rospy.get_param('~nav_port', 5066)
         self.server_addr = (self.ip, self.port)
 
         self.sock = None
