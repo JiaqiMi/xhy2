@@ -1,0 +1,40 @@
+<launch>
+    <arg name="save_dir" default="$(env HOME)/.ros/auv_logs" />
+    <arg name="vehicle_ip" default="192.168.1.115" />
+
+    <include file="$(find auv_control)/launch/param.launch" />
+
+    <node pkg="auv_control" type="debug_driver.py" name="debug_driver" output="screen">
+        <param name="debug_ip" value="$(arg vehicle_ip)" />
+        <param name="debug_port" value="5063" />
+        <param name="save_data" type="bool" value="false" />
+        <param name="save_raw_data" type="bool" value="true" />
+        <param name="raw_save_dir" type="string" value="$(arg save_dir)" />
+        <param name="raw_flush_every" type="int" value="1" />
+    </node>
+
+    <node pkg="auv_control" type="sensor_driver_v2.py" name="sensor_driver_v2" output="screen">
+        <param name="sensor_ip" value="$(arg vehicle_ip)" />
+        <param name="sensor_port" value="5064" />
+        <param name="save_raw_data" type="bool" value="true" />
+        <param name="raw_save_dir" type="string" value="$(arg save_dir)" />
+        <param name="raw_flush_every" type="int" value="1" />
+    </node>
+
+    <node pkg="auv_control" type="data_saver.py" name="data_saver" output="screen">
+        <param name="enabled" type="bool" value="true" />
+        <param name="save_dir" type="string" value="$(arg save_dir)" />
+        <param name="flush_every" type="int" value="1" />
+    </node>
+
+    <node pkg="auv_control" type="nav_driver.py" name="nav_driver" output="screen">
+        <param name="nav_ip" value="$(arg vehicle_ip)" />
+        <param name="nav_port" value="5066" />
+        <param name="save_data" type="bool" value="false" />
+        <param name="save_dir" type="string" value="$(arg save_dir)" />
+        <param name="flush_every" type="int" value="1" />
+        <param name="save_raw_data" type="bool" value="true" />
+        <param name="raw_save_dir" type="string" value="$(arg save_dir)" />
+        <param name="raw_flush_every" type="int" value="1" />
+    </node>
+</launch>

@@ -24,6 +24,10 @@
     TODO 在水下测试深度
 """
 
+import json
+import os
+from datetime import datetime
+
 import rospy
 import socket
 import struct
@@ -114,6 +118,12 @@ class debugdriver:
         port = port or rospy.get_param("~debug_port", 5063)
         self.saving_enable = rospy.get_param("~save_data", True)  # 是否保存数据
         self.saving_path = rospy.get_param("~save_path", "/home/hsx/debug_data.csv")
+        self.raw_saving_enable = rospy.get_param("~save_raw_data", False)
+        self.raw_save_dir = os.path.expanduser(rospy.get_param("~raw_save_dir", "~/.ros/auv_logs"))
+        self.raw_save_file_name = rospy.get_param("~raw_save_file", "")
+        self.raw_flush_every = max(1, int(rospy.get_param("~raw_flush_every", 1)))
+        self.raw_write_count = 0
+        self.raw_save_file = None
         self.server_address = (ip, port)
         self.tcp_sock = None
         # 初始化接收缓冲区
@@ -152,10 +162,42 @@ class debugdriver:
                 rospy.logerr(f"debug_driver: 打开保存文件失败: {e}")
                 self.save_file = None
 
+        if self.raw_saving_enable:
+            self.open_raw_save_file()
+
         rospy.Subscriber('/auv_control', AUVPose, self.control_callback)
         self.data_pub = rospy.Publisher('/debug_auv_data', AUVData, queue_size=10)
         self.rate = rospy.Rate(10)
         rospy.loginfo(f"debug_driver: 已启动")
+
+    def open_raw_save_file(self):
+        if not self.raw_save_file_name:
+            self.raw_save_file_name = datetime.now().strftime("debug_raw_%Y%m%d_%H%M%S.jsonl")
+
+        os.makedirs(self.raw_save_dir, exist_ok=True)
+        path = os.path.join(self.raw_save_dir, self.raw_save_file_name)
+        self.raw_save_file = open(path, "a", encoding="utf-8")
+        rospy.loginfo(f"debug_driver: 原始报文将保存到 {path}")
+
+    def save_raw_packet(self, packet, checksum_ok):
+        if not self.raw_saving_enable or self.raw_save_file is None:
+            return
+
+        event = {
+            "pc_time": rospy.Time.now().to_sec(),
+            "source": "debug",
+            "packet_len": len(packet),
+            "checksum_ok": bool(checksum_ok),
+            "packet_hex": " ".join("{:02x}".format(byte) for byte in packet),
+        }
+
+        try:
+            self.raw_save_file.write(json.dumps(event, ensure_ascii=False) + "\n")
+            self.raw_write_count += 1
+            if self.raw_write_count % self.raw_flush_every == 0:
+                self.raw_save_file.flush()
+        except Exception as e:
+            rospy.logerr(f"debug_driver: 保存原始报文失败: {e}")
         
     def calc_debug_checksum(self, packet):
         # 计算调试协议的校验和
@@ -309,7 +351,9 @@ class debugdriver:
                         if self.buffer[start+108:start+110] == b'\xFA\xAF':
                             packet = self.buffer[start:start+110]
                             self.buffer = self.buffer[start+110:]
-                            if self.calc_debug_checksum(packet) == packet[107]:
+                            checksum_ok = self.calc_debug_checksum(packet) == packet[107]
+                            self.save_raw_packet(packet, checksum_ok)
+                            if checksum_ok:
                                 parsed = self.parse_debug_packet(packet)
                                 with self.lock:
                                     self.latest_debug_data = parsed
@@ -324,6 +368,14 @@ class debugdriver:
                                 msg.pose.pitch = parsed.euler_angles[1]
                                 msg.pose.yaw = parsed.euler_angles[2]
                                 msg.pose.speed = parsed.linear_velocity[0]
+                                msg.motor_force.TX = parsed.force_commands[0]
+                                msg.motor_force.TY = parsed.force_commands[1]
+                                msg.motor_force.TZ = parsed.force_commands[2]
+                                msg.motor_force.MX = parsed.force_commands[3]
+                                msg.motor_force.MY = parsed.force_commands[4]
+                                msg.motor_force.MZ = parsed.force_commands[5]
+                                msg.linear_velocity = parsed.linear_velocity
+                                msg.angular_velocity = parsed.angular_velocity
                                 msg.sensor.temperature = parsed.temperature
                                 msg.sensor.voltage = parsed.control_voltage
                                 msg.sensor.current = parsed.power_current
@@ -440,6 +492,13 @@ class debugdriver:
                 rospy.loginfo("debug_driver: 数据文件已保存并关闭")
             except Exception as e:
                 rospy.logerr(f"debug_driver: 关闭数据文件失败: {e}")
+
+        if self.raw_saving_enable and self.raw_save_file:
+            try:
+                self.raw_save_file.close()
+                rospy.loginfo("debug_driver: 原始报文文件已保存并关闭")
+            except Exception as e:
+                rospy.logerr(f"debug_driver: 关闭原始报文文件失败: {e}")
 
 if __name__ == "__main__":
     try:

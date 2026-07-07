@@ -3,10 +3,10 @@
 名称：task1_node.py
 功能：下潜、过门
 作者：黄思旭
-监听：/target_detection (来自视觉节点)
-      /tf (来自tf树)
-发布：/target (PoseStamped.msg)
-      /finished (String)被state_control订阅, 代表任务是否完成
+监听：  /target_detection (来自视觉节点)
+        /tf (来自tf树)
+发布：  /target (PoseStamped.msg)
+        /finished (String)被state_control订阅, 代表任务是否完成
 
 记录：
 2025.7.17 10:50
@@ -27,6 +27,8 @@
     完善
 2025.8.1 02.29
     同步task2完善注释和驱动
+2025.8.6 16:10
+    final check
 """
 
 import rospy
@@ -44,31 +46,31 @@ class Task1Node:
     """下潜、过门任务"""
     def __init__(self):
         # ros相关的初始化
-        self.finished_pub = rospy.Publisher('/finished', String, queue_size=10)  
+        self.finished_pub = rospy.Publisher('/finished', String, queue_size=10) # 发布任务完成消息 
         self.target_pub = rospy.Publisher('/target', PoseStamped, queue_size=10) # 创建任务完成消息发布者，由state_control订阅
         # self.control_pub = rospy.Publisher('/sensor', Control, queue_size=10) # 发布控制话题                   
         rospy.Subscriber('/obj/target_message', TargetDetection, self.target_detection_callback) # 订阅目标检测消息，来自视觉节点
         self.rate = rospy.Rate(5) # 运行频率5Hz                                                                                                              
-        self.tf_listener = tf.TransformListener()
+        self.tf_listener = tf.TransformListener() # 订阅tf变换
 
         # 变量初始化
+        self.step = 0   # 程序运行阶段
         self.target_posestamped = PoseStamped()  # 用于存储目标点的位姿
-        self.start_point = PoseStamped()
-        self.point_reddoor = PoseStamped()
-        self.point_bluedoor = PoseStamped()
-        self.step = 0   # 当前步骤
-        self.queue = []# 初始化优先队列存储门位置
-        self.sequence_number = 0  # 用于优先队列中元素的唯一标识
+        self.start_point = PoseStamped() # 门前的点的位姿
+        self.point_reddoor = PoseStamped() # 红色门的点的位姿
+        self.point_bluedoor = PoseStamped() # 蓝色门的点的位姿
+        self.queue = [] # 初始化优先队列存储门位置 NOTE: 弃用
+        self.sequence_number = 0  # 用于优先队列中元素的唯一标识 NOTE: 弃用
         self.sensor = [0] * 5 # 用一个列表5个数字表示传感器状态，分别代表红灯、绿灯、舵机、补光灯1、补光灯2
         self.pub_num = 0  # 记录释放目标的次数
         
         # 参数获取
-        self.detect_door = rospy.get_param('/detect_door', False)  # 是否检测门
-        self.init_depth = rospy.get_param('/depth', 0.3)  # 下潜深度，单位米
+        self.detect_door = rospy.get_param('/detect_door', False)  # 是否检测门 NOTE: 不检测
+        self.target_depth = rospy.get_param('/depth', 0.3)  # 下潜深度，单位米
         self.door_color = rospy.get_param('/door_color', 'red')  # 目标颜色，默认红色 另一种是蓝色
-        start_point_from_param = rospy.get_param('/task1_point1', [0.5, -0.5, 0.15, 0.0])  # 默认值
-        point_red_door = rospy.get_param('/task1_point2', [0.52, -2.62, 0.15, 0.0])  # 默认值
-        point_bluedoor_params = rospy.get_param('/task1_point3', [1.99, -2.85, 0.15, -90.0])  # 默认值
+        start_point_from_param = rospy.get_param('/task1_point0', [0.5, -0.5, 0.15, 0.0])  # 默认值
+        point_red_door_params = rospy.get_param('/task1_pointred', [0.52, -2.62, 0.15, 0.0])  # 默认值
+        point_bluedoor_params = rospy.get_param('/task1_pointblue', [1.99, -2.85, 0.15, -90.0])  # 默认值
         self.pitch_offset = np.radians(rospy.get_param('/pitch_offset', 0.0))  # 俯仰角偏移，默认0.0, 单位°
 
         # 准备执行任务的初始点
@@ -78,8 +80,8 @@ class Task1Node:
 
         # 红色门的点位置   
         self.point_reddoor.header.frame_id = "map"
-        self.point_reddoor.pose.position = Point(*point_red_door[0:3])
-        self.point_reddoor.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, np.radians(point_red_door[3])))
+        self.point_reddoor.pose.position = Point(*point_red_door_params[0:3])
+        self.point_reddoor.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, np.radians(point_red_door_params[3])))
 
         # 蓝色门的点位置
         self.point_bluedoor.header.frame_id = "map"
@@ -88,7 +90,7 @@ class Task1Node:
 
         # 旋转方向：红色门顺时针（-），蓝色门逆时针（+）
         self.direction = 1 if self.door_color == 'blue' else -1
-        self.step_deg = 10 #NOTE 旋转加速
+        self.step_deg = 10 # 旋转速度10°每秒，实际还会再做平滑
         self.step_rad = np.radians(self.step_deg) * self.direction
         
         # 输出log
@@ -98,7 +100,7 @@ class Task1Node:
         rospy.loginfo(f"{NODE_NAME}: 红色门: {self.point_reddoor.pose.position.x:.2f}, {self.point_reddoor.pose.position.y:.2f}, {self.point_reddoor.pose.position.z:.2f}")
         rospy.loginfo(f"{NODE_NAME}: 蓝色门: {self.point_bluedoor.pose.position.x:.2f}, {self.point_bluedoor.pose.position.y:.2f}, {self.point_bluedoor.pose.position.z:.2f}")
 
-    ###############################################驱动层#################################
+    ########################################### 驱动层 #############################################
     def is_arrival(self, current_pose:PoseStamped, target_pose:PoseStamped, max_xyz_dist=0.2, max_yaw_dist=np.radians(0.2)):
         """
         检查是否到达目标位置和航向
@@ -125,6 +127,13 @@ class Task1Node:
     def yaw_distance(self, ori1:Quaternion, ori2:Quaternion):
         """
         计算两个航向之间的差值，并处理角度环绕问题
+
+        Parameters:
+            ori1: Quaternion, 第一个四元数
+            ori2: Quaternion, 第二个四元数
+
+        Returns:
+            float: 两个航向之间的差值（绝对值）弧度
         """
         _, _, yaw1 = euler_from_quaternion([
             ori1.x,
@@ -181,7 +190,7 @@ class Task1Node:
             current_pose.pose.orientation.z,
             current_pose.pose.orientation.w
         ])
-        _, target_pitch, target_yaw = euler_from_quaternion([
+        _, _, target_yaw = euler_from_quaternion([
             target_pose.pose.orientation.x,
             target_pose.pose.orientation.y,
             target_pose.pose.orientation.z,
@@ -195,11 +204,11 @@ class Task1Node:
         # 计算到目标点的距离
         dist_to_target = self.xyz_distance(current_pose.pose.position, target_pose.pose.position)
 
-        # 如果距离目标点很近(小于1米)，则开始调整最终姿态
+        # 如果距离目标点很近，则开始调整最终姿态
         if dist_to_target < max_xy_step:
             # 计算yaw角差异（处理角度环绕）
             dyaw = target_yaw - current_yaw
-            dyaw = (dyaw + np.pi) % (2 * np.pi) - np.pi
+            dyaw = (dyaw + np.pi) % (2 * np.pi) - np.pi # 处理绕环问题
             dyaw = np.clip(dyaw, -max_yaw_step, max_yaw_step) # 应用最大步长
             next_yaw = current_yaw + dyaw
             
@@ -207,6 +216,7 @@ class Task1Node:
             # next_roll = current_roll + np.clip(target_roll - current_roll, -max_yaw_step, max_yaw_step)
             # next_pitch = target_pitch  # 保持目标俯仰角
             
+            # 下一个点的位置是目标点的位置，航向是平滑后的航向
             next_pose.pose.position = target_pose.pose.position
             # next_pose.pose.orientation = Quaternion(*quaternion_from_euler(0, next_pitch, next_yaw))
             next_pose.pose.orientation = Quaternion(*quaternion_from_euler(0, self.pitch_offset, next_yaw))
@@ -314,7 +324,7 @@ class Task1Node:
             return False
             
         except tf.Exception as e:
-            rospy.logwarn(f"task1 node: 移动失败: {e}")
+            rospy.logwarn(f"{NODE_NAME}: 移动失败: {e}")
             return False
         
     def get_current_pose(self):
@@ -342,7 +352,7 @@ class Task1Node:
         self.control_pub.publish(control_msg)
         # NOTE 打印一下命令
         rospy.loginfo(f"{NODE_NAME}: 发布外设控制: 红色led={self.sensor[0]}, 绿色led={self.sensor[1]}, 舵机={self.sensor[2]}, 补光灯1={self.sensor[3]}, 补光灯2={self.sensor[4]}")
-    ###############################################驱动层#################################
+    ############################################### 驱动层 #########################################
 
     ############################################### 回调层 #########################################
     def target_detection_callback(self, msg: TargetDetection):
@@ -389,27 +399,39 @@ class Task1Node:
         Returns:
             到达目标位置返回true,未到达目标位置返回false
         """        
-        self.target_posestamped = self.start_point # 将宏定义的初始位置赋值给目标位置
+        # self.target_posestamped = self.start_point # 将宏定义的初始位置赋值给目标位置
+        self.target_posestamped.pose.position = self.start_point.pose.position
+        self.target_posestamped.pose.orientation = self.start_point.pose.orientation
         return self.move_to_target()
 
     def move_to_red_door(self,max_dist):
         """
         发送一次指令运动到红色门
 
+        Parameters:
+            max_dist: float, 最大距离误差(米)
+
         Returns:
             到达目标位置返回true,未到达目标位置返回false
         """        
-        self.target_posestamped = self.point_reddoor # 将宏定义的初始位置赋值给目标位置
+        # self.target_posestamped = self.point_reddoor # 将宏定义的初始位置赋值给目标位置
+        self.target_posestamped.pose.position = self.point_reddoor.pose.position
+        self.target_posestamped.pose.orientation = self.point_reddoor.pose.orientation
         return self.move_to_target(max_dist)
     
     def move_to_blue_door(self,max_dist):
         """
         发送一次指令运动到蓝色门
 
+        Parameters:
+            max_dist: float, 最大距离误差(米)
+
         Returns:
             到达目标位置返回true,未到达目标位置返回false
         """        
-        self.target_posestamped = self.point_bluedoor # 将宏定义的初始位置赋值给目标位置
+        # self.target_posestamped = self.point_bluedoor # 将宏定义的初始位置赋值给目标位置
+        self.target_posestamped.pose.position = self.point_bluedoor.pose.position
+        self.target_posestamped.pose.orientation = self.point_bluedoor.pose.orientation
         return self.move_to_target(max_dist)
 
     def finish_task(self):
@@ -465,10 +487,10 @@ class Task1Node:
         # 赋值给target_pose
         self.target_posestamped.header.frame_id = "map"
         self.target_posestamped.pose.position = current_pose.pose.position  # 使用当前位姿作为初始位置
-        self.target_posestamped.pose.position.z = self.init_depth  # 设置目标深度
+        self.target_posestamped.pose.position.z = self.target_depth  # 设置目标深度
         self.target_posestamped.pose.orientation = current_pose.pose.orientation  # 使用当前位姿作为初始姿态
         rospy.loginfo(f"{NODE_NAME}: 初始位姿均值: 位置=({current_pose.pose.position.x:.3f}, {current_pose.pose.position.y:.3f}, {current_pose.pose.position.z:.3f}), "
-                      f"四元数=({current_pose.pose.orientation.x:.3f}, {current_pose.pose.orientation.y:.3f}, {current_pose.pose.orientation.z:.3f}, {current_pose.pose.orientation.w:.3f})")
+                    f"四元数=({current_pose.pose.orientation.x:.3f}, {current_pose.pose.orientation.y:.3f}, {current_pose.pose.orientation.z:.3f}, {current_pose.pose.orientation.w:.3f})")
 
     def rotate360(self) -> bool:
         """
@@ -482,12 +504,12 @@ class Task1Node:
         if current_pose is None:
             return False
 
-        _, _, current_yaw = euler_from_quaternion(
-            [current_pose.pose.orientation.x,
-             current_pose.pose.orientation.y,
-             current_pose.pose.orientation.z,
-             current_pose.pose.orientation.w]
-             )
+        _, _, current_yaw = euler_from_quaternion([
+            current_pose.pose.orientation.x,
+            current_pose.pose.orientation.y,
+            current_pose.pose.orientation.z,
+            current_pose.pose.orientation.w
+            ])
 
         # 初始化旋转相关变量
         if not hasattr(self, 'rotate_start_yaw'):
@@ -521,7 +543,7 @@ class Task1Node:
         self.target_posestamped.pose.orientation = Quaternion(*quaternion_from_euler(0, 0, self.rotate_target_yaw))
 
         # 发布新姿态
-        self.move_to_target(max_xyz_dist=0.1, max_yaw_step=self.step_rad, max_yaw_dist=self.step_rad)
+        self.move_to_target(max_xyz_dist=0.1, max_yaw_step=self.step_rad, max_yaw_dist=self.step_rad/3) # 1/3的航向差作为判断到达
         if current_yaw is not None:
             rospy.loginfo_throttle(1, f"{NODE_NAME}: 目标航向: {np.degrees(self.rotate_target_yaw)}度, 当前航向: {np.degrees(current_yaw)}度,delta yaw {delta_yaw}")
         else:

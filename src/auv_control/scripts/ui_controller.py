@@ -1191,10 +1191,10 @@ class SenderUI:
                 data = self.sensor_sock.recv(512)
                 if data:
                     buffer += data
-                    while len(buffer) >= 17:
+                    while len(buffer) >= 64:
                         # 解析17字节数据
-                        sensor_data = parse_sensor_data(buffer[:17])
-                        buffer = buffer[17:]
+                        sensor_data = parse_sensor_data(buffer[:64])
+                        buffer = buffer[64:]
                         if sensor_data:
                             self.show_sensor_data(sensor_data)
             except Exception as e:
@@ -1366,23 +1366,40 @@ class SenderUI:
                 break  # 发生错误直接退出循环
             time.sleep(0.2)  # 5Hz发送频率
 
-
+# ========== 传感器数据解析相关 ==========
+def calc_xor(data: bytes, length: int) -> int:
+    xor_val = 0
+    for i in range(length):
+        xor_val ^= data[i]
+    return xor_val
 def parse_sensor_data(data: bytes) -> SensorData:
     """
     解析17字节传感器数据
     """
-    if len(data) != 17:
+    if len(data) != 64:
+        return None
+
+    # 帧头校验
+    if data[0] != 0xFE or data[1] != 0xEF:
+        return None
+
+    # 帧尾校验
+    if data[62] != 0xFA or data[63] != 0xAF:
+        return None
+
+    # XOR校验
+    if data[61] != calc_xor(data, 61):
         return None
     
     sensor = SensorData()
     try:
         # 解析4个float数据
-        sensor.control_voltage = struct.unpack('<f', data[0:4])[0]
-        sensor.power_voltage = struct.unpack('<f', data[4:8])[0]
-        sensor.control_current = struct.unpack('<f', data[8:12])[0]
-        sensor.power_current = struct.unpack('<f', data[12:16])[0]
+        sensor.control_voltage = struct.unpack('<f', data[2:6])[0]
+        sensor.power_voltage = struct.unpack('<f', data[6:10])[0]
+        sensor.control_current = struct.unpack('<f', data[10:14])[0]
+        sensor.power_current = struct.unpack('<f', data[14:18])[0]
         # 解析舵机角度
-        sensor.servo_angle = data[16]
+        sensor.servo_angle = data[18]
     except Exception as e:
         print(f"传感器数据解析错误: {e}")
         return None
