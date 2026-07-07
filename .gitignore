@@ -26,7 +26,8 @@ CLAUDE.md
 
 # 忽略特定文件夹
 packages/
-
+build_isolated/
+devel_isolated/
 # 忽略训练数据
 datasets/images/
 datasets/video/
