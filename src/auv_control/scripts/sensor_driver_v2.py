@@ -302,7 +302,7 @@ class SensorDriverV2:
             new_heading = max(0, min(255, msg.heading_servo))
             new_clamp = max(0, min(255, msg.clamp_servo))
             new_drive_cmd = msg.drive_cmd if msg.drive_cmd in (0, 1, 2) else 0
-            new_drive_speed = max(0, min(255, msg.drive_speed))
+            new_drive_speed = max(0, min(254, msg.drive_speed))
             new_red = 1 if msg.red_light else 0
             new_yellow = 1 if msg.yellow_light else 0
             new_green = 1 if msg.green_light else 0
