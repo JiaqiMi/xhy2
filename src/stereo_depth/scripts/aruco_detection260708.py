@@ -6,7 +6,7 @@ from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import PoseStamped, Quaternion
 from scipy.spatial.transform import Rotation as R
-import tf
+# import tf
 
 class ArucoPosePublisher:
     def __init__(self):
@@ -76,8 +76,10 @@ class ArucoPosePublisher:
                 )
 
                 # 将旋转向量转换为四元数
-                R, _ = cv2.Rodrigues(rvec)
-                quat = tf.transformations.quaternion_from_matrix(np.vstack((np.hstack((R, [[0], [0], [0]])), [0, 0, 0, 1])))
+                # R, _ = cv2.Rodrigues(rvec)
+                # quat = tf.transformations.quaternion_from_matrix(np.vstack((np.hstack((R, [[0], [0], [0]])), [0, 0, 0, 1])))
+                rot_mat, _ = cv2.Rodrigues(rvec)
+                quat_xyzw = R.from_matrix(rot_mat).as_quat()
 
                 # 发布位姿
                 pose_msg = PoseStamped()
@@ -86,12 +88,24 @@ class ArucoPosePublisher:
                 pose_msg.pose.position.x = tvec[0][0]
                 pose_msg.pose.position.y = tvec[1][0]
                 pose_msg.pose.position.z = tvec[2][0]
-                pose_msg.pose.orientation = Quaternion(*quat)
+                # pose_msg.pose.orientation = Quaternion(*quat)
+                pose_msg.pose.orientation = Quaternion(
+                    quat_xyzw[0],
+                    quat_xyzw[1],
+                    quat_xyzw[2],
+                    quat_xyzw[3]
+                )
 
                 self.pose_pub.publish(pose_msg)
 
-                rospy.loginfo(f"Published pose for ArUco ID={ids[i][0]}: tvec={tvec.ravel()}, quat={quat}")
-                
+                # rospy.loginfo(f"Published pose for ArUco ID={ids[i][0]}: tvec={tvec.ravel()}, quat={quat}")
+                rospy.loginfo(
+                    "Published pose for ArUco ID=%s: tvec=%s, quat=%s",
+                    ids[i][0],
+                    tvec.ravel(),
+                    quat_xyzw
+                )
+
                 rospy.sleep(0.2)
 
 if __name__ == '__main__':

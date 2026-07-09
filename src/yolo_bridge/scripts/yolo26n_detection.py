@@ -24,9 +24,9 @@ class YOLO26nDetector:
         self.left_img = None                           # 初始化左眼相机画面
         
         model_list = [
-            "/home/xhy/catkin_ws/models/shapes_model260708.pt",
+            "/home/xhy/catkin_ws/models/shapes0709.pt",
             "/home/xhy/catkin_ws/models/rectangle_model260708.pt",
-            "/home/xhy/catkin_ws/models/balls_model260708.pt" 
+            "/home/xhy/catkin_ws/models/line0709.pt" 
         ]
         if self.DetectMode == 1:
             self.model = YOLO(model_list[0])
