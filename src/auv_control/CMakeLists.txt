@@ -58,7 +58,7 @@ add_message_files(
   AUVData.msg
   SensorStatus.msg
   Keyboard.msg # 键盘节点到主控节点的消息
-  Control.msg # 主控节点到驱动节点的消息
+  # Control.msg # 主控节点到驱动节点的消息
   ActuatorControl.msg # 执行器控制消息
   NavData.msg 
   TargetDetection.msg

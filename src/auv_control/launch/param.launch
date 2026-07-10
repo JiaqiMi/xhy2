@@ -1,6 +1,7 @@
 <launch>
     <arg name="color" default="red" />
 
+
     <!-- 下潜的深度-->
     <param name="depth" type ="double" value="0.2" />
     <param name="pitch_offset" type="double" value="1.5" />

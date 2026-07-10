@@ -21,7 +21,9 @@
 2025.7.23 11:16
     增加数据保存功能
     对深度数据进行滤波处理
-    TODO 在水下测试深度
+    在水下测试深度
+2026.7.0 15:30
+    删除csv保存，改为直接保存原始报文
 """
 
 import json
@@ -78,13 +80,13 @@ class MovingAverageFilter:
 class DebugDataPacket:
     # 110字节调试协议解析结构体
     def __init__(self):
-        self.mode = 0                       # 当前运行模式
-        self.temperature = 0.0              # 舱内温度监测数据
-        self.control_voltage = 0.0          # 控制电压
+        self.mode = 0                       # 当前运行模式 02 定深，03 定向
+        self.temperature = 0.0              # 舱内温度监测数据 不使用
+        self.control_voltage = 0.0          # 总电压
         self.power_current = 0.0            # 总电流
-        self.water_leak = 0                 # 漏水检测
-        self.sensor_status = 0              # 传感器状态
-        self.sensor_update = 0              # 传感器更新
+        self.water_leak = 0                 # 漏水检测 00不漏 01漏
+        self.sensor_status = 0              # 传感器状态 0 ahrs 1 gps 2 sbl 3 vio 4 dvl 地速 5 dvl流速 6 dvl高度
+        self.sensor_update = 0              # 传感器更新 0 ahrs 1 dvl 2 gps 3 sbl 4 vio
         self.fault_status = 0               # 故障状态
         self.power_status = 0               # 电源状态 ROV默认全开启
         self.force_commands = [0] * 6        # 当前的力和力矩
@@ -116,8 +118,9 @@ class debugdriver:
         # 获取参数服务器的IP和端口，默认192.168.1.115:5063
         ip = ip or rospy.get_param("~debug_ip", "192.168.1.115")
         port = port or rospy.get_param("~debug_port", 5063)
-        self.saving_enable = rospy.get_param("~save_data", True)  # 是否保存数据
-        self.saving_path = rospy.get_param("~save_path", "/home/hsx/debug_data.csv")
+
+        # self.saving_enable = rospy.get_param("~save_data", True)  # 是否保存数据
+        # self.saving_path = rospy.get_param("~save_path", "/home/xhy/debug_data.csv")
         self.raw_saving_enable = rospy.get_param("~save_raw_data", False)
         self.raw_save_dir = os.path.expanduser(rospy.get_param("~raw_save_dir", "~/.ros/auv_logs"))
         self.raw_save_file_name = rospy.get_param("~raw_save_file", "")
@@ -139,28 +142,28 @@ class debugdriver:
         # 初始化深度滤波器
         self.depth_lpf = LowPassFilter(alpha=0.2)  # 低通滤波器
         self.depth_ma = MovingAverageFilter(window_size=5)  # 移动平均滤波器
-        rospy.loginfo("debug_driver: 数据保存 %s", self.saving_enable)
+        # rospy.loginfo("debug_driver: 数据保存 %s", self.saving_enable)
         # 打开数据保存文件
-        if self.saving_enable:
-            try:
-                self.save_file = open(self.saving_path, 'w')
-                # 修改CSV表头，增加滤波后的深度字段
-                header = "pc_timestamp,mode,temperature,control_voltage,power_current,water_leak,"
-                header += "sensor_status,sensor_update,fault_status,power_status,"
-                header += "force_cmd1,force_cmd2,force_cmd3,force_cmd4,force_cmd5,force_cmd6,"
-                header += "roll,pitch,yaw,"
-                header += "angular_vel_x,angular_vel_y,angular_vel_z,"
-                header += "linear_vel_x,linear_vel_y,linear_vel_z,"
-                header += "longitude,latitude,depth_raw,depth_lpf,depth_ma,altitude,"  # 增加滤波深度
-                header += "target_longitude,target_latitude,target_depth,"
-                header += "target_roll,target_pitch,target_yaw,"
-                header += "target_altitude,target_speed,"
-                header += "utc_year,utc_month,utc_day,utc_hour,utc_minute,utc_second\n"
-                self.save_file.write(header)
-                rospy.loginfo(f"debug_driver: 数据将保存到 {self.saving_path}")
-            except Exception as e:
-                rospy.logerr(f"debug_driver: 打开保存文件失败: {e}")
-                self.save_file = None
+        # if self.saving_enable:
+        #     try:
+        #         self.save_file = open(self.saving_path, 'w')
+        #         # 修改CSV表头，增加滤波后的深度字段
+        #         header = "pc_timestamp,mode,temperature,control_voltage,power_current,water_leak,"
+        #         header += "sensor_status,sensor_update,fault_status,power_status,"
+        #         header += "force_cmd1,force_cmd2,force_cmd3,force_cmd4,force_cmd5,force_cmd6,"
+        #         header += "roll,pitch,yaw,"
+        #         header += "angular_vel_x,angular_vel_y,angular_vel_z,"
+        #         header += "linear_vel_x,linear_vel_y,linear_vel_z,"
+        #         header += "longitude,latitude,depth_raw,depth_lpf,depth_ma,altitude,"  # 增加滤波深度
+        #         header += "target_longitude,target_latitude,target_depth,"
+        #         header += "target_roll,target_pitch,target_yaw,"
+        #         header += "target_altitude,target_speed,"
+        #         header += "utc_year,utc_month,utc_day,utc_hour,utc_minute,utc_second\n"
+        #         self.save_file.write(header)
+        #         rospy.loginfo(f"debug_driver: 数据将保存到 {self.saving_path}")
+        #     except Exception as e:
+        #         rospy.logerr(f"debug_driver: 打开保存文件失败: {e}")
+        #         self.save_file = None
 
         if self.raw_saving_enable:
             self.open_raw_save_file()
@@ -241,37 +244,37 @@ class debugdriver:
             data.checksum = packet[107]
             
             # 保存所有解析到的数据
-            if self.saving_enable and self.save_file:
-                try:
-                    pc_time = time.time()
-                    # 构造完整的CSV行，包含所有字段
-                    csv_line = f"{pc_time:.6f},"  # PC时间戳
-                    csv_line += f"{data.mode},"  # 运行模式
-                    csv_line += f"{data.temperature:.2f},{data.control_voltage:.2f},{data.power_current:.2f},"  # 温度电压电流
-                    csv_line += f"{data.water_leak},"  # 漏水检测
-                    csv_line += f"{data.sensor_status},{data.sensor_update},{data.fault_status},{data.power_status},"  # 状态字
-                    # 力和力矩
-                    csv_line += ",".join(f"{x}" for x in data.force_commands) + ","
-                    # 欧拉角
-                    csv_line += f"{data.euler_angles[0]:.2f},{data.euler_angles[1]:.2f},{data.euler_angles[2]:.2f},"
-                    # 角速度
-                    csv_line += ",".join(f"{x:.2f}" for x in data.angular_velocity) + ","
-                    # 线速度
-                    csv_line += ",".join(f"{x:.2f}" for x in data.linear_velocity) + ","
-                    # 导航坐标和深度高度（增加滤波深度）
-                    csv_line += f"{data.navigation_coords[0]:.7f},{data.navigation_coords[1]:.7f},"
-                    csv_line += f"{data.depth:.3f},{data.depth_filtered:.3f},{data.depth_ma:.3f},{data.altitude:.3f},"
-                    # 目标位置和姿态
-                    csv_line += f"{data.target_longitude:.7f},{data.target_latitude:.7f},{data.target_depth:.3f},"
-                    csv_line += f"{data.target_roll:.2f},{data.target_pitch:.2f},{data.target_yaw:.2f},"
-                    csv_line += f"{data.target_altitude:.3f},{data.target_speed:.2f},"
-                    # UTC时间
-                    csv_line += ",".join(f"{x}" for x in data.utc_time) + "\n"
+            # if self.saving_enable and self.save_file:
+            #     try:
+            #         pc_time = time.time()
+            #         # 构造完整的CSV行，包含所有字段
+            #         csv_line = f"{pc_time:.6f},"  # PC时间戳
+            #         csv_line += f"{data.mode},"  # 运行模式
+            #         csv_line += f"{data.temperature:.2f},{data.control_voltage:.2f},{data.power_current:.2f},"  # 温度电压电流
+            #         csv_line += f"{data.water_leak},"  # 漏水检测
+            #         csv_line += f"{data.sensor_status},{data.sensor_update},{data.fault_status},{data.power_status},"  # 状态字
+            #         # 力和力矩
+            #         csv_line += ",".join(f"{x}" for x in data.force_commands) + ","
+            #         # 欧拉角
+            #         csv_line += f"{data.euler_angles[0]:.2f},{data.euler_angles[1]:.2f},{data.euler_angles[2]:.2f},"
+            #         # 角速度
+            #         csv_line += ",".join(f"{x:.2f}" for x in data.angular_velocity) + ","
+            #         # 线速度
+            #         csv_line += ",".join(f"{x:.2f}" for x in data.linear_velocity) + ","
+            #         # 导航坐标和深度高度（增加滤波深度）
+            #         csv_line += f"{data.navigation_coords[0]:.7f},{data.navigation_coords[1]:.7f},"
+            #         csv_line += f"{data.depth:.3f},{data.depth_filtered:.3f},{data.depth_ma:.3f},{data.altitude:.3f},"
+            #         # 目标位置和姿态
+            #         csv_line += f"{data.target_longitude:.7f},{data.target_latitude:.7f},{data.target_depth:.3f},"
+            #         csv_line += f"{data.target_roll:.2f},{data.target_pitch:.2f},{data.target_yaw:.2f},"
+            #         csv_line += f"{data.target_altitude:.3f},{data.target_speed:.2f},"
+            #         # UTC时间
+            #         csv_line += ",".join(f"{x}" for x in data.utc_time) + "\n"
                     
-                    self.save_file.write(csv_line)
-                    self.save_file.flush()  # 立即写入文件
-                except Exception as e:
-                    rospy.logerr(f"debug_driver: 保存数据失败: {e}")
+            #         self.save_file.write(csv_line)
+            #         self.save_file.flush()  # 立即写入文件
+            #     except Exception as e:
+            #         rospy.logerr(f"debug_driver: 保存数据失败: {e}")
                     
         except Exception as e:
             rospy.logerr(f"debug_driver: 数据解析错误: {e}")
@@ -486,12 +489,12 @@ class debugdriver:
         rospy.signal_shutdown("debug_driver: 节点已关闭")
 
         # 关闭文件
-        if self.saving_enable and self.save_file:
-            try:
-                self.save_file.close()
-                rospy.loginfo("debug_driver: 数据文件已保存并关闭")
-            except Exception as e:
-                rospy.logerr(f"debug_driver: 关闭数据文件失败: {e}")
+        # if self.saving_enable and self.save_file:
+        #     try:
+        #         self.save_file.close()
+        #         rospy.loginfo("debug_driver: 数据文件已保存并关闭")
+        #     except Exception as e:
+        #         rospy.logerr(f"debug_driver: 关闭数据文件失败: {e}")
 
         if self.raw_saving_enable and self.raw_save_file:
             try:
