@@ -42,8 +42,8 @@
     </node>
 
     <!-- 目标点空间定位 -->
-    <node pkg="stereo_depth" type="line_detection_v2.py" name="line_location" output="screen" >
-        <param name="is_visual" value="1"/>
+    <node pkg="stereo_depth" type="line_detection_v3.py" name="line_location" output="screen" >
+        <param name="is_visual" value="0"/>
     </node>
 
 
