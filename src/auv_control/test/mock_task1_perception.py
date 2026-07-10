@@ -8,7 +8,8 @@
     2. 以机器人初始航向为“前”，生成边长约 1 m 的前、右、后、左闭合轨迹；
     3. 将轨迹前瞻点转换到 camera 坐标系，发布 /obj/line_message；
     4. 在四条边上布置黄色圆形、黑色方形、黄色三角形、黑色方形；
-    5. 当机器人接近图形前方可发现范围时，发布 /obj/target_message。
+    5. 当机器人接近图形前方可发现范围时，短时间发布 /obj/target_message，
+       发布窗口结束后将该图形置为已使用。
 监听：/tf
 发布：/obj/line_message (TargetDetection3)，/obj/target_message (TargetDetection)
 说明：本节点只虚拟识别输出，不发布 /tf、不发布 /target、不控制下位机。
@@ -52,11 +53,8 @@ class MockTask1Perception:
         self.marker_detection_distance = float(
             rospy.get_param('~marker_detection_distance', 0.60)
         )
-        self.marker_reached_distance = float(
-            rospy.get_param('~marker_reached_distance', 0.15)
-        )
-        self.marker_max_publish_seconds = float(
-            rospy.get_param('~marker_max_publish_seconds', 120.0)
+        self.marker_publish_seconds = float(
+            rospy.get_param('~marker_publish_seconds', 2.0)
         )
         self.marker_confidence = float(rospy.get_param('~marker_confidence', 1.0))
 
@@ -256,14 +254,13 @@ class MockTask1Perception:
         self.target_pub.publish(message)
 
     ############################################### 图形状态层 #######################################
-    def update_markers(self, robot_position, robot_progress):
+    def update_markers(self, robot_progress):
         """根据机器人沿轨迹进度，决定是否发布和关闭虚拟图形。"""
         now = rospy.Time.now()
         for marker in self.markers:
             if marker['state'] == 'used':
                 continue
 
-            marker_point = self.point_at_progress(marker['progress'])
             ahead = (marker['progress'] - robot_progress) % self.total_length
 
             if marker['state'] == 'idle' and ahead <= self.marker_detection_distance:
@@ -280,15 +277,9 @@ class MockTask1Perception:
                 continue
 
             self.publish_marker(marker)
-            if xy_distance(robot_position, marker_point) <= self.marker_reached_distance:
+            if (now - marker['started_at']).to_sec() >= self.marker_publish_seconds:
                 marker['state'] = 'used'
-                rospy.loginfo('%s: marker %s reached; stop publishing',
-                              NODE_NAME, marker['class_name'])
-                continue
-
-            if (now - marker['started_at']).to_sec() >= self.marker_max_publish_seconds:
-                marker['state'] = 'used'
-                rospy.logwarn('%s: marker %s publish timeout; mark as used',
+                rospy.loginfo('%s: marker %s publish window finished; mark as used',
                               NODE_NAME, marker['class_name'])
 
     ############################################### 主循环 ###########################################
@@ -308,7 +299,7 @@ class MockTask1Perception:
             robot_position = (translation[0], translation[1], translation[2])
             robot_progress = self.closest_progress(robot_position)
             self.publish_line(robot_progress)
-            self.update_markers(robot_position, robot_progress)
+            self.update_markers(robot_progress)
             self.rate.sleep()
 
 
