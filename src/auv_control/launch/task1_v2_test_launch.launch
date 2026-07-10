@@ -15,17 +15,15 @@
     -->
 
     <!-- Task1 V2 场地与任务参数 -->
-    <arg name="depth" default="0.3" />
+    <arg name="depth" default="0.0" />
     <arg name="surface_yaw" default="0.0" />
     <arg name="square_side" default="1.0" />
 
     <param name="task1_v2_entry_point" type="yaml" value="[0.0, 0.0, $(arg depth), $(arg surface_yaw)]" />
     <param name="task1_v2_end_point" type="yaml" value="[0.0, 0.0, $(arg depth), $(arg surface_yaw)]" />
     <param name="task1_v2_use_current_pose_as_start" type="bool" value="true" />
-    <param name="task1_v2_depth" type="double" value="$(arg depth)" />
     <param name="task1_v2_required_yellow" type="int" value="2" />
     <param name="task1_v2_required_black" type="int" value="2" />
-    <param name="task1_v2_yellow_dive_depth" type="double" value="0.10" />
     <param name="task1_v2_touch_hold_seconds" type="double" value="1.0" />
     <param name="task1_v2_marker_merge_distance" type="double" value="0.5" />
     <param name="task1_v2_line_forward_fraction" type="double" value="0.8" />
@@ -41,7 +39,6 @@
     <!-- Task1 V2 主任务节点：真实发布 /target 和 /auv_actuator_control -->
     <node pkg="auv_control" type="task1_v2.py" name="task1_v2" output="screen">
         <param name="max_xy_step" type="double" value="0.15" />
-        <param name="max_z_step" type="double" value="0.05" />
         <param name="max_yaw_step_deg" type="double" value="3.0" />
         <param name="position_tolerance" type="double" value="0.15" />
         <param name="yaw_tolerance_deg" type="double" value="5.0" />
@@ -55,8 +52,7 @@
         <param name="line_pose2_ahead" type="double" value="0.35" />
         <param name="line_pose3_ahead" type="double" value="0.70" />
         <param name="marker_detection_distance" type="double" value="0.60" />
-        <param name="marker_reached_distance" type="double" value="0.15" />
-        <param name="marker_max_publish_seconds" type="double" value="120.0" />
+        <param name="marker_publish_seconds" type="double" value="2.0" />
     </node>
 
     <!-- 监控节点：只统计话题，不参与控制 -->

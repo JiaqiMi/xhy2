@@ -5,7 +5,7 @@
 描述：
     1. 移动到主管道入口并根据视觉检测结果沿管道前进；
     2. 识别黄色圆形/三角形泄漏标记和黑色方形污染标记；
-    3. 当前测试阶段将黄色“接触”简化为当前位置下潜 10 cm；
+    3. 当前通信测试阶段只在 XY 平面巡线，目标 z 始终保持当前深度；
     4. 黄色标记闪烁一次红灯；
     5. 黑色标记闪烁两次绿灯并原地旋转 360 度；
     6. 完成规定数量的两类标记后移动到管道终点。
@@ -13,7 +13,8 @@
 发布：/target，/auv_actuator_control，/finished
 说明：比赛场地坐标、目标类别名称和标记数量通过 ROS 参数配置。
       测试时可将 /task1_v2_use_current_pose_as_start 设为 true，使任务以
-      启动瞬间机器人当前位置作为入口点和返回终点。
+      启动瞬间机器人当前位置作为入口点和返回终点；运动目标发布前会
+      使用当前 z，避免主动上浮或下潜。
 """
 
 import copy
@@ -48,14 +49,12 @@ class Task1V2(MissionBase):
 
         self.entry_pose = self.pose_from_param('/task1_v2_entry_point', [0.0, 0.0, 0.0, 0.0])
         self.end_pose = self.pose_from_param('/task1_v2_end_point', [0.0, 0.0, 0.0, 0.0])
-        self.target_depth = rospy.get_param('/task1_v2_depth', self.entry_pose.pose.position.z)
         self.use_current_pose_as_start = rospy.get_param(
             '/task1_v2_use_current_pose_as_start', False
         )
         self.required_yellow = int(rospy.get_param('/task1_v2_required_yellow', 2))
         self.required_black = int(rospy.get_param('/task1_v2_required_black', 2))
         self.touch_hold_seconds = rospy.get_param('/task1_v2_touch_hold_seconds', 1.0)
-        self.yellow_dive_depth = rospy.get_param('/task1_v2_yellow_dive_depth', 0.10)
         self.marker_merge_distance = rospy.get_param('/task1_v2_marker_merge_distance', 0.5)
         self.line_forward_fraction = rospy.get_param('/task1_v2_line_forward_fraction', 0.8)
         self.yellow_classes = class_names(
@@ -91,7 +90,6 @@ class Task1V2(MissionBase):
 
         self.entry_pose = copy.deepcopy(current)
         self.end_pose = copy.deepcopy(current)
-        self.target_depth = current.pose.position.z
         rospy.loginfo(
             '%s: using current pose as test start/end: %.2f, %.2f, %.2f',
             NODE_NAME,
@@ -109,6 +107,17 @@ class Task1V2(MissionBase):
                 return current
             rospy.sleep(0.1)
         return None
+
+    def move_to_pose_xy(self, target, position_tolerance=None, yaw_tolerance=None):
+        """只按 XY 和航向移动，发布目标前将 z 改为机器人当前深度。"""
+        current = self.get_current_pose()
+        if current is None:
+            return False
+
+        xy_target = copy.deepcopy(target)
+        xy_target.header.stamp = rospy.Time.now()
+        xy_target.pose.position.z = current.pose.position.z
+        return self.move_to_pose(xy_target, position_tolerance, yaw_tolerance)
 
     ############################################### 回调辅助层 #######################################
     def marker_already_known(self, point):
@@ -128,8 +137,8 @@ class Task1V2(MissionBase):
         """接收缺陷目标，将有效且未重复的标记加入任务队列。
 
         视觉消息中的目标点先从 camera 转换到 map。当前真实下水通信测试
-        还没有真实接触识别，因此黄色图形动作用当前位置下潜近似，黑色
-        图形仍移动到图形坐标执行闪灯和旋转。
+        不做黄色图形接触动作，黄色图形只在当前位姿闪红灯；黑色图形
+        移动到图形 XY 坐标执行闪灯和旋转。
         """
         if message.class_name in self.yellow_classes:
             defect_type = 'yellow'
@@ -179,8 +188,8 @@ class Task1V2(MissionBase):
     def action_pose_from_marker(self, marker, defect_type):
         """根据图形位置生成当前测试用动作位姿。
 
-        黄色图形：base_link 保持当前 XY 和航向，仅下潜 yellow_dive_depth；
-        黑色图形：base_link 到达图形 XY，并在当前巡线深度执行动作。
+        黄色图形：base_link 保持当前位姿，只执行闪灯；
+        黑色图形：base_link 到达图形 XY，z 保持当前深度。
         """
         current = self.get_current_pose()
         if current is None:
@@ -191,7 +200,6 @@ class Task1V2(MissionBase):
         target.header.stamp = rospy.Time.now()
         if defect_type == 'yellow':
             target.pose.position = copy.deepcopy(current.pose.position)
-            target.pose.position.z += self.yellow_dive_depth
             desired_yaw = yaw_from_quaternion(current.pose.orientation)
         else:
             dx = marker.pose.position.x - current.pose.position.x
@@ -202,7 +210,7 @@ class Task1V2(MissionBase):
                 desired_yaw = yaw_from_quaternion(current.pose.orientation)
             target.pose.position.x = marker.pose.position.x
             target.pose.position.y = marker.pose.position.y
-            target.pose.position.z = self.target_depth
+            target.pose.position.z = current.pose.position.z
         target.pose.orientation = Quaternion(*quaternion_from_euler(
             0.0, self.pitch_offset, desired_yaw
         ))
@@ -212,7 +220,7 @@ class Task1V2(MissionBase):
         """根据管线上的第二、第三检测点更新循线目标。
 
         第二个点用于确定下一位置，第二点指向第三点的方向作为期望航向，
-        深度保持为 /task1_v2_depth。
+        z 保持为当前深度，避免测试时对深度闭环提出额外要求。
         """
         try:
             self.tf_listener.waitForTransform(
@@ -243,7 +251,7 @@ class Task1V2(MissionBase):
         target.pose.position.y = current.pose.position.y + self.line_forward_fraction * (
             second.pose.position.y - current.pose.position.y
         )
-        target.pose.position.z = self.target_depth
+        target.pose.position.z = current.pose.position.z
         target.pose.orientation = Quaternion(*quaternion_from_euler(
             0.0, self.pitch_offset, math.atan2(line_dy, line_dx)
         ))
@@ -268,11 +276,11 @@ class Task1V2(MissionBase):
 
     ############################################### 主循环 ###########################################
     def run(self):
-        """按照“入口→循线→触碰→标记动作→终点”的顺序执行任务。"""
+        """按照“入口→循线→标记动作→终点”的顺序执行任务。"""
         while not rospy.is_shutdown():
             # 步骤0：移动到主管道入口。
             if self.step == 0:
-                if self.move_to_pose(self.entry_pose):
+                if self.move_to_pose_xy(self.entry_pose):
                     rospy.loginfo('%s: reached pipeline entry', NODE_NAME)
                     self.set_step(1)
 
@@ -295,13 +303,13 @@ class Task1V2(MissionBase):
                 ):
                     self.set_step(6)
                 elif self.line_target is not None:
-                    self.move_to_pose(self.line_target)
+                    self.move_to_pose_xy(self.line_target)
                 else:
                     self.sweep_for_target(max_angle_deg=20.0, step_deg=1.0)
 
-            # 步骤2：移动到动作位姿；黄色图形保持当前XY并下潜10cm。
+            # 步骤2：移动到动作位姿；黄色图形保持当前状态，不做下潜接触。
             elif self.step == 2:
-                if self.move_to_pose(self.active_defect['contact'], position_tolerance=0.1):
+                if self.move_to_pose_xy(self.active_defect['contact'], position_tolerance=0.1):
                     rospy.loginfo('%s: reached marker action pose', NODE_NAME)
                     self.set_step(3)
 
@@ -331,7 +339,7 @@ class Task1V2(MissionBase):
 
             # 步骤6：两类标记均达到要求后移动到管道终点并结束。
             elif self.step == 6:
-                if self.move_to_pose(self.end_pose):
+                if self.move_to_pose_xy(self.end_pose):
                     self.finish_task()
 
             self.rate.sleep()
