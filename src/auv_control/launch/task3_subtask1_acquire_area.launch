@@ -1,0 +1,28 @@
+<launch>
+    <!-- Task 3 subtask 1: move to the task acquisition area.
+         Start the required vehicle drivers, TF, and controller separately. -->
+
+    <arg name="rate" default="5.0" />
+
+    <!-- Mock arrow result before the arrow detector is ready. -->
+    <arg name="arrow_forward" default="0.50" />
+    <arg name="arrow_right" default="0.30" />
+    <arg name="arrow_down" default="0.00" />
+
+    <arg name="arrive_dist" default="0.12" />
+    <arg name="arrive_yaw_deg" default="5.0" />
+    <arg name="hold_seconds" default="2.0" />
+
+    <node pkg="auv_control"
+          type="test_task3_1_acquire_area.py"
+          name="test_task3_1_acquire_area"
+          output="screen">
+        <param name="rate" type="double" value="$(arg rate)" />
+        <param name="arrow_forward" type="double" value="$(arg arrow_forward)" />
+        <param name="arrow_right" type="double" value="$(arg arrow_right)" />
+        <param name="arrow_down" type="double" value="$(arg arrow_down)" />
+        <param name="arrive_dist" type="double" value="$(arg arrive_dist)" />
+        <param name="arrive_yaw_deg" type="double" value="$(arg arrive_yaw_deg)" />
+        <param name="hold_seconds" type="double" value="$(arg hold_seconds)" />
+    </node>
+</launch>
