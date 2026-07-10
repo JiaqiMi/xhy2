@@ -1,0 +1,60 @@
+<launch>
+    <!--
+        Task1 V2 真实下位机通信测试
+        使用方式：
+        1. 先单独启动真实基础节点：roslaunch auv_control begin.launch
+        2. 再启动本文件：roslaunch auv_control task1_v2_test_launch.launch
+
+        本 launch 只启动：
+        - task1_v2.py：任务状态机
+        - mock_task1_perception.py：虚拟巡线和图形识别输出
+        - task1_v2_test_monitor.py：话题监控
+
+        不启动 sensor_driver_v2/debug_driver/auv_tf_handler/static_tf_broadcaster，
+        避免重复连接真实下位机或重复发布 TF。
+    -->
+
+    <!-- Task1 V2 场地与任务参数 -->
+    <arg name="depth" default="0.0" />
+    <arg name="surface_yaw" default="0.0" />
+    <arg name="square_side" default="1.0" />
+
+    <param name="task1_v2_entry_point" type="yaml" value="[0.0, 0.0, $(arg depth), $(arg surface_yaw)]" />
+    <param name="task1_v2_end_point" type="yaml" value="[0.0, 0.0, $(arg depth), $(arg surface_yaw)]" />
+    <param name="task1_v2_use_current_pose_as_start" type="bool" value="true" />
+    <param name="task1_v2_required_yellow" type="int" value="2" />
+    <param name="task1_v2_required_black" type="int" value="2" />
+    <param name="task1_v2_touch_hold_seconds" type="double" value="1.0" />
+    <param name="task1_v2_marker_merge_distance" type="double" value="0.5" />
+    <param name="task1_v2_line_forward_fraction" type="double" value="0.8" />
+    <param name="task1_v2_yellow_classes" type="yaml" value="['yellow_circle', 'yellow_triangle', 'yellow']" />
+    <param name="task1_v2_black_classes" type="yaml" value="['black_square', 'black_rectangle', 'black']" />
+
+    <!-- ActuatorControl 默认值：按 sensor_driver_v2 当前真实默认值设置 -->
+    <param name="task_v2_heading_servo" type="int" value="128" />
+    <param name="task_v2_clamp_servo" type="int" value="0" />
+    <param name="task_v2_drive_cmd" type="int" value="0" />
+    <param name="task_v2_drive_speed" type="int" value="0" />
+
+    <!-- Task1 V2 主任务节点：真实发布 /target 和 /auv_actuator_control -->
+    <node pkg="auv_control" type="task1_v2.py" name="task1_v2" output="screen">
+        <param name="max_xy_step" type="double" value="0.15" />
+        <param name="max_yaw_step_deg" type="double" value="3.0" />
+        <param name="position_tolerance" type="double" value="0.15" />
+        <param name="yaw_tolerance_deg" type="double" value="5.0" />
+    </node>
+
+    <!-- 虚拟视觉节点：只发布 /obj/line_message 和 /obj/target_message -->
+    <node pkg="auv_control" type="mock_task1_perception.py" name="mock_task1_perception" output="screen">
+        <param name="side_length" type="double" value="$(arg square_side)" />
+        <param name="rate" type="double" value="5.0" />
+        <param name="line_pose1_ahead" type="double" value="0.20" />
+        <param name="line_pose2_ahead" type="double" value="0.35" />
+        <param name="line_pose3_ahead" type="double" value="0.70" />
+        <param name="marker_detection_distance" type="double" value="0.60" />
+        <param name="marker_publish_seconds" type="double" value="2.0" />
+    </node>
+
+    <!-- 监控节点：只统计话题，不参与控制 -->
+    <node pkg="auv_control" type="task1_v2_test_monitor.py" name="task1_v2_test_monitor" output="screen" />
+</launch>

@@ -4,7 +4,7 @@
 # 基于中心像素点的目标位姿计算
 import rospy
 import cv2
-import tf
+# import tf
 import numpy as np
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image

@@ -1,0 +1,61 @@
+<launch>
+    <!-- Task 3 subtask 3: move to the selected pipe area and drop the beacon.
+         Start the required vehicle drivers, TF, and controller separately. -->
+
+    <arg name="rate" default="5.0" />
+    <arg name="actuator_topic" default="/auv_actuator_control" />
+
+    <!-- Use mock now. Switch to topic after the pipe detector is ready. -->
+    <arg name="target_mode" default="mock" />
+    <arg name="target_topic" default="/task3/pipeline_target" />
+    <arg name="target_color" default="yellow" />
+    <arg name="mock_detected_colors" default="yellow green red" />
+
+    <!-- Mock pipe target: front 0.50 m and left 0.30 m. -->
+    <arg name="drop_forward" default="0.50" />
+    <arg name="drop_left" default="0.30" />
+    <arg name="drop_down" default="0.00" />
+
+    <arg name="arrive_dist" default="0.12" />
+    <arg name="arrive_yaw_deg" default="5.0" />
+    <arg name="hold_seconds" default="1.0" />
+    <arg name="open_seconds" default="3.0" />
+    <arg name="close_seconds" default="1.0" />
+
+    <arg name="clamp_open" default="0" />
+    <arg name="clamp_closed" default="255" />
+    <arg name="heading_servo" default="128" />
+    <arg name="drive_cmd" default="0" />
+    <arg name="drive_speed" default="0" />
+    <arg name="light1" default="0" />
+    <arg name="light2" default="0" />
+    <arg name="show_color_light" default="true" />
+
+    <node pkg="auv_control"
+          type="test_task3_3_inspect_and_drop.py"
+          name="test_task3_3_inspect_and_drop"
+          output="screen">
+        <param name="rate" type="double" value="$(arg rate)" />
+        <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
+        <param name="target_mode" type="string" value="$(arg target_mode)" />
+        <param name="target_topic" type="string" value="$(arg target_topic)" />
+        <param name="target_color" type="string" value="$(arg target_color)" />
+        <param name="mock_detected_colors" type="string" value="$(arg mock_detected_colors)" />
+        <param name="drop_forward" type="double" value="$(arg drop_forward)" />
+        <param name="drop_left" type="double" value="$(arg drop_left)" />
+        <param name="drop_down" type="double" value="$(arg drop_down)" />
+        <param name="arrive_dist" type="double" value="$(arg arrive_dist)" />
+        <param name="arrive_yaw_deg" type="double" value="$(arg arrive_yaw_deg)" />
+        <param name="hold_seconds" type="double" value="$(arg hold_seconds)" />
+        <param name="open_seconds" type="double" value="$(arg open_seconds)" />
+        <param name="close_seconds" type="double" value="$(arg close_seconds)" />
+        <param name="clamp_open" type="int" value="$(arg clamp_open)" />
+        <param name="clamp_closed" type="int" value="$(arg clamp_closed)" />
+        <param name="heading_servo" type="int" value="$(arg heading_servo)" />
+        <param name="drive_cmd" type="int" value="$(arg drive_cmd)" />
+        <param name="drive_speed" type="int" value="$(arg drive_speed)" />
+        <param name="light1" type="int" value="$(arg light1)" />
+        <param name="light2" type="int" value="$(arg light2)" />
+        <param name="show_color_light" type="bool" value="$(arg show_color_light)" />
+    </node>
+</launch>

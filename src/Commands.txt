@@ -1,0 +1,5 @@
+roscore
+
+roslaunch stereo_depth test_camera_split.launch
+
+rosrun camera_calibration cameracalibrator.py --size 11x8 --square 0.02 --approximate 0.1 --no-service-check --camera_name stereo left:=/left/image_raw right:=/right/image_raw
