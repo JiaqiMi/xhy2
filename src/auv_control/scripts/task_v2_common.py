@@ -5,10 +5,10 @@
 描述：
     1. 从 TF 树获取 AUV 在 map 坐标系下的当前位姿；
     2. 将任务目标拆分为带步长限制的中间目标，并发布到 /target；
-    3. 通过 /sensor 控制红绿灯、补光灯和舵机；
+    3. 通过 /auv_actuator_control 控制红绿灯、补光灯和执行器；
     4. 提供定时亮灯、闪灯、往复搜索、原地旋转和接触点计算功能。
 监听：/tf
-发布：/target (PoseStamped)，/sensor (Control)，/finished (String)
+发布：/target (PoseStamped)，/auv_actuator_control (ActuatorControl)，/finished (String)
 说明：本文件只封装多个任务共同使用的功能，不单独启动 ROS 节点。
 """
 
@@ -17,7 +17,7 @@ import math
 
 import rospy
 import tf
-from auv_control.msg import Control
+from auv_control.msg import ActuatorControl
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
@@ -55,11 +55,17 @@ class MissionBase:
         self.node_name = node_name
         self.target_pub = rospy.Publisher('/target', PoseStamped, queue_size=10)
         self.finished_pub = rospy.Publisher('/finished', String, queue_size=10)
-        self.device_pub = rospy.Publisher('/sensor', Control, queue_size=10)
+        self.device_pub = rospy.Publisher(
+            '/auv_actuator_control', ActuatorControl, queue_size=10
+        )
         self.tf_listener = tf.TransformListener()
         self.rate = rospy.Rate(rate_hz)
 
         self.pitch_offset = math.radians(rospy.get_param('/pitch_offset', 0.0))
+        self.default_heading_servo = int(rospy.get_param('/task_v2_heading_servo', 0x80))
+        self.default_clamp_servo = int(rospy.get_param('/task_v2_clamp_servo', 0x00))
+        self.default_drive_cmd = int(rospy.get_param('/task_v2_drive_cmd', 0))
+        self.default_drive_speed = int(rospy.get_param('/task_v2_drive_speed', 0))
         self.max_xy_step = rospy.get_param('~max_xy_step', 0.5)
         self.max_z_step = rospy.get_param('~max_z_step', 0.1)
         self.max_yaw_step = math.radians(rospy.get_param('~max_yaw_step_deg', 5.0))
@@ -229,20 +235,24 @@ class MissionBase:
             self.target_pub.publish(self.hold_pose)
 
     ############################################### 外设层 ###########################################
-    def publish_device(self, red=0, green=0, servo=255, light1=0, light2=0):
+    def publish_device(self, red=0, green=0, servo=None, light1=0, light2=0):
         """发布一次外设控制消息。
 
         Parameters:
             red/green: int，红灯和绿灯开关，取值 0 或 1。
-            servo: int，舵机控制值，现有驱动允许 100～255。
+            servo: int，可选，开合舵机控制值；None 时使用 /task_v2_clamp_servo。
             light1/light2: int，两路补光灯亮度，取值 0～100。
         """
-        message = Control()
-        message.led_red = int(red)
-        message.led_green = int(green)
-        message.servo = int(servo)
+        message = ActuatorControl()
         message.light1 = int(light1)
         message.light2 = int(light2)
+        message.heading_servo = self.default_heading_servo
+        message.clamp_servo = self.default_clamp_servo if servo is None else int(servo)
+        message.drive_cmd = self.default_drive_cmd
+        message.drive_speed = self.default_drive_speed
+        message.red_light = int(red)
+        message.yellow_light = 0
+        message.green_light = int(green)
         self.device_pub.publish(message)
 
     def blink_lights(self, red, green, count, half_period=0.5):
