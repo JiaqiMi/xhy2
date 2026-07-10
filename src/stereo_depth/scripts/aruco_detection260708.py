@@ -85,6 +85,7 @@ class ArucoPosePublisher:
                 pose_msg = PoseStamped()
                 pose_msg.header.stamp = img_msg.header.stamp
                 pose_msg.header.frame_id = "camera"
+                pose_msg.header.class_id = ids[i][0]
                 pose_msg.pose.position.x = tvec[0][0]
                 pose_msg.pose.position.y = tvec[1][0]
                 pose_msg.pose.position.z = tvec[2][0]
