@@ -46,8 +46,8 @@ class Task1V2(MissionBase):
         """初始化任务参数、视觉队列以及目标检测订阅。"""
         super().__init__(NODE_NAME)
 
-        self.entry_pose = self.pose_from_param('/task1_v2_entry_point', [0.0, 0.0, 0.3, 0.0])
-        self.end_pose = self.pose_from_param('/task1_v2_end_point', [0.0, 0.0, 0.3, 0.0])
+        self.entry_pose = self.pose_from_param('/task1_v2_entry_point', [0.0, 0.0, 0.0, 0.0])
+        self.end_pose = self.pose_from_param('/task1_v2_end_point', [0.0, 0.0, 0.0, 0.0])
         self.target_depth = rospy.get_param('/task1_v2_depth', self.entry_pose.pose.position.z)
         self.use_current_pose_as_start = rospy.get_param(
             '/task1_v2_use_current_pose_as_start', False
