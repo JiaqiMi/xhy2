@@ -5,14 +5,19 @@
 作者：buyegaid
 监听：/debug_auv_data (AUVData.msg)
       /target (PoseStamped.msg)
+      /target_cmd (AUVControlCmd.msg)
       /world_origin (NavSatFix.msg)
 发布：/auv_control (AUVPose.msg)
+      /auv_control_cmd (AUVControlCmd.msg)
       /tf (from base_link to map)
 记录：
 2025.7.19 10:56
     第一版完成
 2025.7.19 15:21
     控制指令改为直接发布AUVPose消息，不再控制舵机和LED灯
+2026.7.11
+    新增 /target_cmd → /auv_control_cmd 链路，支持 debug_driver_v2 的 AUVControlCmd 消息
+    两条链路（/target 和 /target_cmd）并行运行，互不影响
 """
 
 
@@ -26,7 +31,7 @@ import rospy
 import tf
 from tf import transformations
 from sensor_msgs.msg import NavSatFix
-from auv_control.msg import AUVData,AUVPose
+from auv_control.msg import AUVData, AUVPose, AUVControlCmd
 import numpy as np
 from geometry_msgs.msg import PoseStamped, TransformStamped # 目标点，目标位姿
 
@@ -48,9 +53,11 @@ class AUV_tfhandler:
         self.tf_broadcaster = tf.TransformBroadcaster()
         rospy.Subscriber('/debug_auv_data', AUVData, self.debug_callback) # 订阅imu数据
         rospy.Subscriber('/target', PoseStamped, self.target_callback) # 订阅目标点数据
+        rospy.Subscriber('/target_cmd', AUVControlCmd, self.target_cmd_callback) # V2: 订阅 AUVControlCmd
         self.current_pose = None
         self.current_yaw = 0.0  # 记录当前yaw角
         self.control_pub = rospy.Publisher('/auv_control', AUVPose, queue_size=10)
+        self.control_cmd_pub = rospy.Publisher('/auv_control_cmd', AUVControlCmd, queue_size=10)  # V2
         self.Rate = rospy.Rate(100)
         # rospy.loginfo("auv_tfhandler:世界坐标系初始化完成")
 
@@ -96,7 +103,28 @@ class AUV_tfhandler:
         ctrl_msg.yaw = np.degrees(yaw)
         rospy.loginfo_throttle(5, "auv_tfhdler: 发布控制指令")
         self.control_pub.publish(ctrl_msg)
-        # rospy.loginfo_(f"auv_tfhandler: control 已发布lat:{lat},lon:{lon},dep:{depth},rpy:{ctrl_msg.roll:.2f},{ctrl_msg.pitch:.2f},{ctrl_msg.yaw:.2f}")
+
+    def target_cmd_callback(self, msg):
+        """将 AUVControlCmd (NED) 转换为经纬度坐标，保留 mode 和 force，发布到 /auv_control_cmd"""
+        n = msg.target.longitude   # NED frame: x=north 存入 longitude 字段
+        e = msg.target.latitude    # NED frame: y=east  存入 latitude 字段
+        d = msg.target.depth       # NED frame: z=down  存入 depth 字段
+        # NED 转 LLD
+        lat, lon, depth = self.wfm.ned_to_lld(n, e, d)
+        # 构造输出消息（mode 和 force 原样保留）
+        out = AUVControlCmd()
+        out.mode = msg.mode
+        out.target.longitude = lon
+        out.target.latitude = lat
+        out.target.depth = depth
+        out.target.altitude = msg.target.altitude
+        out.target.roll = msg.target.roll
+        out.target.pitch = msg.target.pitch
+        out.target.yaw = msg.target.yaw
+        out.target.speed = msg.target.speed
+        out.force = msg.force
+        rospy.loginfo_throttle(5, "auv_tf_handler: 发布 /auv_control_cmd")
+        self.control_cmd_pub.publish(out)
 
     def publish_tf(self):
         """发布map到base_link的TF（NED）"""

@@ -3,7 +3,7 @@
 名称: debug_driver.py
 功能: 连接调试串口发送54字节扩展报文
 作者: buyegaid
-监听: /auv_control (Control.msg)
+监听: /auv_control (AUVPose.msg)
 发布: /debug_auv_data(AUVData.msg)
 记录:
 2025.7.15
