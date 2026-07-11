@@ -15,6 +15,9 @@
     增加 debug 协议下行控制：发送 CAMERA_LIGHT_SET 和 ACTUATOR_SET 帧
     增加 /auv_actuator_control 订阅（ActuatorControl.msg）
     增加 ACK 和 ACTUATOR_FB 上行帧解析与日志
+2026.7.11
+    ACK 帧日志级别从 debug 提升为 info，便于观察完整交互过程
+    优化 process_buffer 同步策略：帧尾不匹配时跳过假帧头，减少无效逐字节同步
 """
 
 import json
@@ -195,6 +198,7 @@ class SensorDriverV2:
                 return
 
             if idx > 0:
+                rospy.logdebug(f"sensor_driver_v2: 跳过 {idx} 字节同步到帧头")
                 del self.buffer[:idx]
 
             if len(self.buffer) < self.PACKET_LEN:
@@ -202,15 +206,29 @@ class SensorDriverV2:
 
             packet = bytes(self.buffer[:self.PACKET_LEN])
             checksum_ok = self.verify_packet(packet)
-            if packet[62:64] == self.TAIL:
+            tail_ok = (packet[62:64] == self.TAIL)
+
+            if tail_ok:
                 self.save_raw_packet(packet, checksum_ok)
 
             if checksum_ok:
                 self.parse_and_publish(packet)
                 del self.buffer[:self.PACKET_LEN]
             else:
-                rospy.logwarn("sensor_driver_v2: 报文校验失败，丢弃1字节继续同步")
-                del self.buffer[0]
+                if not tail_ok:
+                    # 帧尾不匹配 → 假帧头（数据中恰好出现 FE EF），跳到下一处 FE EF
+                    next_idx = self.buffer.find(self.HEADER, 2)
+                    if next_idx > 0:
+                        rospy.logdebug(
+                            f"sensor_driver_v2: 假帧头（帧尾不匹配），跳过 {next_idx} 字节到下一帧头"
+                        )
+                        del self.buffer[:next_idx]
+                    else:
+                        del self.buffer[0]
+                else:
+                    # 帧头帧尾正确但 XOR 错误 → 罕见的数据损坏
+                    rospy.logwarn("sensor_driver_v2: 报文校验失败(XOR错误)，丢弃1字节继续同步")
+                    del self.buffer[0]
 
     def parse_and_publish(self, packet):
         report_type = packet[4]
@@ -267,7 +285,7 @@ class SensorDriverV2:
                 f"result=0x{ack_result:02X} error=0x{ack_error:02X}"
             )
         else:
-            rospy.logdebug(f"sensor_driver_v2: ACK成功 cmd={cmd_name}")
+            rospy.loginfo(f"sensor_driver_v2: ACK成功 cmd={cmd_name}")
 
     def _parse_actuator_fb(self, packet, payload_len):
         """解析 ACTUATOR_FB 帧，记录执行机构当前状态"""

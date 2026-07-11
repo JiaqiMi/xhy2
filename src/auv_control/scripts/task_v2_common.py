@@ -17,7 +17,7 @@ import math
 
 import rospy
 import tf
-from auv_control.msg import Control
+from auv_control.msg import ActuatorControl
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
