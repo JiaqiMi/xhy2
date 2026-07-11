@@ -3,7 +3,7 @@
 名称: debug_driver.py
 功能: 连接调试串口发送54字节扩展报文
 作者: buyegaid
-监听: /auv_control (Control.msg)
+监听: /auv_control (AUVPose.msg)
 发布: /debug_auv_data(AUVData.msg)
 记录:
 2025.7.15
@@ -24,6 +24,8 @@
     在水下测试深度
 2026.7.0 15:30
     删除csv保存，改为直接保存原始报文
+2026.7.11
+    统一 loginfo 中文输出：CMD/SEND 定长小数格式，保留 loginfo_throttle 节流
 """
 
 import json
@@ -334,10 +336,10 @@ class debugdriver:
                 self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.tcp_sock.connect(self.server_address)
                 self.tcp_sock.settimeout(1)
-                rospy.loginfo(f"debug driver: TCP连接成功 {self.server_address}")
+                rospy.loginfo(f"debug_driver: TCP连接成功 {self.server_address}")
                 return
             except Exception as e:
-                rospy.logwarn(f"debug driver: TCP连接失败 {self.server_address}: {e}, 2秒后重试...")
+                rospy.logwarn(f"debug_driver: TCP连接失败 {self.server_address}: {e}, 2秒后重试...")
                 rospy.sleep(2)
 
     def recv_loop(self):
@@ -397,11 +399,11 @@ class debugdriver:
                                 self.data_pub.publish(msg)
                                 # rospy.loginfo_throttle(2, f"DebugData published: {msg}")
                             else:
-                                rospy.logwarn("debug driver: 校验和错误")
+                                rospy.logwarn("debug_driver: 校验和错误")
                         else:
                             self.buffer = self.buffer[start+2:]
             except Exception as e:
-                rospy.logwarn(f"debug driver: TCP连接错误: {e}, 重连中...")
+                rospy.logwarn(f"debug_driver: TCP连接错误: {e}, 重连中...")
                 try:
                     if self.tcp_sock:
                         self.tcp_sock.close()
@@ -424,7 +426,14 @@ class debugdriver:
             self.target.speed = getattr(msg, 'speed', 0.0)
             self.target.valid = True
             self.last_control_time = time.time()
-            rospy.loginfo_throttle(5, "debug_driver: 接收到控制消息")
+            rospy.loginfo_throttle(5,
+                "debug_driver: 接收到控制消息 lon=%12.7f lat=%12.7f depth=%7.2f "
+                "roll=%6.1f pitch=%6.1f yaw=%6.1f speed=%5.2f",
+                self.target.longitude, self.target.latitude,
+                self.target.depth,
+                self.target.roll, self.target.pitch, self.target.yaw,
+                self.target.speed
+            )
         except Exception as e:
             rospy.logerr(f"debug_driver: 控制消息接收错误: {e}")
 
@@ -442,9 +451,16 @@ class debugdriver:
                 try:
                     packet = self.build_54_packet_from_control()
                     self.tcp_sock.sendall(packet)
-                    rospy.loginfo_throttle(2, f"debug driver: 发送扩展控制指令{self.target.longitude}, {self.target.latitude}, {self.target.depth}, {self.target.roll}, {self.target.pitch}, {self.target.yaw}, {self.target.speed}")
+                    rospy.loginfo_throttle(2,
+                        "debug_driver: 发送扩展控制指令 lon=%12.7f lat=%12.7f depth=%7.2f "
+                        "roll=%6.1f pitch=%6.1f yaw=%6.1f speed=%5.2f",
+                        self.target.longitude, self.target.latitude,
+                        self.target.depth,
+                        self.target.roll, self.target.pitch, self.target.yaw,
+                        self.target.speed
+                    )
                 except Exception as e:
-                    rospy.logerr(f"debug driver: 发送扩展指令包错误: {e}")
+                    rospy.logerr(f"debug_driver: 发送扩展指令包错误: {e}")
             time.sleep(0.2)  # 5Hz
 
     def run(self):
@@ -457,19 +473,19 @@ class debugdriver:
                     continue
                 
                 if not self.recv_thread or not self.recv_thread.is_alive():
-                    rospy.loginfo("debug driver: 启动接收线程")
+                    rospy.loginfo("debug_driver: 启动接收线程")
                     self.recv_thread = threading.Thread(target=self.recv_loop, daemon=True)
                     self.recv_thread.start()
                 
                 if not self.send_thread or not self.send_thread.is_alive():
-                    rospy.loginfo("debug driver: 启动发送线程")
+                    rospy.loginfo("debug_driver: 启动发送线程")
                     self.send_thread = threading.Thread(target=self.send_loop, daemon=True)
                     self.send_thread.start()
                 
                 time.sleep(0.01)  # 100Hz，足够了
                 
             except Exception as e:
-                rospy.logerr(f"debug driver: 运行错误: {e}")
+                rospy.logerr(f"debug_driver: 运行错误: {e}")
                 # 关闭现有连接
                 if self.tcp_sock:
                     try:

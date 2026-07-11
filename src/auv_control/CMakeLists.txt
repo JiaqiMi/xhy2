@@ -63,6 +63,7 @@ add_message_files(
   NavData.msg 
   TargetDetection.msg
   TargetDetection3.msg
+  AUVControlCmd.msg
 )
 
 ## Generate services in the 'srv' folder
