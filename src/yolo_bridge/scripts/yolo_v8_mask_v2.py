@@ -28,7 +28,7 @@ class YOLOv8Mask:
             "/home/xhy/catkin_ws/models/shapes_model0719.pt",
             "/home/xhy/catkin_ws/models/holes_model0719.pt",
             "/home/xhy/catkin_ws/models/balls_model0725.pt" ,
-            "/home/xhy/catkin_ws/models/line_mask_0801.pt",
+            "/home/xhy/catkin_ws/models/line0709.pt",
         ]
         if self.DetectMode == 1:
             self.model = YOLO(model_list[0])

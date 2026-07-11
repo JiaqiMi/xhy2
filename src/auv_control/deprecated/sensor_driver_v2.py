@@ -442,7 +442,7 @@ class SensorDriverV2:
                     self.sock.sendall(bytes(light_frame))
                     actuator_frame = self.build_actuator_frame()
                     self.sock.sendall(bytes(actuator_frame))
-                    rospy.logdebug("sensor_driver_v2: 已发送控制帧")
+                    rospy.loginfo("sensor_driver_v2: 已发送控制帧")
             except Exception as e:
                 rospy.logerr(f"sensor_driver_v2: 发送失败: {e}")
             rate.sleep()
