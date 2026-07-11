@@ -13,7 +13,7 @@
         <param name="raw_flush_every" type="int" value="1" />
     </node>
 
-    <node pkg="auv_control" type="sensor_driver_v2.py" name="sensor_driver_v2" output="screen">
+    <node pkg="auv_control" type="sensor_status_node.py" name="sensor_status_node" output="screen">
         <param name="sensor_ip" value="$(arg vehicle_ip)" />
         <param name="sensor_port" value="5064" />
         <param name="save_raw_data" type="bool" value="true" />
