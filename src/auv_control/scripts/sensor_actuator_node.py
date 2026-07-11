@@ -12,6 +12,7 @@
 2026.7.11
     从 sensor_driver_v2.py 拆分出执行器控制逻辑，独立 TCP 连接
     发布 /auv_actuator_status 反馈执行机构实际状态
+    统一 loginfo 中文输出：ACK/FB/CMD/SEND 定长格式化，保留原有输出频率
 """
 
 import socket
@@ -91,7 +92,7 @@ class SensorActuatorNode:
         self.status_pub = rospy.Publisher('/auv_actuator_status', ActuatorControl, queue_size=10)
 
         self.connect()
-        rospy.loginfo("sensor_actuator_node: 已启动（执行器控制+反馈模式）")
+        rospy.loginfo("sensor_actuator: 已启动（执行器控制+反馈模式）")
 
     # ============================================================
     # TCP 连接
@@ -103,10 +104,10 @@ class SensorActuatorNode:
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.sock.connect((self.ip, self.port))
                 self.sock.settimeout(1.0)
-                rospy.loginfo(f"sensor_actuator_node: TCP连接 {self.ip}:{self.port}")
+                rospy.loginfo(f"sensor_actuator: TCP连接 {self.ip}:{self.port}")
                 return
             except Exception as e:
-                rospy.logerr(f"sensor_actuator_node: TCP连接失败 {e}, 2s 后重试")
+                rospy.logerr(f"sensor_actuator: TCP连接失败 {e}, 2s 后重试")
                 self.sock = None
                 rospy.sleep(2)
 
@@ -150,7 +151,7 @@ class SensorActuatorNode:
                 self._process_buffer()
 
             except Exception as e:
-                rospy.logerr(f"sensor_actuator_node: 接收失败: {e}")
+                rospy.logerr(f"sensor_actuator: 接收失败: {e}")
                 try:
                     if self.sock:
                         self.sock.close()
@@ -169,7 +170,7 @@ class SensorActuatorNode:
                 return
 
             if idx > 0:
-                rospy.logdebug(f"sensor_actuator_node: 跳过 {idx} 字节同步到帧头")
+                rospy.logdebug(f"sensor_actuator: 跳过 {idx} 字节同步到帧头")
                 del self.buffer[:idx]
 
             if len(self.buffer) < self.PACKET_LEN:
@@ -188,13 +189,13 @@ class SensorActuatorNode:
                     next_idx = self.buffer.find(self.HEADER, 2)
                     if next_idx > 0:
                         rospy.logdebug(
-                            f"sensor_actuator_node: 假帧头（帧尾不匹配），跳过 {next_idx} 字节到下一帧头"
+                            f"sensor_actuator: 假帧头（帧尾不匹配），跳过 {next_idx} 字节到下一帧头"
                         )
                         del self.buffer[:next_idx]
                     else:
                         del self.buffer[0]
                 else:
-                    rospy.logwarn("sensor_actuator_node: 报文校验失败(XOR错误)，丢弃1字节继续同步")
+                    rospy.logwarn("sensor_actuator: 报文校验失败(XOR错误)，丢弃1字节继续同步")
                     del self.buffer[0]
 
     # ============================================================
@@ -214,28 +215,31 @@ class SensorActuatorNode:
 
     def _parse_ack(self, packet):
         """解析 ACK 帧，记录命令处理结果"""
+        ack_seq = packet[3]
         ack_cmd = packet[5]
-        ack_op = packet[6]
         ack_result = packet[7]
         ack_error = packet[8]
 
         cmd_name = {
             self.CMD_CAMERA_LIGHT: 'CAMERA_LIGHT',
             self.CMD_ACTUATOR: 'ACTUATOR',
-        }.get(ack_cmd, f'0x{ack_cmd:02X}')
+        }.get(ack_cmd, '0x%02X' % ack_cmd)
 
         if ack_result != 0:
             rospy.logwarn(
-                f"sensor_actuator_node: ACK错误 cmd={cmd_name} op=0x{ack_op:02X} "
-                f"result=0x{ack_result:02X} error=0x{ack_error:02X}"
+                "sensor_actuator: ACK错误 seq=%3d cmd=%-14s result=0x%02X error=0x%02X",
+                ack_seq, cmd_name, ack_result, ack_error
             )
         else:
-            rospy.loginfo(f"sensor_actuator_node: ACK成功 cmd={cmd_name}")
+            rospy.loginfo(
+                "sensor_actuator: ACK成功 seq=%3d cmd=%-14s",
+                ack_seq, cmd_name
+            )
 
     def _parse_actuator_fb(self, packet, payload_len):
         """解析 ACTUATOR_FB 帧，更新反馈缓存并发布 /auv_actuator_status"""
         if payload_len < 8:
-            rospy.logwarn(f"sensor_actuator_node: ACTUATOR_FB payload长度不足: {payload_len}")
+            rospy.logwarn(f"sensor_actuator: ACTUATOR_FB payload长度不足: {payload_len}")
             return
 
         payload = packet[10:10 + payload_len]
@@ -253,11 +257,12 @@ class SensorActuatorNode:
             self.fb_green = payload[6]
 
         rospy.loginfo(
-            f"sensor_actuator_node: 执行机构反馈 "
-            f"heading=0x{payload[0]:02X} angle=0x{payload[1]:02X} "
-            f"drive=({payload[2]},{payload[3]}) "
-            f"led=({payload[4]},{payload[5]},{payload[6]}) "
-            f"result=0x{fb_result:02X} error=0x{fb_error:02X}"
+            "sensor_actuator: 执行机构反馈 heading=%3d clamp=%3d drive=(%d,%3d) "
+            "led=(%d,%d,%d) result=%s",
+            payload[0], payload[1],
+            payload[2], payload[3],
+            payload[4], payload[5], payload[6],
+            "正常" if fb_result == 0 else "错误(0x%02X)" % fb_result
         )
 
         # 发布 /auv_actuator_status
@@ -325,14 +330,15 @@ class SensorActuatorNode:
 
             if changed:
                 rospy.loginfo(
-                    f"sensor_actuator_node: 执行器控制更新 "
-                    f"light=({self.light1},{self.light2}) "
-                    f"heading=0x{self.heading_servo:02X} clamp=0x{self.clamp_servo:02X} "
-                    f"drive=({self.drive_cmd},{self.drive_speed}) "
-                    f"led=({self.red_light},{self.yellow_light},{self.green_light})"
+                    "sensor_actuator: 执行器控制更新 light=(%3d,%3d) heading=%3d clamp=%3d "
+                    "drive=(%d,%3d) led=(%d,%d,%d)",
+                    self.light1, self.light2,
+                    self.heading_servo, self.clamp_servo,
+                    self.drive_cmd, self.drive_speed,
+                    self.red_light, self.yellow_light, self.green_light
                 )
         except Exception as e:
-            rospy.logerr(f"sensor_actuator_node: 执行器控制回调失败: {e}")
+            rospy.logerr(f"sensor_actuator: 执行器控制回调失败: {e}")
 
     def _next_seq(self):
         """递增并返回序列号 (0-255 回绕)"""
@@ -405,9 +411,17 @@ class SensorActuatorNode:
                     self.sock.sendall(bytes(light_frame))
                     actuator_frame = self.build_actuator_frame()
                     self.sock.sendall(bytes(actuator_frame))
-                    rospy.loginfo("sensor_actuator_node: 已发送控制帧")
+                    rospy.loginfo(
+                        "sensor_actuator: 已发送控制帧 seq=%3d light=(%3d,%3d) heading=%3d "
+                        "clamp=%3d drive=(%d,%3d) led=(%d,%d,%d)",
+                        self.seq,
+                        self.light1, self.light2,
+                        self.heading_servo, self.clamp_servo,
+                        self.drive_cmd, self.drive_speed,
+                        self.red_light, self.yellow_light, self.green_light
+                    )
             except Exception as e:
-                rospy.logerr(f"sensor_actuator_node: 发送失败: {e}")
+                rospy.logerr(f"sensor_actuator: 发送失败: {e}")
             rate.sleep()
 
     # ============================================================

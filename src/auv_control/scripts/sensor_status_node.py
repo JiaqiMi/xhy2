@@ -11,6 +11,7 @@
 记录：
 2026.7.11
     从 sensor_driver_v2.py 拆分出纯 STATUS 接收逻辑，独立 TCP 连接
+    统一 loginfo 中文输出：定长小数格式，电源状态 0.2Hz 节流输出
 """
 
 import json
@@ -59,8 +60,12 @@ class SensorStatusNode:
         if self.raw_saving_enable:
             self._open_raw_save_file()
 
+        # STATUS 日志节流计数器（5Hz 帧率，每 25 帧 = 0.2Hz 输出一次）
+        self._status_log_cnt = 0
+        self._status_log_interval = 25
+
         self.connect()
-        rospy.loginfo("sensor_status_node: 已启动（纯 STATUS 接收模式）")
+        rospy.loginfo("sensor_status: 已启动（纯 STATUS 接收模式）")
 
     # ============================================================
     # 原始报文保存
@@ -73,7 +78,7 @@ class SensorStatusNode:
         os.makedirs(self.raw_save_dir, exist_ok=True)
         path = os.path.join(self.raw_save_dir, self.raw_save_file_name)
         self.raw_save_file = open(path, 'a', encoding='utf-8')
-        rospy.loginfo(f"sensor_status_node: 原始报文将保存到 {path}")
+        rospy.loginfo(f"sensor_status: 原始报文将保存到 {path}")
 
     def _save_raw_packet(self, packet, checksum_ok):
         if not self.raw_saving_enable or self.raw_save_file is None:
@@ -94,7 +99,7 @@ class SensorStatusNode:
             if self.raw_write_count % self.raw_flush_every == 0:
                 self.raw_save_file.flush()
         except Exception as e:
-            rospy.logerr(f"sensor_status_node: 保存原始报文失败: {e}")
+            rospy.logerr(f"sensor_status: 保存原始报文失败: {e}")
 
     # ============================================================
     # TCP 连接
@@ -106,10 +111,10 @@ class SensorStatusNode:
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.sock.connect((self.ip, self.port))
                 self.sock.settimeout(1.0)
-                rospy.loginfo(f"sensor_status_node: TCP连接 {self.ip}:{self.port}")
+                rospy.loginfo(f"sensor_status: TCP连接 {self.ip}:{self.port}")
                 return
             except Exception as e:
-                rospy.logerr(f"sensor_status_node: TCP连接失败 {e}, 2s 后重试")
+                rospy.logerr(f"sensor_status: TCP连接失败 {e}, 2s 后重试")
                 self.sock = None
                 rospy.sleep(2)
 
@@ -153,7 +158,7 @@ class SensorStatusNode:
                 self._process_buffer()
 
             except Exception as e:
-                rospy.logerr(f"sensor_status_node: 接收失败: {e}")
+                rospy.logerr(f"sensor_status: 接收失败: {e}")
                 try:
                     if self.sock:
                         self.sock.close()
@@ -172,7 +177,7 @@ class SensorStatusNode:
                 return
 
             if idx > 0:
-                rospy.logdebug(f"sensor_status_node: 跳过 {idx} 字节同步到帧头")
+                rospy.logdebug(f"sensor_status: 跳过 {idx} 字节同步到帧头")
                 del self.buffer[:idx]
 
             if len(self.buffer) < self.PACKET_LEN:
@@ -194,14 +199,14 @@ class SensorStatusNode:
                     next_idx = self.buffer.find(self.HEADER, 2)
                     if next_idx > 0:
                         rospy.logdebug(
-                            f"sensor_status_node: 假帧头（帧尾不匹配），跳过 {next_idx} 字节到下一帧头"
+                            f"sensor_status: 假帧头（帧尾不匹配），跳过 {next_idx} 字节到下一帧头"
                         )
                         del self.buffer[:next_idx]
                     else:
                         del self.buffer[0]
                 else:
                     # 帧头帧尾正确但 XOR 错误 → 罕见数据损坏
-                    rospy.logwarn("sensor_status_node: 报文校验失败(XOR错误)，丢弃1字节继续同步")
+                    rospy.logwarn("sensor_status: 报文校验失败(XOR错误)，丢弃1字节继续同步")
                     del self.buffer[0]
 
     # ============================================================
@@ -220,29 +225,47 @@ class SensorStatusNode:
     def _parse_status(self, packet, payload_len):
         """解析 STATUS 周期状态帧，发布电源数据"""
         if payload_len < self.STATUS_MIN_PAYLOAD_LEN:
-            rospy.logwarn(f"sensor_status_node: STATUS payload长度不足: {payload_len}")
+            rospy.logwarn(f"sensor_status: STATUS payload长度不足: {payload_len}")
             return
 
         payload = packet[10:56]
         system_flags = payload[1]
+
+        p1_valid = bool(system_flags & 0x01)
+        p2_valid = bool(system_flags & 0x02)
+
+        p1_v = struct.unpack_from('<H', payload, 2)[0] / 1000.0
+        p1_c = struct.unpack_from('<h', payload, 4)[0] / 1000.0
+        p1_p = struct.unpack_from('<i', payload, 6)[0] / 1000.0
+        p2_v = struct.unpack_from('<H', payload, 10)[0] / 1000.0
+        p2_c = struct.unpack_from('<h', payload, 12)[0] / 1000.0
+        p2_p = struct.unpack_from('<i', payload, 14)[0] / 1000.0
 
         msg = SensorStatus()
         msg.header = Header()
         msg.header.stamp = rospy.Time.now()
         msg.header.frame_id = "sensor"
         msg.checksum_ok = True
-        msg.power1_valid = bool(system_flags & 0x01)
-        msg.power2_valid = bool(system_flags & 0x02)
-
-        msg.power1_voltage = struct.unpack_from('<H', payload, 2)[0] / 1000.0
-        msg.power1_current = struct.unpack_from('<h', payload, 4)[0] / 1000.0
-        msg.power1_power = struct.unpack_from('<i', payload, 6)[0] / 1000.0
-
-        msg.power2_voltage = struct.unpack_from('<H', payload, 10)[0] / 1000.0
-        msg.power2_current = struct.unpack_from('<h', payload, 12)[0] / 1000.0
-        msg.power2_power = struct.unpack_from('<i', payload, 14)[0] / 1000.0
+        msg.power1_valid = p1_valid
+        msg.power2_valid = p2_valid
+        msg.power1_voltage = p1_v
+        msg.power1_current = p1_c
+        msg.power1_power = p1_p
+        msg.power2_voltage = p2_v
+        msg.power2_current = p2_c
+        msg.power2_power = p2_p
 
         self.pub.publish(msg)
+
+        # STATUS 日志节流（0.2Hz，确保连接正常）
+        self._status_log_cnt += 1
+        if self._status_log_cnt % self._status_log_interval == 0:
+            rospy.loginfo(
+                "sensor_status: 电源1 %4s V=%7.3fV I=%7.3fA P=%7.1fW | "
+                "电源2 %4s V=%7.3fV I=%7.3fA P=%7.1fW",
+                "正常" if p1_valid else "无效", p1_v, p1_c, p1_p,
+                "正常" if p2_valid else "无效", p2_v, p2_c, p2_p
+            )
 
     # ============================================================
 
@@ -258,7 +281,7 @@ class SensorStatusNode:
             if self.raw_save_file:
                 self.raw_save_file.flush()
                 self.raw_save_file.close()
-                rospy.loginfo("sensor_status_node: 原始报文文件已保存并关闭")
+                rospy.loginfo("sensor_status: 原始报文文件已保存并关闭")
 
 
 if __name__ == "__main__":
