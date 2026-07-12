@@ -1,0 +1,33 @@
+<launch>
+    <!-- Web服务参数：启动时均可覆盖 -->
+    <arg name="host" default="0.0.0.0" />
+    <arg name="port" default="8080" />
+
+    <!-- 当前YOLO26n脚本发布的话题 -->
+    <arg name="image_topic" default="/yolo26n/annotated_image" />
+    <arg name="detection_topic" default="/web/detections" />
+    <arg name="pose_topic" default="/web/pose" />
+
+    <arg name="stream_fps" default="5.0" />
+    <arg name="jpeg_quality" default="75" />
+    <arg name="web_width" default="960" />
+
+    <node pkg="vision_web"
+          type="web_dashboard_node.py"
+          name="vision_web_dashboard"
+          output="screen"
+          respawn="true"
+          respawn_delay="2.0">
+
+        <param name="host" value="$(arg host)" />
+        <param name="port" value="$(arg port)" />
+
+        <param name="image_topic" value="$(arg image_topic)" />
+        <param name="detection_topic" value="$(arg detection_topic)" />
+        <param name="pose_topic" value="$(arg pose_topic)" />
+
+        <param name="stream_fps" value="$(arg stream_fps)" />
+        <param name="jpeg_quality" value="$(arg jpeg_quality)" />
+        <param name="web_width" value="$(arg web_width)" />
+    </node>
+</launch>
