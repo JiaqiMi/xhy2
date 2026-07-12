@@ -48,7 +48,7 @@
         <param name="conf_thre" value="0.5" />     
     </node> -->
     <node pkg="stereo_depth"
-      type="shapes_detection260708.py"
+      type="shapes_detection_web.py"
       name="object_detection_locate"
       output="screen">
 
