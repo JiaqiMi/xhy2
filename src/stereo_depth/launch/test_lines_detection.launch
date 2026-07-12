@@ -5,8 +5,11 @@
     <arg name="start_splitter" default="true" />
     <arg name="start_web" default="true" />
 
-    <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/shapes0709.pt" />
+    <!-- <arg name="model_path"
+         default="/home/xhy/catkin_ws/models/rectangle0710.pt" /> -->
+    <arg name="task_mode" default="segment3" />
+    <arg name="detect_mode" default="4" />   
+    <arg name="model_path" default="" />
     <arg name="exp_env" default="water" />
     <arg name="conf_thre" default="0.2" />
     <arg name="top_k" default="3" />
@@ -43,9 +46,12 @@
           output="screen"
           launch-prefix="bash">
         <env name="NODE_NAME" value="/yolo_unified_detector" />
-
-        <param name="task_mode" value="detect" />
-        <param name="detect_mode" value="1" />
+        
+        <!-- <param name="task_mode" value="detect" />
+        <param name="detect_mode" value="2" />
+        <param name="model_path" value="$(arg model_path)" /> -->
+        <param name="task_mode" value="$(arg task_mode)" />
+        <param name="detect_mode" value="$(arg detect_mode)" />
         <param name="model_path" value="$(arg model_path)" />
         <param name="top_k" value="$(arg top_k)" />
         <param name="visualization" value="$(arg visualization)" />
@@ -70,7 +76,7 @@
           type="stereo_depth_node.py"
           name="stereo_depth_unified"
           output="screen">
-        <param name="task_mode" value="center" />
+        <param name="task_mode" value="line3" />
         <param name="exp_env" value="$(arg exp_env)" />
         <param name="visualization" value="$(arg visualization)" />
         <param name="conf_thre" value="$(arg conf_thre)" />
