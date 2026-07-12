@@ -1,0 +1,467 @@
+#!/home/xhy/xhy_env/bin/python3.8
+# -*- coding: utf-8 -*-
+
+import argparse
+import json
+import os
+import threading
+
+import cv2
+import numpy as np
+import rospy
+from cv_bridge import CvBridge
+from geometry_msgs.msg import PointStamped
+from sensor_msgs.msg import Image
+from std_msgs.msg import Header, String
+from ultralytics import YOLO
+
+from stereo_depth.msg import BoundingBox, LineBox
+
+
+class UnifiedYOLODetector:
+    def __init__(self, args):
+        rospy.init_node("yolo_unified_detector", anonymous=False)
+
+        self.task_mode = args.task_mode.lower()
+        self.detect_mode = int(args.detect_mode)
+        self.top_k = max(1, int(args.top_k))
+        self.visualization = int(args.visualization)
+        self.conf_thre = float(args.conf_thre)
+        self.detc_type = args.detc_type.lower()
+        self.output_type = args.output_type.lower()
+        self.rate = rospy.Rate(max(0.5, float(args.infer_rate)))
+
+        if self.task_mode not in ("detect", "segment3"):
+            raise ValueError("task_mode must be detect or segment3")
+        if self.task_mode == "detect" and self.detc_type not in ("center", "bbox"):
+            raise ValueError("detect task requires detc_type=center or bbox")
+        if self.task_mode == "segment3" and self.output_type != "quartiles":
+            raise ValueError("segment3 currently supports output_type=quartiles only")
+
+        self.input_topic = args.input_topic
+        self.annotated_topic = args.annotated_topic
+        self.web_topic = args.web_topic
+        self.center_topic = args.center_topic
+        self.bbox_topic = args.bbox_topic
+        self.line_topic = args.line_topic
+
+        self.bridge = CvBridge()
+        self.image_lock = threading.Lock()
+        self.left_img = None
+        self.left_header = Header()
+        self.image_version = 0
+        self.processed_version = -1
+
+        self.model_path = self._resolve_model_path(
+            self.task_mode,
+            self.detect_mode,
+            args.model_path.strip(),
+        )
+        if not os.path.isfile(self.model_path):
+            raise FileNotFoundError("model file does not exist: {}".format(self.model_path))
+
+        self.model = YOLO(self.model_path)
+
+        self.image_sub = rospy.Subscriber(
+            self.input_topic,
+            Image,
+            self.image_callback,
+            queue_size=1,
+            buff_size=2 ** 24,
+        )
+
+        if self.task_mode == "detect":
+            if self.detc_type == "center":
+                self.target_pub = rospy.Publisher(
+                    self.center_topic, PointStamped, queue_size=1
+                )
+            else:
+                self.target_pub = rospy.Publisher(
+                    self.bbox_topic, BoundingBox, queue_size=1
+                )
+        else:
+            self.target_pub = rospy.Publisher(
+                self.line_topic, LineBox, queue_size=1
+            )
+
+        self.annotated_pub = rospy.Publisher(
+            self.annotated_topic, Image, queue_size=1
+        )
+        self.web_detection_pub = rospy.Publisher(
+            self.web_topic, String, queue_size=1
+        )
+
+        rospy.loginfo("YOLO node initialized")
+        rospy.loginfo("task_mode=%s, detc_type=%s", self.task_mode, self.detc_type)
+        rospy.loginfo("model=%s", self.model_path)
+        rospy.loginfo("input=%s", self.input_topic)
+        rospy.loginfo("annotated=%s", self.annotated_topic)
+        rospy.loginfo("web=%s", self.web_topic)
+
+    @staticmethod
+    def _resolve_model_path(task_mode, detect_mode, model_path):
+        if model_path:
+            return model_path
+
+        detect_models = {
+            1: "/home/xhy/catkin_ws/models/shapes0709.pt",
+            2: "/home/xhy/catkin_ws/models/rectangle0710.pt",
+            3: "/home/xhy/catkin_ws/models/line0709.pt",
+        }
+        segment_models = {
+            1: "/home/xhy/catkin_ws/models/shapes_model0719.pt",
+            2: "/home/xhy/catkin_ws/models/holes_model0719.pt",
+            3: "/home/xhy/catkin_ws/models/balls_model0725.pt",
+            4: "/home/xhy/catkin_ws/models/line0709.pt",
+        }
+
+        model_map = detect_models if task_mode == "detect" else segment_models
+        if detect_mode not in model_map:
+            raise ValueError(
+                "no preset model for task_mode={} detect_mode={}".format(
+                    task_mode, detect_mode
+                )
+            )
+        return model_map[detect_mode]
+
+    def image_callback(self, msg):
+        try:
+            image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as exc:
+            rospy.logerr_throttle(2.0, "cv_bridge error: %s", str(exc))
+            return
+
+        with self.image_lock:
+            self.left_img = image
+            self.left_header = msg.header
+            self.image_version += 1
+
+    @staticmethod
+    def valid_stamp(header):
+        if header.stamp == rospy.Time():
+            return rospy.Time.now()
+        return header.stamp
+
+    @staticmethod
+    def get_skeleton(binary_img):
+        binary_img = binary_img.copy().astype(np.uint8)
+        size = binary_img.size
+        skeleton = np.zeros(binary_img.shape, np.uint8)
+        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+
+        while True:
+            eroded = cv2.erode(binary_img, element)
+            opened = cv2.dilate(eroded, element)
+            residue = cv2.subtract(binary_img, opened)
+            skeleton = cv2.bitwise_or(skeleton, residue)
+            binary_img = eroded
+
+            if size - cv2.countNonZero(binary_img) == size:
+                break
+
+        return skeleton
+
+    @staticmethod
+    def largest_component(binary_img):
+        num_labels, labels = cv2.connectedComponents(
+            (binary_img > 0).astype(np.uint8), connectivity=8
+        )
+        if num_labels <= 1:
+            return np.zeros_like(binary_img, dtype=np.uint8)
+
+        counts = [
+            int(np.count_nonzero(labels == label))
+            for label in range(1, num_labels)
+        ]
+        best_label = int(np.argmax(counts)) + 1
+        return (labels == best_label).astype(np.uint8) * 255
+
+    @staticmethod
+    def select_three_quartile_points(skeleton):
+        points_yx = np.column_stack(np.where(skeleton > 0))
+        if len(points_yx) < 3:
+            return None
+
+        order = np.lexsort((points_yx[:, 1], points_yx[:, 0]))
+        points_yx = points_yx[order]
+        count = len(points_yx)
+        indices = [count // 4, count // 2, (3 * count) // 4]
+
+        selected = []
+        for index in indices:
+            y, x = points_yx[min(count - 1, index)]
+            selected.append((int(x), int(y)))
+        return selected
+
+    @staticmethod
+    def build_mask(result, index, image_shape):
+        if result.masks is None:
+            return None
+
+        height, width = image_shape[:2]
+
+        if index < len(result.masks.xy):
+            polygon = result.masks.xy[index]
+            if polygon is not None and len(polygon) >= 3:
+                mask = np.zeros((height, width), dtype=np.uint8)
+                contour = np.round(polygon).astype(np.int32)
+                cv2.fillPoly(mask, [contour], 255)
+                return mask
+
+        data = result.masks.data[index].cpu().numpy()
+        data = (data > 0.5).astype(np.uint8) * 255
+        if data.shape[:2] != (height, width):
+            data = cv2.resize(
+                data, (width, height), interpolation=cv2.INTER_NEAREST
+            )
+        return data
+
+    def build_detections(self, result, image):
+        if result.boxes is None or len(result.boxes) == 0:
+            return []
+
+        boxes = result.boxes.xyxy.cpu().numpy()
+        confs = result.boxes.conf.cpu().numpy()
+        classes = result.boxes.cls.cpu().numpy()
+        order = confs.argsort()[::-1]
+
+        detections = []
+
+        for index in order:
+            confidence = float(confs[index])
+            if confidence < self.conf_thre:
+                continue
+            if len(detections) >= self.top_k:
+                break
+
+            box = boxes[index]
+            class_id = int(classes[index])
+            class_name = str(result.names[class_id])
+
+            x1, y1, x2, y2 = [int(round(value)) for value in box]
+            center_u = int(round((x1 + x2) / 2.0))
+            center_v = int(round((y1 + y2) / 2.0))
+
+            item = {
+                "class_id": class_id,
+                "class_name": class_name,
+                "confidence": round(confidence, 4),
+                "bbox": {
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                },
+                "center": {
+                    "u": center_u,
+                    "v": center_v,
+                },
+            }
+
+            if result.masks is not None and index < len(result.masks.xy):
+                polygon = result.masks.xy[index]
+                item["polygon"] = [
+                    [round(float(point[0]), 2), round(float(point[1]), 2)]
+                    for point in polygon
+                ]
+
+            if self.task_mode == "detect":
+                item["task"] = "detect"
+                item["output_type"] = self.detc_type
+                detections.append(item)
+                continue
+
+            mask = self.build_mask(result, index, image.shape)
+            if mask is None:
+                continue
+
+            skeleton = self.largest_component(self.get_skeleton(mask))
+            keypoints = self.select_three_quartile_points(skeleton)
+            if keypoints is None:
+                rospy.logwarn("not enough skeleton points for %s", class_name)
+                continue
+
+            item["task"] = "segment3"
+            item["output_type"] = "quartiles"
+            item["keypoints"] = [
+                {"x": point[0], "y": point[1]} for point in keypoints
+            ]
+            detections.append(item)
+
+        return detections
+
+    def publish_best_target(self, detection, stamp):
+        """定位链路只发布最高置信度目标，Web JSON仍保留top_k。"""
+        if detection is None:
+            return
+
+        if self.task_mode == "segment3":
+            keypoints = [
+                (point["x"], point["y"])
+                for point in detection["keypoints"]
+            ]
+            msg = LineBox()
+            msg.header.stamp = stamp
+            msg.header.frame_id = detection["class_name"]
+            msg.x1, msg.y1 = keypoints[0]
+            msg.x2, msg.y2 = keypoints[1]
+            msg.x3, msg.y3 = keypoints[2]
+            msg.conf = float(detection["confidence"])
+            self.target_pub.publish(msg)
+            return
+
+        if self.detc_type == "center":
+            msg = PointStamped()
+            msg.header.stamp = stamp
+            msg.header.frame_id = detection["class_name"]
+            msg.point.x = float(detection["center"]["u"])
+            msg.point.y = float(detection["center"]["v"])
+            msg.point.z = float(detection["confidence"])
+            self.target_pub.publish(msg)
+        else:
+            msg = BoundingBox()
+            msg.header.stamp = stamp
+            msg.header.frame_id = detection["class_name"]
+            msg.x1 = int(detection["bbox"]["x1"])
+            msg.y1 = int(detection["bbox"]["y1"])
+            msg.x2 = int(detection["bbox"]["x2"])
+            msg.y2 = int(detection["bbox"]["y2"])
+            msg.conf = float(detection["confidence"])
+            self.target_pub.publish(msg)
+
+    def run(self):
+        while not rospy.is_shutdown():
+            with self.image_lock:
+                if self.left_img is None or self.image_version == self.processed_version:
+                    image = None
+                    header = None
+                    version = self.processed_version
+                else:
+                    image = self.left_img.copy()
+                    header = self.left_header
+                    version = self.image_version
+
+            if image is None:
+                self.rate.sleep()
+                continue
+
+            try:
+                results = self.model(
+                    image,
+                    conf=self.conf_thre,
+                    max_det=self.top_k,
+                    verbose=False,
+                )
+            except Exception as exc:
+                rospy.logerr_throttle(2.0, "YOLO inference failed: %s", str(exc))
+                self.rate.sleep()
+                continue
+
+            self.processed_version = version
+
+            if not results:
+                self.rate.sleep()
+                continue
+
+            result = results[0]
+            stamp = self.valid_stamp(header)
+            detections = self.build_detections(result, image)
+
+            self.publish_best_target(
+                detections[0] if detections else None,
+                stamp,
+            )
+
+            payload = {
+                "stamp": stamp.to_sec(),
+                "source": "ultralytics",
+                "node": "yolo_unified_detector",
+                "task_mode": self.task_mode,
+                "detect_mode": self.detect_mode,
+                "frame_id": header.frame_id,
+                "image_width": int(image.shape[1]),
+                "image_height": int(image.shape[0]),
+                "count": len(detections),
+                "detections": detections,
+            }
+            self.web_detection_pub.publish(
+                String(data=json.dumps(payload, ensure_ascii=False))
+            )
+
+            annotated = None
+            try:
+                annotated = result.plot()
+
+                if self.task_mode == "segment3":
+                    for item in detections:
+                        for index, point in enumerate(item.get("keypoints", [])):
+                            center = (int(point["x"]), int(point["y"]))
+                            cv2.circle(annotated, center, 6, (0, 255, 255), -1)
+                            cv2.putText(
+                                annotated,
+                                "P{}".format(index + 1),
+                                (center[0] + 7, center[1] - 7),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.55,
+                                (0, 255, 255),
+                                2,
+                                cv2.LINE_AA,
+                            )
+
+                annotated_msg = self.bridge.cv2_to_imgmsg(
+                    annotated, encoding="bgr8"
+                )
+                annotated_msg.header = header
+                annotated_msg.header.stamp = stamp
+                self.annotated_pub.publish(annotated_msg)
+
+            except Exception as exc:
+                rospy.logerr_throttle(
+                    2.0,
+                    "failed to publish annotated image: %s",
+                    str(exc),
+                )
+
+            if self.visualization == 1 and annotated is not None:
+                cv2.imshow("Unified YOLO Detection", annotated)
+                cv2.waitKey(1)
+
+            self.rate.sleep()
+
+        cv2.destroyAllWindows()
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Unified Ultralytics YOLO ROS node"
+    )
+    parser.add_argument("--task_mode", choices=["detect", "segment3"], default="detect")
+    parser.add_argument("--detect_mode", type=int, default=1)
+    parser.add_argument("--model_path", default="")
+    parser.add_argument("--top_k", type=int, default=3)
+    parser.add_argument("--visualization", type=int, default=0)
+    parser.add_argument("--conf_thre", type=float, default=0.2)
+    parser.add_argument("--detc_type", choices=["center", "bbox"], default="center")
+    parser.add_argument("--output_type", choices=["quartiles"], default="quartiles")
+    parser.add_argument("--infer_rate", type=float, default=5.0)
+    parser.add_argument("--input_topic", default="/left/image_raw")
+    parser.add_argument("--annotated_topic", default="/yolo_unified/annotated_image")
+    parser.add_argument("--web_topic", default="/web/detections")
+    parser.add_argument("--center_topic", default="/yolo_unified/target_center")
+    parser.add_argument("--bbox_topic", default="/yolo_unified/target_bbox")
+    parser.add_argument("--line_topic", default="/yolo_unified/line_bbox")
+    return parser
+
+
+if __name__ == "__main__":
+    parser = build_parser()
+    parsed_args = parser.parse_args(rospy.myargv()[1:])
+
+    try:
+        node = UnifiedYOLODetector(parsed_args)
+        node.run()
+    except rospy.ROSInterruptException:
+        pass
+    except Exception as exc:
+        rospy.logfatal("YOLO node failed: %s", str(exc))
+        raise

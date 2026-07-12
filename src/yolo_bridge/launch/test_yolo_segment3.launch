@@ -1,0 +1,45 @@
+<launch>
+
+    <node pkg="yolo_bridge"
+          type="yolo_wrapper.sh"
+          name="yolo26n_detector"
+          output="screen"
+          launch-prefix="bash">
+
+        <param name="task_mode" value="segment3"/>
+
+        <param name="model_path"
+               value="/home/xhy/catkin_ws/models/line0709.pt"/>
+
+        <param name="detect_mode" value="4"/>
+        <param name="top_k" value="3"/>
+        <param name="visualization" value="0"/>
+        <param name="conf_thre" value="0.2"/>
+
+        <!-- segment3模式下该参数不参与输出选择 -->
+        <param name="detc_type" value="center"/>
+
+        <param name="output_type" value="quartiles"/>
+        <param name="infer_rate" value="5.0"/>
+
+        <param name="input_topic"
+               value="/left/image_raw"/>
+
+        <param name="annotated_topic"
+               value="/yolo26n/annotated_image"/>
+
+        <param name="web_topic"
+               value="/web/detections"/>
+
+        <param name="center_topic"
+               value="/yolo26n/target_center"/>
+
+        <param name="bbox_topic"
+               value="/yolo26n/target_bbox"/>
+
+        <param name="line_topic"
+               value="/yolo26n/line_bbox"/>
+
+    </node>
+
+</launch>
