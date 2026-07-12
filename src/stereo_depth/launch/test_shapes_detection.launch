@@ -1,0 +1,108 @@
+<launch>
+    <!-- Shapes识别：检测框中心 -> 单点三维坐标 -> Web -->
+
+    <arg name="start_camera" default="true" />
+    <arg name="start_splitter" default="true" />
+    <arg name="start_web" default="true" />
+
+    <arg name="model_path"
+         default="/home/xhy/catkin_ws/models/shapes0709.pt" />
+    <arg name="exp_env" default="water" />
+    <arg name="conf_thre" default="0.2" />
+    <arg name="top_k" default="3" />
+    <arg name="rate" default="5.0" />
+    <arg name="visualization" default="0" />
+    <arg name="web_port" default="8080" />
+
+    <node if="$(arg start_camera)"
+          pkg="usb_cam"
+          type="usb_cam_node"
+          name="usb_cam"
+          output="screen">
+        <param name="video_device" value="/dev/video0" />
+        <param name="pixel_format" value="mjpeg" />
+        <param name="image_width" value="1280" />
+        <param name="image_height" value="480" />
+        <param name="framerate" value="30" />
+    </node>
+
+    <node if="$(arg start_splitter)"
+          pkg="stereo_splitter"
+          type="split_stereo_image.py"
+          name="split_stereo_image"
+          output="screen" />
+
+    <node pkg="yolo_bridge"
+          type="yolo_wrapper.sh"
+          name="yolo_unified_detector"
+          output="screen"
+          launch-prefix="bash">
+        <env name="NODE_NAME" value="/yolo_unified_detector" />
+
+        <param name="task_mode" value="detect" />
+        <param name="detect_mode" value="1" />
+        <param name="model_path" value="$(arg model_path)" />
+        <param name="top_k" value="$(arg top_k)" />
+        <param name="visualization" value="$(arg visualization)" />
+        <param name="conf_thre" value="$(arg conf_thre)" />
+        <param name="detc_type" value="center" />
+        <param name="output_type" value="quartiles" />
+        <param name="infer_rate" value="$(arg rate)" />
+
+        <param name="input_topic" value="/left/image_raw" />
+        <param name="annotated_topic"
+               value="/yolo_unified/annotated_image" />
+        <param name="web_topic" value="/web/detections" />
+        <param name="center_topic"
+               value="/yolo_unified/target_center" />
+        <param name="bbox_topic"
+               value="/yolo_unified/target_bbox" />
+        <param name="line_topic"
+               value="/yolo_unified/line_bbox" />
+    </node>
+
+    <node pkg="stereo_depth"
+          type="stereo_depth.py"
+          name="stereo_depth_unified"
+          output="screen">
+        <param name="task_mode" value="center" />
+        <param name="exp_env" value="$(arg exp_env)" />
+        <param name="visualization" value="$(arg visualization)" />
+        <param name="conf_thre" value="$(arg conf_thre)" />
+        <param name="rate" value="$(arg rate)" />
+
+        <param name="left_topic" value="/left/image_raw" />
+        <param name="right_topic" value="/right/image_raw" />
+        <param name="center_topic"
+               value="/yolo_unified/target_center" />
+        <param name="bbox_topic"
+               value="/yolo_unified/target_bbox" />
+        <param name="line_topic"
+               value="/yolo_unified/line_bbox" />
+
+        <param name="target_output_topic"
+               value="/obj/target_message" />
+        <param name="line_output_topic"
+               value="/obj/line_message" />
+        <param name="web_pose_topic" value="/web/pose" />
+
+        <param name="max_sync_dt" value="0.15" />
+        <param name="frame_buffer_size" value="20" />
+        <param name="depth_statistic" value="mean" />
+    </node>
+
+    <include if="$(arg start_web)"
+             file="$(find vision_web)/launch/vision_web.launch">
+        <arg name="port" value="$(arg web_port)" />
+        <arg name="image_topic"
+             value="/yolo_unified/annotated_image" />
+        <arg name="detection_topic"
+             value="/web/detections" />
+        <arg name="pose_topic" value="/web/pose" />
+        <arg name="stream_fps" value="$(arg rate)" />
+        <arg name="jpeg_quality" value="75" />
+        <arg name="web_width" value="960" />
+        <arg name="detection_timeout" value="2.0" />
+        <arg name="pose_timeout" value="2.0" />
+    </include>
+</launch>

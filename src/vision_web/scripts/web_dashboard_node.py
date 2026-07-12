@@ -262,7 +262,7 @@ PAGE_HTML = r"""
         }
 
         body.innerHTML = detections.map(det => {
-            const center = det.center || det.pixel_center || {};
+            const center = det.center || {};
 
             return `
                 <tr>
@@ -278,21 +278,31 @@ PAGE_HTML = r"""
     }
 
     function updatePose(payload) {
-        const position =
-            payload && payload.position_m
-                ? payload.position_m
-                : (
-                    payload &&
-                    payload.pose &&
-                    payload.pose.position
-                        ? payload.pose.position
-                        : null
-                );
+        if (!payload) {
+            document.getElementById("pose-source").textContent =
+                "暂无位置数据";
+            document.getElementById("pose-x").textContent = "--";
+            document.getElementById("pose-y").textContent = "--";
+            document.getElementById("pose-z").textContent = "--";
+            document.getElementById("pose-valid").textContent = "--";
+            return;
+        }
+
+        if (payload.valid === false) {
+            document.getElementById("pose-source").textContent =
+                `定位无效：${payload.reason || "unknown"}`;
+            document.getElementById("pose-x").textContent = "--";
+            document.getElementById("pose-y").textContent = "--";
+            document.getElementById("pose-z").textContent = "--";
+            document.getElementById("pose-valid").textContent = "无效";
+            return;
+        }
+
+        const position = payload.position_m || null;
 
         if (!position) {
             document.getElementById("pose-source").textContent =
                 "暂无位置数据";
-
             document.getElementById("pose-x").textContent = "--";
             document.getElementById("pose-y").textContent = "--";
             document.getElementById("pose-z").textContent = "--";
@@ -398,7 +408,7 @@ class VisionWebDashboard:
 
         self.image_topic = rospy.get_param(
             "~image_topic",
-            "/yolo26n/annotated_image"
+            "/yolo_unified/annotated_image"
         )
 
         self.detection_topic = rospy.get_param(
@@ -429,6 +439,20 @@ class VisionWebDashboard:
             rospy.get_param(
                 "~web_width",
                 960
+            )
+        )
+
+        self.detection_timeout = float(
+            rospy.get_param(
+                "~detection_timeout",
+                2.0
+            )
+        )
+
+        self.pose_timeout = float(
+            rospy.get_param(
+                "~pose_timeout",
+                2.0
             )
         )
 
@@ -689,6 +713,23 @@ class VisionWebDashboard:
             last_frame > 0 and
             now - last_frame < 3.0
         )
+
+        if (
+            detection is not None
+            and detection.get("received_at") is not None
+            and now - detection["received_at"] > self.detection_timeout
+        ):
+            detection = {
+                "count": 0,
+                "detections": []
+            }
+
+        if (
+            pose is not None
+            and pose.get("received_at") is not None
+            and now - pose["received_at"] > self.pose_timeout
+        ):
+            pose = None
 
         return jsonify({
             "server_time": now,
