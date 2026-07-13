@@ -6,15 +6,16 @@
 功能：执行器控制与反馈节点，通过 sensor debug 协议下行控制执行机构，
      接收 ACK 和 ACTUATOR_FB 上行帧并发布执行机构实际状态
 作者：buyegaid
-监听：/auv_actuator_control (ActuatorControl.msg)
-发布：/auv_actuator_status (ActuatorControl.msg)
+监听：/cmd/actuator (ActuatorControl.msg)
+发布：/status/actuator (ActuatorControl.msg)
 记录：
 2026.7.11
     从 sensor_driver_v2.py 拆分出执行器控制逻辑，独立 TCP 连接
-    发布 /auv_actuator_status 反馈执行机构实际状态
+    发布 /status/actuator 反馈执行机构实际状态
     统一 loginfo 中文输出：ACK/FB/CMD/SEND 定长格式化，保留原有输出频率
 2026.7.13
     调整至 driver 目录，归入硬件驱动层
+    下行控制话题调整为 /cmd/actuator，上行状态话题调整为 /status/actuator。
 """
 
 import socket
@@ -29,9 +30,9 @@ class SensorActuatorNode:
     """
     sensor 执行器控制与反馈节点：
     - 独立 TCP 连接到 sensor:5064
-    - 订阅 /auv_actuator_control，下发 CAMERA_LIGHT_SET + ACTUATOR_SET
+    - 订阅 /cmd/actuator，下发 CAMERA_LIGHT_SET + ACTUATOR_SET
     - 接收 ACK 和 ACTUATOR_FB 上行帧
-    - 发布 /auv_actuator_status 反馈执行机构实际状态
+    - 发布 /status/actuator 反馈执行机构实际状态
     - 忽略 STATUS 周期帧（由 sensor_status_node 处理）
     """
 
@@ -90,8 +91,8 @@ class SensorActuatorNode:
         self.send_thread = None
 
         # --- ROS 接口 ---
-        rospy.Subscriber('/auv_actuator_control', ActuatorControl, self.actuator_callback)
-        self.status_pub = rospy.Publisher('/auv_actuator_status', ActuatorControl, queue_size=10)
+        rospy.Subscriber('/cmd/actuator', ActuatorControl, self.actuator_callback)
+        self.status_pub = rospy.Publisher('/status/actuator', ActuatorControl, queue_size=10)
 
         self.connect()
         rospy.loginfo("sensor_actuator: 已启动（执行器控制+反馈模式）")
@@ -239,7 +240,7 @@ class SensorActuatorNode:
             )
 
     def _parse_actuator_fb(self, packet, payload_len):
-        """解析 ACTUATOR_FB 帧，更新反馈缓存并发布 /auv_actuator_status"""
+        """解析 ACTUATOR_FB 帧，更新反馈缓存并发布 /status/actuator"""
         if payload_len < 8:
             rospy.logwarn(f"sensor_actuator: ACTUATOR_FB payload长度不足: {payload_len}")
             return
@@ -267,7 +268,7 @@ class SensorActuatorNode:
             "正常" if fb_result == 0 else "错误(0x%02X)" % fb_result
         )
 
-        # 发布 /auv_actuator_status
+        # 发布 /status/actuator
         self._publish_status()
 
     def _publish_status(self):
@@ -293,7 +294,7 @@ class SensorActuatorNode:
     # ============================================================
 
     def actuator_callback(self, msg):
-        """接收 /auv_actuator_control 控制指令，更新缓存并置脏标志"""
+        """接收 /cmd/actuator 控制指令，更新缓存并置脏标志"""
         try:
             new_light1 = max(0, min(100, msg.light1))
             new_light2 = max(0, min(100, msg.light2))

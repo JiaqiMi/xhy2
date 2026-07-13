@@ -1,5 +1,7 @@
 # Task 3 三个测试子任务实现逻辑
 
+更新：2026.7.13，执行器下行话题调整为 `/cmd/actuator`。
+
 本文档说明 `test` 目录下 Task 3 三个子任务脚本的当前实现思路。现在识别模型还没有训练好，所以代码先用参数模拟视觉识别结果；后续模型完成后，尽量只通过切换参数或接入 ROS topic 来使用真实识别结果。
 
 相关脚本：
@@ -23,7 +25,7 @@
 
 - `/target`：发布 `geometry_msgs/PoseStamped`，告诉底层控制器机器人要去哪里。
 - `/finished`：发布 `std_msgs/String`，表示当前测试子任务完成。
-- `/auv_actuator_control`：发布 `auv_control/ActuatorControl`，控制新接口下的三色指示灯和夹爪舵机。
+- `/cmd/actuator`：发布 `auv_control/ActuatorControl`，控制新接口下的三色指示灯和夹爪舵机。
 
 ## 子任务 1：到达任务获取区
 
@@ -98,7 +100,7 @@ rosrun auv_control test_task3_2_get_task.py
 ~mock_aruco_ids  = [1, 3, 5, 2, 4, 6]
 ~light_seconds   = 3.0
 ~gap_seconds     = 0.5
-~actuator_topic  = /auv_actuator_control
+~actuator_topic  = /cmd/actuator
 ```
 
 ### 编号和颜色映射
@@ -111,7 +113,7 @@ rosrun auv_control test_task3_2_get_task.py
 | `3` / `4` | 绿色 |
 | `5` / `6` | 红色 |
 
-新接口 `/auv_actuator_control` 使用三个独立灯字段：
+新接口 `/cmd/actuator` 使用三个独立灯字段：
 
 | 颜色 | `red_light` | `yellow_light` | `green_light` |
 | --- | --- | --- | --- |
@@ -126,7 +128,7 @@ rosrun auv_control test_task3_2_get_task.py
 2. 如果是 `mock` 模式，就从 `~mock_aruco_ids` 里按顺序取编号。
 3. 如果是 `topic` 模式，就订阅 `~aruco_topic`，等待识别节点发布 `std_msgs/Int32` 编号。
 4. 每次拿到一个 ArUco 编号后，通过映射表得到目标颜色。
-5. 通过 `/auv_actuator_control` 发布灯光控制消息。
+5. 通过 `/cmd/actuator` 发布灯光控制消息。
 6. 每个颜色保持 `~light_seconds` 秒，默认 `3 秒`。
 7. 两次亮灯之间熄灭 `~gap_seconds` 秒，默认 `0.5 秒`。
 8. 模拟序列全部执行完，或者真实 topic 模式达到 `~max_topic_markers` 次后，熄灯并发布 `/finished`。
@@ -192,7 +194,7 @@ z =  0.00
 
 ### 夹爪和灯光参数
 
-脚本使用新接口 `/auv_actuator_control` 控制夹爪：
+脚本使用新接口 `/cmd/actuator` 控制夹爪：
 
 ```text
 ~clamp_open   = 0x00
@@ -214,7 +216,7 @@ z =  0.00
 
 ### 实现流程
 
-1. 节点启动后创建 `/target`、`/finished`、`/auv_actuator_control` 发布器，并创建 TF 监听器。
+1. 节点启动后创建 `/target`、`/finished`、`/cmd/actuator` 发布器，并创建 TF 监听器。
 2. 根据 `~target_mode` 决定目标来源。
 3. 如果是 `mock` 模式，就用固定相对位移构造投放点。
 4. 如果是 `topic` 模式，就订阅 `~target_topic`，等待识别节点发布 `geometry_msgs/PoseStamped`。
@@ -251,8 +253,8 @@ rosrun auv_control test_task3_3_inspect_and_drop.py _target_mode:=topic _target_
 
 ```text
 子任务 1：假设箭头结果 -> 生成任务获取区位置 -> 发布 /target
-子任务 2：假设 ArUco 编号 -> 得到目标颜色 -> 发布 /auv_actuator_control 亮灯
-子任务 3：假设目标管道位置 -> 发布 /target -> 发布 /auv_actuator_control 打开夹爪
+子任务 2：假设 ArUco 编号 -> 得到目标颜色 -> 发布 /cmd/actuator 亮灯
+子任务 3：假设目标管道位置 -> 发布 /target -> 发布 /cmd/actuator 打开夹爪
 ```
 
 后续如果要把三个子任务串成完整 Task 3 状态机，推荐数据流是：

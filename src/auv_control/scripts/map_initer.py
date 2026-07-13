@@ -4,7 +4,7 @@
 名称：map_initer.py
 功能：创建map坐标系原点
 作者：buyegaid
-监听：/debug_auv_data(AUVData.msg)
+监听：/status/auv(AUVData.msg)
 发布：/world_origin(NavSatFix.msg)
 记录：
 2025.7.19 10:50
@@ -12,6 +12,9 @@
 2026.7.13
     新增一次性红色圆形原点重置，监听 /world_origin_reset_candidate，
     更新后锁存发布 /world_origin，并通过 /world_origin_reset_result 返回结果。
+2026.7.13
+    允许在同一轮运行中重复接收原点重置请求，每次均以当前原点为基准更新。
+    AUV 状态订阅话题调整为 /status/auv。
 """
 
 import threading
@@ -27,7 +30,7 @@ from world_frame import WorldFrameManager
 
 
 class MapIniter:
-    """先由导航数据初始化原点，再接受一次稳定红圆候选点重置原点。"""
+    """先由导航数据初始化原点，再接受稳定红圆候选点重复重置原点。"""
 
     def __init__(self):
         self.lock = threading.RLock()
@@ -35,14 +38,13 @@ class MapIniter:
         self.init_lon_list = []
         self.init_dep_list = []
         self.initialized = False
-        self.reset_done = False
         self.wfm = None
 
         self.pub = rospy.Publisher('/world_origin', NavSatFix, queue_size=1, latch=True)
         self.reset_result_pub = rospy.Publisher(
             '/world_origin_reset_result', Bool, queue_size=1
         )
-        rospy.Subscriber('/debug_auv_data', AUVData, self.debug_callback)
+        rospy.Subscriber('/status/auv', AUVData, self.debug_callback)
         rospy.Subscriber(
             '/world_origin_reset_candidate', PoseStamped, self.reset_callback, queue_size=1
         )
@@ -83,10 +85,6 @@ class MapIniter:
                 rospy.logwarn("map_initer: 初始原点未就绪，拒绝重置请求")
                 self.reset_result_pub.publish(Bool(data=False))
                 return
-            if self.reset_done:
-                rospy.logwarn("map_initer: 本次运行已经完成过原点重置")
-                self.reset_result_pub.publish(Bool(data=False))
-                return
             if candidate.header.frame_id != 'map':
                 rospy.logwarn("map_initer: 候选点坐标系必须为 map")
                 self.reset_result_pub.publish(Bool(data=False))
@@ -109,7 +107,6 @@ class MapIniter:
                 return
 
             self.wfm = WorldFrameManager(latitude, longitude, depth)
-            self.reset_done = True
             self.publish_origin(latitude, longitude, depth)
             self.reset_result_pub.publish(Bool(data=True))
             rospy.loginfo(
