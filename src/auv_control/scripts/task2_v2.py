@@ -1,108 +1,143 @@
 #! /home/xhy/xhy_env/bin/python
 """
 名称：task2_v2.py
-功能：2026 Task 2——环境监测与水样采集
-描述：
-    1. 移动到预设采样位置；
-    2. 保持定点并执行采水推拉杆示例动作；
-    3. 携带水样返回起始区域；
-    4. 在起始区域上浮，实现水样自动送达。
-监听：/tf
-发布：/target，/sensor，/finished
-说明：目前工程没有采水推拉杆话题，operate_sampling_pushrod() 仅为占位示例，
-      不会向不存在的硬件接口发布命令。接入硬件后应使用驱动确认信号替换
-      sample_collected 的直接赋值。
+功能：2026 Task 2——取水器采水与返航
+作者：buyegaid
+订阅：/tf
+发布：/target，/auv_actuator_control，/finished
+记录：
+    2026-07-13：
+        1. 新增取水器定点采水、深度保持返航和原点保持 10 秒流程；
+        2. 新增 /task_v2_sample_duration、/task_v2_pushrod_speed、
+           /task_v2_return_yaw_deg 参数；
+        3. 推杆前进速度由固定值 250 改为参数化配置，默认值为 250。
+        4. 统一日志格式，日志正文以节点名称 task2_v2 开头。
 """
 
-import copy
+import math
 
 import rospy
+from auv_control.msg import ActuatorControl
+from geometry_msgs.msg import PoseStamped, Quaternion
+from tf.transformations import quaternion_from_euler
 
 from task_v2_common import MissionBase
 
 
 NODE_NAME = 'task2_v2'
+PUSHROD_FORWARD = 1
+ARRIVAL_HOLD_SECONDS = 10.0
 
 
 class Task2V2(MissionBase):
-    """环境监测与水样采集任务状态机。"""
+    """取水、返航和到达保持的任务状态机。"""
 
     def __init__(self):
-        """初始化采样点、起始点、上浮深度和采样动作时间。"""
+        """读取采水时长、推杆速度和返航航向参数。"""
         super().__init__(NODE_NAME)
-        self.sample_pose = self.pose_from_param(
-            '/task2_v2_sample_point', [0.0, 0.0, 0.3, 0.0]
+        self.sample_duration = float(
+            rospy.get_param('/task_v2_sample_duration', 3.0)
         )
-        self.start_pose = self.pose_from_param(
-            '/task_v2_start_point', [0.0, 0.0, 0.3, 0.0]
+        self.pushrod_speed = int(
+            rospy.get_param('/task_v2_pushrod_speed', 250)
         )
-        self.surface_depth = rospy.get_param('/task_v2_surface_depth', 0.0)
-        self.sample_duration = rospy.get_param('/task2_v2_sample_duration', 3.0)
-        self.sample_collected = False
-        self.pushrod_action_announced = False
-        rospy.loginfo('%s: initialized', NODE_NAME)
+        self.return_yaw_deg = float(
+            rospy.get_param('/task_v2_return_yaw_deg', 0.0)
+        )
+        if self.sample_duration < 0.0:
+            raise ValueError('/task_v2_sample_duration must be non-negative')
+        if not 0 <= self.pushrod_speed <= 254:
+            raise ValueError('/task_v2_pushrod_speed must be in [0, 254]')
+
+        # 任务结束时必须停止推杆，不能继承其他任务的默认推杆动作。
+        self.default_drive_cmd = 0
+        self.default_drive_speed = 0
+        self.collection_started_at = None
+        self.return_pose = None
+        self.log_info(
+            'initialized (sample_duration=%.2fs, pushrod_speed=%d, '
+            'return_yaw=%.1fdeg)',
+            self.sample_duration,
+            self.pushrod_speed,
+            self.return_yaw_deg,
+        )
+
+    ############################################### 日志层 ###########################################
+    def log_info(self, message, *args):
+        """输出以节点名称开头的 INFO 日志。"""
+        rospy.loginfo('%s: ' + message, NODE_NAME, *args)
 
     ############################################### 采水机构层 #######################################
-    def operate_sampling_pushrod(self):
-        """采水推拉杆示例函数。
+    def publish_pushrod(self, command, speed):
+        """发布取水推杆控制，并保持其他执行器处于默认状态。"""
+        message = ActuatorControl()
+        message.light1 = 0
+        message.light2 = 0
+        message.heading_servo = self.default_heading_servo
+        message.clamp_servo = self.default_clamp_servo
+        message.drive_cmd = int(command)
+        message.drive_speed = int(speed)
+        message.red_light = 0
+        message.yellow_light = 0
+        message.green_light = 0
+        self.device_pub.publish(message)
 
-        当前行为：
-            1. 保持 AUV 位于采样点；
-            2. 第一次调用时输出明确的占位警告；
-            3. 等待 /task2_v2_sample_duration 指定的时间；
-            4. 假定推拉杆已运动且采水器已经完成采水。
-
-        Returns:
-            bool：示例采样时间达到后返回 True。
-
-        TODO：后续用真实推拉杆话题或服务替换占位逻辑，并等待硬件反馈。
-        """
+    def collect_water(self):
+        """在采水位置持续定点控制，并驱动推杆前进至采水结束。"""
         self.hold_position()
-        if not self.pushrod_action_announced:
-            rospy.logwarn(
-                '%s: SAMPLE PUSHROD EXAMPLE - assume the pushrod has extended '
-                'and the sampler is collecting water; no hardware topic is published',
-                NODE_NAME,
-            )
-            self.pushrod_action_announced = True
-
-        if self.step_elapsed() < self.sample_duration:
+        if self.hold_pose is None:
             return False
 
-        # TODO: replace this assignment with acknowledgement from the pushrod driver.
-        self.sample_collected = True
-        rospy.loginfo('%s: example sampling action completed', NODE_NAME)
-        return True
+        if self.collection_started_at is None:
+            self.collection_started_at = rospy.Time.now()
+            self.log_info('water collection started')
+
+        elapsed = (rospy.Time.now() - self.collection_started_at).to_sec()
+        if elapsed >= self.sample_duration:
+            self.publish_pushrod(0, 0)
+            return True
+
+        self.publish_pushrod(PUSHROD_FORWARD, self.pushrod_speed)
+        return False
+
+    ############################################### 返航目标层 #######################################
+    def build_return_pose(self):
+        """构造返回世界坐标原点且保持采水深度的目标位姿。"""
+        target = PoseStamped()
+        target.header.frame_id = 'map'
+        target.header.stamp = rospy.Time.now()
+        target.pose.position.x = 0.0
+        target.pose.position.y = 0.0
+        target.pose.position.z = self.hold_pose.pose.position.z
+        target.pose.orientation = Quaternion(*quaternion_from_euler(
+            0.0,
+            self.pitch_offset,
+            math.radians(self.return_yaw_deg),
+        ))
+        return target
 
     ############################################### 主循环 ###########################################
     def run(self):
-        """依次执行“前往采样点→采水→返回起点→上浮送达”。"""
+        """依次执行采水、返航、到达保持和任务结束。"""
         while not rospy.is_shutdown():
-            # 步骤0：移动到允许采集水样的预设位置和深度。
+            # 步骤0：采水期间持续发布当前位置，确保 AUV 原地定点。
             if self.step == 0:
-                if self.move_to_pose(self.sample_pose):
-                    rospy.loginfo('%s: reached sampling point', NODE_NAME)
+                if self.collect_water():
+                    self.return_pose = self.build_return_pose()
+                    self.log_info('water collection completed')
                     self.set_step(1)
 
-            # 步骤1：保持定点并执行推拉杆采水示例动作。
+            # 步骤1：保持采水深度，返回 map 原点并调整为指定航向。
             elif self.step == 1:
-                if self.operate_sampling_pushrod():
+                if self.move_to_pose(self.return_pose):
+                    self.log_info('reached world origin')
                     self.set_step(2)
 
-            # 步骤2：携带采集到的水样返回起始区域。
+            # 步骤2：在原点定点保持 10 秒后结束任务。
             elif self.step == 2:
-                if self.move_to_pose(self.start_pose):
-                    rospy.loginfo('%s: sample returned to start area', NODE_NAME)
-                    self.surface_pose = copy.deepcopy(self.start_pose)
-                    self.surface_pose.pose.position.z = self.surface_depth
-                    self.set_step(3)
-
-            # 步骤3：保持起始区域水平位置并上浮到水面。
-            elif self.step == 3:
-                if self.move_to_pose(self.surface_pose, position_tolerance=0.1):
-                    rospy.loginfo(
-                        '%s: surfaced in start area for automatic delivery', NODE_NAME
-                    )
+                self.hold_position()
+                if self.step_elapsed() >= ARRIVAL_HOLD_SECONDS:
+                    self.publish_pushrod(0, 0)
                     self.finish_task()
 
             self.rate.sleep()
