@@ -12,6 +12,8 @@
 2026.7.13
     新增一次性红色圆形原点重置，监听 /world_origin_reset_candidate，
     更新后锁存发布 /world_origin，并通过 /world_origin_reset_result 返回结果。
+2026.7.13
+    允许在同一轮运行中重复接收原点重置请求，每次均以当前原点为基准更新。
 """
 
 import threading
@@ -27,7 +29,7 @@ from world_frame import WorldFrameManager
 
 
 class MapIniter:
-    """先由导航数据初始化原点，再接受一次稳定红圆候选点重置原点。"""
+    """先由导航数据初始化原点，再接受稳定红圆候选点重复重置原点。"""
 
     def __init__(self):
         self.lock = threading.RLock()
@@ -35,7 +37,6 @@ class MapIniter:
         self.init_lon_list = []
         self.init_dep_list = []
         self.initialized = False
-        self.reset_done = False
         self.wfm = None
 
         self.pub = rospy.Publisher('/world_origin', NavSatFix, queue_size=1, latch=True)
@@ -72,7 +73,7 @@ class MapIniter:
             self.initialized = True
             self.publish_origin(latitude, longitude, depth)
             rospy.loginfo(
-                "map_initer: 初始世界坐标系原点已发布: lat=%s, lon=%s, depth=%s",
+                "map_initer: 初始世界坐标系原点已发布: lat=%12.7f, lon=%12.7f, depth=%7.2f",
                 latitude, longitude, depth,
             )
 
@@ -81,10 +82,6 @@ class MapIniter:
         with self.lock:
             if not self.initialized or self.wfm is None:
                 rospy.logwarn("map_initer: 初始原点未就绪，拒绝重置请求")
-                self.reset_result_pub.publish(Bool(data=False))
-                return
-            if self.reset_done:
-                rospy.logwarn("map_initer: 本次运行已经完成过原点重置")
                 self.reset_result_pub.publish(Bool(data=False))
                 return
             if candidate.header.frame_id != 'map':
@@ -109,7 +106,6 @@ class MapIniter:
                 return
 
             self.wfm = WorldFrameManager(latitude, longitude, depth)
-            self.reset_done = True
             self.publish_origin(latitude, longitude, depth)
             self.reset_result_pub.publish(Bool(data=True))
             rospy.loginfo(

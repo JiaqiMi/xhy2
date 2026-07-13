@@ -10,7 +10,7 @@
 -->
 <launch>
     <!-- 需先单独启动 begin.launch，使 /world_origin 和 map 到 camera 的 TF 可用。 -->
-    <include file="$(find stereo_depth)/launch/test_shapes_detection260708.launch" />
+    <include file="$(find stereo_depth)/launch/test_shapes_detection.launch" />
 
     <!-- 节点结束时 required 会停止本 launch 中的感知链路。 -->
     <node pkg="auv_control" type="world_origin_reset.py" name="world_origin_reset" output="screen" required="true">
@@ -18,13 +18,13 @@
         <param name="target_class" value="red" />
         <param name="source_frame" value="camera" />
         <param name="reference_frame" value="map" />
-        <param name="min_confidence" value="0.7" />
+        <param name="min_confidence" value="0.2" />
         <param name="sample_count" value="10" />
         <param name="min_inliers" value="8" />
         <param name="max_spread" value="0.20" />
         <param name="min_inlier_radius" value="0.03" />
-        <param name="tf_ready_timeout_sec" value="30.0" />
-        <param name="observation_timeout_sec" value="30.0" />
+        <param name="tf_ready_timeout_sec" value="180.0" />
+        <param name="observation_timeout_sec" value="180.0" />
         <param name="result_timeout_sec" value="5.0" />
     </node>
 </launch>

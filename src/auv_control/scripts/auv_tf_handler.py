@@ -6,7 +6,7 @@
 作者：buyegaid
 监听：/debug_auv_data (AUVData.msg)
       /target (PoseStamped.msg)
-      /target_cmd (AUVControlCmd.msg)
+      /target/cmd (AUVControlCmd.msg)
       /world_origin (NavSatFix.msg)
 发布：/auv_control (AUVPose.msg)
       /auv_control_cmd (AUVControlCmd.msg)
