@@ -4,7 +4,7 @@
 功能：调试驱动V2，支持定深(02)/定深定向(03)/定点(04)三种模式
       通过 TCP 发送 54 字节 ROV 扩展控制帧到 AUV
 作者：BroXu
-监听：/auv_control_cmd (AUVControlCmd.msg)
+监听：/cmd/pose/lla (PoseLLAcmd.msg，经纬度坐标系)
 发布：/debug_auv_data (AUVData.msg)
 记录：
 2026.7.11
@@ -14,6 +14,7 @@
     统一 loginfo 中文输出：CMD/SEND 带 mode 标注，定长小数对齐
 2026.7.13
     调整至 driver 目录，归入硬件驱动层
+    下层控制接口使用 LLA 坐标系的 PoseLLAcmd 整包消息。
 """
 
 import json
@@ -25,7 +26,7 @@ import socket
 import struct
 import threading
 import time
-from auv_control.msg import AUVData, AUVControlCmd
+from auv_control.msg import AUVData, PoseLLAcmd
 from functools import reduce
 
 # 运行模式常量
@@ -154,10 +155,10 @@ class DebugDriverV2:
         if self.raw_saving_enable:
             self.open_raw_save_file()
 
-        # 订阅 /auv_control_cmd（经纬度坐标系，经tf_handler转换后）
-        rospy.Subscriber('/auv_control_cmd', AUVControlCmd, self.control_cmd_callback)
+        # 接收由 auv_tf_handler 转换后的 LLA 整包控制指令。
+        rospy.Subscriber('/cmd/pose/lla', PoseLLAcmd, self.control_cmd_callback)
         self.data_pub = rospy.Publisher('/debug_auv_data', AUVData, queue_size=10)
-        rospy.loginfo("debug_driver_v2: 已启动, 监听 /auv_control_cmd")
+        rospy.loginfo("debug_driver_v2: 已启动, 监听 /cmd/pose/lla")
 
     def open_raw_save_file(self):
         """打开原始报文保存文件"""
@@ -406,27 +407,51 @@ class DebugDriverV2:
         """发送循环（子线程），5Hz"""
         while not rospy.is_shutdown():
             now = time.time()
-            # 5秒未收到有效控制消息则停止发送
-            if self.target.valid and (now - self.last_control_time > 5):
-                self.target.valid = False
+            packet = None
+            target_snapshot = None
+            timed_out = False
+            with self.lock:
+                # 5秒未收到任一有效控制量更新则停止发送。
+                if self.target.valid and (now - self.last_control_time > 5):
+                    self.target.valid = False
+                    timed_out = True
+
+                if self.target.valid:
+                    packet = self.build_54_packet()
+                    target_snapshot = (
+                        self.target.mode,
+                        self.target.longitude,
+                        self.target.latitude,
+                        self.target.depth,
+                        self.target.roll,
+                        self.target.pitch,
+                        self.target.yaw,
+                        self.target.tx,
+                        self.target.ty,
+                        self.target.tz,
+                        self.target.mx,
+                        self.target.my,
+                        self.target.mz,
+                    )
+
+            if timed_out:
                 rospy.loginfo("debug_driver_v2: 5s未收到控制消息，停止发送！")
 
-            if self.target.valid:
+            if packet is not None:
                 try:
-                    packet = self.build_54_packet()
                     self.tcp_sock.sendall(packet)
                     mode_name = DebugDataPacket.MODE_NAMES.get(
-                        self.target.mode, f"未知({self.target.mode})")
+                        target_snapshot[0], f"未知({target_snapshot[0]})")
                     rospy.loginfo_throttle(2,
                         "debug_driver_v2: SEND mode=%d(%s) lon=%12.7f lat=%12.7f depth=%7.2f "
                         "roll=%6.1f pitch=%6.1f yaw=%6.1f "
                         "F=[%5d,%5d,%5d] M=[%5d,%5d,%5d]",
-                        self.target.mode, mode_name,
-                        self.target.longitude, self.target.latitude,
-                        self.target.depth,
-                        self.target.roll, self.target.pitch, self.target.yaw,
-                        self.target.tx, self.target.ty, self.target.tz,
-                        self.target.mx, self.target.my, self.target.mz
+                        target_snapshot[0], mode_name,
+                        target_snapshot[1], target_snapshot[2],
+                        target_snapshot[3],
+                        target_snapshot[4], target_snapshot[5], target_snapshot[6],
+                        target_snapshot[7], target_snapshot[8], target_snapshot[9],
+                        target_snapshot[10], target_snapshot[11], target_snapshot[12],
                     )
                 except Exception as e:
                     rospy.logerr(f"debug_driver_v2: 发送扩展指令包错误: {e}")
@@ -435,11 +460,12 @@ class DebugDriverV2:
     # ── 回调 ─────────────────────────────────────────────
 
     def control_cmd_callback(self, msg):
-        """
-        收到 AUVControlCmd 消息时的回调
-        统一发送完整位姿+力/力矩，由 driver 根据 mode 自行取舍
-        """
-        try:
+        """接收 LLA 坐标系的完整控制指令。"""
+        if msg.mode not in (MODE_DEPTH, MODE_DEPTH_HDG, MODE_DPROV):
+            rospy.logwarn("debug_driver_v2: 忽略不支持的控制模式 %d", msg.mode)
+            return
+
+        with self.lock:
             self.target.mode = msg.mode
             self.target.longitude = msg.target.longitude
             self.target.latitude = msg.target.latitude
@@ -456,23 +482,6 @@ class DebugDriverV2:
             self.target.mz = msg.force.MZ
             self.target.valid = True
             self.last_control_time = time.time()
-
-            mode_name = DebugDataPacket.MODE_NAMES.get(
-                msg.mode, f"未知({msg.mode})")
-            rospy.loginfo_throttle(5,
-                "debug_driver_v2: CMD mode=%d(%s) lon=%12.7f lat=%12.7f depth=%7.2f "
-                "roll=%6.1f pitch=%6.1f yaw=%6.1f speed=%5.2f "
-                "F=[%5d,%5d,%5d] M=[%5d,%5d,%5d]",
-                msg.mode, mode_name,
-                self.target.longitude, self.target.latitude,
-                self.target.depth,
-                self.target.roll, self.target.pitch, self.target.yaw,
-                self.target.speed,
-                self.target.tx, self.target.ty, self.target.tz,
-                self.target.mx, self.target.my, self.target.mz
-            )
-        except Exception as e:
-            rospy.logerr(f"debug_driver_v2: 控制消息接收错误: {e}")
 
     # ── 主循环 ─────────────────────────────────────────────
 

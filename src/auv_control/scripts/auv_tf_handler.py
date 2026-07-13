@@ -6,21 +6,19 @@
 作者：buyegaid
 监听：/debug_auv_data (AUVData.msg)
       /target (PoseStamped.msg)
-      /target_cmd (AUVControlCmd.msg)
+      /cmd/pose/ned (PoseNEDcmd.msg)
       /world_origin (NavSatFix.msg)
 发布：/auv_control (AUVPose.msg)
-      /auv_control_cmd (AUVControlCmd.msg)
+      /cmd/pose/lla (PoseLLAcmd.msg)
       /tf (from base_link to map)
 记录：
 2025.7.19 10:56
     第一版完成
 2025.7.19 15:21
     控制指令改为直接发布AUVPose消息，不再控制舵机和LED灯
-2026.7.11
-    新增 /target_cmd → /auv_control_cmd 链路，支持 debug_driver_v2 的 AUVControlCmd 消息
-    两条链路（/target 和 /target_cmd）并行运行，互不影响
 2026.7.13
     新增 /world_origin 更新订阅，收到红色圆形对应的新原点后原子更新坐标换算器。
+    新增 PoseNEDcmd（NED）→ PoseLLAcmd（LLA）控制指令转换。
 """
 
 import threading
@@ -28,7 +26,7 @@ import threading
 import numpy as np
 import rospy
 import tf
-from auv_control.msg import AUVControlCmd, AUVData, AUVPose
+from auv_control.msg import AUVData, AUVPose, PoseLLAcmd, PoseNEDcmd
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import NavSatFix
 from tf import transformations
@@ -53,12 +51,12 @@ class AUVTfHandler:
         self.current_yaw = 0.0
         self.control_pub = rospy.Publisher('/auv_control', AUVPose, queue_size=10)
         self.control_cmd_pub = rospy.Publisher(
-            '/auv_control_cmd', AUVControlCmd, queue_size=10
+            '/cmd/pose/lla', PoseLLAcmd, queue_size=10
         )
 
         rospy.Subscriber('/debug_auv_data', AUVData, self.debug_callback)
         rospy.Subscriber('/target', PoseStamped, self.target_callback)
-        rospy.Subscriber('/target_cmd', AUVControlCmd, self.target_cmd_callback)
+        rospy.Subscriber('/cmd/pose/ned', PoseNEDcmd, self.target_cmd_callback)
         # map_initer 是 /world_origin 的唯一发布者；锁存初始值会被安全忽略。
         rospy.Subscriber('/world_origin', NavSatFix, self.origin_callback, queue_size=1)
 
@@ -125,26 +123,32 @@ class AUVTfHandler:
         rospy.loginfo_throttle(5, "auv_tf_handler: 已发布 /auv_control")
 
     def target_cmd_callback(self, msg):
-        """将 NED 形式的 AUVControlCmd 转换为经纬深控制指令。"""
+        """将 NED 整包控制指令转换为 LLA 整包控制指令。"""
         wfm = self.get_world_frame_manager()
-        north = msg.target.longitude
-        east = msg.target.latitude
-        down = msg.target.depth
-        latitude, longitude, depth = wfm.ned_to_lld(north, east, down)
+        pose = msg.target.pose
+        latitude, longitude, depth = wfm.ned_to_lld(
+            pose.position.x,
+            pose.position.y,
+            pose.position.z,
+        )
+        roll, pitch, yaw = tf.transformations.euler_from_quaternion([
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        ])
 
-        output = AUVControlCmd()
+        output = PoseLLAcmd()
         output.mode = msg.mode
-        output.target.longitude = longitude
         output.target.latitude = latitude
+        output.target.longitude = longitude
         output.target.depth = depth
-        output.target.altitude = msg.target.altitude
-        output.target.roll = msg.target.roll
-        output.target.pitch = msg.target.pitch
-        output.target.yaw = msg.target.yaw
-        output.target.speed = msg.target.speed
+        output.target.roll = np.degrees(roll)
+        output.target.pitch = np.degrees(pitch)
+        output.target.yaw = np.degrees(yaw)
         output.force = msg.force
         self.control_cmd_pub.publish(output)
-        rospy.loginfo_throttle(5, "auv_tf_handler: 已发布 /auv_control_cmd")
+        rospy.loginfo_throttle(5, "auv_tf_handler: 已发布 /cmd/pose/lla")
 
     def publish_tf(self):
         """发布当前 map 到 base_link 的 NED 变换。"""
