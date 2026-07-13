@@ -106,12 +106,13 @@ class Task2V2(MissionBase):
         target = PoseStamped()
         target.header.frame_id = 'map'
         target.header.stamp = rospy.Time.now()
+        # 位置是当前位置，深度保持原有深度
         target.pose.position.x = 0.0
         target.pose.position.y = 0.0
         target.pose.position.z = self.hold_pose.pose.position.z
         target.pose.orientation = Quaternion(*quaternion_from_euler(
             0.0,
-            self.pitch_offset,
+            0.0,
             math.radians(self.return_yaw_deg),
         ))
         return target
