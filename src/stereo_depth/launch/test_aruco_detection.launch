@@ -1,0 +1,97 @@
+<launch>
+    <!-- ArUco识别：标记检测 -> 位姿估计 -> ROS话题 -> Web -->
+
+    <arg name="start_camera" default="true" />
+    <arg name="start_splitter" default="true" />
+    <arg name="start_web" default="true" />
+
+    <arg name="image_topic" default="/left/image_raw" />
+    <arg name="exp_env" default="air" />
+    <arg name="marker_length" default="0.2" />
+    <arg name="dictionary" default="DICT_4X4_1000" />
+    <arg name="infer_rate" default="5.0" />
+    <arg name="visualization" default="0" />
+
+    <arg name="pose_topic" default="/aruco/pose" />
+    <arg name="annotated_topic"
+         default="/aruco/annotated_image" />
+    <arg name="web_detection_topic"
+         default="/web/detections" />
+    <arg name="web_pose_topic"
+         default="/web/pose" />
+
+    <arg name="web_port" default="8080" />
+
+    <!-- USB双目相机 -->
+    <node if="$(arg start_camera)"
+          name="usb_cam"
+          pkg="usb_cam"
+          type="usb_cam_node"
+          output="screen"
+          launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
+
+    <!-- 左右图像分割 -->
+    <node if="$(arg start_splitter)"
+          pkg="stereo_splitter"
+          type="split_stereo_image.py"
+          name="split_stereo_image"
+          output="screen" />
+
+    <!-- ArUco检测、位姿估计、Web数据发布 -->
+    <node pkg="stereo_depth"
+          type="aruco_detection260708_web.py"
+          name="aruco_pose_location"
+          output="screen">
+
+        <param name="image_topic"
+               value="$(arg image_topic)" />
+        <param name="exp_env"
+               value="$(arg exp_env)" />
+        <param name="marker_length"
+               value="$(arg marker_length)" />
+        <param name="dictionary"
+               value="$(arg dictionary)" />
+        <param name="infer_rate"
+               value="$(arg infer_rate)" />
+        <param name="visualization"
+               value="$(arg visualization)" />
+
+        <param name="camera_frame"
+               value="camera" />
+        <param name="primary_marker_policy"
+               value="nearest" />
+
+        <param name="pose_topic"
+               value="$(arg pose_topic)" />
+        <param name="annotated_topic"
+               value="$(arg annotated_topic)" />
+        <param name="web_detection_topic"
+               value="$(arg web_detection_topic)" />
+        <param name="web_pose_topic"
+               value="$(arg web_pose_topic)" />
+    </node>
+
+    <!-- Web仪表盘 -->
+    <include if="$(arg start_web)"
+             file="$(find vision_web)/launch/vision_web.launch">
+
+        <arg name="port"
+             value="$(arg web_port)" />
+        <arg name="image_topic"
+             value="$(arg annotated_topic)" />
+        <arg name="detection_topic"
+             value="$(arg web_detection_topic)" />
+        <arg name="pose_topic"
+             value="$(arg web_pose_topic)" />
+        <arg name="stream_fps"
+             value="$(arg infer_rate)" />
+        <arg name="jpeg_quality"
+             value="75" />
+        <arg name="web_width"
+             value="960" />
+        <arg name="detection_timeout"
+             value="2.0" />
+        <arg name="pose_timeout"
+             value="2.0" />
+    </include>
+</launch>
