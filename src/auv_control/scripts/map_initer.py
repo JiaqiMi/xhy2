@@ -4,7 +4,7 @@
 名称：map_initer.py
 功能：创建map坐标系原点
 作者：buyegaid
-监听：/debug_auv_data(AUVData.msg)
+监听：/status/auv(AUVData.msg)
 发布：/world_origin(NavSatFix.msg)
 记录：
 2025.7.19 10:50
@@ -14,6 +14,7 @@
     更新后锁存发布 /world_origin，并通过 /world_origin_reset_result 返回结果。
 2026.7.13
     允许在同一轮运行中重复接收原点重置请求，每次均以当前原点为基准更新。
+    AUV 状态订阅话题调整为 /status/auv。
 """
 
 import threading
@@ -43,7 +44,7 @@ class MapIniter:
         self.reset_result_pub = rospy.Publisher(
             '/world_origin_reset_result', Bool, queue_size=1
         )
-        rospy.Subscriber('/debug_auv_data', AUVData, self.debug_callback)
+        rospy.Subscriber('/status/auv', AUVData, self.debug_callback)
         rospy.Subscriber(
             '/world_origin_reset_candidate', PoseStamped, self.reset_callback, queue_size=1
         )

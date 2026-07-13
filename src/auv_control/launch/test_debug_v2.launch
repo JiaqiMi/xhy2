@@ -41,7 +41,7 @@
     <!-- 静态 TF 广播 (base_link → imu/hand/camera) -->
     <node pkg="auv_control" type="static_tf_broadcaster.py" name="static_tf_broadcaster" output="screen"/>
 
-    <!-- TF 坐标变换 (订阅 /target 和 /target_cmd, 发布 /auv_control 和 /auv_control_cmd) -->
+    <!-- TF 坐标变换（/cmd/pose/ned NED 整包消息转换为 /cmd/pose/lla LLA 整包消息） -->
     <node pkg="auv_control" type="auv_tf_handler.py" name="auv_tf_handler" output="screen"/>
 
 </launch>

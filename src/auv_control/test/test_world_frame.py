@@ -39,6 +39,18 @@ class WorldFrameManagerTest(unittest.TestCase):
         self.assertAlmostEqual(east, 0.0, places=5)
         self.assertAlmostEqual(down, 0.0, places=5)
 
+    def test_multiple_rebases_are_supported(self):
+        first_frame = WorldFrameManager(30.0, 120.0, 5.0)
+        first_origin = first_frame.ned_to_lld(8.0, -3.0, 1.5)
+        second_frame = WorldFrameManager(*first_origin)
+        second_origin = second_frame.ned_to_lld(-2.0, 4.0, 0.3)
+        third_frame = WorldFrameManager(*second_origin)
+
+        north, east, down = third_frame.lld_to_ned(*second_origin)
+        self.assertAlmostEqual(north, 0.0, places=5)
+        self.assertAlmostEqual(east, 0.0, places=5)
+        self.assertAlmostEqual(down, 0.0, places=5)
+
 
 if __name__ == "__main__":
     unittest.main()

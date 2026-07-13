@@ -1,5 +1,8 @@
 #! /home/xhy/xhy_env36/bin/python
-"""2025.7.23 00:55 已废弃"""
+"""
+2025.7.23 00:55 已废弃
+2026.7.13 状态订阅话题调整为 /status/auv
+"""
 
 # 功能，测试点控制功能
 # 输入：ui界面上输入的一个机器人坐标系下的一个点的坐标，单位m（前右下坐标系）
@@ -156,7 +159,7 @@ class ControlUI:
 def main():
     rospy.init_node('test_point_control')
     pub = rospy.Publisher('/auv_control', Control, queue_size=1)
-    rospy.Subscriber('/debug_auv_data', AUVData, auv_data_callback)  # 订阅AUVData消息
+    rospy.Subscriber('/status/auv', AUVData, auv_data_callback)  # 订阅AUVData消息
     root = tk.Tk()
     ui = ControlUI(root, pub)
     root.mainloop()
