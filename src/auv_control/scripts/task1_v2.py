@@ -176,7 +176,7 @@ class Task1V2(MissionBase):
     def marker_pose_in_map(self, detection_pose):
         """将视觉节点发布的 camera 坐标系图形位置转换到 map 坐标系。"""
         try:
-            self.tf_listener.waitForTrans..form(
+            self.tf_listener.waitForTrans.form(
                 'map', detection_pose.header.frame_id, detection_pose.header.stamp,
                 rospy.Duration(1.0),
             )
