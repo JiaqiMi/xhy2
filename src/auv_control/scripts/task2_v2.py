@@ -37,7 +37,7 @@ class Task2V2(MissionBase):
         """读取采水时长、推杆速度和返航航向参数。"""
         super().__init__(NODE_NAME)
         self.sample_duration = float(
-            rospy.get_param('/task_v2_sample_duration', 3.0)
+            rospy.get_param('/task_v2_sample_duration', 10.0)
         )
         self.pushrod_speed = int(
             rospy.get_param('/task_v2_pushrod_speed', 250)
