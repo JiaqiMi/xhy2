@@ -136,8 +136,8 @@ include_directories(
   scripts/main_driver.py
   scripts/sensor_driver.py
   scripts/state_control.py
-  scripts/debug_driver.py
-  scripts/nav_driver.py
+  driver/debug_driver.py
+  driver/nav_driver.py
   scripts/task1_node.py
   scripts/task2_node.py
   scripts/task3_node.py
@@ -195,10 +195,14 @@ include_directories(
 
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
-# catkin_install_python(PROGRAMS
-#   scripts/my_python_script
-#   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-# )
+catkin_install_python(PROGRAMS
+  driver/debug_driver.py
+  driver/debug_driver_v2.py
+  driver/nav_driver.py
+  driver/sensor_status_node.py
+  driver/sensor_actuator_node.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
 
 ## Mark executables for installation
 ## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_executables.html

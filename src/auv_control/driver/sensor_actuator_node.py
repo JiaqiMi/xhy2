@@ -13,6 +13,8 @@
     从 sensor_driver_v2.py 拆分出执行器控制逻辑，独立 TCP 连接
     发布 /auv_actuator_status 反馈执行机构实际状态
     统一 loginfo 中文输出：ACK/FB/CMD/SEND 定长格式化，保留原有输出频率
+2026.7.13
+    调整至 driver 目录，归入硬件驱动层
 """
 
 import socket

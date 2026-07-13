@@ -1,40 +1,47 @@
 <launch>
-  <!-- test_debug_v2.launch — 调试驱动 V2 测试启动文件 -->
-  <!-- 用法: roslaunch auv_control test_debug_v2.launch -->
+    <!-- test_debug_v2.launch — 调试驱动 V2 测试启动文件 -->
+    <!-- 用法: roslaunch auv_control test_debug_v2.launch -->
 
-  <!-- 包含任务参数 -->
-  <include file="$(find auv_control)/launch/param.launch"/>
+    <!-- 包含任务参数 -->
+    <include file="$(find auv_control)/launch/param.launch"/>
+    <arg name="save_dir" default="$(env HOME)/.ros/auv_logs" />
+    <arg name="vehicle_ip" default="192.168.1.115" />
 
-  <!-- ===== 硬件驱动层 ===== -->
+    <!-- ===== 硬件驱动层 ===== -->
 
-  <!-- 传感器状态 (TCP 5064, STATUS 帧接收) -->
-  <node pkg="auv_control" type="sensor_status_node.py" name="sensor_status_node"
-        output="screen"/>
+    <!-- 传感器状态 (TCP 5064, STATUS 帧接收) -->
+    <node pkg="auv_control" type="sensor_status_node.py" name="sensor_status_node" output="screen">
+        <param name="sensor_ip" value="$(arg vehicle_ip)" />
+        <param name="sensor_port" value="5064" />
+        <param name="save_raw_data" type="bool" value="true" />
+        <param name="raw_save_dir" type="string" value="$(arg save_dir)" />
+        <param name="raw_flush_every" type="int" value="1" />
+    </node>
 
-  <!-- 传感器执行器 (TCP 5064, 补光灯/舵机/推杆控制) -->
-  <node pkg="auv_control" type="sensor_actuator_node.py" name="sensor_actuator_node"
-        output="screen"/>
+    <!-- 传感器执行器 (TCP 5064, 补光灯/舵机/推杆控制) -->
+    <node pkg="auv_control" type="sensor_actuator_node.py" name="sensor_actuator_node" output="screen">
+        <param name="sensor_ip" value="$(arg vehicle_ip)" />
+        <param name="sensor_port" value="5064" />
+    </node>
 
-  <!-- 调试驱动 V2 (TCP 5063, 支持定深/定深定向/定点三种模式) -->
-  <node pkg="auv_control" type="debug_driver_v2.py" name="debug_driver_v2"
-        output="screen">
-    <param name="debug_ip" value="192.168.1.115"/>
-    <param name="debug_port" value="5063"/>
-    <param name="save_raw_data" value="false"/>
-  </node>
+    <!-- 调试驱动 V2 (TCP 5063, 支持定深/定深定向/定点三种模式) -->
+    <node pkg="auv_control" type="debug_driver_v2.py" name="debug_driver_v2" output="screen">
+        <param name="debug_ip" value="192.168.1.115"/>
+        <param name="debug_port" value="5063"/>
+        <param name="save_raw_data" type="bool" value="true" />
+        <param name="raw_save_dir" type="string" value="$(arg save_dir)" />
+        <param name="raw_flush_every" type="int" value="1" />
+    </node>
 
-  <!-- ===== 坐标变换层 ===== -->
+    <!-- ===== 坐标变换层 ===== -->
 
-  <!-- 地图原点初始化 -->
-  <node pkg="auv_control" type="map_initer.py" name="map_initer"
-        output="screen"/>
+    <!-- 地图原点初始化 -->
+    <node pkg="auv_control" type="map_initer.py" name="map_initer" output="screen"/>
 
-  <!-- 静态 TF 广播 (base_link → imu/hand/camera) -->
-  <node pkg="auv_control" type="static_tf_broadcaster.py" name="static_tf_broadcaster"
-        output="screen"/>
+    <!-- 静态 TF 广播 (base_link → imu/hand/camera) -->
+    <node pkg="auv_control" type="static_tf_broadcaster.py" name="static_tf_broadcaster" output="screen"/>
 
-  <!-- TF 坐标变换 (订阅 /target 和 /target_cmd, 发布 /auv_control 和 /auv_control_cmd) -->
-  <node pkg="auv_control" type="auv_tf_handler.py" name="auv_tf_handler"
-        output="screen"/>
+    <!-- TF 坐标变换 (订阅 /target 和 /target_cmd, 发布 /auv_control 和 /auv_control_cmd) -->
+    <node pkg="auv_control" type="auv_tf_handler.py" name="auv_tf_handler" output="screen"/>
 
 </launch>

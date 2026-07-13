@@ -26,6 +26,8 @@
     删除csv保存，改为直接保存原始报文
 2026.7.11
     统一 loginfo 中文输出：CMD/SEND 定长小数格式，保留 loginfo_throttle 节流
+2026.7.13
+    调整至 driver 目录，归入硬件驱动层
 """
 
 import json
