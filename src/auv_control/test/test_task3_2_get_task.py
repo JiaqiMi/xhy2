@@ -11,9 +11,13 @@ Task rule mapping:
   3,4 -> green
   5,6 -> red
 
-This script only uses the newer /auv_actuator_control topic.  When the
+This script only uses the newer /cmd/actuator topic.  When the
 vision model is ready, switch input_mode from mock to topic and publish
 std_msgs/Int32 marker ids on aruco_topic.
+
+记录：
+2026.7.13
+  执行器下行话题调整为 /cmd/actuator。
 """
 
 import rospy
@@ -57,7 +61,7 @@ class Task3GetTaskTest:
         self.light_seconds = float(rospy.get_param("~light_seconds", 3.0))
         self.gap_seconds = float(rospy.get_param("~gap_seconds", 0.5))
 
-        self.actuator_topic = rospy.get_param("~actuator_topic", "/auv_actuator_control")
+        self.actuator_topic = rospy.get_param("~actuator_topic", "/cmd/actuator")
 
         self.light1 = int(rospy.get_param("~light1", 0))
         self.light2 = int(rospy.get_param("~light2", 0))

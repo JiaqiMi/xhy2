@@ -6,11 +6,14 @@
 描述：
     1. 从 TF 树获取 AUV 在 map 坐标系下的当前位姿；
     2. 将任务目标拆分为带步长限制的中间目标，并发布到 /target；
-    3. 通过 /auv_actuator_control 控制红绿灯、补光灯和执行器；
+    3. 通过 /cmd/actuator 控制红绿灯、补光灯和执行器；
     4. 提供定时亮灯、闪灯、往复搜索、原地旋转和接触点计算功能。
 监听：/tf
-发布：/target (PoseStamped)，/auv_actuator_control (ActuatorControl)，/finished (String)
+发布：/target (PoseStamped)，/cmd/actuator (ActuatorControl)，/finished (String)
 说明：本文件只封装多个任务共同使用的功能，不单独启动 ROS 节点。
+记录：
+2026.7.13
+    执行器下行话题调整为 /cmd/actuator。
 """
 
 import copy
@@ -57,7 +60,7 @@ class MissionBase:
         self.target_pub = rospy.Publisher('/target', PoseStamped, queue_size=10)
         self.finished_pub = rospy.Publisher('/finished', String, queue_size=10)
         self.device_pub = rospy.Publisher(
-            '/auv_actuator_control', ActuatorControl, queue_size=10
+            '/cmd/actuator', ActuatorControl, queue_size=10
         )
         self.tf_listener = tf.TransformListener()
         self.rate = rospy.Rate(rate_hz)

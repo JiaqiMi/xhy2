@@ -5,7 +5,7 @@
       通过 TCP 发送 54 字节 ROV 扩展控制帧到 AUV
 作者：BroXu
 监听：/cmd/pose/lla (PoseLLAcmd.msg，经纬度坐标系)
-发布：/debug_auv_data (AUVData.msg)
+发布：/status/auv (AUVData.msg)
 记录：
 2026.7.11
     基于 debug_driver.py 重构，新增定深(mode=2)和定深定向(mode=3)模式
@@ -15,6 +15,7 @@
 2026.7.13
     调整至 driver 目录，归入硬件驱动层
     下层控制接口使用 LLA 坐标系的 PoseLLAcmd 整包消息。
+    上行 AUV 状态话题调整为 /status/auv。
 """
 
 import json
@@ -157,7 +158,7 @@ class DebugDriverV2:
 
         # 接收由 auv_tf_handler 转换后的 LLA 整包控制指令。
         rospy.Subscriber('/cmd/pose/lla', PoseLLAcmd, self.control_cmd_callback)
-        self.data_pub = rospy.Publisher('/debug_auv_data', AUVData, queue_size=10)
+        self.data_pub = rospy.Publisher('/status/auv', AUVData, queue_size=10)
         rospy.loginfo("debug_driver_v2: 已启动, 监听 /cmd/pose/lla")
 
     def open_raw_save_file(self):

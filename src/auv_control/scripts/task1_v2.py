@@ -10,11 +10,14 @@
     5. 黑色标记闪烁两次绿灯并原地旋转 360 度；
     6. 完成规定数量的两类标记后移动到管道终点。
 监听：/obj/target_message，/obj/line_message，/tf
-发布：/target，/auv_actuator_control，/finished
+发布：/target，/cmd/actuator，/finished
 说明：比赛场地坐标、目标类别名称和标记数量通过 ROS 参数配置。
       测试时可将 /task1_v2_use_current_pose_as_start 设为 true，使任务以
       启动瞬间机器人当前位置作为入口点和返回终点；运动目标发布前会
       使用当前 z，避免主动上浮或下潜。
+记录：
+2026.7.13
+    执行器下行话题调整为 /cmd/actuator。
 """
 
 import copy

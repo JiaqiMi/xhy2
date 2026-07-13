@@ -4,7 +4,7 @@
 名称：auv_tf_handler.py
 功能：完成机器人坐标到世界坐标的转换
 作者：buyegaid
-监听：/debug_auv_data (AUVData.msg)
+监听：/status/auv (AUVData.msg)
       /target (PoseStamped.msg)
       /cmd/pose/ned (PoseNEDcmd.msg)
       /world_origin (NavSatFix.msg)
@@ -19,6 +19,7 @@
 2026.7.13
     新增 /world_origin 更新订阅，收到红色圆形对应的新原点后原子更新坐标换算器。
     新增 PoseNEDcmd（NED）→ PoseLLAcmd（LLA）控制指令转换。
+    AUV 状态订阅话题调整为 /status/auv。
 """
 
 import threading
@@ -54,7 +55,7 @@ class AUVTfHandler:
             '/cmd/pose/lla', PoseLLAcmd, queue_size=10
         )
 
-        rospy.Subscriber('/debug_auv_data', AUVData, self.debug_callback)
+        rospy.Subscriber('/status/auv', AUVData, self.debug_callback)
         rospy.Subscriber('/target', PoseStamped, self.target_callback)
         rospy.Subscriber('/cmd/pose/ned', PoseNEDcmd, self.target_cmd_callback)
         # map_initer 是 /world_origin 的唯一发布者；锁存初始值会被安全忽略。
