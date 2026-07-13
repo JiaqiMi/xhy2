@@ -15,6 +15,8 @@
     3. 校验包头和校验和
     4. 解析INS/GPS/DVL/IMU/USBL/波束速度和距离/标志位
     5. 发布完整ROS消息
+2026.7.13
+    调整至 driver 目录，归入硬件驱动层
 """
 
 import json

@@ -12,6 +12,8 @@
 2026.7.11
     从 sensor_driver_v2.py 拆分出纯 STATUS 接收逻辑，独立 TCP 连接
     统一 loginfo 中文输出：定长小数格式，电源状态 0.2Hz 节流输出
+2026.7.13
+    调整至 driver 目录，归入硬件驱动层
 """
 
 import json
