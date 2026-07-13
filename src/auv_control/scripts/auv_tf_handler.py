@@ -1,4 +1,5 @@
 #! /home/xhy/xhy_env36/bin/python
+# -*- coding: utf-8 -*-
 """
 名称：auv_tf_handler.py
 功能：完成机器人坐标到世界坐标的转换
@@ -18,278 +19,150 @@
 2026.7.11
     新增 /target_cmd → /auv_control_cmd 链路，支持 debug_driver_v2 的 AUVControlCmd 消息
     两条链路（/target 和 /target_cmd）并行运行，互不影响
+2026.7.13
+    新增 /world_origin 更新订阅，收到红色圆形对应的新原点后原子更新坐标换算器。
 """
 
+import threading
 
-# from geographic_msgs.msg import GeoPoint,GeoPose # 需要安装 sudo apt install ros-noetic-geodesy
-"""
-float64 latitude   # 纬度(degrees)
-float64 longitude  # 经度(degrees)
-float64 altitude   # 高度(meters)
-"""
+import numpy as np
 import rospy
 import tf
-from tf import transformations
+from auv_control.msg import AUVControlCmd, AUVData, AUVPose
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import NavSatFix
-from auv_control.msg import AUVData, AUVPose, AUVControlCmd
-import numpy as np
-from geometry_msgs.msg import PoseStamped, TransformStamped # 目标点，目标位姿
+from tf import transformations
 
-class AUV_tfhandler:
-    """
-    1. 订阅/debug_auv_data，获取机器人在世界坐标系下的位姿
-    2. 订阅/target，获取机器人坐标系下的目标位置
-    3. 将目标位置转换成世界坐标系下的位置，再转换成经纬度发送给debug_driver
-    4. 发布/auv_control消息，包含目标经纬度和深度
-    5. 发布TF变换，将世界坐标系下的base_link变换
-    """
+from world_frame import WorldFrameManager
+
+
+class AUVTfHandler:
+    """维护当前 map 原点，并将导航与控制目标转换到对应的坐标系。"""
+
     def __init__(self):
-        # rospy.init_node('auv_pose_control_publisher')
-        origin = NavSatFix()
+        self.origin_lock = threading.RLock()
         origin = rospy.wait_for_message('/world_origin', NavSatFix)
-        self.wfm = WorldFrameManager(origin.latitude, origin.longitude, origin.altitude)
-        rospy.loginfo(f"auv_tfhandler: 世界坐标系初始化完成{origin.latitude, origin.longitude, origin.altitude}")
-        # TF相关
+        self.wfm = WorldFrameManager(
+            origin.latitude, origin.longitude, origin.altitude
+        )
+        self.origin_values = (origin.latitude, origin.longitude, origin.altitude)
+        rospy.loginfo("auv_tf_handler: 初始世界坐标系已就绪: %s", self.origin_values)
+
         self.tf_broadcaster = tf.TransformBroadcaster()
-        rospy.Subscriber('/debug_auv_data', AUVData, self.debug_callback) # 订阅imu数据
-        rospy.Subscriber('/target', PoseStamped, self.target_callback) # 订阅目标点数据
-        rospy.Subscriber('/target_cmd', AUVControlCmd, self.target_cmd_callback) # V2: 订阅 AUVControlCmd
         self.current_pose = None
-        self.current_yaw = 0.0  # 记录当前yaw角
+        self.current_yaw = 0.0
         self.control_pub = rospy.Publisher('/auv_control', AUVPose, queue_size=10)
-        self.control_cmd_pub = rospy.Publisher('/auv_control_cmd', AUVControlCmd, queue_size=10)  # V2
-        self.Rate = rospy.Rate(100)
-        # rospy.loginfo("auv_tfhandler:世界坐标系初始化完成")
+        self.control_cmd_pub = rospy.Publisher(
+            '/auv_control_cmd', AUVControlCmd, queue_size=10
+        )
+
+        rospy.Subscriber('/debug_auv_data', AUVData, self.debug_callback)
+        rospy.Subscriber('/target', PoseStamped, self.target_callback)
+        rospy.Subscriber('/target_cmd', AUVControlCmd, self.target_cmd_callback)
+        # map_initer 是 /world_origin 的唯一发布者；锁存初始值会被安全忽略。
+        rospy.Subscriber('/world_origin', NavSatFix, self.origin_callback, queue_size=1)
+
+    def origin_callback(self, origin):
+        """原子替换坐标换算器，使下一帧 TF 按新原点计算。"""
+        values = (origin.latitude, origin.longitude, origin.altitude)
+        if not np.all(np.isfinite(values)):
+            rospy.logwarn("auv_tf_handler: 忽略包含无效值的世界原点")
+            return
+
+        with self.origin_lock:
+            if np.allclose(values, self.origin_values, rtol=0.0, atol=1e-9):
+                return
+            self.wfm = WorldFrameManager(*values)
+            self.origin_values = values
+        rospy.logwarn("auv_tf_handler: 原点已更新，后续 map 坐标以红圆为零点")
+
+    def get_world_frame_manager(self):
+        """获取当前不可变的坐标换算器实例。"""
+        with self.origin_lock:
+            return self.wfm
 
     def debug_callback(self, msg):
-        """将AUV的位姿转换为世界坐标系下的NED坐标，并发布TF变换"""
-        # 转换为NED坐标
-        n, e, d = self.wfm.lld_to_ned(msg.pose.latitude, msg.pose.longitude, msg.pose.depth) # 深度直接用正值
+        """将 AUV 导航位姿转换为当前 map 中的 NED 位姿并发布 TF。"""
+        wfm = self.get_world_frame_manager()
+        north, east, down = wfm.lld_to_ned(
+            msg.pose.latitude, msg.pose.longitude, msg.pose.depth
+        )
         if self.current_pose is None:
-            self.current_pose = [n, e, d, 0, 0, 0, 1]  # n,e,d + 初始四元数(无旋转)
+            self.current_pose = [north, east, down, 0, 0, 0, 1]
         else:
-            self.current_pose[0:3] = [n, e, d]
-        # 记录当前yaw角（单位：度）
+            self.current_pose[0:3] = [north, east, down]
+
         self.current_yaw = msg.pose.yaw
-        if self.current_pose is not None:
-            # 欧拉角使用北东地坐标系,且使用弧度制
-            self.current_pose[3:7] = transformations.quaternion_from_euler(
-                np.radians(msg.pose.roll), 
-                np.radians(msg.pose.pitch), 
-                np.radians(msg.pose.yaw)
-            )
-            self.publish_tf()
-            rospy.loginfo_throttle(10, f"auv_tfhandler: tf已发布")
+        self.current_pose[3:7] = transformations.quaternion_from_euler(
+            np.radians(msg.pose.roll),
+            np.radians(msg.pose.pitch),
+            np.radians(msg.pose.yaw),
+        )
+        self.publish_tf()
+        rospy.loginfo_throttle(10, "auv_tf_handler: TF 已发布")
 
     def target_callback(self, msg):
-        """将目标点(PoseStamped)转换为经纬度和欧拉角，并发送control消息"""
-        # 目标点已经是map坐标系(NED)下的点，直接转换为LLD
-        n = msg.pose.position.x
-        e = msg.pose.position.y
-        d = msg.pose.position.z
-        # NED转LLD
-        lat, lon, depth = self.wfm.ned_to_lld(n, e, d)
-        # 四元数转欧拉角
-        q = msg.pose.orientation
-        quaternion = [q.x, q.y, q.z, q.w]
-        roll, pitch, yaw = tf.transformations.euler_from_quaternion(quaternion)
-        # 发布Control消息
-        ctrl_msg = AUVPose()
-        ctrl_msg.latitude = lat
-        ctrl_msg.longitude = lon
-        ctrl_msg.depth = depth  # NED下直接赋值
-        ctrl_msg.roll = np.degrees(roll)
-        ctrl_msg.pitch = np.degrees(pitch)
-        ctrl_msg.yaw = np.degrees(yaw)
-        rospy.loginfo_throttle(5, "auv_tfhdler: 发布控制指令")
-        self.control_pub.publish(ctrl_msg)
+        """将 map 坐标目标转换为经纬深控制指令。"""
+        wfm = self.get_world_frame_manager()
+        latitude, longitude, depth = wfm.ned_to_lld(
+            msg.pose.position.x,
+            msg.pose.position.y,
+            msg.pose.position.z,
+        )
+        quaternion = msg.pose.orientation
+        roll, pitch, yaw = tf.transformations.euler_from_quaternion([
+            quaternion.x, quaternion.y, quaternion.z, quaternion.w,
+        ])
+
+        control_msg = AUVPose()
+        control_msg.latitude = latitude
+        control_msg.longitude = longitude
+        control_msg.depth = depth
+        control_msg.roll = np.degrees(roll)
+        control_msg.pitch = np.degrees(pitch)
+        control_msg.yaw = np.degrees(yaw)
+        self.control_pub.publish(control_msg)
+        rospy.loginfo_throttle(5, "auv_tf_handler: 已发布 /auv_control")
 
     def target_cmd_callback(self, msg):
-        """将 AUVControlCmd (NED) 转换为经纬度坐标，保留 mode 和 force，发布到 /auv_control_cmd"""
-        n = msg.target.longitude   # NED frame: x=north 存入 longitude 字段
-        e = msg.target.latitude    # NED frame: y=east  存入 latitude 字段
-        d = msg.target.depth       # NED frame: z=down  存入 depth 字段
-        # NED 转 LLD
-        lat, lon, depth = self.wfm.ned_to_lld(n, e, d)
-        # 构造输出消息（mode 和 force 原样保留）
-        out = AUVControlCmd()
-        out.mode = msg.mode
-        out.target.longitude = lon
-        out.target.latitude = lat
-        out.target.depth = depth
-        out.target.altitude = msg.target.altitude
-        out.target.roll = msg.target.roll
-        out.target.pitch = msg.target.pitch
-        out.target.yaw = msg.target.yaw
-        out.target.speed = msg.target.speed
-        out.force = msg.force
-        rospy.loginfo_throttle(5, "auv_tf_handler: 发布 /auv_control_cmd")
-        self.control_cmd_pub.publish(out)
+        """将 NED 形式的 AUVControlCmd 转换为经纬深控制指令。"""
+        wfm = self.get_world_frame_manager()
+        north = msg.target.longitude
+        east = msg.target.latitude
+        down = msg.target.depth
+        latitude, longitude, depth = wfm.ned_to_lld(north, east, down)
+
+        output = AUVControlCmd()
+        output.mode = msg.mode
+        output.target.longitude = longitude
+        output.target.latitude = latitude
+        output.target.depth = depth
+        output.target.altitude = msg.target.altitude
+        output.target.roll = msg.target.roll
+        output.target.pitch = msg.target.pitch
+        output.target.yaw = msg.target.yaw
+        output.target.speed = msg.target.speed
+        output.force = msg.force
+        self.control_cmd_pub.publish(output)
+        rospy.loginfo_throttle(5, "auv_tf_handler: 已发布 /auv_control_cmd")
 
     def publish_tf(self):
-        """发布map到base_link的TF（NED）"""
+        """发布当前 map 到 base_link 的 NED 变换。"""
         self.tf_broadcaster.sendTransform(
-            (self.current_pose[0], self.current_pose[1], self.current_pose[2]),  # translation (n,e,d)
-            (self.current_pose[3], self.current_pose[4], self.current_pose[5], self.current_pose[6]),  # rotation (quaternion)
+            tuple(self.current_pose[0:3]),
+            tuple(self.current_pose[3:7]),
             rospy.Time.now(),
-            "base_link",
-            "map"
+            'base_link',
+            'map',
         )
 
     def run(self):
-        while not rospy.is_shutdown():
-            # self.Rate.sleep()
-            rospy.spin() # 直接一直循环等待就行
-
-class WorldFrameManager:
-    """
-    世界坐标系定义
-    1.保存世界坐标系原点
-    2.完成tf计算和世界坐标系到经纬度的转换
-    """
-    def __init__(self, init_lat:float, init_lon:float, init_depth:float):
-        # 保存初始纬度、经度和深度(参考点)
-        # init_lat, init_lon 单位: 度(degree)
-        # init_depth 单位: 米(m)
-        self.init_lat = init_lat
-        self.init_lon = init_lon
-        self.init_depth = init_depth
-        
-        # WGS84椭球参数
-        self.a = 6378137.0  # 半长轴(m)
-        self.f = 1/298.257223563  # 扁率
-        self.e_sq = self.f * (2 - self.f)  # 第一偏心率的平方
-
-    def lld_to_ned(self, lat, lon, depth):
-        """
-        将经纬深(LLD)坐标转换为NED坐标系下的坐标(相对于初始点)
-        输入:
-            lat, lon 单位: 度(degree)
-            depth 单位: 米(m)
-        输出:
-            (north, east, down) 单位: 米(m)
-        """
-        # 1. 将当前LLD转换为ECEF(地心地固坐标系)
-        x, y, z = self.lld_to_ecef(lat, lon, depth)
-        
-        # 2. 将初始LLD转换为ECEF
-        x0, y0, z0 = self.lld_to_ecef(self.init_lat, self.init_lon, self.init_depth)
-        
-        # 3. 计算NED坐标
-        return self.ecef_to_ned(x, y, z, x0, y0, z0)
-    
-    def lld_to_ecef(self, lat, lon, depth):
-        """
-        LLd(经纬高)转ECEF(地心地固坐标系)
-        输入:
-            lat, lon 单位: 度(degree)
-            depth 单位: 米(m)
-        输出:
-            x, y, z 单位: 米(m)
-        """
-        lat_rad = np.radians(lat)
-        lon_rad = np.radians(lon)
-        
-        N = self.a / np.sqrt(1 - self.e_sq * np.sin(lat_rad)**2)
-        
-        x = (N - depth) * np.cos(lat_rad) * np.cos(lon_rad)
-        y = (N - depth) * np.cos(lat_rad) * np.sin(lon_rad)
-        z = (N * (1 - self.e_sq) - depth) * np.sin(lat_rad)
-        
-        return x, y, z
-    
-    def ecef_to_ned(self, x, y, z, x0, y0, z0):
-        """
-        ECEF(地心地固)转NED(北东地)
-        输入:
-            x, y, z, x0, y0, z0 单位: 米(m)
-        输出:
-            n, e, d 单位: 米(m)
-        """
-        dx = x - x0
-        dy = y - y0
-        dz = z - z0
-
-        lat0_rad = np.radians(self.init_lat)
-        lon0_rad = np.radians(self.init_lon)
-
-        # 标准ECEF到NED旋转矩阵
-        R = np.array([
-            [-np.sin(lat0_rad)*np.cos(lon0_rad), -np.sin(lat0_rad)*np.sin(lon0_rad),  np.cos(lat0_rad)],
-            [-np.sin(lon0_rad),                   np.cos(lon0_rad),                  0],
-            [-np.cos(lat0_rad)*np.cos(lon0_rad), -np.cos(lat0_rad)*np.sin(lon0_rad), -np.sin(lat0_rad)]
-        ])
-        ned = R @ np.array([dx, dy, dz])
-        return ned[0], ned[1], ned[2]
-
-    def ned_to_lld(self, n, e, d):
-        """
-        NED(北东地)坐标转LLD(纬经深)
-        输入:
-            n, e, d 单位: 米(m)
-        输出:
-            lat, lon 单位: 度(degree)
-            depth 单位: 米(m)
-        """
-        # 1. 将原点LLD转换为ECEF
-        lat0_rad = np.radians(self.init_lat)
-        lon0_rad = np.radians(self.init_lon)
-        depth0 = self.init_depth
-        N0 = self.a / np.sqrt(1 - self.e_sq * np.sin(lat0_rad)**2)
-        x0 = (N0 - depth0) * np.cos(lat0_rad) * np.cos(lon0_rad)
-        y0 = (N0 - depth0) * np.cos(lat0_rad) * np.sin(lon0_rad)
-        z0 = (N0 * (1 - self.e_sq) - depth0) * np.sin(lat0_rad)
-        # 2. NED到ECEF的旋转矩阵（标准）
-        R = np.array([
-            [-np.sin(lat0_rad)*np.cos(lon0_rad), -np.sin(lat0_rad)*np.sin(lon0_rad),  np.cos(lat0_rad)],
-            [-np.sin(lon0_rad),                   np.cos(lon0_rad),                  0],
-            [-np.cos(lat0_rad)*np.cos(lon0_rad), -np.cos(lat0_rad)*np.sin(lon0_rad), -np.sin(lat0_rad)]
-        ])
-        # 3. 计算目标点ECEF坐标
-        ned = np.array([n, e, d])
-        ecef = R.T @ ned + np.array([x0, y0, z0])
-        x, y, z = ecef
-        # 4. ECEF转LLD
-        lld = self.ecef_to_lld(x, y, z)
-        # 返回纬度、经度(度)，深度(米)
-        return np.degrees(lld[0]), np.degrees(lld[1]), lld[2]
-
-    def ecef_to_lld(self, x, y, z):
-        """
-        ECEF(地心地固)坐标转LLD(纬经深)
-        输入:
-            x, y, z 单位: 米(m)
-        输出:
-            lat_rad, lon_rad 单位: 弧度(radian)
-            depth 单位: 米(m)
-        """
-        # 经度
-        lon_rad = np.arctan2(y, x)
-        
-        # 初始纬度估计
-        p = np.sqrt(x**2 + y**2)
-        lat_rad = np.arctan2(z, p * (1 - self.e_sq))
-        
-        # 迭代计算精确纬度
-        for _ in range(10):
-            N = self.a / np.sqrt(1 - self.e_sq * np.sin(lat_rad)**2)
-            depth = N - p / np.cos(lat_rad)
-            lat_new = np.arctan2(z, p * (1 - self.e_sq * N / (N - depth)))
-            if abs(lat_new - lat_rad) < 1e-12:
-                break
-            lat_rad = lat_new
-        
-        # 最终高度
-        N = self.a / np.sqrt(1 - self.e_sq * np.sin(lat_rad)**2)
-        depth = N - p / np.cos(lat_rad)
-
-        return lat_rad, lon_rad, depth
+        rospy.spin()
 
 
 if __name__ == "__main__":
     try:
         rospy.init_node('auv_tf_handler_node')
-        pub = AUV_tfhandler()
-        pub.run()
+        AUVTfHandler().run()
     except rospy.ROSInterruptException:
         pass
