@@ -16,7 +16,7 @@
 
     <!-- mock：使用配置好的固定偏移。
          topic：只在前方搜索 class_name=arrow，然后基于视觉靠近箭头中心。 -->
-    <arg name="input_mode" default="mock" />
+    <arg name="input_mode" default="topic" />
     <arg name="arrow_topic" default="/obj/target_message" />
     <arg name="arrow_class" default="arrow" />
     <arg name="detection_frame" default="camera" />
@@ -55,6 +55,9 @@
     <arg name="approach_lateral_tolerance" default="0.10" />
     <arg name="approach_yaw_tolerance_deg" default="10.0" />
     <arg name="hold_seconds" default="2.0" />
+
+   <include file="$(find stereo_depth)/launch/test_shapes_detection.launch"/>
+
 
     <node pkg="auv_control"
           type="test_task3_1_acquire_area.py"

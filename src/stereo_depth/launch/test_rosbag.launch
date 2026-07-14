@@ -1,0 +1,138 @@
+<launch>
+    <!--
+        将 /usb_cam/image_raw 限频到 1 Hz，压缩后录制；
+        回放时解压并恢复到 /usb_cam/image_raw。
+
+        录制话题：
+            /record/stereo/compressed
+            类型：sensor_msgs/CompressedImage
+
+        回放输出：
+            /usb_cam/image_raw
+            类型：sensor_msgs/Image
+            频率：约 1 Hz（play_rate=1.0 时）
+    -->
+
+    <!-- record / play -->
+    <arg name="mode" default="record" />
+
+    <!-- 录制参数 -->
+    <arg name="bag_dir" default="/home/xhy/xhy_records" />
+    <arg name="bag_name" default="stereo_input" />
+    <arg name="split_size_mb" default="2048" />
+    <arg name="record_delay" default="3.0" />
+    <arg name="record_rate" default="1.0" />
+    <arg name="video_device" default="/dev/video0" />
+
+    <!-- 回放参数 -->
+    <arg name="bag_file" default="" />
+    <arg name="play_rate" default="1.0" />
+    <arg name="pause" default="false" />
+    <arg name="loop" default="false" />
+    <arg name="startup_delay" default="2.0" />
+
+    <!-- ==================== 录制 ==================== -->
+    <group if="$(eval arg('mode') == 'record')">
+
+        <param name="/use_sim_time" value="false" />
+
+        <!-- 相机原始拼接图 -->
+        <node name="usb_cam" 
+              pkg="usb_cam" 
+              type="usb_cam_node" 
+              launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
+
+        <!--
+            第一步：把原始图像限制到 1 Hz。
+
+            输入：
+                /usb_cam/image_raw
+                sensor_msgs/Image
+
+            输出：
+                /record/stereo_raw
+                sensor_msgs/Image
+        -->
+        <node pkg="topic_tools"
+              type="throttle"
+              name="stereo_record_throttle"
+              output="screen"
+              args="messages
+                    /usb_cam/image_raw
+                    $(arg record_rate)
+                    /record/stereo_raw" />
+
+        <!--
+            第二步：把 1 Hz 原始图压缩为 JPEG。
+
+            实际输入：
+                /record/stereo_raw
+
+            实际输出：
+                /record/stereo/compressed
+                sensor_msgs/CompressedImage
+        -->
+        <node pkg="image_transport"
+              type="republish"
+              name="stereo_image_compressor"
+              output="screen"
+              args="raw
+                    in:=/record/stereo_raw
+                    compressed
+                    out:=/record/stereo" />
+
+        <!-- 第三步：只录制压缩图像 -->
+        <node pkg="rosbag"
+              type="record"
+              name="stereo_bag_recorder"
+              output="screen"
+              required="true"
+              launch-prefix="bash -c 'mkdir -p &quot;$(arg bag_dir)&quot;; sleep $(arg record_delay); exec $0 $@'"
+              args="--lz4
+                    --split
+                    --size=$(arg split_size_mb)
+                    -O $(arg bag_dir)/$(arg bag_name)
+                    /record/stereo/compressed" />
+
+    </group>
+
+    <!-- ==================== 回放 ==================== -->
+    <group if="$(eval arg('mode') == 'play')">
+
+        <param name="/use_sim_time" value="true" />
+
+        <!--
+            compressed in:=/record/stereo
+            实际订阅：
+                /record/stereo/compressed
+
+            raw out:=/usb_cam/image_raw
+            实际发布：
+                /usb_cam/image_raw
+        -->
+        <node pkg="image_transport"
+              type="republish"
+              name="stereo_image_decompressor"
+              output="screen"
+              args="compressed
+                    in:=/record/stereo
+                    raw
+                    out:=/usb_cam/image_raw" />
+
+        <!--
+            bag 内消息本身是 1 Hz。
+            play_rate=1.0 时，回放仍为约 1 Hz。
+        -->
+        <node pkg="rosbag"
+            type="play"
+            name="stereo_rosbag_play"
+            output="screen"
+            required="true"
+            launch-prefix="bash -c 'if [ -z &quot;$(arg bag_file)&quot; ]; then echo &quot;[ERROR] 请设置 bag_file:=实际bag路径&quot; >&amp;2; exit 2; fi; sleep $(arg startup_delay); exec $0 $@'"
+            args="--clock
+                    --rate=$(arg play_rate)
+                    $(arg bag_file)" />
+
+    </group>
+
+</launch>

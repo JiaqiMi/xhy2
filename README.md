@@ -625,3 +625,16 @@ ss -lntp | grep 8080
 ```
 
 
+## rosbag视频回放功能
+
+```bash
+
+roslaunch stereo_depth test_rosbag.launch \
+  mode:=record
+
+roslaunch stereo_depth test_rosbag.launch \
+  mode:=play \
+  bag_file:=/home/xhy/xhy_records/stereo_input_0.bag
+```
+
+
