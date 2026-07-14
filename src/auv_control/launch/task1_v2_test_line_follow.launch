@@ -1,0 +1,69 @@
+<launch>
+    <!--
+        Task1 巡线单项测试。
+        使用前请先启动真实下位机链路、TF 链路和红线识别节点：
+        /cmd/pose/ned -> auv_tf_handler -> /cmd/pose/lla -> debug_driver_v2。
+
+        用法示例：
+        roslaunch auv_control task1_v2_test_line_follow.launch initial_heading_deg:=0
+    -->
+
+    <arg name="rate" default="5.0" />
+    <arg name="initial_heading_deg" default="0.0" />
+
+    <arg name="cmd_topic" default="/cmd/pose/ned" />
+    <arg name="line_topic" default="/obj/line_message" />
+    <arg name="finished_topic" default="/finished" />
+
+    <arg name="search_forward_force" default="120.0" />
+    <arg name="manual_forward_force" default="260.0" />
+    <arg name="manual_slow_forward_force" default="120.0" />
+    <arg name="manual_lateral_gain" default="250.0" />
+    <arg name="manual_max_lateral_force" default="180.0" />
+    <arg name="manual_force_step" default="50.0" />
+    <arg name="manual_tx_sign" default="1.0" />
+    <arg name="manual_ty_sign" default="1.0" />
+
+    <arg name="los_lookahead_distance" default="0.6" />
+    <arg name="manual_slow_yaw_error_deg" default="20.0" />
+    <arg name="manual_slow_lateral_error" default="0.25" />
+
+    <arg name="line_lost_timeout" default="5.0" />
+    <arg name="curve_blind_follow_timeout" default="2.0" />
+    <arg name="line_point_merge_distance" default="0.15" />
+    <arg name="line_curve_max_points" default="120" />
+    <arg name="line_curve_sample_count" default="80" />
+    <arg name="line_curve_degree" default="3" />
+    <arg name="line_curve_min_length" default="0.4" />
+    <arg name="line_classes" default="line" />
+
+    <node pkg="auv_control"
+          type="test_task1_v2_line_follow.py"
+          name="test_task1_v2_line_follow"
+          output="screen">
+        <param name="rate" type="double" value="$(arg rate)" />
+        <param name="initial_heading_deg" type="double" value="$(arg initial_heading_deg)" />
+        <param name="cmd_topic" type="string" value="$(arg cmd_topic)" />
+        <param name="line_topic" type="string" value="$(arg line_topic)" />
+        <param name="finished_topic" type="string" value="$(arg finished_topic)" />
+        <param name="search_forward_force" type="double" value="$(arg search_forward_force)" />
+        <param name="manual_forward_force" type="double" value="$(arg manual_forward_force)" />
+        <param name="manual_slow_forward_force" type="double" value="$(arg manual_slow_forward_force)" />
+        <param name="manual_lateral_gain" type="double" value="$(arg manual_lateral_gain)" />
+        <param name="manual_max_lateral_force" type="double" value="$(arg manual_max_lateral_force)" />
+        <param name="manual_force_step" type="double" value="$(arg manual_force_step)" />
+        <param name="manual_tx_sign" type="double" value="$(arg manual_tx_sign)" />
+        <param name="manual_ty_sign" type="double" value="$(arg manual_ty_sign)" />
+        <param name="los_lookahead_distance" type="double" value="$(arg los_lookahead_distance)" />
+        <param name="manual_slow_yaw_error_deg" type="double" value="$(arg manual_slow_yaw_error_deg)" />
+        <param name="manual_slow_lateral_error" type="double" value="$(arg manual_slow_lateral_error)" />
+        <param name="line_lost_timeout" type="double" value="$(arg line_lost_timeout)" />
+        <param name="curve_blind_follow_timeout" type="double" value="$(arg curve_blind_follow_timeout)" />
+        <param name="line_point_merge_distance" type="double" value="$(arg line_point_merge_distance)" />
+        <param name="line_curve_max_points" type="int" value="$(arg line_curve_max_points)" />
+        <param name="line_curve_sample_count" type="int" value="$(arg line_curve_sample_count)" />
+        <param name="line_curve_degree" type="int" value="$(arg line_curve_degree)" />
+        <param name="line_curve_min_length" type="double" value="$(arg line_curve_min_length)" />
+        <param name="line_classes" type="string" value="$(arg line_classes)" />
+    </node>
+</launch>
