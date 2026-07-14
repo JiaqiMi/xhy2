@@ -48,7 +48,7 @@
 
 ### 一键运行
 
-### 每次新终端加载环境
+#### 激活环境
 
 ```bash
 source /opt/ros/melodic/setup.bash
@@ -58,6 +58,36 @@ source /home/xhy/xhy_env/bin/activate
 export PYTHONPATH=/home/xhy/catkin_ws/devel_isolated/cv_bridge/lib/python3/dist-packages:$PYTHONPATH
 ```
 这部分已经放到~/.bashrc中，理论上不需要重复执行。
+
+#### 检测红色圆形
+
+```bash
+roslaunch stereo_depth test_red_circle_detection.launch
+```
+
+#### 检测红色管线
+
+```bash
+roslaunch stereo_depth test_line_detection.launch
+```
+
+#### 检测多类别形状
+
+```bash
+roslaunch stereo_depth test_shapes_detection.launch
+```
+
+#### 检测黑色箭头
+
+```bash
+roslaunch stereo_depth test_arrow_detection.launch
+```
+
+#### 检测三类矩形框
+
+```bash
+roslaunch stereo_depth test_rectangle_detection.launch
+```
 
 ## 7. Shapes 多类别任务
 
