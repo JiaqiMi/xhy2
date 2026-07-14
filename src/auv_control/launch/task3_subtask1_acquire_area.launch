@@ -1,16 +1,59 @@
 <launch>
-    <!-- Task 3 subtask 1: move to the task acquisition area.
-         Start the required vehicle drivers, TF, and controller separately. -->
+    <!-- 任务 3 子任务 1：移动到任务获取区。
+         车辆驱动、TF 和控制器需要单独启动。 -->
 
     <arg name="rate" default="5.0" />
 
-    <!-- Mock arrow result before the arrow detector is ready. -->
+    <!-- 运动指令输出：
+         cmd：最新 /cmd/pose/ned PoseNEDcmd。
+         target：旧版 /target PoseStamped。
+         both：迁移调试时同时发布两个话题。 -->
+    <arg name="motion_output" default="cmd" />
+    <arg name="legacy_target_topic" default="/target" />
+    <arg name="pose_cmd_topic" default="/cmd/pose/ned" />
+    <arg name="pose_cmd_mode" default="4" />
+    <arg name="pose_cmd_force" default="0 0 0 0 0 0" />
+
+    <!-- mock：使用配置好的固定偏移。
+         topic：只在前方搜索 class_name=arrow，然后基于视觉靠近箭头中心。 -->
+    <arg name="input_mode" default="mock" />
+    <arg name="arrow_topic" default="/obj/target_message" />
+    <arg name="arrow_class" default="arrow" />
+    <arg name="detection_frame" default="camera" />
+    <arg name="min_confidence" default="0.35" />
+
+    <!-- 仅 mock 模式使用的偏移量。 -->
     <arg name="arrow_forward" default="0.50" />
     <arg name="arrow_right" default="0.30" />
     <arg name="arrow_down" default="0.00" />
 
-    <arg name="arrive_dist" default="0.12" />
-    <arg name="arrive_yaw_deg" default="5.0" />
+    <!-- 搜索点只在起始位姿前方生成。base_link 使用 x=前方、y=右方。 -->
+    <arg name="search_step" default="0.30" />
+    <arg name="max_search_points" default="14" />
+    <arg name="scan_yaw_offsets_deg" default="0 20 -20 40 -40 60 -60" />
+    <arg name="scan_hold_seconds" default="1.5" />
+    <arg name="max_search_seconds" default="300.0" />
+    <arg name="search_arrive_dist" default="0.15" />
+    <arg name="search_arrive_yaw_deg" default="8.0" />
+
+    <!-- 箭头锁定：移动到箭头前需要多次稳定识别。 -->
+    <arg name="stable_detection_count" default="5" />
+    <arg name="stable_position_tolerance" default="0.15" />
+    <arg name="detection_timeout" default="2.0" />
+
+    <!-- detection：使用 pose.orientation 作为箭头航向。
+         current：如果感知暂未发布箭头航向，调试时保持当前航向。
+         fixed：使用 map 下的 fixed_arrow_yaw_deg。 -->
+    <arg name="arrow_yaw_mode" default="detection" />
+    <arg name="fixed_arrow_yaw_deg" default="0.0" />
+
+    <arg name="arrive_dist" default="0.25" />
+    <arg name="arrive_yaw_deg" default="8.0" />
+    <arg name="min_ground_clearance" default="0.40" />
+    <arg name="approach_distance" default="0.30" />
+    <arg name="approach_distance_tolerance" default="0.10" />
+    <arg name="approach_lateral_tolerance" default="0.10" />
+    <arg name="approach_yaw_tolerance_deg" default="10.0" />
     <arg name="hold_seconds" default="2.0" />
 
     <node pkg="auv_control"
@@ -18,11 +61,38 @@
           name="test_task3_1_acquire_area"
           output="screen">
         <param name="rate" type="double" value="$(arg rate)" />
+        <param name="motion_output" type="string" value="$(arg motion_output)" />
+        <param name="legacy_target_topic" type="string" value="$(arg legacy_target_topic)" />
+        <param name="pose_cmd_topic" type="string" value="$(arg pose_cmd_topic)" />
+        <param name="pose_cmd_mode" type="int" value="$(arg pose_cmd_mode)" />
+        <param name="pose_cmd_force" type="string" value="$(arg pose_cmd_force)" />
+        <param name="input_mode" type="string" value="$(arg input_mode)" />
+        <param name="arrow_topic" type="string" value="$(arg arrow_topic)" />
+        <param name="arrow_class" type="string" value="$(arg arrow_class)" />
+        <param name="detection_frame" type="string" value="$(arg detection_frame)" />
+        <param name="min_confidence" type="double" value="$(arg min_confidence)" />
         <param name="arrow_forward" type="double" value="$(arg arrow_forward)" />
         <param name="arrow_right" type="double" value="$(arg arrow_right)" />
         <param name="arrow_down" type="double" value="$(arg arrow_down)" />
+        <param name="search_step" type="double" value="$(arg search_step)" />
+        <param name="max_search_points" type="int" value="$(arg max_search_points)" />
+        <param name="scan_yaw_offsets_deg" type="string" value="$(arg scan_yaw_offsets_deg)" />
+        <param name="scan_hold_seconds" type="double" value="$(arg scan_hold_seconds)" />
+        <param name="max_search_seconds" type="double" value="$(arg max_search_seconds)" />
+        <param name="search_arrive_dist" type="double" value="$(arg search_arrive_dist)" />
+        <param name="search_arrive_yaw_deg" type="double" value="$(arg search_arrive_yaw_deg)" />
+        <param name="stable_detection_count" type="int" value="$(arg stable_detection_count)" />
+        <param name="stable_position_tolerance" type="double" value="$(arg stable_position_tolerance)" />
+        <param name="detection_timeout" type="double" value="$(arg detection_timeout)" />
+        <param name="arrow_yaw_mode" type="string" value="$(arg arrow_yaw_mode)" />
+        <param name="fixed_arrow_yaw_deg" type="double" value="$(arg fixed_arrow_yaw_deg)" />
         <param name="arrive_dist" type="double" value="$(arg arrive_dist)" />
         <param name="arrive_yaw_deg" type="double" value="$(arg arrive_yaw_deg)" />
+        <param name="min_ground_clearance" type="double" value="$(arg min_ground_clearance)" />
+        <param name="approach_distance" type="double" value="$(arg approach_distance)" />
+        <param name="approach_distance_tolerance" type="double" value="$(arg approach_distance_tolerance)" />
+        <param name="approach_lateral_tolerance" type="double" value="$(arg approach_lateral_tolerance)" />
+        <param name="approach_yaw_tolerance_deg" type="double" value="$(arg approach_yaw_tolerance_deg)" />
         <param name="hold_seconds" type="double" value="$(arg hold_seconds)" />
     </node>
 </launch>
