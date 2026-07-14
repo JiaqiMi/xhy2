@@ -73,6 +73,7 @@ def resolve_model_path(task_mode, detect_mode, model_path):
         1: "/home/xhy/catkin_ws/models/shapes0709.pt",
         2: "/home/xhy/catkin_ws/models/rectangle0710.pt",
         3: "/home/xhy/catkin_ws/models/line0709.pt",
+        4: "/home/xhy/catkin_ws/models/arrow0709.pt"
     }
 
     segment_models = {

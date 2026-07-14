@@ -1,0 +1,41 @@
+<launch>
+    <arg name="host" default="0.0.0.0" />
+    <arg name="port" default="8080" />
+
+    <arg name="image_topic" default="/arrow/annotated_image" />
+    <arg name="detection_topic" default="/web/detections" />
+    <arg name="pose_topic" default="/web/pose" />
+    <arg name="arrow_topic" default="/arrow/direction" />
+
+    <arg name="stream_fps" default="5.0" />
+    <arg name="jpeg_quality" default="75" />
+    <arg name="web_width" default="960" />
+
+    <arg name="detection_timeout" default="2.0" />
+    <arg name="pose_timeout" default="2.0" />
+    <arg name="arrow_timeout" default="2.0" />
+
+    <node pkg="vision_web"
+          type="web_dashboard_node_v2.py"
+          name="vision_web_dashboard"
+          output="screen"
+          respawn="true"
+          respawn_delay="2.0">
+
+        <param name="host" value="$(arg host)" />
+        <param name="port" value="$(arg port)" />
+
+        <param name="image_topic" value="$(arg image_topic)" />
+        <param name="detection_topic" value="$(arg detection_topic)" />
+        <param name="pose_topic" value="$(arg pose_topic)" />
+        <param name="arrow_topic" value="$(arg arrow_topic)" />
+
+        <param name="stream_fps" value="$(arg stream_fps)" />
+        <param name="jpeg_quality" value="$(arg jpeg_quality)" />
+        <param name="web_width" value="$(arg web_width)" />
+
+        <param name="detection_timeout" value="$(arg detection_timeout)" />
+        <param name="pose_timeout" value="$(arg pose_timeout)" />
+        <param name="arrow_timeout" value="$(arg arrow_timeout)" />
+    </node>
+</launch>

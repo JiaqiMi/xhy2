@@ -39,7 +39,7 @@
 
     <!-- ArUco检测、位姿估计、Web数据发布 -->
     <node pkg="stereo_depth"
-          type="aruco_detection260708_web.py"
+          type="aruco_node.py"
           name="aruco_pose_location"
           output="screen">
 
