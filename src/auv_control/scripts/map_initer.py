@@ -74,7 +74,7 @@ class MapIniter:
             self.initialized = True
             self.publish_origin(latitude, longitude, depth)
             rospy.loginfo(
-                "map_initer: 初始世界坐标系原点已发布: lat=%s, lon=%s, depth=%s",
+                "map_initer: 初始世界坐标系原点已发布: lat=%12.7f, lon=%12.7f, depth=%7.2f",
                 latitude, longitude, depth,
             )
 

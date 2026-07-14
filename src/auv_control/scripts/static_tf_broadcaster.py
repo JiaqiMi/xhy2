@@ -58,7 +58,7 @@ class Static_tf_broadcaster:
             self.tf_broadcaster.sendTransform(self.imu_trans, self.imu_rot, current_time, "imu", "base_link")
             self.tf_broadcaster.sendTransform(self.hand_trans, self.hand_rot, current_time, "hand", "base_link")
             self.tf_broadcaster.sendTransform(self.camera_trans, self.camera_rot, current_time, "camera", "base_link")
-            self.tf_broadcaster.sendTransform(self.camera2_trans, self.camera2_rot, current_time, "camera front", "base_link")
+            self.tf_broadcaster.sendTransform(self.camera2_trans, self.camera2_rot, current_time, "camera_front", "base_link")
             rospy.loginfo_throttle(10, f"{NODE_NAME}: AUV 静态tf广播完成")
             self.rate.sleep()
 

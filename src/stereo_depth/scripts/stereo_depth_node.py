@@ -18,7 +18,7 @@ from stereo_depth.msg import BoundingBox, LineBox
 
 
 def is_finite_point(point):
-    return (
+    return bool(
         point is not None
         and len(point) == 3
         and np.all(np.isfinite(point))
@@ -333,7 +333,7 @@ class UnifiedStereoDepthNode:
         return np.array([x, y, z], dtype=np.float64)
 
     def point_valid(self, point):
-        return (
+        return bool(
             is_finite_point(point)
             and -1.0 < point[0] < 1.0
             and -1.0 < point[1] < 1.0
@@ -418,7 +418,7 @@ class UnifiedStereoDepthNode:
         valid = all(self.point_valid(point) for point in points)
 
         if valid and self.require_line_depth_order:
-            valid = points[0][2] <= points[1][2] <= points[2][2]
+            valid = bool(points[0][2] <= points[1][2] <= points[2][2])
 
         if valid:
             poses = [self.make_pose(point, target["stamp"]) for point in points]

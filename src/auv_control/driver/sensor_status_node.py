@@ -65,7 +65,7 @@ class SensorStatusNode:
 
         # STATUS 日志节流计数器（5Hz 帧率，每 25 帧 = 0.2Hz 输出一次）
         self._status_log_cnt = 0
-        self._status_log_interval = 25
+        self._status_log_interval = 100
 
         self.connect()
         rospy.loginfo("sensor_status: 已启动（纯 STATUS 接收模式）")
