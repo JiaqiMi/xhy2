@@ -1,0 +1,43 @@
+<launch>
+    <arg name="start_driver" default="true" />
+    <arg name="camera_host" default="192.168.1.122" />
+    <arg name="camera_port" default="554" />
+    <arg name="username" default="admin" />
+    <arg name="password" default="admin" />
+    <arg name="channel" default="1" />
+    <arg name="subtype" default="0" />
+    <arg name="image_topic" default="/fisheye_camera/image_raw" />
+    <arg name="web_host" default="0.0.0.0" />
+    <arg name="web_port" default="8081" />
+    <arg name="stream_fps" default="10.0" />
+    <arg name="jpeg_quality" default="80" />
+    <arg name="web_width" default="0" />
+
+    <include file="$(find fisheye_camera_driver)/launch/driver.launch"
+             if="$(arg start_driver)">
+        <arg name="host" value="$(arg camera_host)" />
+        <arg name="port" value="$(arg camera_port)" />
+        <arg name="username" value="$(arg username)" />
+        <arg name="password" value="$(arg password)" />
+        <arg name="channel" value="$(arg channel)" />
+        <arg name="subtype" value="$(arg subtype)" />
+        <arg name="image_topic" value="$(arg image_topic)" />
+    </include>
+
+    <node pkg="fisheye_camera_driver"
+          type="web_image_test.py"
+          name="fisheye_web_image_test"
+          output="screen"
+          respawn="true"
+          respawn_delay="2.0">
+        <rosparam command="load"
+                  file="$(find fisheye_camera_driver)/config/web_test.yaml" />
+
+        <param name="host" value="$(arg web_host)" />
+        <param name="port" value="$(arg web_port)" />
+        <param name="image_topic" value="$(arg image_topic)" />
+        <param name="stream_fps" value="$(arg stream_fps)" />
+        <param name="jpeg_quality" value="$(arg jpeg_quality)" />
+        <param name="web_width" value="$(arg web_width)" />
+    </node>
+</launch>
