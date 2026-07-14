@@ -1,23 +1,35 @@
 <launch>
     <!-- 2026.7.13：执行器下行话题调整为 /cmd/actuator。 -->
-    <!-- Task 3 subtask 3: move to the selected pipe area and drop the beacon.
-         Start the required vehicle drivers, TF, and controller separately. -->
+    <!-- 任务 3 子任务 3：移动到指定颜色方框区域并投放信标球。
+         车辆驱动、TF 和控制器需要单独启动。 -->
 
     <arg name="rate" default="5.0" />
     <arg name="actuator_topic" default="/cmd/actuator" />
 
-    <!-- mock: use configured offset.
-         topic: read an external PoseStamped.
-         detection: read colored frames from /obj/target_message, then coarse move + fine align. -->
-    <arg name="target_mode" default="mock" />
+    <!-- 运动指令输出：
+         cmd：最新 /cmd/pose/ned PoseNEDcmd。
+         target：旧版 /target PoseStamped。
+         both：迁移调试时同时发布两个话题。 -->
+    <arg name="motion_output" default="cmd" />
+    <arg name="legacy_target_topic" default="/target" />
+    <arg name="pose_cmd_topic" default="/cmd/pose/ned" />
+    <arg name="pose_cmd_mode" default="4" />
+    <arg name="pose_cmd_force" default="0 0 0 0 0 0" />
+
+    <!-- mock：使用配置好的固定偏移。
+         topic：读取外部 PoseStamped。
+         detection：从 /obj/target_message 读取彩色方框，然后粗靠近并细对齐。 -->
+    <arg name="target_mode" default="detection" />
     <arg name="target_topic" default="/task3/pipeline_target" />
     <arg name="detection_topic" default="/obj/target_message" />
     <arg name="detection_frame" default="camera" />
     <arg name="min_confidence" default="0.2" />
     <arg name="target_color" default="yellow" />
     <arg name="mock_detected_colors" default="yellow green red" />
+    <arg name="debug_log_detections" default="true" />
+    <arg name="debug_log_targets" default="true" />
 
-    <!-- Mock pipe target: front 0.50 m and left 0.30 m. -->
+    <!-- mock 管道/方框目标：前方 0.50 m、左侧 0.30 m。 -->
     <arg name="drop_forward" default="0.50" />
     <arg name="drop_left" default="0.30" />
     <arg name="drop_down" default="0.00" />
@@ -25,17 +37,36 @@
     <arg name="arrive_dist" default="0.12" />
     <arg name="arrive_yaw_deg" default="5.0" />
 
-    <!-- Detection lock before coarse movement. -->
+    <!-- 彩色方框搜索沿用子任务 1 的只搜索前方逻辑。 -->
+    <arg name="search_step" default="0.30" />
+    <arg name="max_search_points" default="14" />
+    <arg name="scan_yaw_offsets_deg" default="0 20 -20 40 -40 60 -60" />
+    <arg name="scan_hold_seconds" default="1.5" />
+    <arg name="max_search_seconds" default="300.0" />
+    <arg name="search_arrive_dist" default="0.15" />
+    <arg name="search_arrive_yaw_deg" default="8.0" />
+
+    <!-- 视觉靠近前的识别锁定。 -->
     <arg name="stable_detection_count" default="5" />
     <arg name="stable_position_tolerance" default="0.15" />
     <arg name="detection_timeout" default="2.0" />
-    <arg name="max_detection_wait_seconds" default="60.0" />
 
-    <!-- Coarse move to the detected colored-frame center. -->
+    <!-- 允许打开夹爪时，方框中心在 base_link 下的期望位置。
+         如果相机/夹爪中心相对 base_link 有偏移，就调整这些参数。 -->
+    <arg name="center_target_forward" default="0.00" />
+    <arg name="center_target_right" default="0.00" />
+
+    <!-- 对识别到的彩色方框中心进行粗视觉靠近。 -->
     <arg name="coarse_arrive_dist" default="0.18" />
     <arg name="coarse_arrive_yaw_deg" default="8.0" />
+    <arg name="coarse_center_tolerance_x" default="0.18" />
+    <arg name="coarse_center_tolerance_y" default="0.18" />
+    <arg name="coarse_max_step" default="0.20" />
+    <arg name="coarse_min_step" default="0.05" />
+    <arg name="coarse_gain" default="0.8" />
+    <arg name="coarse_command_period" default="0.5" />
 
-    <!-- Fine visual alignment in base_link.  x=front, y=right. -->
+    <!-- base_link 下的精细视觉对齐，x=前方，y=右方。 -->
     <arg name="fine_tolerance_x" default="0.08" />
     <arg name="fine_tolerance_y" default="0.08" />
     <arg name="fine_max_step" default="0.10" />
@@ -64,6 +95,11 @@
           output="screen">
         <param name="rate" type="double" value="$(arg rate)" />
         <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
+        <param name="motion_output" type="string" value="$(arg motion_output)" />
+        <param name="legacy_target_topic" type="string" value="$(arg legacy_target_topic)" />
+        <param name="pose_cmd_topic" type="string" value="$(arg pose_cmd_topic)" />
+        <param name="pose_cmd_mode" type="int" value="$(arg pose_cmd_mode)" />
+        <param name="pose_cmd_force" type="string" value="$(arg pose_cmd_force)" />
         <param name="target_mode" type="string" value="$(arg target_mode)" />
         <param name="target_topic" type="string" value="$(arg target_topic)" />
         <param name="detection_topic" type="string" value="$(arg detection_topic)" />
@@ -71,6 +107,8 @@
         <param name="min_confidence" type="double" value="$(arg min_confidence)" />
         <param name="target_color" type="string" value="$(arg target_color)" />
         <param name="mock_detected_colors" type="string" value="$(arg mock_detected_colors)" />
+        <param name="debug_log_detections" type="bool" value="$(arg debug_log_detections)" />
+        <param name="debug_log_targets" type="bool" value="$(arg debug_log_targets)" />
         <param name="drop_forward" type="double" value="$(arg drop_forward)" />
         <param name="drop_left" type="double" value="$(arg drop_left)" />
         <param name="drop_down" type="double" value="$(arg drop_down)" />
@@ -79,9 +117,23 @@
         <param name="stable_detection_count" type="int" value="$(arg stable_detection_count)" />
         <param name="stable_position_tolerance" type="double" value="$(arg stable_position_tolerance)" />
         <param name="detection_timeout" type="double" value="$(arg detection_timeout)" />
-        <param name="max_detection_wait_seconds" type="double" value="$(arg max_detection_wait_seconds)" />
+        <param name="search_step" type="double" value="$(arg search_step)" />
+        <param name="max_search_points" type="int" value="$(arg max_search_points)" />
+        <param name="scan_yaw_offsets_deg" type="string" value="$(arg scan_yaw_offsets_deg)" />
+        <param name="scan_hold_seconds" type="double" value="$(arg scan_hold_seconds)" />
+        <param name="max_search_seconds" type="double" value="$(arg max_search_seconds)" />
+        <param name="search_arrive_dist" type="double" value="$(arg search_arrive_dist)" />
+        <param name="search_arrive_yaw_deg" type="double" value="$(arg search_arrive_yaw_deg)" />
         <param name="coarse_arrive_dist" type="double" value="$(arg coarse_arrive_dist)" />
         <param name="coarse_arrive_yaw_deg" type="double" value="$(arg coarse_arrive_yaw_deg)" />
+        <param name="center_target_forward" type="double" value="$(arg center_target_forward)" />
+        <param name="center_target_right" type="double" value="$(arg center_target_right)" />
+        <param name="coarse_center_tolerance_x" type="double" value="$(arg coarse_center_tolerance_x)" />
+        <param name="coarse_center_tolerance_y" type="double" value="$(arg coarse_center_tolerance_y)" />
+        <param name="coarse_max_step" type="double" value="$(arg coarse_max_step)" />
+        <param name="coarse_min_step" type="double" value="$(arg coarse_min_step)" />
+        <param name="coarse_gain" type="double" value="$(arg coarse_gain)" />
+        <param name="coarse_command_period" type="double" value="$(arg coarse_command_period)" />
         <param name="fine_tolerance_x" type="double" value="$(arg fine_tolerance_x)" />
         <param name="fine_tolerance_y" type="double" value="$(arg fine_tolerance_y)" />
         <param name="fine_max_step" type="double" value="$(arg fine_max_step)" />

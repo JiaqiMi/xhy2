@@ -1,12 +1,12 @@
 <launch>
     <!-- 2026.7.13：执行器下行话题调整为 /cmd/actuator。 -->
-    <!-- Task 3 subtask 2: read an ArUco id and show the corresponding light.
-         Uses the new /cmd/actuator interface only. -->
+    <!-- 任务 3 子任务 2：读取 ArUco 编号并点亮对应颜色灯。
+         只使用新的 /cmd/actuator 接口。 -->
 
     <arg name="rate" default="10.0" />
     <arg name="actuator_topic" default="/cmd/actuator" />
 
-    <!-- topic: read real ids from /task3/aruco_id. mock: fixed id sequence for bench tests. -->
+    <!-- topic：从 /task3/aruco_id 读取真实编号。mock：使用固定编号序列进行台架测试。 -->
     <arg name="input_mode" default="topic" />
     <arg name="mock_aruco_ids" default="[1, 3, 5, 2, 4, 6]" />
     <arg name="aruco_topic" default="/task3/aruco_id" />
