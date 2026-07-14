@@ -1,0 +1,8 @@
+# Web 服务参数
+host: "0.0.0.0"
+port: 8081
+image_topic: "/fisheye_camera/image_raw"
+stream_fps: 10.0
+jpeg_quality: 80
+web_width: 0
+image_timeout: 3.0

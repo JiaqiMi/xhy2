@@ -1,0 +1,22 @@
+# RTSP 连接参数
+host: "192.168.1.122"
+port: 554
+username: "admin"
+password: "admin"
+channel: 1
+subtype: 0
+rtsp_path: "/cam/realmonitor?channel={channel}&subtype={subtype}"
+rtsp_url: ""
+transport: "tcp"
+
+# ROS 图像参数
+image_topic: "/fisheye_camera/image_raw"
+frame_id: "fisheye_camera"
+queue_size: 1
+output_width: 0
+output_height: 0
+
+# 连接恢复与日志参数
+reconnect_delay: 2.0
+failure_threshold: 3
+log_interval: 5.0
