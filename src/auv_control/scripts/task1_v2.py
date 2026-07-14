@@ -5,23 +5,24 @@
 描述：
     1. 任务启动时记录当前位姿，按比赛约定认为 map 原点已经位于红色圆形处；
     2. 从起点向前搜索底部红色长线，首次看到管线时记录红线起点；
-    3. 根据红色长线识别结果在 XY 平面巡线，z 统一使用参考深度；
+    3. 根据红色长线识别结果在 XY 平面巡线，运行高度统一使用参考高度；
     4. 巡线过程中稳定识别黄色圆形/三角形和黑色方形，并在图形上方执行动作；
     5. 黄色图形亮红灯，黑色图形亮绿灯并根据实时航向累计旋转角度；
     6. 红色长线丢失超过设定时间后记录终点并结束任务。
 监听：/obj/target_message，/obj/line_message，/tf
-发布：/target，/auv_actuator_control，/finished
+发布：/target，/cmd/actuator，/finished
 说明：
     - 识别类别按感知方话题格式默认使用 triangle、circle、rectangle、line；
-    - /task1_v2_reference_depth 可设置参考深度，不设置时使用任务启动瞬间深度；
+    - /task1_v2_reference_height 可设置相对红色圆形原点的运行高度，默认 0.4 m；
+      map 为 NED 坐标，z/down 向下为正，因此默认运行目标 z 为 -0.4；
     - 运动控制先调整航向指向目标点，再执行 XY 位置移动；
-    - common.py 暂时不使用其 move_to_pose / blink_lights / rotate_360 等动作函数，
-      本文件只复用 MissionBase 中的基础发布、TF、当前位姿和任务完成接口。
+    - 本文件自行实现发布、TF、当前位姿、外设控制、任务完成和状态机计时，
+      不依赖 task_v2_common.py / MissionBase。
 
 修改记录：
     2026.7.13：
         1. 将任务起点改为启动时当前位姿，符合 map 已在红色圆形处建系的约定；
-        2. 增加参考深度参数，巡线和图形动作均只控制 XY，z 固定为参考深度；
+        2. 增加参考运行高度参数，巡线和图形动作均只控制 XY，z 固定为参考运行高度；
         3. 将运动控制改为先转向目标点，再向目标点移动；
         4. 图形识别改为约 10 帧聚类稳定后入队，完成动作后按位置去重；
         5. 灯光动作改为每次亮灯 3 秒；
@@ -29,6 +30,12 @@
         7. 增加红线起点、终点记录，红线结束后结束任务；
         8. 增加图形动作后的红线重捕获宽限，避免动作期间视觉中断导致提前结束；
         9. 降低黑色图形旋转默认航向步长，减少旋转时机器人中心漂移。
+    2026.7.14：
+        1. 合并 main 最新框架，执行器下行话题调整为 /cmd/actuator；
+        2. 解决 task1_v2.py 合并冲突，保留当前 Task1 状态机和稳定识别逻辑。
+        3. 修复最新 MissionBase 中不存在 publish_target 方法导致的目标发布错误。
+        4. 移除 MissionBase 依赖，将 Task1 所需公共功能全部放入本文件。
+        5. 运行高度改为相对红色圆形原点的参考高度，默认 0.4 m，便于现场修改。
 """
 
 import copy
@@ -36,11 +43,10 @@ import math
 
 import rospy
 import tf
-from auv_control.msg import TargetDetection, TargetDetection3
+from auv_control.msg import ActuatorControl, TargetDetection, TargetDetection3
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
+from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
-
-from task_v2_common import MissionBase
 
 
 NODE_NAME = 'task1_v2'
@@ -91,7 +97,7 @@ def median(values):
     return 0.5 * (ordered[middle - 1] + ordered[middle])
 
 
-class Task1V2(MissionBase):
+class Task1V2:
     """主管道检修任务状态机。"""
 
     STEP_SEARCH_LINE = 0
@@ -103,14 +109,30 @@ class Task1V2(MissionBase):
 
     def __init__(self):
         """初始化任务参数、视觉缓存以及目标检测订阅。"""
-        super().__init__(NODE_NAME)
+        self.node_name = NODE_NAME
+        self.target_pub = rospy.Publisher('/target', PoseStamped, queue_size=10)
+        self.finished_pub = rospy.Publisher('/finished', String, queue_size=10)
+        self.device_pub = rospy.Publisher('/cmd/actuator', ActuatorControl, queue_size=10)
+        self.tf_listener = tf.TransformListener()
+        self.rate = rospy.Rate(rospy.get_param('~rate_hz', 5.0))
 
-        self.reference_depth_param_set = rospy.has_param('/task1_v2_reference_depth')
-        self.reference_depth = (
-            float(rospy.get_param('/task1_v2_reference_depth'))
-            if self.reference_depth_param_set
-            else None
-        )
+        self.pitch_offset = math.radians(rospy.get_param('/pitch_offset', 0.0))
+        self.default_heading_servo = int(rospy.get_param('/task_v2_heading_servo', 0x80))
+        self.default_clamp_servo = int(rospy.get_param('/task_v2_clamp_servo', 0x00))
+        self.default_drive_cmd = int(rospy.get_param('/task_v2_drive_cmd', 0))
+        self.default_drive_speed = int(rospy.get_param('/task_v2_drive_speed', 0))
+        self.max_xy_step = rospy.get_param('~max_xy_step', 0.5)
+        self.max_yaw_step = math.radians(rospy.get_param('~max_yaw_step_deg', 5.0))
+        self.position_tolerance = rospy.get_param('~position_tolerance', 0.15)
+        self.yaw_tolerance = math.radians(rospy.get_param('~yaw_tolerance_deg', 2.0))
+
+        self.step = self.STEP_SEARCH_LINE
+        self.step_started = rospy.Time.now()
+
+        self.reference_height = float(rospy.get_param('/task1_v2_reference_height', 0.4))
+        self.reference_z = float(rospy.get_param(
+            '/task1_v2_reference_z', -self.reference_height
+        ))
 
         self.search_forward_step = rospy.get_param('/task1_v2_search_forward_step', 0.3)
         self.line_forward_fraction = rospy.get_param('/task1_v2_line_forward_fraction', 0.8)
@@ -163,6 +185,64 @@ class Task1V2(MissionBase):
         rospy.loginfo('%s: initialized', NODE_NAME)
 
     ############################################### 基础工具层 #######################################
+    def set_step(self, step):
+        """切换状态机步骤，并记录进入该步骤的时间。"""
+        self.step = step
+        self.step_started = rospy.Time.now()
+
+    def step_elapsed(self):
+        """返回当前步骤已持续时间，单位为秒。"""
+        return (rospy.Time.now() - self.step_started).to_sec()
+
+    def get_current_pose(self):
+        """从 TF 树读取 map -> base_link 当前位姿。"""
+        try:
+            self.tf_listener.waitForTransform(
+                'map', 'base_link', rospy.Time(0), rospy.Duration(1.0)
+            )
+            translation, rotation = self.tf_listener.lookupTransform(
+                'map', 'base_link', rospy.Time(0)
+            )
+        except tf.Exception as error:
+            rospy.logwarn_throttle(2, '%s: cannot read AUV pose: %s', NODE_NAME, error)
+            return None
+
+        pose = PoseStamped()
+        pose.header.frame_id = 'map'
+        pose.header.stamp = rospy.Time.now()
+        pose.pose.position = Point(*translation)
+        pose.pose.orientation = Quaternion(*rotation)
+        return pose
+
+    @staticmethod
+    def position_distance(first, second):
+        """计算两个 Point 之间的三维欧氏距离。"""
+        dx = first.x - second.x
+        dy = first.y - second.y
+        dz = first.z - second.z
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    def publish_device(self, red=0, green=0, servo=None, light1=0, light2=0):
+        """发布执行器控制消息到 /cmd/actuator。"""
+        message = ActuatorControl()
+        message.light1 = int(light1)
+        message.light2 = int(light2)
+        message.heading_servo = self.default_heading_servo
+        message.clamp_servo = self.default_clamp_servo if servo is None else int(servo)
+        message.drive_cmd = self.default_drive_cmd
+        message.drive_speed = self.default_drive_speed
+        message.red_light = int(red)
+        message.yellow_light = 0
+        message.green_light = int(green)
+        self.device_pub.publish(message)
+
+    def finish_task(self):
+        """关闭执行器并发布任务完成消息。"""
+        self.publish_device()
+        self.finished_pub.publish('{} finished'.format(NODE_NAME))
+        rospy.loginfo('%s: mission finished', NODE_NAME)
+        rospy.signal_shutdown('mission finished')
+
     def wait_for_current_pose(self, timeout=5.0):
         """等待并返回当前 map -> base_link 位姿；超时返回 None。"""
         deadline = rospy.Time.now() + rospy.Duration(timeout)
@@ -174,7 +254,7 @@ class Task1V2(MissionBase):
         return None
 
     def initialize_mission_frame(self):
-        """记录任务启动位姿和参考深度。"""
+        """记录任务启动位姿和参考运行高度。"""
         if self.initial_pose is not None:
             return True
 
@@ -185,18 +265,17 @@ class Task1V2(MissionBase):
 
         self.initial_pose = copy.deepcopy(current)
         self.initial_yaw = yaw_from_quaternion(current.pose.orientation)
-        if self.reference_depth is None:
-            self.reference_depth = current.pose.position.z
 
         rospy.loginfo(
             '%s: mission origin pose recorded at x=%.2f, y=%.2f, z=%.2f, yaw=%.1f deg; '
-            'reference_depth=%.2f',
+            'reference_height=%.2f, target_z=%.2f',
             NODE_NAME,
             current.pose.position.x,
             current.pose.position.y,
             current.pose.position.z,
             math.degrees(self.initial_yaw),
-            self.reference_depth,
+            self.reference_height,
+            self.reference_z,
         )
         return True
 
@@ -214,17 +293,17 @@ class Task1V2(MissionBase):
         return target
 
     def make_level_pose(self, x, y, yaw):
-        """生成固定参考深度的目标位姿。"""
-        return self.make_pose(x, y, self.reference_depth, yaw)
+        """生成固定参考运行高度的目标位姿。"""
+        return self.make_pose(x, y, self.reference_z, yaw)
 
     def publish_level_target(self, x, y, yaw):
-        """发布固定参考深度目标。"""
-        self.publish_target(self.make_level_pose(x, y, yaw))
+        """发布固定参考运行高度目标。"""
+        self.target_pub.publish(self.make_level_pose(x, y, yaw))
 
     def move_to_pose_level(self, target, position_tolerance=None, yaw_tolerance=None):
-        """先控制航向，再控制 XY 位置，z 固定为参考深度。"""
+        """先控制航向，再控制 XY 位置，z 固定为参考运行高度。"""
         current = self.get_current_pose()
-        if current is None or self.reference_depth is None:
+        if current is None:
             return False
 
         if position_tolerance is None:
@@ -282,7 +361,7 @@ class Task1V2(MissionBase):
         """保持当前动作位姿，避免亮灯或旋转时目标点丢失。"""
         if self.active_defect is not None:
             self.active_defect['action'].header.stamp = rospy.Time.now()
-            self.publish_target(self.active_defect['action'])
+            self.target_pub.publish(self.active_defect['action'])
             return
 
         current = self.get_current_pose()
@@ -487,9 +566,9 @@ class Task1V2(MissionBase):
         )
 
     def action_pose_from_marker(self, marker):
-        """生成图形上方动作位姿，XY 使用图形位置，z 使用参考深度。"""
+        """生成图形上方动作位姿，XY 使用图形位置，z 使用参考运行高度。"""
         current = self.get_current_pose()
-        if current is None or self.reference_depth is None:
+        if current is None:
             return None
 
         dx = marker.pose.position.x - current.pose.position.x
@@ -658,7 +737,7 @@ class Task1V2(MissionBase):
                 else:
                     self.search_line_forward()
 
-            # 步骤2：移动到图形正上方，移动过程中仍然保持参考深度。
+            # 步骤2：移动到图形正上方，移动过程中仍然保持参考运行高度。
             elif self.step == self.STEP_MOVE_TO_MARKER:
                 if self.active_defect is None:
                     self.set_step(self.STEP_FOLLOW_LINE)

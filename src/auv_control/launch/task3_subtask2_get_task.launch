@@ -1,9 +1,10 @@
 <launch>
+    <!-- 2026.7.13：执行器下行话题调整为 /cmd/actuator。 -->
     <!-- Task 3 subtask 2: read an ArUco id and show the corresponding light.
-         Uses the new /auv_actuator_control interface only. -->
+         Uses the new /cmd/actuator interface only. -->
 
     <arg name="rate" default="10.0" />
-    <arg name="actuator_topic" default="/auv_actuator_control" />
+    <arg name="actuator_topic" default="/cmd/actuator" />
 
     <!-- Use mock now. Switch to topic after the ArUco model is ready. -->
     <arg name="input_mode" default="mock" />

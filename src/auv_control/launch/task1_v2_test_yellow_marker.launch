@@ -1,0 +1,68 @@
+<launch>
+    <!--
+        Task1 黄色图形单项测试。
+        使用前请先启动真实下位机链路、TF 链路和图形识别节点。
+
+        用法示例：
+        roslaunch auv_control task1_v2_test_yellow_marker.launch initial_heading_deg:=0
+    -->
+
+    <arg name="rate" default="5.0" />
+    <arg name="initial_heading_deg" default="0.0" />
+
+    <arg name="cmd_topic" default="/cmd/pose/ned" />
+    <arg name="target_topic" default="/obj/target_message" />
+    <arg name="actuator_topic" default="/cmd/actuator" />
+    <arg name="finished_topic" default="/finished" />
+
+    <arg name="search_forward_force" default="120.0" />
+    <arg name="manual_tx_sign" default="1.0" />
+
+    <arg name="max_xy_step" default="0.4" />
+    <arg name="position_tolerance" default="0.15" />
+    <arg name="yaw_tolerance_deg" default="3.0" />
+    <arg name="max_yaw_step_deg" default="5.0" />
+    <arg name="max_camera_distance" default="5.0" />
+
+    <arg name="light_seconds" default="3.0" />
+    <arg name="gap_seconds" default="0.5" />
+
+    <arg name="yellow_classes" default="triangle,circle" />
+    <arg name="black_classes" default="rectangle" />
+
+    <arg name="light1" default="0" />
+    <arg name="light2" default="0" />
+    <arg name="heading_servo" default="128" />
+    <arg name="clamp_servo" default="0" />
+    <arg name="drive_cmd" default="0" />
+    <arg name="drive_speed" default="0" />
+
+    <node pkg="auv_control"
+          type="test_task1_v2_yellow_marker.py"
+          name="test_task1_v2_yellow_marker"
+          output="screen">
+        <param name="rate" type="double" value="$(arg rate)" />
+        <param name="initial_heading_deg" type="double" value="$(arg initial_heading_deg)" />
+        <param name="cmd_topic" type="string" value="$(arg cmd_topic)" />
+        <param name="target_topic" type="string" value="$(arg target_topic)" />
+        <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
+        <param name="finished_topic" type="string" value="$(arg finished_topic)" />
+        <param name="search_forward_force" type="double" value="$(arg search_forward_force)" />
+        <param name="manual_tx_sign" type="double" value="$(arg manual_tx_sign)" />
+        <param name="max_xy_step" type="double" value="$(arg max_xy_step)" />
+        <param name="position_tolerance" type="double" value="$(arg position_tolerance)" />
+        <param name="yaw_tolerance_deg" type="double" value="$(arg yaw_tolerance_deg)" />
+        <param name="max_yaw_step_deg" type="double" value="$(arg max_yaw_step_deg)" />
+        <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
+        <param name="light_seconds" type="double" value="$(arg light_seconds)" />
+        <param name="gap_seconds" type="double" value="$(arg gap_seconds)" />
+        <param name="yellow_classes" type="string" value="$(arg yellow_classes)" />
+        <param name="black_classes" type="string" value="$(arg black_classes)" />
+        <param name="light1" type="int" value="$(arg light1)" />
+        <param name="light2" type="int" value="$(arg light2)" />
+        <param name="heading_servo" type="int" value="$(arg heading_servo)" />
+        <param name="clamp_servo" type="int" value="$(arg clamp_servo)" />
+        <param name="drive_cmd" type="int" value="$(arg drive_cmd)" />
+        <param name="drive_speed" type="int" value="$(arg drive_speed)" />
+    </node>
+</launch>

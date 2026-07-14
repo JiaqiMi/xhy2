@@ -7,13 +7,14 @@
      不发送任何下行控制帧，不与执行器控制逻辑耦合
 作者：buyegaid
 监听：无
-发布：/sensor_status (SensorStatus.msg)
+发布：/status/power (SensorStatus.msg)
 记录：
 2026.7.11
     从 sensor_driver_v2.py 拆分出纯 STATUS 接收逻辑，独立 TCP 连接
     统一 loginfo 中文输出：定长小数格式，电源状态 0.2Hz 节流输出
 2026.7.13
     调整至 driver 目录，归入硬件驱动层
+    上行电源状态话题调整为 /status/power。
 """
 
 import json
@@ -33,7 +34,7 @@ class SensorStatusNode:
     sensor STATUS 帧接收节点：
     - 独立 TCP 连接到 sensor:5064
     - 仅接收 64 字节上行帧，解析 report_type=0x00 (STATUS)
-    - 发布两路电源的电压、电流、功率到 /sensor_status
+    - 发布两路电源的电压、电流、功率到 /status/power
     - 忽略 ACK、ACTUATOR_FB、CONFIG_FB 等非 STATUS 帧
     """
 
@@ -49,7 +50,7 @@ class SensorStatusNode:
 
         self.sock = None
         self.buffer = bytearray()
-        self.pub = rospy.Publisher('/sensor_status', SensorStatus, queue_size=10)
+        self.pub = rospy.Publisher('/status/power', SensorStatus, queue_size=10)
 
         # --- 原始报文保存 ---
         self.raw_saving_enable = rospy.get_param('~save_raw_data', False)
@@ -64,7 +65,7 @@ class SensorStatusNode:
 
         # STATUS 日志节流计数器（5Hz 帧率，每 25 帧 = 0.2Hz 输出一次）
         self._status_log_cnt = 0
-        self._status_log_interval = 25
+        self._status_log_interval = 100
 
         self.connect()
         rospy.loginfo("sensor_status: 已启动（纯 STATUS 接收模式）")

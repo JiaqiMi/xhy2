@@ -6,9 +6,13 @@ Task 3 subtask 3 test: inspect the selected pipe area and drop the beacon.
 Current mock assumption before the pipe detector is ready:
   target pipe area is 0.50 m in front of the robot and 0.30 m to the left.
 
-This file only uses the newer /auv_actuator_control topic.  The movement target
+This file only uses the newer /cmd/actuator topic.  The movement target
 is still parameterized so the future detector can be connected by switching
 target_mode to topic and publishing a geometry_msgs/PoseStamped target.
+
+记录：
+2026.7.13
+  执行器下行话题调整为 /cmd/actuator。
 """
 
 import math
@@ -38,7 +42,7 @@ class Task3InspectAndDropTest:
         self.target_pub = rospy.Publisher("/target", PoseStamped, queue_size=10)
         self.finished_pub = rospy.Publisher("/finished", String, queue_size=10)
         self.actuator_pub = rospy.Publisher(
-            rospy.get_param("~actuator_topic", "/auv_actuator_control"),
+            rospy.get_param("~actuator_topic", "/cmd/actuator"),
             ActuatorControl,
             queue_size=10,
         )
