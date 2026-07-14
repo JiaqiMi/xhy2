@@ -26,3 +26,7 @@ rosrun usb_cam usb_cam_node \
   _image_width:=1280 \
   _image_height:=480 \
   2> >(grep -v "No accelerated colorspace conversion found")
+
+## control
+
+roslaunch auv_control begin.launch

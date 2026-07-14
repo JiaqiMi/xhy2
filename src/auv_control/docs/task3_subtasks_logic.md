@@ -1,5 +1,7 @@
 # Task 3 三个测试子任务实现逻辑
 
+更新：2026.7.13，执行器下行话题调整为 `/cmd/actuator`。
+
 本文档说明 `src/auv_control/test` 目录下 Task 3 三个测试子任务脚本的当前实现逻辑。
 
 本次代码已经把真实感知模型输出接入到三个子任务里，同时保留原来的 mock 模式。这样模型、相机、TF 还没完全跑通时，可以继续用 mock 参数测试底盘运动和外设动作；等识别模型启动后，只需要切换 launch 参数，就可以读取真实识别结果。
@@ -29,7 +31,7 @@
 
 - `/target`：发布 `geometry_msgs/PoseStamped`，告诉底层控制器机器人要去哪里。
 - `/finished`：发布 `std_msgs/String`，表示当前测试子任务完成。
-- `/auv_actuator_control`：发布 `auv_control/ActuatorControl`，控制新接口下的红、黄、绿三色灯和夹爪舵机。
+- `/cmd/actuator`：发布 `auv_control/ActuatorControl`，控制新接口下的三色指示灯和夹爪舵机。
 
 ## 子任务 1：到达任务获取区
 
@@ -231,7 +233,7 @@ Task 3 规则：
 | `3` / `4` | 绿色 |
 | `5` / `6` | 红色 |
 
-对应 `/auv_actuator_control`：
+新接口 `/cmd/actuator` 使用三个独立灯字段：
 
 | 颜色 | `red_light` | `yellow_light` | `green_light` |
 | --- | --- | --- | --- |
@@ -278,7 +280,7 @@ roslaunch auv_control task3_subtask2_get_task.launch max_topic_markers:=0
 2. 默认 `topic` 模式，订阅 `/task3/aruco_id`，等待真实 ArUco 编号。
 3. 如果切到 `mock` 模式，按 `mock_aruco_ids` 里的固定序列模拟识别编号。
 4. 收到 ArUco 编号后，根据 `1/2 -> yellow`、`3/4 -> green`、`5/6 -> red` 得到目标颜色。
-5. 通过 `/auv_actuator_control` 点亮对应颜色灯。
+5. 通过 `/cmd/actuator` 点亮对应颜色灯。
 6. 每次亮灯保持 `light_seconds` 秒。
 7. 灯熄灭 `gap_seconds` 秒。
 8. 如果收到的编号不是 `1~6`，脚本会忽略这个编号，不会乱亮灯。
@@ -355,7 +357,7 @@ roslaunch auv_control task3_subtask3_inspect_and_drop.launch target_mode:=detect
 
 ### 实现流程
 
-1. 节点启动后创建 `/target`、`/finished`、`/auv_actuator_control` 发布器，并创建 TF 监听器。
+1. 节点启动后创建 `/target`、`/finished`、`/cmd/actuator` 发布器，并创建 TF 监听器。
 2. 根据 `target_mode` 决定目标来源。
 3. 如果是 `mock` 模式，使用 `drop_forward / drop_left / drop_down` 构造投放目标。
 4. 如果是 `topic` 模式，订阅 `target_topic`，等待外部发布 `PoseStamped`。

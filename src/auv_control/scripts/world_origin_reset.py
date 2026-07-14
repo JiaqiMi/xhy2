@@ -144,6 +144,7 @@ class WorldOriginResetNode:
         candidate = self.estimator.add(
             (map_point.point.x, map_point.point.y, map_point.point.z)
         )
+        rospy.loginfo("world_origin_reset: 加入有效point %s", (map_point.point.x, map_point.point.y, map_point.point.z))
         if candidate is None:
             return
 

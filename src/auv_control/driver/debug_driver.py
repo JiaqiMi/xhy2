@@ -4,7 +4,7 @@
 功能: 连接调试串口发送54字节扩展报文
 作者: buyegaid
 监听: /auv_control (AUVPose.msg)
-发布: /debug_auv_data(AUVData.msg)
+发布: /status/auv(AUVData.msg)
 记录:
 2025.7.15
     由于主控端需要一直发送因此, 这个改为持续5Hz发送, 当2s没有收到有效Control消息时, 停止发送
@@ -28,6 +28,7 @@
     统一 loginfo 中文输出：CMD/SEND 定长小数格式，保留 loginfo_throttle 节流
 2026.7.13
     调整至 driver 目录，归入硬件驱动层
+    上行 AUV 状态话题调整为 /status/auv。
 """
 
 import json
@@ -173,7 +174,7 @@ class debugdriver:
             self.open_raw_save_file()
 
         rospy.Subscriber('/auv_control', AUVPose, self.control_callback)
-        self.data_pub = rospy.Publisher('/debug_auv_data', AUVData, queue_size=10)
+        self.data_pub = rospy.Publisher('/status/auv', AUVData, queue_size=10)
         self.rate = rospy.Rate(10)
         rospy.loginfo(f"debug_driver: 已启动")
 

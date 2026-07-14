@@ -10,8 +10,12 @@ Detection mode logic:
   4. keep reading vision and fine-align the robot above the frame center;
   5. stop, open the clamp, close the clamp, and finish.
 
-This script uses /target for motion and the newer /auv_actuator_control topic
-for lights and clamp control.
+This script uses /target for motion and the newer /cmd/actuator topic for
+lights and clamp control.
+
+记录：
+2026.7.13
+  执行器下行话题调整为 /cmd/actuator。
 """
 
 import math
@@ -77,7 +81,7 @@ DEFAULT_OPEN_SECONDS = 3.0
 DEFAULT_CLOSE_SECONDS = 1.0
 
 # Actuator defaults.
-DEFAULT_ACTUATOR_TOPIC = "/auv_actuator_control"
+DEFAULT_ACTUATOR_TOPIC = "/cmd/actuator"
 DEFAULT_CLAMP_OPEN = 0x00
 DEFAULT_CLAMP_CLOSED = 0xFF
 DEFAULT_HEADING_SERVO = 0x80

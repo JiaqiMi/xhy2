@@ -4,7 +4,7 @@
 Task 3 subtask 2 test: read the ArUco marker id and show the matching light.
 
 This script does not move the robot and does not publish /target.  It only reads
-the ArUco id and drives the new /auv_actuator_control light fields.
+the ArUco id and drives the new /cmd/actuator light fields.
 
 Default mode reads real ArUco ids from /task3/aruco_id.  Mock mode is still kept
 for bench tests without the camera/perception node.
@@ -14,7 +14,11 @@ Task rule mapping:
   3,4 -> green
   5,6 -> red
 
-This script only uses the newer /auv_actuator_control topic.
+This script only uses the newer /cmd/actuator topic.
+
+记录：
+2026.7.13
+  执行器下行话题调整为 /cmd/actuator。
 """
 
 import rospy
@@ -46,7 +50,7 @@ DEFAULT_MARKER_TIMEOUT = 1.0
 DEFAULT_LIGHT_SECONDS = 3.0
 DEFAULT_GAP_SECONDS = 0.5
 
-DEFAULT_ACTUATOR_TOPIC = "/auv_actuator_control"
+DEFAULT_ACTUATOR_TOPIC = "/cmd/actuator"
 DEFAULT_LIGHT1 = 0
 DEFAULT_LIGHT2 = 0
 DEFAULT_HEADING_SERVO = 0x80

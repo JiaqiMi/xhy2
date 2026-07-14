@@ -4,6 +4,9 @@
 """
 名称：data_saver.py
 功能：将 debug/sensor/nav 三类 ROS 消息保存为同一个 JSONL 事件流文件
+记录：
+2026.7.13
+    订阅话题调整为 /status/auv 与 /status/power。
 """
 
 import json
@@ -33,8 +36,8 @@ class DataSaver:
         if self.enabled:
             self.open_file()
 
-        rospy.Subscriber('/debug_auv_data', AUVData, self.debug_callback)
-        rospy.Subscriber('/sensor_status', SensorStatus, self.sensor_callback)
+        rospy.Subscriber('/status/auv', AUVData, self.debug_callback)
+        rospy.Subscriber('/status/power', SensorStatus, self.sensor_callback)
         rospy.Subscriber('/nav', NavData, self.nav_callback)
 
         rospy.loginfo("data_saver: 已启动")
@@ -93,10 +96,10 @@ class DataSaver:
             rospy.logerr(f"data_saver: 写入失败: {e}")
 
     def debug_callback(self, msg):
-        self.write_event('debug', '/debug_auv_data', msg)
+        self.write_event('debug', '/status/auv', msg)
 
     def sensor_callback(self, msg):
-        self.write_event('sensor', '/sensor_status', msg)
+        self.write_event('sensor', '/status/power', msg)
 
     def nav_callback(self, msg):
         self.write_event('nav', '/nav', msg)

@@ -1,9 +1,10 @@
 <launch>
+    <!-- 2026.7.13：执行器下行话题调整为 /cmd/actuator。 -->
     <!-- Task 3 subtask 3: move to the selected pipe area and drop the beacon.
          Start the required vehicle drivers, TF, and controller separately. -->
 
     <arg name="rate" default="5.0" />
-    <arg name="actuator_topic" default="/auv_actuator_control" />
+    <arg name="actuator_topic" default="/cmd/actuator" />
 
     <!-- mock: use configured offset.
          topic: read an external PoseStamped.

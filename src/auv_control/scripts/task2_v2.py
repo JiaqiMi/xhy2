@@ -4,7 +4,7 @@
 功能：2026 Task 2——取水器采水与返航
 作者：buyegaid
 订阅：/tf
-发布：/target，/auv_actuator_control，/finished
+发布：/target，/cmd/actuator，/finished
 记录：
     2026-07-13：
         1. 新增取水器定点采水、深度保持返航和原点保持 10 秒流程；
@@ -12,6 +12,7 @@
            /task_v2_return_yaw_deg 参数；
         3. 推杆前进速度由固定值 250 改为参数化配置，默认值为 250。
         4. 统一日志格式，日志正文以节点名称 task2_v2 开头。
+        5. 执行器下行话题调整为 /cmd/actuator。
 """
 
 import math
@@ -36,7 +37,7 @@ class Task2V2(MissionBase):
         """读取采水时长、推杆速度和返航航向参数。"""
         super().__init__(NODE_NAME)
         self.sample_duration = float(
-            rospy.get_param('/task_v2_sample_duration', 3.0)
+            rospy.get_param('/task_v2_sample_duration', 10.0)
         )
         self.pushrod_speed = int(
             rospy.get_param('/task_v2_pushrod_speed', 250)
