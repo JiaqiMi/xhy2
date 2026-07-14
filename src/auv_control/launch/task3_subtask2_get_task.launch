@@ -5,11 +5,13 @@
     <arg name="rate" default="10.0" />
     <arg name="actuator_topic" default="/auv_actuator_control" />
 
-    <!-- Use mock now. Switch to topic after the ArUco model is ready. -->
-    <arg name="input_mode" default="mock" />
+    <!-- topic: read real ids from /task3/aruco_id. mock: fixed id sequence for bench tests. -->
+    <arg name="input_mode" default="topic" />
     <arg name="mock_aruco_ids" default="[1, 3, 5, 2, 4, 6]" />
     <arg name="aruco_topic" default="/task3/aruco_id" />
     <arg name="max_topic_markers" default="1" />
+    <arg name="stable_marker_count" default="1" />
+    <arg name="marker_timeout" default="1.0" />
 
     <arg name="light_seconds" default="3.0" />
     <arg name="gap_seconds" default="0.5" />
@@ -31,6 +33,8 @@
         <param name="mock_aruco_ids" type="yaml" value="$(arg mock_aruco_ids)" />
         <param name="aruco_topic" type="string" value="$(arg aruco_topic)" />
         <param name="max_topic_markers" type="int" value="$(arg max_topic_markers)" />
+        <param name="stable_marker_count" type="int" value="$(arg stable_marker_count)" />
+        <param name="marker_timeout" type="double" value="$(arg marker_timeout)" />
         <param name="light_seconds" type="double" value="$(arg light_seconds)" />
         <param name="gap_seconds" type="double" value="$(arg gap_seconds)" />
         <param name="light1" type="int" value="$(arg light1)" />

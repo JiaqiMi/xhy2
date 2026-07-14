@@ -5,9 +5,14 @@
     <arg name="rate" default="5.0" />
     <arg name="actuator_topic" default="/auv_actuator_control" />
 
-    <!-- Use mock now. Switch to topic after the pipe detector is ready. -->
+    <!-- mock: use configured offset.
+         topic: read an external PoseStamped.
+         detection: read colored frames from /obj/target_message, then coarse move + fine align. -->
     <arg name="target_mode" default="mock" />
     <arg name="target_topic" default="/task3/pipeline_target" />
+    <arg name="detection_topic" default="/obj/target_message" />
+    <arg name="detection_frame" default="camera" />
+    <arg name="min_confidence" default="0.2" />
     <arg name="target_color" default="yellow" />
     <arg name="mock_detected_colors" default="yellow green red" />
 
@@ -18,6 +23,27 @@
 
     <arg name="arrive_dist" default="0.12" />
     <arg name="arrive_yaw_deg" default="5.0" />
+
+    <!-- Detection lock before coarse movement. -->
+    <arg name="stable_detection_count" default="5" />
+    <arg name="stable_position_tolerance" default="0.15" />
+    <arg name="detection_timeout" default="2.0" />
+    <arg name="max_detection_wait_seconds" default="60.0" />
+
+    <!-- Coarse move to the detected colored-frame center. -->
+    <arg name="coarse_arrive_dist" default="0.18" />
+    <arg name="coarse_arrive_yaw_deg" default="8.0" />
+
+    <!-- Fine visual alignment in base_link.  x=front, y=right. -->
+    <arg name="fine_tolerance_x" default="0.08" />
+    <arg name="fine_tolerance_y" default="0.08" />
+    <arg name="fine_max_step" default="0.10" />
+    <arg name="fine_min_step" default="0.03" />
+    <arg name="fine_gain" default="0.8" />
+    <arg name="fine_command_period" default="0.4" />
+    <arg name="fine_hold_seconds" default="1.0" />
+    <arg name="frame_lost_timeout" default="2.0" />
+
     <arg name="hold_seconds" default="1.0" />
     <arg name="open_seconds" default="3.0" />
     <arg name="close_seconds" default="1.0" />
@@ -39,6 +65,9 @@
         <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
         <param name="target_mode" type="string" value="$(arg target_mode)" />
         <param name="target_topic" type="string" value="$(arg target_topic)" />
+        <param name="detection_topic" type="string" value="$(arg detection_topic)" />
+        <param name="detection_frame" type="string" value="$(arg detection_frame)" />
+        <param name="min_confidence" type="double" value="$(arg min_confidence)" />
         <param name="target_color" type="string" value="$(arg target_color)" />
         <param name="mock_detected_colors" type="string" value="$(arg mock_detected_colors)" />
         <param name="drop_forward" type="double" value="$(arg drop_forward)" />
@@ -46,6 +75,20 @@
         <param name="drop_down" type="double" value="$(arg drop_down)" />
         <param name="arrive_dist" type="double" value="$(arg arrive_dist)" />
         <param name="arrive_yaw_deg" type="double" value="$(arg arrive_yaw_deg)" />
+        <param name="stable_detection_count" type="int" value="$(arg stable_detection_count)" />
+        <param name="stable_position_tolerance" type="double" value="$(arg stable_position_tolerance)" />
+        <param name="detection_timeout" type="double" value="$(arg detection_timeout)" />
+        <param name="max_detection_wait_seconds" type="double" value="$(arg max_detection_wait_seconds)" />
+        <param name="coarse_arrive_dist" type="double" value="$(arg coarse_arrive_dist)" />
+        <param name="coarse_arrive_yaw_deg" type="double" value="$(arg coarse_arrive_yaw_deg)" />
+        <param name="fine_tolerance_x" type="double" value="$(arg fine_tolerance_x)" />
+        <param name="fine_tolerance_y" type="double" value="$(arg fine_tolerance_y)" />
+        <param name="fine_max_step" type="double" value="$(arg fine_max_step)" />
+        <param name="fine_min_step" type="double" value="$(arg fine_min_step)" />
+        <param name="fine_gain" type="double" value="$(arg fine_gain)" />
+        <param name="fine_command_period" type="double" value="$(arg fine_command_period)" />
+        <param name="fine_hold_seconds" type="double" value="$(arg fine_hold_seconds)" />
+        <param name="frame_lost_timeout" type="double" value="$(arg frame_lost_timeout)" />
         <param name="hold_seconds" type="double" value="$(arg hold_seconds)" />
         <param name="open_seconds" type="double" value="$(arg open_seconds)" />
         <param name="close_seconds" type="double" value="$(arg close_seconds)" />

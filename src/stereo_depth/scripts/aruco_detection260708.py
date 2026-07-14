@@ -5,6 +5,7 @@ import numpy as np
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import PoseStamped, Quaternion
+from std_msgs.msg import Int32
 from scipy.spatial.transform import Rotation as R
 # import tf
 
@@ -37,6 +38,8 @@ class ArucoPosePublisher:
 
         # 发布姿态信息
         self.pose_pub = rospy.Publisher("/aruco/pose", PoseStamped, queue_size=10)
+        self.id_topic = rospy.get_param("~id_topic", "/task3/aruco_id")
+        self.id_pub = rospy.Publisher(self.id_topic, Int32, queue_size=10)
 
         rospy.loginfo("Aruco Pose Publisher Initialized.")
         
@@ -63,6 +66,7 @@ class ArucoPosePublisher:
 
         if ids is not None:
             for i, corner in enumerate(corners):
+                marker_id = int(ids[i][0])
                 retval, rvec, tvec = cv2.solvePnP(
                     objectPoints=np.array([
                         [-0.5, 0.5, 0],
@@ -85,7 +89,6 @@ class ArucoPosePublisher:
                 pose_msg = PoseStamped()
                 pose_msg.header.stamp = img_msg.header.stamp
                 pose_msg.header.frame_id = "camera"
-                pose_msg.header.class_id = ids[i][0]
                 pose_msg.pose.position.x = tvec[0][0]
                 pose_msg.pose.position.y = tvec[1][0]
                 pose_msg.pose.position.z = tvec[2][0]
@@ -98,11 +101,12 @@ class ArucoPosePublisher:
                 )
 
                 self.pose_pub.publish(pose_msg)
+                self.id_pub.publish(Int32(data=marker_id))
 
                 # rospy.loginfo(f"Published pose for ArUco ID={ids[i][0]}: tvec={tvec.ravel()}, quat={quat}")
                 rospy.loginfo(
                     "Published pose for ArUco ID=%s: tvec=%s, quat=%s",
-                    ids[i][0],
+                    marker_id,
                     tvec.ravel(),
                     quat_xyzw
                 )

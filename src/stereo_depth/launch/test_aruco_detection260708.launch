@@ -1,4 +1,6 @@
 <launch>
+    <arg name="id_topic" default="/task3/aruco_id" />
+
     <!-- 启动 USB 相机 -->
     <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
 
@@ -6,7 +8,9 @@
     <node pkg="stereo_splitter" type="split_stereo_image.py" name="split_stereo_image" output="screen" />
 
     <!-- aruco标签识别 -->
-    <node pkg="stereo_depth" type="aruco_detection260708.py" name="aruco_pose_location" output="screen" />
+    <node pkg="stereo_depth" type="aruco_detection260708.py" name="aruco_pose_location" output="screen">
+        <param name="id_topic" type="string" value="$(arg id_topic)" />
+    </node>
 
 </launch>
 
