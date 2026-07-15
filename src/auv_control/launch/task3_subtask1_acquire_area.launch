@@ -30,7 +30,7 @@
     <!-- 搜索点只在起始位姿前方生成。base_link 使用 x=前方、y=右方。 -->
     <arg name="search_step" default="0.30" />
     <arg name="max_search_points" default="14" />
-    <arg name="scan_yaw_offsets_deg" default="0 20 -20 40 -40 60 -60" />
+    <arg name="scan_yaw_offsets_deg" default="0 5 -5 6 -6 7 -7" />
     <arg name="scan_hold_seconds" default="1.5" />
     <arg name="max_search_seconds" default="300.0" />
     <arg name="search_arrive_dist" default="0.15" />

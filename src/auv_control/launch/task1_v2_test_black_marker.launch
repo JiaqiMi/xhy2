@@ -8,7 +8,7 @@
     -->
 
     <arg name="rate" default="5.0" />
-    <arg name="initial_heading_deg" default="0.0" />
+    <arg name="initial_heading_deg" default="30.0" />
 
     <arg name="cmd_topic" default="/cmd/pose/ned" />
     <arg name="target_topic" default="/obj/target_message" />
@@ -39,6 +39,9 @@
     <arg name="clamp_servo" default="0" />
     <arg name="drive_cmd" default="0" />
     <arg name="drive_speed" default="0" />
+
+<!-- <include file="$(find stereo_depth)/launch/test_line_detection.launch"/> -->
+
 
     <node pkg="auv_control"
           type="test_task1_v2_black_marker.py"

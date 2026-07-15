@@ -9,14 +9,14 @@
     -->
 
     <arg name="rate" default="5.0" />
-    <arg name="initial_heading_deg" default="0.0" />
+    <arg name="initial_heading_deg" default="45.0" />
 
     <arg name="cmd_topic" default="/cmd/pose/ned" />
     <arg name="line_topic" default="/obj/line_message" />
     <arg name="finished_topic" default="/finished" />
 
-    <arg name="search_forward_force" default="120.0" />
-    <arg name="manual_forward_force" default="260.0" />
+    <arg name="search_forward_force" default="1000.0" />
+    <arg name="manual_forward_force" default="1000.0" />
     <arg name="manual_slow_forward_force" default="120.0" />
     <arg name="manual_lateral_gain" default="250.0" />
     <arg name="manual_max_lateral_force" default="180.0" />
@@ -36,6 +36,10 @@
     <arg name="line_curve_degree" default="3" />
     <arg name="line_curve_min_length" default="0.4" />
     <arg name="line_classes" default="line" />
+
+<!-- 
+    <include file="$(find stereo_depth)/launch/test_line_detection.launch"/> -->
+
 
     <node pkg="auv_control"
           type="test_task1_v2_line_follow.py"
