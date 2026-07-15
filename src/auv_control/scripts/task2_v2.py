@@ -4,7 +4,7 @@
 功能：2026 Task 2——取水器采水与返航
 作者：buyegaid
 订阅：/tf
-发布：/target，/cmd/actuator，/finished
+发布：/cmd/pose/ned，/cmd/actuator，/finished
 记录：
     2026-07-13：
         1. 新增取水器定点采水、深度保持返航和原点保持 10 秒流程；
@@ -13,6 +13,9 @@
         3. 推杆前进速度由固定值 250 改为参数化配置，默认值为 250。
         4. 统一日志格式，日志正文以节点名称 task2_v2 开头。
         5. 执行器下行话题调整为 /cmd/actuator。
+    2026-07-15：
+        1. 运动控制统一使用 /cmd/pose/ned。
+        2. 推杆命令明确使用执行器模式 mode=2。
 """
 
 import math
@@ -72,6 +75,7 @@ class Task2V2(MissionBase):
     def publish_pushrod(self, command, speed):
         """发布取水推杆控制，并保持其他执行器处于默认状态。"""
         message = ActuatorControl()
+        message.mode = 2
         message.light1 = 0
         message.light2 = 0
         message.heading_servo = self.default_heading_servo

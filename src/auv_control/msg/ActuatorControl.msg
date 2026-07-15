@@ -1,6 +1,8 @@
 # 执行器控制消息 - sensor debug协议下行控制
 # 对应下位机 CAMERA_LIGHT_SET (cmd=0x10) 和 ACTUATOR_SET (cmd=0x30)
 
+uint8 mode                # 控制模式：0=不响应，1=仅补光灯，2=仅执行器
+
 # --- 补光灯 (CAMERA_LIGHT_SET, cmd=0x10 op=0x00) ---
 uint8 light1              # 补光灯1亮度 0-100
 uint8 light2              # 补光灯2亮度 0-100
