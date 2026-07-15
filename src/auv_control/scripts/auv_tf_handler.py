@@ -5,11 +5,9 @@
 功能：完成机器人坐标到世界坐标的转换
 作者：buyegaid
 监听：/status/auv (AUVData.msg)
-      /target (PoseStamped.msg)
       /cmd/pose/ned (PoseNEDcmd.msg)
       /world_origin (NavSatFix.msg)
-发布：/auv_control (AUVPose.msg)
-      /cmd/pose/lla (PoseLLAcmd.msg)
+发布：/cmd/pose/lla (PoseLLAcmd.msg)
       /tf (from base_link to map)
 记录：
 2025.7.19 10:56
@@ -20,6 +18,8 @@
     新增 /world_origin 更新订阅，收到红色圆形对应的新原点后原子更新坐标换算器。
     新增 PoseNEDcmd（NED）→ PoseLLAcmd（LLA）控制指令转换。
     AUV 状态订阅话题调整为 /status/auv。
+2026.7.15
+    删除旧版 /target 到 /auv_control 的兼容链路，仅保留整包控制指令转换。
 """
 
 import threading
@@ -27,8 +27,7 @@ import threading
 import numpy as np
 import rospy
 import tf
-from auv_control.msg import AUVData, AUVPose, PoseLLAcmd, PoseNEDcmd
-from geometry_msgs.msg import PoseStamped
+from auv_control.msg import AUVData, PoseLLAcmd, PoseNEDcmd
 from sensor_msgs.msg import NavSatFix
 from tf import transformations
 
@@ -50,13 +49,11 @@ class AUVTfHandler:
         self.tf_broadcaster = tf.TransformBroadcaster()
         self.current_pose = None
         self.current_yaw = 0.0
-        self.control_pub = rospy.Publisher('/auv_control', AUVPose, queue_size=10)
         self.control_cmd_pub = rospy.Publisher(
             '/cmd/pose/lla', PoseLLAcmd, queue_size=10
         )
 
         rospy.Subscriber('/status/auv', AUVData, self.debug_callback)
-        rospy.Subscriber('/target', PoseStamped, self.target_callback)
         rospy.Subscriber('/cmd/pose/ned', PoseNEDcmd, self.target_cmd_callback)
         # map_initer 是 /world_origin 的唯一发布者；锁存初始值会被安全忽略。
         rospy.Subscriber('/world_origin', NavSatFix, self.origin_callback, queue_size=1)
@@ -99,29 +96,6 @@ class AUVTfHandler:
         )
         self.publish_tf()
         rospy.loginfo_throttle(10, "auv_tf_handler: TF 已发布")
-
-    def target_callback(self, msg):
-        """将 map 坐标目标转换为经纬深控制指令。"""
-        wfm = self.get_world_frame_manager()
-        latitude, longitude, depth = wfm.ned_to_lld(
-            msg.pose.position.x,
-            msg.pose.position.y,
-            msg.pose.position.z,
-        )
-        quaternion = msg.pose.orientation
-        roll, pitch, yaw = tf.transformations.euler_from_quaternion([
-            quaternion.x, quaternion.y, quaternion.z, quaternion.w,
-        ])
-
-        control_msg = AUVPose()
-        control_msg.latitude = latitude
-        control_msg.longitude = longitude
-        control_msg.depth = depth
-        control_msg.roll = np.degrees(roll)
-        control_msg.pitch = np.degrees(pitch)
-        control_msg.yaw = np.degrees(yaw)
-        self.control_pub.publish(control_msg)
-        rospy.loginfo_throttle(5, "auv_tf_handler: 已发布 /auv_control")
 
     def target_cmd_callback(self, msg):
         """将 NED 整包控制指令转换为 LLA 整包控制指令。"""

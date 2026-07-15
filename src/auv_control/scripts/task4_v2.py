@@ -7,7 +7,7 @@
     2. 保持起始区域水平位置，上浮到设定水面深度；
     3. 发布任务完成消息，提示队员向裁判说“Stop”。
 监听：/tf
-发布：/target，/sensor，/finished
+发布：/cmd/pose/ned，/cmd/actuator，/finished
 说明：程序只能完成返航和上浮，规则要求的口头“Stop”仍需参赛队员执行。
 """
 

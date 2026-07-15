@@ -329,30 +329,37 @@ class Task1V2:
 
     def publish_device(self, red=0, green=0, servo=None, light1=0, light2=0):
         """发布执行器控制消息到 /cmd/actuator。"""
-        message = ActuatorControl()
-        message.light1 = int(light1)
-        message.light2 = int(light2)
-        message.heading_servo = self.default_heading_servo
-        message.clamp_servo = self.default_clamp_servo if servo is None else int(servo)
-        message.drive_cmd = self.default_drive_cmd
-        message.drive_speed = self.default_drive_speed
-        message.red_light = int(red)
-        message.yellow_light = 0
-        message.green_light = int(green)
-        self.device_pub.publish(message)
+        light_message = ActuatorControl()
+        light_message.mode = 1
+        light_message.light1 = int(light1)
+        light_message.light2 = int(light2)
+        self.device_pub.publish(light_message)
+
+        actuator_message = ActuatorControl()
+        actuator_message.mode = 2
+        actuator_message.heading_servo = self.default_heading_servo
+        actuator_message.clamp_servo = (
+            self.default_clamp_servo if servo is None else int(servo)
+        )
+        actuator_message.drive_cmd = self.default_drive_cmd
+        actuator_message.drive_speed = self.default_drive_speed
+        actuator_message.red_light = int(red)
+        actuator_message.yellow_light = 0
+        actuator_message.green_light = int(green)
+        self.device_pub.publish(actuator_message)
         rospy.loginfo_throttle(
             1.0,
             '%s: actuator cmd red=%d green=%d light1=%d light2=%d '
             'heading_servo=%d clamp_servo=%d drive=(cmd=%d, speed=%d)',
             NODE_NAME,
-            message.red_light,
-            message.green_light,
-            message.light1,
-            message.light2,
-            message.heading_servo,
-            message.clamp_servo,
-            message.drive_cmd,
-            message.drive_speed,
+            actuator_message.red_light,
+            actuator_message.green_light,
+            light_message.light1,
+            light_message.light2,
+            actuator_message.heading_servo,
+            actuator_message.clamp_servo,
+            actuator_message.drive_cmd,
+            actuator_message.drive_speed,
         )
 
     @staticmethod
