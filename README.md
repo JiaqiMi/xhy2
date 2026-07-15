@@ -404,69 +404,33 @@ Web 会显示：
 ### 10.1 当前启动命令
 
 ```bash
-roslaunch stereo_depth test_aruco_detection.launch
+roslaunch stereo_depth test_aruco_detection_fisheye.launch
 ```
 
-但在修复第 1.1 节所述的脚本问题之前，不建议直接运行。
-
-### 10.2 期望的核心话题
-
-```text
-/aruco/pose                geometry_msgs/PoseStamped
-/aruco/annotated_image     sensor_msgs/Image
-/web/detections            std_msgs/String(JSON)
-/web/pose                  std_msgs/String(JSON)
+发布话题： obj/target_message, 内容如下：
+```base
+pose: 
+  header: 
+    seq: 0
+    stamp: 
+      secs: 1784127191
+      nsecs: 163179636
+    frame_id: "fisheye_camera"
+  pose: 
+    position: 
+      x: 0.0
+      y: 0.0
+      z: 0.0
+    orientation: 
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+conf: 0.0
+type: "aruco_not_detected"
+class_name: "-1"
 ```
 
-### 10.3 `/aruco/pose` 格式
-
-```yaml
-header:
-  stamp: ...
-  frame_id: "camera"
-pose:
-  position:
-    x: 0.02
-    y: -0.01
-    z: 0.83
-  orientation:
-    x: ...
-    y: ...
-    z: ...
-    w: ...
-```
-
-该位置来自 ArUco `solvePnP`，不是双目 StereoSGBM 深度。
-
-距离比例直接取决于：
-
-```text
-marker_length
-```
-
-必须填写 ArUco 黑色有效方框的真实边长，单位为米。
-
-### 10.4 启动参数示例
-
-空气环境、20 cm、4×4 字典：
-
-```bash
-roslaunch stereo_depth test_aruco_detection.launch \
-  exp_env:=air \
-  marker_length:=0.2 \
-  dictionary:=DICT_4X4_1000
-```
-
-水下环境、10.5 cm、6×6 字典：
-
-```bash
-roslaunch stereo_depth test_aruco_detection.launch \
-  exp_env:=water \
-  marker_length:=0.105 \
-  dictionary:=DICT_6X6_250
-```
-
-这些参数只有在 `aruco_node.py` 真正读取 ROS 参数时才有效。
 
 ## 11. Web 使用说明
 
