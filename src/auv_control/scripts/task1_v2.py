@@ -58,6 +58,9 @@
         10. 增加黑色旋转方向、MZ 步长、减速区、慢速 MZ 和姿态反馈过滤参数。
         11. 黑色方形改为同一 rectangle 连续 3 帧且每帧置信度不低于 0.30 后入队。
         12. 轨迹网页和节流日志增加黄色、黑色图形已完成操作次数。
+        13. P1/P2/P3 仅解释为当前局部管线上的近中远三点，不再视为整条管线端点。
+        14. 增加局部三点几何验证、连续帧确认及距离/方向/进度关联，隔离误识别管线。
+        15. 全局原始点按已确认管线前进顺序维护，不再使用首帧固定轴投影排序。
     2026.7.15：
         1. 执行器控制按 mode 拆分为两条消息：补光灯使用 mode=1；
            舵机、推杆和三色指示灯使用 mode=2。
@@ -310,6 +313,42 @@ class Task1V2:
         self.line_point_merge_distance = rospy.get_param(
             '/task1_v2_line_point_merge_distance', 0.15
         )
+        self.line_min_point_spacing = rospy.get_param(
+            '/task1_v2_line_min_point_spacing', 0.03
+        )
+        self.line_max_point_spacing = rospy.get_param(
+            '/task1_v2_line_max_point_spacing', 3.0
+        )
+        self.line_middle_offset_tolerance = rospy.get_param(
+            '/task1_v2_line_middle_offset_tolerance', 0.25
+        )
+        self.line_point_order_tolerance = rospy.get_param(
+            '/task1_v2_line_point_order_tolerance', 0.15
+        )
+        self.line_local_max_bend = math.radians(rospy.get_param(
+            '/task1_v2_line_local_max_bend_deg', 45.0
+        ))
+        self.line_candidate_confirm_frames = int(rospy.get_param(
+            '/task1_v2_line_candidate_confirm_frames', 3
+        ))
+        self.line_candidate_center_distance = rospy.get_param(
+            '/task1_v2_line_candidate_center_distance', 0.50
+        )
+        self.line_candidate_yaw_tolerance = math.radians(rospy.get_param(
+            '/task1_v2_line_candidate_yaw_tolerance_deg', 20.0
+        ))
+        self.line_association_distance = rospy.get_param(
+            '/task1_v2_line_association_distance', 0.50
+        )
+        self.line_association_angle = math.radians(rospy.get_param(
+            '/task1_v2_line_association_angle_deg', 35.0
+        ))
+        self.line_association_backtrack = rospy.get_param(
+            '/task1_v2_line_association_backtrack', 0.60
+        )
+        self.line_extension_max_gap = rospy.get_param(
+            '/task1_v2_line_extension_max_gap', 1.0
+        )
         self.line_curve_max_points = int(rospy.get_param(
             '/task1_v2_line_curve_max_points', 120
         ))
@@ -498,6 +537,7 @@ class Task1V2:
         self.last_line_time = None
         self.line_axis_origin = None
         self.line_axis_yaw = None
+        self.line_candidate = None
         self.line_raw_points = []
         self.line_curve_points = []
         self.line_curve_s = []
@@ -1089,43 +1129,101 @@ class Task1V2:
             rospy.logwarn_throttle(2, '%s: transform failed: %s', NODE_NAME, error)
             return None
 
-    def line_axis_s(self, point):
-        """计算点在初始红线主方向上的投影进度，用于稳定排序。"""
-        if self.line_axis_origin is None or self.line_axis_yaw is None:
-            return 0.0
-        dx = point.x - self.line_axis_origin.x
-        dy = point.y - self.line_axis_origin.y
-        return dx * math.cos(self.line_axis_yaw) + dy * math.sin(self.line_axis_yaw)
-
     def downsample_line_points(self):
-        """限制原始红线点数量，避免长时间运行后点集过大。"""
+        """按已确认的管线顺序均匀降采样，不改变前后拓扑关系。"""
         if len(self.line_raw_points) <= self.line_curve_max_points:
             return
-        ordered = sorted(self.line_raw_points, key=self.line_axis_s)
         keep_count = max(2, self.line_curve_max_points)
         indexes = [
-            int(round(index * (len(ordered) - 1) / float(keep_count - 1)))
+            int(round(index * (len(self.line_raw_points) - 1) / float(keep_count - 1)))
             for index in range(keep_count)
         ]
-        self.line_raw_points = [copy.deepcopy(ordered[index]) for index in indexes]
+        self.line_raw_points = [
+            copy.deepcopy(self.line_raw_points[index]) for index in indexes
+        ]
         rospy.loginfo(
             '%s: line raw points downsampled to %d points',
             NODE_NAME,
             len(self.line_raw_points),
         )
 
-    def add_line_map_point(self, point):
-        """将红线点加入全局点集；近距离点做平滑融合。"""
+    def smooth_existing_line_point(self, point):
+        """将局部观测与已有路径的最近点平滑融合。"""
+        if not self.line_raw_points:
+            return False
         new_point = Point(point.x, point.y, self.reference_z)
-        for old_point in self.line_raw_points:
-            if xy_distance(old_point, new_point) <= self.line_point_merge_distance:
-                old_point.x = 0.8 * old_point.x + 0.2 * new_point.x
-                old_point.y = 0.8 * old_point.y + 0.2 * new_point.y
-                old_point.z = self.reference_z
-                self.line_raw_points.sort(key=self.line_axis_s)
-                return
-        self.line_raw_points.append(new_point)
-        self.line_raw_points.sort(key=self.line_axis_s)
+        nearest = min(
+            self.line_raw_points,
+            key=lambda old_point: xy_distance(old_point, new_point),
+        )
+        if xy_distance(nearest, new_point) > self.line_point_merge_distance:
+            return False
+        nearest.x = 0.8 * nearest.x + 0.2 * new_point.x
+        nearest.y = 0.8 * nearest.y + 0.2 * new_point.y
+        nearest.z = self.reference_z
+        return True
+
+    def fuse_ordered_line_segment(self, poses):
+        """
+        将当前局部近→中→远三点融入全局有序路径。
+
+        三点可以是管线上的任意采样点：已观测部分只做平滑，只有与当前
+        路径尾部连通的前向部分才会追加，避免把整帧当成新端点。
+        """
+        points = [
+            Point(pose.pose.position.x, pose.pose.position.y, self.reference_z)
+            for pose in poses
+        ]
+        if not self.line_raw_points:
+            self.line_raw_points = [copy.deepcopy(point) for point in points]
+            self.downsample_line_points()
+            return
+
+        old_tail = copy.deepcopy(self.line_raw_points[-1])
+        tail_distances = [xy_distance(old_tail, point) for point in points]
+        connection_index = min(range(len(points)), key=lambda index: tail_distances[index])
+        connection_distance = tail_distances[connection_index]
+
+        for point in points:
+            self.smooth_existing_line_point(point)
+
+        if connection_distance > self.line_association_distance:
+            rospy.loginfo_throttle(
+                2.0,
+                '%s: associated line segment overlaps known curve but does not extend tail, '
+                'tail_gap=%.2fm',
+                NODE_NAME,
+                connection_distance,
+            )
+            return
+
+        for point in points[connection_index:]:
+            if len(self.line_raw_points) >= 2:
+                previous = self.line_raw_points[-2]
+                tail = self.line_raw_points[-1]
+                tail_yaw = math.atan2(tail.y - previous.y, tail.x - previous.x)
+                forward_projection = (
+                    (point.x - tail.x) * math.cos(tail_yaw)
+                    + (point.y - tail.y) * math.sin(tail_yaw)
+                )
+                if forward_projection < -self.line_point_merge_distance:
+                    continue
+            gap = xy_distance(self.line_raw_points[-1], point)
+            if gap <= self.line_point_merge_distance:
+                tail = self.line_raw_points[-1]
+                tail.x = 0.8 * tail.x + 0.2 * point.x
+                tail.y = 0.8 * tail.y + 0.2 * point.y
+                continue
+            if gap > self.line_extension_max_gap:
+                rospy.logwarn_throttle(
+                    2.0,
+                    '%s: stop line extension at discontinuous gap %.2fm > %.2fm',
+                    NODE_NAME,
+                    gap,
+                    self.line_extension_max_gap,
+                )
+                break
+            self.line_raw_points.append(copy.deepcopy(point))
         self.downsample_line_points()
 
     @staticmethod
@@ -1141,9 +1239,8 @@ class Task1V2:
         if len(self.line_raw_points) < 2:
             return
 
-        ordered = sorted(self.line_raw_points, key=self.line_axis_s)
-        filtered = [ordered[0]]
-        for point in ordered[1:]:
+        filtered = [self.line_raw_points[0]]
+        for point in self.line_raw_points[1:]:
             if xy_distance(point, filtered[-1]) > 1e-3:
                 filtered.append(point)
 
@@ -1177,7 +1274,7 @@ class Task1V2:
             self.line_curve_s = raw_s
 
     def update_line_curve(self, poses):
-        """用一帧红线起点/中点/终点更新全局曲线。"""
+        """用一帧已关联的局部近/中/远三点更新全局曲线。"""
         first, second, third = poses
         if self.line_axis_origin is None:
             self.line_axis_origin = copy.deepcopy(first.pose.position)
@@ -1193,9 +1290,7 @@ class Task1V2:
                 math.degrees(self.line_axis_yaw),
             )
 
-        self.add_line_map_point(first.pose.position)
-        self.add_line_map_point(second.pose.position)
-        self.add_line_map_point(third.pose.position)
+        self.fuse_ordered_line_segment((first, second, third))
         self.fit_line_curve()
         curve_length = self.line_curve_s[-1] if self.line_curve_ready() else 0.0
         if curve_length > self.max_known_curve_length + self.endpoint_growth_tolerance:
@@ -1214,7 +1309,12 @@ class Task1V2:
         )
 
     def update_line_end_evidence(self, far_pose):
-        """用连续稳定的 P1 远点和曲线停止增长共同生成红线终点候选。"""
+        """
+        用局部前向观测点稳定、曲线停止增长和机器人接近尾部共同生成终点候选。
+
+        P1 只是当前局部三点中的前向点；本函数不单独依赖 P1 判断物理终点。
+        任务结束仍需后续红线超时丢失和额外扫描确认。
+        """
         self.far_endpoint_samples.append(copy.deepcopy(far_pose.pose.position))
         if len(self.far_endpoint_samples) < self.far_endpoint_samples.maxlen:
             return
@@ -1249,7 +1349,7 @@ class Task1V2:
             self.line_end_candidate = candidate
             rospy.loginfo_throttle(
                 1.0,
-                '%s: red line end candidate stable, far_spread=%.3fm '
+                '%s: red line end candidate stable, local_far_spread=%.3fm '
                 'robot_to_end=%.2fm completed=%.2fm growth_stalled=%.1fs',
                 NODE_NAME,
                 spread,
@@ -1484,23 +1584,176 @@ class Task1V2:
         )
         return True
 
+    @staticmethod
+    def point_to_chord_distance(point, start, end):
+        """计算点到线段弦线的水平距离。"""
+        vx = end.x - start.x
+        vy = end.y - start.y
+        length_sq = vx * vx + vy * vy
+        if length_sq < 1e-9:
+            return float('inf')
+        ratio = clamp(
+            ((point.x - start.x) * vx + (point.y - start.y) * vy) / length_sq,
+            0.0,
+            1.0,
+        )
+        projection = Point(start.x + ratio * vx, start.y + ratio * vy, point.z)
+        return xy_distance(point, projection)
+
+    def validate_local_line_triplet(self, near, middle, far):
+        """验证任意局部三点的顺序、间距、共线性和局部转角。"""
+        near_point = near.pose.position
+        middle_point = middle.pose.position
+        far_point = far.pose.position
+        near_middle = xy_distance(near_point, middle_point)
+        middle_far = xy_distance(middle_point, far_point)
+        if (
+            near_middle < self.line_min_point_spacing
+            or middle_far < self.line_min_point_spacing
+        ):
+            return False, None, 'point_spacing_too_small'
+        if (
+            near_middle > self.line_max_point_spacing
+            or middle_far > self.line_max_point_spacing
+        ):
+            return False, None, 'point_spacing_too_large'
+
+        yaw_near_middle = math.atan2(
+            middle_point.y - near_point.y,
+            middle_point.x - near_point.x,
+        )
+        yaw_middle_far = math.atan2(
+            far_point.y - middle_point.y,
+            far_point.x - middle_point.x,
+        )
+        if abs(wrap_angle(yaw_middle_far - yaw_near_middle)) > self.line_local_max_bend:
+            return False, None, 'local_bend_too_large'
+
+        middle_offset = self.point_to_chord_distance(
+            middle_point, near_point, far_point
+        )
+        if middle_offset > self.line_middle_offset_tolerance:
+            return False, None, 'middle_point_off_chord'
+
+        current = self.get_current_pose()
+        if current is not None:
+            robot = current.pose.position
+            distances = [
+                xy_distance(robot, near_point),
+                xy_distance(robot, middle_point),
+                xy_distance(robot, far_point),
+            ]
+            if (
+                distances[0] > distances[1] + self.line_point_order_tolerance
+                or distances[1] > distances[2] + self.line_point_order_tolerance
+            ):
+                return False, None, 'near_middle_far_order_invalid'
+
+        detected_yaw = math.atan2(
+            far_point.y - near_point.y,
+            far_point.x - near_point.x,
+        )
+        return True, detected_yaw, 'valid'
+
+    def line_segment_associated(self, poses, detected_yaw):
+        """根据与已知曲线的距离、切向和当前进度判断是否为同一管线。"""
+        if not self.line_curve_ready():
+            return True, 'first_line_segment'
+
+        projections = []
+        minimum_progress = max(0.0, self.current_path_s - self.line_association_backtrack)
+        for pose in poses:
+            projection = self.project_to_line_curve(pose.pose.position)
+            if projection is None or projection['path_s'] < minimum_progress:
+                continue
+            projections.append(projection)
+        if not projections:
+            return False, 'segment_behind_current_progress'
+
+        best = min(projections, key=lambda value: value['distance'])
+        if best['distance'] > self.line_association_distance:
+            return False, 'segment_too_far_from_active_curve'
+        if abs(wrap_angle(detected_yaw - best['segment_yaw'])) > self.line_association_angle:
+            return False, 'segment_direction_mismatch'
+        return True, 'associated_with_active_curve'
+
+    def reset_line_candidate(self, reason):
+        """清除未确认的管线候选，防止非连续误检累加。"""
+        if self.line_candidate is not None:
+            rospy.loginfo_throttle(
+                1.0,
+                '%s: reset line candidate reason=%s confirmed_frames=%d',
+                NODE_NAME,
+                reason,
+                self.line_candidate['count'],
+            )
+        self.line_candidate = None
+
+    def confirm_line_candidate(self, poses, detected_yaw):
+        """要求空间位置和方向一致的局部管线连续多帧出现。"""
+        points = [pose.pose.position for pose in poses]
+        center = Point(
+            sum(point.x for point in points) / len(points),
+            sum(point.y for point in points) / len(points),
+            self.reference_z,
+        )
+        compatible = (
+            self.line_candidate is not None
+            and xy_distance(center, self.line_candidate['center'])
+            <= self.line_candidate_center_distance
+            and abs(wrap_angle(detected_yaw - self.line_candidate['yaw']))
+            <= self.line_candidate_yaw_tolerance
+        )
+        if compatible:
+            self.line_candidate['count'] += 1
+            self.line_candidate['center'] = center
+            self.line_candidate['yaw'] = detected_yaw
+        else:
+            self.line_candidate = {
+                'count': 1,
+                'center': center,
+                'yaw': detected_yaw,
+            }
+
+        rospy.loginfo_throttle(
+            1.0,
+            '%s: line candidate frames=%d/%d center=(%.2f,%.2f) yaw=%.1fdeg',
+            NODE_NAME,
+            self.line_candidate['count'],
+            self.line_candidate_confirm_frames,
+            center.x,
+            center.y,
+            math.degrees(detected_yaw),
+        )
+        return self.line_candidate['count'] >= self.line_candidate_confirm_frames
+
     def line_callback(self, message):
         """接收红色长线识别结果，并更新巡线目标。"""
         if message.class_name and message.class_name not in self.line_classes:
+            self.reset_line_candidate('unexpected_line_class')
             return
 
-        # 感知统一约定：Pose1 为视野远点，Pose2 为中点，Pose3 为近点。
+        # Pose1/Pose2/Pose3 是局部管线上的远/中/近点，不代表整条管线端点。
         far = self.transform_pose_to_map(message.pose1)
         middle = self.transform_pose_to_map(message.pose2)
         near = self.transform_pose_to_map(message.pose3)
         if far is None or middle is None or near is None:
+            self.reset_line_candidate('line_tf_failed')
             return
 
-        line_dx = far.pose.position.x - middle.pose.position.x
-        line_dy = far.pose.position.y - middle.pose.position.y
-        if math.hypot(line_dx, line_dy) < 1e-6:
+        geometry_valid, detected_yaw, reason = self.validate_local_line_triplet(
+            near, middle, far
+        )
+        if not geometry_valid:
+            rospy.logwarn_throttle(
+                1.0,
+                '%s: reject local line triplet reason=%s',
+                NODE_NAME,
+                reason,
+            )
+            self.reset_line_candidate(reason)
             return
-        detected_yaw = math.atan2(line_dy, line_dx)
+
         if (
             self.last_line_yaw is not None
             and abs(wrap_angle(detected_yaw - self.last_line_yaw))
@@ -1513,12 +1766,30 @@ class Task1V2:
                 math.degrees(detected_yaw),
                 math.degrees(self.last_line_yaw),
             )
+            self.reset_line_candidate('gross_direction_change')
+            return
+
+        associated, reason = self.line_segment_associated(
+            (near, middle, far), detected_yaw
+        )
+        if not associated:
+            rospy.logwarn_throttle(
+                1.0,
+                '%s: isolate unrelated line candidate reason=%s yaw=%.1fdeg',
+                NODE_NAME,
+                reason,
+                math.degrees(detected_yaw),
+            )
+            self.reset_line_candidate(reason)
+            return
+
+        if not self.confirm_line_candidate((near, middle, far), detected_yaw):
             return
 
         if self.line_start_pose is None:
             self.line_start_pose = copy.deepcopy(near)
             rospy.loginfo(
-                '%s: red line start recorded at x=%.2f, y=%.2f, z=%.2f',
+                '%s: first confirmed line observation recorded at x=%.2f, y=%.2f, z=%.2f',
                 NODE_NAME,
                 near.pose.position.x,
                 near.pose.position.y,
@@ -1532,8 +1803,8 @@ class Task1V2:
         self.update_line_end_evidence(far)
         rospy.loginfo_throttle(
             1.0,
-            '%s: line detection class=%s P1_far=(%.2f, %.2f) '
-            'P2_mid=(%.2f, %.2f) P3_near=(%.2f, %.2f) yaw=%.1fdeg',
+            '%s: accepted local line class=%s P1_local_far=(%.2f, %.2f) '
+            'P2_local_mid=(%.2f, %.2f) P3_local_near=(%.2f, %.2f) yaw=%.1fdeg',
             NODE_NAME,
             message.class_name,
             far.pose.position.x,
@@ -1918,6 +2189,7 @@ class Task1V2:
         self.last_line_time = None
         self.line_axis_origin = None
         self.line_axis_yaw = None
+        self.line_candidate = None
         self.line_raw_points = []
         self.line_curve_points = []
         self.line_curve_s = []

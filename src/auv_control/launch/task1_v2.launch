@@ -85,6 +85,30 @@
     <arg name="max_line_direction_change_deg" default="75.0" />
     <!-- 两个视觉红线点小于该距离时进行融合而非新增，单位 m。 -->
     <arg name="line_point_merge_distance" default="0.15" />
+    <!-- P3-P2 或 P2-P1 允许的最小间距，用于排除重合点，单位 m。 -->
+    <arg name="line_min_point_spacing" default="0.03" />
+    <!-- P3-P2 或 P2-P1 允许的最大间距，用于排除跳点，单位 m。 -->
+    <arg name="line_max_point_spacing" default="3.0" />
+    <!-- P2 偏离 P3-P1 弦线的最大距离，过大视为三点不属于同一局部管线，单位 m。 -->
+    <arg name="line_middle_offset_tolerance" default="0.25" />
+    <!-- 验证 P3近、P2中、P1远距离顺序时允许的误差，单位 m。 -->
+    <arg name="line_point_order_tolerance" default="0.15" />
+    <!-- P3->P2 与 P2->P1 两段之间允许的最大局部转角，单位 deg。 -->
+    <arg name="line_local_max_bend_deg" default="45.0" />
+    <!-- 同一局部管线至少连续出现该帧数后才允许融合。 -->
+    <arg name="line_candidate_confirm_frames" default="3" />
+    <!-- 连续帧候选中心允许的最大位移，单位 m。 -->
+    <arg name="line_candidate_center_distance" default="0.50" />
+    <!-- 连续帧候选方向允许的最大变化，单位 deg。 -->
+    <arg name="line_candidate_yaw_tolerance_deg" default="20.0" />
+    <!-- 新局部管线与当前规划曲线允许的最大关联距离，单位 m。 -->
+    <arg name="line_association_distance" default="0.50" />
+    <!-- 新局部管线方向与关联处曲线切向允许的最大差值，单位 deg。 -->
+    <arg name="line_association_angle_deg" default="35.0" />
+    <!-- 数据关联允许回看当前已完成进度后方的距离，单位 m。 -->
+    <arg name="line_association_backtrack" default="0.60" />
+    <!-- 向已知路径尾部追加新点时允许的最大单次间隔，单位 m。 -->
+    <arg name="line_extension_max_gap" default="1.0" />
     <!-- 保存的最大原始红线点数量；调小可降低长路径计算和网页数据量。 -->
     <arg name="line_curve_max_points" default="120" />
     <!-- 拟合曲线重新采样的控制点数量。 -->
@@ -181,9 +205,9 @@
     <arg name="required_yellow_count" default="2" />
     <!-- Task1 正常结束前要求完成的黑色图形数量。 -->
     <arg name="required_black_count" default="2" />
-    <!-- P1 远端点需要连续稳定的帧数。 -->
+    <!-- 局部 P1 前向点需要连续稳定的帧数；仅是终点联合证据之一。 -->
     <arg name="endpoint_stable_count" default="8" />
-    <!-- 稳定 P1 远端点样本相对中心允许的最大散布，单位 m。 -->
+    <!-- 稳定局部 P1 前向点样本相对中心允许的最大散布，单位 m。 -->
     <arg name="endpoint_position_tolerance" default="0.12" />
     <!-- 拟合曲线增长小于该值时视为没有显著增长，单位 m。 -->
     <arg name="endpoint_growth_tolerance" default="0.05" />
@@ -262,6 +286,18 @@
         <param name="/task1_v2_line_lost_timeout" type="double" value="$(arg line_lost_timeout)" />
         <param name="/task1_v2_max_line_direction_change_deg" type="double" value="$(arg max_line_direction_change_deg)" />
         <param name="/task1_v2_line_point_merge_distance" type="double" value="$(arg line_point_merge_distance)" />
+        <param name="/task1_v2_line_min_point_spacing" type="double" value="$(arg line_min_point_spacing)" />
+        <param name="/task1_v2_line_max_point_spacing" type="double" value="$(arg line_max_point_spacing)" />
+        <param name="/task1_v2_line_middle_offset_tolerance" type="double" value="$(arg line_middle_offset_tolerance)" />
+        <param name="/task1_v2_line_point_order_tolerance" type="double" value="$(arg line_point_order_tolerance)" />
+        <param name="/task1_v2_line_local_max_bend_deg" type="double" value="$(arg line_local_max_bend_deg)" />
+        <param name="/task1_v2_line_candidate_confirm_frames" type="int" value="$(arg line_candidate_confirm_frames)" />
+        <param name="/task1_v2_line_candidate_center_distance" type="double" value="$(arg line_candidate_center_distance)" />
+        <param name="/task1_v2_line_candidate_yaw_tolerance_deg" type="double" value="$(arg line_candidate_yaw_tolerance_deg)" />
+        <param name="/task1_v2_line_association_distance" type="double" value="$(arg line_association_distance)" />
+        <param name="/task1_v2_line_association_angle_deg" type="double" value="$(arg line_association_angle_deg)" />
+        <param name="/task1_v2_line_association_backtrack" type="double" value="$(arg line_association_backtrack)" />
+        <param name="/task1_v2_line_extension_max_gap" type="double" value="$(arg line_extension_max_gap)" />
         <param name="/task1_v2_line_curve_max_points" type="int" value="$(arg line_curve_max_points)" />
         <param name="/task1_v2_line_curve_sample_count" type="int" value="$(arg line_curve_sample_count)" />
         <param name="/task1_v2_line_curve_degree" type="int" value="$(arg line_curve_degree)" />

@@ -71,8 +71,24 @@
     <!-- 丢线处理：结束/重搜超时和允许沿已知曲线盲巡的时间（s）。 -->
     <arg name="line_lost_timeout" default="5.0" />
     <arg name="curve_blind_follow_timeout" default="2.0" />
-    <!-- 曲线点集：点融合半径（m）、原始点上限、采样点数、拟合阶数和最短拟合长度（m）。 -->
+    <!-- 局部三点几何：融合半径、最小/最大点间距、P2偏离弦线容差和近中远顺序容差（m）。 -->
     <arg name="line_point_merge_distance" default="0.15" />
+    <arg name="line_min_point_spacing" default="0.03" />
+    <arg name="line_max_point_spacing" default="3.0" />
+    <arg name="line_middle_offset_tolerance" default="0.25" />
+    <arg name="line_point_order_tolerance" default="0.15" />
+    <!-- P3->P2 与 P2->P1 允许的最大局部转角（deg）。 -->
+    <arg name="line_local_max_bend_deg" default="45.0" />
+    <!-- 连续帧确认：帧数、候选中心位移（m）和方向变化（deg）。 -->
+    <arg name="line_candidate_confirm_frames" default="3" />
+    <arg name="line_candidate_center_distance" default="0.50" />
+    <arg name="line_candidate_yaw_tolerance_deg" default="20.0" />
+    <!-- 主管线关联：到既有曲线距离（m）、切向差（deg）、允许回看距离（m）和尾部追加最大间隔（m）。 -->
+    <arg name="line_association_distance" default="0.50" />
+    <arg name="line_association_angle_deg" default="35.0" />
+    <arg name="line_association_backtrack" default="0.60" />
+    <arg name="line_extension_max_gap" default="1.0" />
+    <!-- 曲线拟合：原始点上限、采样点数、拟合阶数和最短拟合长度（m）。 -->
     <arg name="line_curve_max_points" default="120" />
     <arg name="line_curve_sample_count" default="80" />
     <arg name="line_curve_degree" default="3" />
@@ -80,7 +96,7 @@
     <!-- 红线过滤：类别名和相对上一方向允许的最大突变角（deg）。 -->
     <arg name="line_classes" default="line" />
     <arg name="max_line_direction_change_deg" default="75.0" />
-    <!-- 终点稳定：连续帧数和 P1 样本最大散布（m）。 -->
+    <!-- 终点稳定：局部 P1 前向点连续帧数和样本最大散布（m）；仅是联合证据之一。 -->
     <arg name="endpoint_stable_count" default="8" />
     <arg name="endpoint_position_tolerance" default="0.12" />
     <!-- 曲线停止增长：最小增长量（m）和连续停止时间（s）。 -->
@@ -140,6 +156,18 @@
         <param name="line_lost_timeout" type="double" value="$(arg line_lost_timeout)" />
         <param name="curve_blind_follow_timeout" type="double" value="$(arg curve_blind_follow_timeout)" />
         <param name="line_point_merge_distance" type="double" value="$(arg line_point_merge_distance)" />
+        <param name="line_min_point_spacing" type="double" value="$(arg line_min_point_spacing)" />
+        <param name="line_max_point_spacing" type="double" value="$(arg line_max_point_spacing)" />
+        <param name="line_middle_offset_tolerance" type="double" value="$(arg line_middle_offset_tolerance)" />
+        <param name="line_point_order_tolerance" type="double" value="$(arg line_point_order_tolerance)" />
+        <param name="line_local_max_bend_deg" type="double" value="$(arg line_local_max_bend_deg)" />
+        <param name="line_candidate_confirm_frames" type="int" value="$(arg line_candidate_confirm_frames)" />
+        <param name="line_candidate_center_distance" type="double" value="$(arg line_candidate_center_distance)" />
+        <param name="line_candidate_yaw_tolerance_deg" type="double" value="$(arg line_candidate_yaw_tolerance_deg)" />
+        <param name="line_association_distance" type="double" value="$(arg line_association_distance)" />
+        <param name="line_association_angle_deg" type="double" value="$(arg line_association_angle_deg)" />
+        <param name="line_association_backtrack" type="double" value="$(arg line_association_backtrack)" />
+        <param name="line_extension_max_gap" type="double" value="$(arg line_extension_max_gap)" />
         <param name="line_curve_max_points" type="int" value="$(arg line_curve_max_points)" />
         <param name="line_curve_sample_count" type="int" value="$(arg line_curve_sample_count)" />
         <param name="line_curve_degree" type="int" value="$(arg line_curve_degree)" />
