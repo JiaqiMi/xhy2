@@ -11,6 +11,8 @@
 记录：
 2026.7.16
     新增纯 Python 状态机核心，支持离线单元测试。
+2026.7.16
+    根据实测数据增加正负方向独立刹车力、减速度和刹车步进参数。
 """
 
 from __future__ import division
@@ -75,6 +77,22 @@ def body_velocity_to_map(forward, lateral, yaw):
         cosine * forward - sine * lateral,
         sine * forward + cosine * lateral,
     )
+
+
+def relative_target_xy(
+        initial_x, initial_y, initial_yaw, offset_x, offset_y, offset_frame):
+    """把初始 base_link 或 map 下的水平偏置换算为 map 绝对坐标。"""
+    if offset_frame == 'base_link':
+        cosine = math.cos(initial_yaw)
+        sine = math.sin(initial_yaw)
+        delta_x = cosine * offset_x - sine * offset_y
+        delta_y = sine * offset_x + cosine * offset_y
+    elif offset_frame == 'map':
+        delta_x = offset_x
+        delta_y = offset_y
+    else:
+        raise ValueError('offset_frame 仅支持 base_link 或 map')
+    return initial_x + delta_x, initial_y + delta_y
 
 
 def stopping_distance(closing_speed, brake_acceleration, delay, margin):
@@ -150,21 +168,29 @@ DEFAULT_PARAMETERS = {
     'max_tx': 300.0,
     'max_ty': 180.0,
     'max_mz': 120.0,
-    'brake_max_tx': 300.0,
-    'brake_max_ty': 180.0,
-    'brake_max_mz': 120.0,
-    'force_slew_per_cycle': 50.0,
+    'brake_max_tx_positive': 2000.0,
+    'brake_max_tx_negative': 3000.0,
+    'brake_max_ty_positive': 2000.0,
+    'brake_max_ty_negative': 4000.0,
+    'brake_max_mz_positive': 3000.0,
+    'brake_max_mz_negative': 3000.0,
+    'force_slew_per_cycle': 10000.0,
+    'brake_force_slew_per_cycle': 10000.0,
     'kp_x': 200.0,
     'kp_y': 200.0,
     'kv_x': 300.0,
     'kv_y': 300.0,
-    'kp_yaw': 100.0,
-    'kr_yaw': 100.0,
-    'brake_gain_x': 1000.0,
-    'brake_gain_y': 1000.0,
-    'brake_gain_yaw': 1000.0,
-    'brake_acceleration': 0.10,
-    'angular_brake_acceleration': 0.30,
+    'kp_yaw': -100.0,
+    'kr_yaw': -100.0,
+    'brake_gain_x': 15000.0,
+    'brake_gain_y': 30000.0,
+    'brake_gain_yaw': -6000.0,
+    'brake_acceleration_tx_positive': 0.05,
+    'brake_acceleration_tx_negative': 0.05,
+    'brake_acceleration_ty_positive': 0.025,
+    'brake_acceleration_ty_negative': 0.025,
+    'angular_brake_acceleration_mz_positive': 0.25,
+    'angular_brake_acceleration_mz_negative': 0.30,
     'control_delay': 0.35,
     'brake_margin': 0.15,
     'yaw_brake_margin': math.radians(3.0),
@@ -204,9 +230,17 @@ class MotionSupervisorCore(object):
 
     def _validate_parameters(self):
         positive_names = (
-            'max_tx', 'max_ty', 'max_mz', 'brake_max_tx', 'brake_max_ty',
-            'brake_max_mz', 'force_slew_per_cycle', 'brake_acceleration',
-            'angular_brake_acceleration', 'capture_radius',
+            'max_tx', 'max_ty', 'max_mz',
+            'brake_max_tx_positive', 'brake_max_tx_negative',
+            'brake_max_ty_positive', 'brake_max_ty_negative',
+            'brake_max_mz_positive', 'brake_max_mz_negative',
+            'force_slew_per_cycle', 'brake_force_slew_per_cycle',
+            'brake_acceleration_tx_positive',
+            'brake_acceleration_tx_negative',
+            'brake_acceleration_ty_positive',
+            'brake_acceleration_ty_negative',
+            'angular_brake_acceleration_mz_positive',
+            'angular_brake_acceleration_mz_negative', 'capture_radius',
             'capture_exit_radius', 'horizontal_speed_threshold',
             'yaw_tolerance', 'path_yaw_tolerance', 'yaw_rate_threshold',
             'stable_frames', 'mode_ack_timeout',
@@ -216,8 +250,11 @@ class MotionSupervisorCore(object):
                 raise ValueError('{} 必须大于 0'.format(name))
         if self.parameters['capture_exit_radius'] <= self.parameters['capture_radius']:
             raise ValueError('capture_exit_radius 必须大于 capture_radius')
-        for name in ('max_tx', 'max_ty', 'max_mz', 'brake_max_tx',
-                     'brake_max_ty', 'brake_max_mz'):
+        for name in (
+                'max_tx', 'max_ty', 'max_mz',
+                'brake_max_tx_positive', 'brake_max_tx_negative',
+                'brake_max_ty_positive', 'brake_max_ty_negative',
+                'brake_max_mz_positive', 'brake_max_mz_negative'):
             if self.parameters[name] > PROTOCOL_FORCE_LIMIT:
                 raise ValueError('{} 不能超过协议限制 {}'.format(
                     name, PROTOCOL_FORCE_LIMIT))
@@ -285,31 +322,89 @@ class MotionSupervisorCore(object):
             self.stable_count = 0
         return self.stable_count >= required
 
+    def _directional_parameter(self, prefix, command):
+        """按实际输出力符号选择正向或负向参数。"""
+        positive = self.parameters[prefix + '_positive']
+        negative = self.parameters[prefix + '_negative']
+        if command > 0.0:
+            return positive
+        if command < 0.0:
+            return negative
+        return min(positive, negative)
+
     def _angular_stop_threshold(self, yaw_rate):
-        acceleration = self.parameters['angular_brake_acceleration']
+        brake_command = (
+            -self.parameters['brake_gain_yaw'] * yaw_rate
+        )
+        acceleration = self._directional_parameter(
+            'angular_brake_acceleration_mz', brake_command)
         return (
             yaw_rate * yaw_rate / (2.0 * acceleration)
             + self.parameters['yaw_brake_margin']
         )
 
-    def _force_limits(self, braking):
-        prefix = 'brake_max_' if braking else 'max_'
-        return (
-            self.parameters[prefix + 'tx'],
-            self.parameters[prefix + 'ty'],
-            self.parameters[prefix + 'mz'],
+    def _horizontal_brake_acceleration(
+            self, vehicle, error_x_body, error_y_body):
+        """按预计刹车力方向选择水平有效减速度，并取相关轴较小值。"""
+        reference_x = (
+            vehicle.forward_velocity
+            if abs(vehicle.forward_velocity) > 1e-6
+            else error_x_body
         )
+        reference_y = (
+            vehicle.lateral_velocity
+            if abs(vehicle.lateral_velocity) > 1e-6
+            else error_y_body
+        )
+        tx_command = -self.parameters['brake_gain_x'] * reference_x
+        ty_command = -self.parameters['brake_gain_y'] * reference_y
+        accelerations = []
+        if abs(error_x_body) > 1e-6 or abs(vehicle.forward_velocity) > 1e-6:
+            accelerations.append(self._directional_parameter(
+                'brake_acceleration_tx', tx_command))
+        if abs(error_y_body) > 1e-6 or abs(vehicle.lateral_velocity) > 1e-6:
+            accelerations.append(self._directional_parameter(
+                'brake_acceleration_ty', ty_command))
+        if not accelerations:
+            accelerations.extend((
+                min(
+                    self.parameters['brake_acceleration_tx_positive'],
+                    self.parameters['brake_acceleration_tx_negative'],
+                ),
+                min(
+                    self.parameters['brake_acceleration_ty_positive'],
+                    self.parameters['brake_acceleration_ty_negative'],
+                ),
+            ))
+        return min(accelerations)
 
     def _limited_forces(self, tx, ty, mz, braking=False, immediate_zero=False):
         if immediate_zero:
             self.last_tx = self.last_ty = self.last_mz = 0.0
             return 0, 0, 0
 
-        max_tx, max_ty, max_mz = self._force_limits(braking)
-        tx = clamp(tx, -max_tx, max_tx)
-        ty = clamp(ty, -max_ty, max_ty)
-        mz = clamp(mz, -max_mz, max_mz)
-        maximum_step = self.parameters['force_slew_per_cycle']
+        if braking:
+            tx = clamp(
+                tx,
+                -self.parameters['brake_max_tx_negative'],
+                self.parameters['brake_max_tx_positive'],
+            )
+            ty = clamp(
+                ty,
+                -self.parameters['brake_max_ty_negative'],
+                self.parameters['brake_max_ty_positive'],
+            )
+            mz = clamp(
+                mz,
+                -self.parameters['brake_max_mz_negative'],
+                self.parameters['brake_max_mz_positive'],
+            )
+            maximum_step = self.parameters['brake_force_slew_per_cycle']
+        else:
+            tx = clamp(tx, -self.parameters['max_tx'], self.parameters['max_tx'])
+            ty = clamp(ty, -self.parameters['max_ty'], self.parameters['max_ty'])
+            mz = clamp(mz, -self.parameters['max_mz'], self.parameters['max_mz'])
+            maximum_step = self.parameters['force_slew_per_cycle']
         tx = slew_value(self.last_tx, tx, maximum_step)
         ty = slew_value(self.last_ty, ty, maximum_step)
         mz = slew_value(self.last_mz, mz, maximum_step)
@@ -390,6 +485,7 @@ class MotionSupervisorCore(object):
         if self.state == TRANSLATE:
             dx, dy, distance, unused_yaw_error = self._goal_metrics(vehicle)
             del unused_yaw_error
+            error_x, error_y = map_error_to_body(dx, dy, vehicle.yaw)
             north_velocity, east_velocity = body_velocity_to_map(
                 vehicle.forward_velocity, vehicle.lateral_velocity, vehicle.yaw)
             if distance > 1e-6:
@@ -399,9 +495,11 @@ class MotionSupervisorCore(object):
                 )
             else:
                 closing_speed = 0.0
+            brake_acceleration = self._horizontal_brake_acceleration(
+                vehicle, error_x, error_y)
             stop_distance = stopping_distance(
                 closing_speed,
-                self.parameters['brake_acceleration'],
+                brake_acceleration,
                 self.parameters['control_delay'],
                 self.parameters['brake_margin'],
             )
@@ -409,7 +507,6 @@ class MotionSupervisorCore(object):
                 self._transition(TRANSLATE_BRAKE, '进入水平停车距离')
                 return self._brake_output(vehicle)
 
-            error_x, error_y = map_error_to_body(dx, dy, vehicle.yaw)
             tx = (
                 self.parameters['kp_x'] * error_x
                 - self.parameters['kv_x'] * vehicle.forward_velocity

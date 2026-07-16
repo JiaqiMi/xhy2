@@ -10,6 +10,8 @@
 记录：
 2026.7.16
     新增运动—刹停—悬停控制核心自动测试。
+2026.7.16
+    增加正负方向刹车限幅与减速度选择测试。
 """
 
 import math
@@ -39,6 +41,7 @@ from motion_supervisor_core import (  # noqa: E402
     VehicleState,
     map_error_to_body,
     protocol_force,
+    relative_target_xy,
     slew_value,
     stopping_distance,
     wrap_angle,
@@ -51,6 +54,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.parameters = {
             'stable_frames': 2,
             'force_slew_per_cycle': 10000.0,
+            'brake_force_slew_per_cycle': 10000.0,
             'mode_ack_timeout': 1.0,
         }
         self.core = MotionSupervisorCore(self.parameters)
@@ -76,6 +80,26 @@ class MotionSupervisorCoreTest(unittest.TestCase):
             self.assertAlmostEqual(actual[0], expected[0], places=6)
             self.assertAlmostEqual(actual[1], expected[1], places=6)
 
+    def test_relative_base_offset_for_cardinal_yaws(self):
+        cases = (
+            (0.0, (2.0, 3.0)),
+            (math.pi / 2.0, (-1.0, 2.0)),
+            (-math.pi / 2.0, (3.0, 0.0)),
+            (math.pi, (0.0, -1.0)),
+        )
+        for yaw, expected in cases:
+            actual = relative_target_xy(
+                1.0, 1.0, yaw, 1.0, 2.0, 'base_link')
+            self.assertAlmostEqual(actual[0], expected[0], places=6)
+            self.assertAlmostEqual(actual[1], expected[1], places=6)
+
+    def test_relative_map_offset_does_not_rotate(self):
+        actual = relative_target_xy(
+            1.0, 2.0, math.pi / 2.0, 3.0, -4.0, 'map')
+        self.assertEqual(actual, (4.0, -2.0))
+        with self.assertRaises(ValueError):
+            relative_target_xy(0.0, 0.0, 0.0, 1.0, 0.0, 'odom')
+
     def test_wrap_angle_crosses_180_degrees(self):
         error = wrap_angle(math.radians(-179.0) - math.radians(179.0))
         self.assertAlmostEqual(error, math.radians(2.0), places=6)
@@ -86,6 +110,88 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(protocol_force(-123.6), -124)
         self.assertEqual(slew_value(0.0, 300.0, 50.0), 50.0)
         self.assertEqual(slew_value(100.0, -300.0, 50.0), 50.0)
+
+    def test_directional_brake_force_limits(self):
+        core = MotionSupervisorCore({
+            'brake_max_tx_positive': 2000.0,
+            'brake_max_tx_negative': 3000.0,
+            'brake_max_ty_positive': 2100.0,
+            'brake_max_ty_negative': 4000.0,
+            'brake_max_mz_positive': 2500.0,
+            'brake_max_mz_negative': 3500.0,
+            'brake_force_slew_per_cycle': 10000.0,
+        })
+        self.assertEqual(
+            core._limited_forces(
+                9000.0, -9000.0, 9000.0, braking=True),
+            (2000, -4000, 2500),
+        )
+        self.assertEqual(
+            core._limited_forces(
+                -9000.0, 9000.0, -9000.0, braking=True),
+            (-3000, 2100, -3500),
+        )
+
+    def test_horizontal_deceleration_uses_brake_force_direction(self):
+        core = MotionSupervisorCore({
+            'brake_acceleration_tx_positive': 0.02,
+            'brake_acceleration_tx_negative': 0.08,
+            'brake_acceleration_ty_positive': 0.03,
+            'brake_acceleration_ty_negative': 0.06,
+        })
+        forward = self.vehicle(u=0.2)
+        backward = self.vehicle(u=-0.2)
+        right = self.vehicle(v=0.1)
+        left = self.vehicle(v=-0.1)
+        self.assertAlmostEqual(
+            core._horizontal_brake_acceleration(forward, 1.0, 0.0),
+            0.08,
+        )
+        self.assertAlmostEqual(
+            core._horizontal_brake_acceleration(backward, -1.0, 0.0),
+            0.02,
+        )
+        self.assertAlmostEqual(
+            core._horizontal_brake_acceleration(right, 0.0, 1.0),
+            0.06,
+        )
+        self.assertAlmostEqual(
+            core._horizontal_brake_acceleration(left, 0.0, -1.0),
+            0.03,
+        )
+
+    def test_angular_deceleration_uses_mz_direction(self):
+        core = MotionSupervisorCore({
+            'brake_gain_yaw': -6000.0,
+            'angular_brake_acceleration_mz_positive': 0.20,
+            'angular_brake_acceleration_mz_negative': 0.40,
+            'yaw_brake_margin': 0.0,
+        })
+        self.assertAlmostEqual(
+            core._angular_stop_threshold(0.4),
+            0.4,
+        )
+        self.assertAlmostEqual(
+            core._angular_stop_threshold(-0.4),
+            0.2,
+        )
+
+    def test_calibrated_brake_output_uses_actual_force_signs(self):
+        positive_velocity = self.core._brake_output(
+            self.vehicle(u=0.2, v=0.2, r=0.5)
+        )
+        self.assertEqual(
+            (positive_velocity.tx, positive_velocity.ty, positive_velocity.mz),
+            (-3000, -4000, 3000),
+        )
+
+        negative_velocity = self.core._brake_output(
+            self.vehicle(u=-0.2, v=-0.2, r=-0.5)
+        )
+        self.assertEqual(
+            (negative_velocity.tx, negative_velocity.ty, negative_velocity.mz),
+            (2000, 2000, -3000),
+        )
 
     def test_stopping_distance_includes_delay_and_margin(self):
         distance = stopping_distance(0.2, 0.1, 0.35, 0.15)

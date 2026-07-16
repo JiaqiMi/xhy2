@@ -2,24 +2,90 @@
     <!--
       原型节点必须是 /cmd/pose/ned 的唯一发布者。
       使用本启动文件时不要同时启动 task1～task4 或其他运动测试节点。
+      motion_goal_test 启动后只获取一次初始位姿并发布一次锁存目标。
+      测试目标的 z 固定为 -0.6 m，不通过 launch 参数修改。
+    -->
+
+    <!--
+      motion_supervisor 的 YAML 配置文件。
+      文件中包含运动限幅、正负方向刹车力、刹车增益、有效减速度、
+      捕获阈值和反馈超时等控制参数。
     -->
     <arg name="config_file" default="$(find auv_control)/config/motion_supervisor.yaml" />
-    <arg name="start_goal_test" default="false" />
-    <arg name="target_x" default="1.0" />
-    <arg name="target_y" default="0.0" />
-    <arg name="target_z" default="1.5" />
-    <arg name="target_yaw_deg" default="0.0" />
 
+    <!--
+      是否同时启动相对目标测试节点。
+      false：只启动 motion_supervisor，目标由其他节点发布；
+      true：启动 motion_goal_test，并自动发布下方参数定义的测试目标。
+    -->
+    <arg name="start_goal_test" default="false" />
+
+    <!--
+      水平偏置所使用的坐标系，只支持 base_link 或 map。
+      base_link：使用测试节点启动时的初始艇体坐标系；
+      map：使用固定 NED/map 坐标系，不随初始航向旋转。
+    -->
+    <arg name="offset_frame" default="base_link" />
+
+    <!--
+      相对目标 x 偏置，单位 m，可输入正负值。
+      offset_frame=base_link：正值向前，负值向后；
+      offset_frame=map：正值向北，负值向南。
+    -->
+    <arg name="offset_x" default="1.0" />
+
+    <!--
+      相对目标 y 偏置，单位 m，可输入正负值。
+      offset_frame=base_link：正值向右，负值向左；
+      offset_frame=map：正值向东，负值向西。
+    -->
+    <arg name="offset_y" default="0.0" />
+
+    <!--
+      相对于初始航向的偏差，单位 deg，可输入正负值。
+      目标航向会归一化到 [-180°, 180°)。
+    -->
+    <arg name="yaw_offset_deg" default="0.0" />
+
+    <!--
+      测试节点启动后、锁定初始 TF 前的等待时间，单位 s。
+      用于等待 TF、地图原点和状态反馈完成初始化。
+    -->
+    <arg name="goal_publish_delay" default="1.0" />
+
+    <!--
+      等待 map -> base_link TF 的最长时间，单位 s。
+      超时后测试节点不发布目标并直接退出。
+    -->
+    <arg name="goal_tf_timeout" default="5.0" />
+
+    <!--
+      运动—刹停—悬停状态机节点。
+      required=true 表示节点异常退出时 roslaunch 同步结束，避免失去控制层。
+    -->
     <node pkg="auv_control" type="motion_supervisor.py"
           name="motion_supervisor" output="screen" required="true">
+        <!-- 将 config_file 中的参数加载到 motion_supervisor 私有命名空间。 -->
         <rosparam command="load" file="$(arg config_file)" />
     </node>
 
+    <!--
+      可选的单次相对目标发布节点。
+      节点读取初始 map -> base_link，计算 map 下的绝对目标后锁存发布。
+    -->
     <node if="$(arg start_goal_test)" pkg="auv_control" type="motion_goal_test.py"
           name="motion_goal_test" output="screen">
-        <param name="target_x" value="$(arg target_x)" />
-        <param name="target_y" value="$(arg target_y)" />
-        <param name="target_z" value="$(arg target_z)" />
-        <param name="target_yaw_deg" value="$(arg target_yaw_deg)" />
+        <!-- 偏置坐标系：base_link 或 map。 -->
+        <param name="offset_frame" value="$(arg offset_frame)" />
+        <!-- 水平 x 偏置，单位 m。 -->
+        <param name="offset_x" value="$(arg offset_x)" />
+        <!-- 水平 y 偏置，单位 m。 -->
+        <param name="offset_y" value="$(arg offset_y)" />
+        <!-- 初始航向基础上的角度偏差，单位 deg。 -->
+        <param name="yaw_offset_deg" value="$(arg yaw_offset_deg)" />
+        <!-- 锁定初始位姿前的等待时间，单位 s。 -->
+        <param name="publish_delay" value="$(arg goal_publish_delay)" />
+        <!-- TF 等待超时时间，单位 s。 -->
+        <param name="tf_timeout" value="$(arg goal_tf_timeout)" />
     </node>
 </launch>
