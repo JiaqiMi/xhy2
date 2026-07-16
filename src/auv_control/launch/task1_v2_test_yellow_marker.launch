@@ -4,12 +4,11 @@
         使用前请先启动真实下位机链路、TF 链路和图形识别节点。
 
         用法示例：
-        roslaunch auv_control task1_v2_test_yellow_marker.launch initial_heading_deg:=0
+        roslaunch auv_control task1_v2_test_yellow_marker.launch
     -->
 
-    <!-- 基础：控制循环频率（Hz）和搜索/动作结束后恢复的航向（deg）。 -->
+    <!-- 基础：控制循环频率（Hz）。搜索方向直接采用节点启动时读取的机器人当前航向。 -->
     <arg name="rate" default="5.0" />
-    <arg name="initial_heading_deg" default="0.0" />
 
     <!-- 话题：运动指令、图形识别、外设控制、完成消息、相机就绪和可选速度反馈。 -->
     <arg name="cmd_topic" default="/cmd/pose/ned" />
@@ -19,27 +18,30 @@
     <arg name="camera_topic" default="/left/image_raw" />
     <arg name="velocity_topic" default="/status/vel" />
 
-    <!-- 搜索手控：前进 TX、每周期增减步长、切定点前卸力步长和 TX 方向符号。 -->
-    <arg name="search_forward_force" default="1000.0" />
-    <arg name="manual_force_step" default="200.0" />
-    <arg name="manual_brake_step" default="300.0" />
-    <arg name="manual_tx_sign" default="1.0" />
+    <!-- 定点搜索：每轮前进距离（m）、左右搜索角度（deg）。 -->
+    <arg name="search_forward_distance" default="0.5" />
+    <arg name="search_yaw_offset_deg" default="30.0" />
 
-    <!-- 动力定位：每周期最大 XY 目标步长（m）、位置/航向容差及航向旋转步长（deg）。 -->
-    <arg name="max_xy_step" default="0.4" />
+    <!-- 到达判断：水平位置容差（m）；航向容差和航向步长只用于定点旋转搜索。 -->
     <arg name="position_tolerance" default="0.15" />
     <arg name="yaw_tolerance_deg" default="3.0" />
     <arg name="max_yaw_step_deg" default="2.0" />
-    <!-- 图形过滤：最大相机坐标距离（m）、稳定识别帧数和聚类距离（m）。 -->
+
+    <!-- 黄色图形过滤：类别名、最大相机距离（m）、稳定识别帧数、
+         相邻采样最大间隔（s）和位置聚类距离（m）。 -->
+    <arg name="yellow_classes" default="triangle,circle" />
     <arg name="max_camera_distance" default="5.0" />
     <arg name="marker_sample_count" default="10" />
+    <arg name="marker_sample_timeout" default="1.0" />
     <arg name="marker_cluster_distance" default="0.25" />
-    <!-- 稳定等待：启动最少时间和阶段间定点时间（s）。 -->
-    <arg name="startup_hold_seconds" default="10.0" />
+
+    <!-- 搜索过渡：前进或旋转目标到达后，保持速度稳定的时间（s）。 -->
     <arg name="transition_hold_seconds" default="4.0" />
+
     <!-- 消息有效期：相机/速度反馈超时（s），速度超时后改用 TF 差分。 -->
     <arg name="camera_message_timeout" default="2.0" />
     <arg name="velocity_message_timeout" default="1.0" />
+
     <!-- 静止判据：最大水平线速度（m/s）和航向角速度（deg/s）。 -->
     <arg name="stable_linear_speed" default="0.05" />
     <arg name="stable_angular_speed_deg" default="3.0" />
@@ -48,10 +50,6 @@
     <arg name="light_seconds" default="3.0" />
     <arg name="gap_seconds" default="0.5" />
     <arg name="yellow_light_count" default="1" />
-
-    <!-- 感知类别名：黄色图形和黑色方形。 -->
-    <arg name="yellow_classes" default="triangle,circle" />
-    <arg name="black_classes" default="rectangle" />
 
     <!-- 外设默认值：照明灯、航向/夹爪舵机以及推拉杆命令/速度。 -->
     <arg name="light1" default="0" />
@@ -66,25 +64,22 @@
           name="test_task1_v2_yellow_marker"
           output="screen">
         <param name="rate" type="double" value="$(arg rate)" />
-        <param name="initial_heading_deg" type="double" value="$(arg initial_heading_deg)" />
         <param name="cmd_topic" type="string" value="$(arg cmd_topic)" />
         <param name="target_topic" type="string" value="$(arg target_topic)" />
         <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
         <param name="finished_topic" type="string" value="$(arg finished_topic)" />
         <param name="camera_topic" type="string" value="$(arg camera_topic)" />
         <param name="velocity_topic" type="string" value="$(arg velocity_topic)" />
-        <param name="search_forward_force" type="double" value="$(arg search_forward_force)" />
-        <param name="manual_force_step" type="double" value="$(arg manual_force_step)" />
-        <param name="manual_brake_step" type="double" value="$(arg manual_brake_step)" />
-        <param name="manual_tx_sign" type="double" value="$(arg manual_tx_sign)" />
-        <param name="max_xy_step" type="double" value="$(arg max_xy_step)" />
+        <param name="search_forward_distance" type="double" value="$(arg search_forward_distance)" />
+        <param name="search_yaw_offset_deg" type="double" value="$(arg search_yaw_offset_deg)" />
         <param name="position_tolerance" type="double" value="$(arg position_tolerance)" />
         <param name="yaw_tolerance_deg" type="double" value="$(arg yaw_tolerance_deg)" />
         <param name="max_yaw_step_deg" type="double" value="$(arg max_yaw_step_deg)" />
+        <param name="yellow_classes" type="string" value="$(arg yellow_classes)" />
         <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
         <param name="marker_sample_count" type="int" value="$(arg marker_sample_count)" />
+        <param name="marker_sample_timeout" type="double" value="$(arg marker_sample_timeout)" />
         <param name="marker_cluster_distance" type="double" value="$(arg marker_cluster_distance)" />
-        <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
         <param name="transition_hold_seconds" type="double" value="$(arg transition_hold_seconds)" />
         <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
         <param name="velocity_message_timeout" type="double" value="$(arg velocity_message_timeout)" />
@@ -93,8 +88,6 @@
         <param name="light_seconds" type="double" value="$(arg light_seconds)" />
         <param name="gap_seconds" type="double" value="$(arg gap_seconds)" />
         <param name="yellow_light_count" type="int" value="$(arg yellow_light_count)" />
-        <param name="yellow_classes" type="string" value="$(arg yellow_classes)" />
-        <param name="black_classes" type="string" value="$(arg black_classes)" />
         <param name="light1" type="int" value="$(arg light1)" />
         <param name="light2" type="int" value="$(arg light2)" />
         <param name="heading_servo" type="int" value="$(arg heading_servo)" />

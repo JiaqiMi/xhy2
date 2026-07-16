@@ -5,11 +5,11 @@
 功能：Task1 黄色图形单项测试。
 
 流程：
-    1. 保持启动位姿，等待相机稳定出图后慢速定点对准指定航向；
-    2. 按设定航向手控前进，以连续 10 帧确定指定图形位置；
-    3. 逐步制动并定点稳定，再只在 XY 平面前往图形上方；
-    4. 到达图形中心稳定 3~5 s 后执行灯光动作；
-    5. 动作完成后回图形中心及原航向，再次稳定后结束单项测试。
+    1. 定点保持启动位姿，等待相机节点持续发布图像；
+    2. 未识别到黄色图形时，定点向初始航向前进 0.5 m，静止后左右旋转 30 度搜索；
+    3. 连续多帧确认黄色图形位置后，使用动力定位模式直接前往图形中心；
+    4. 前往图形时只判断水平位置误差，不规划或校正目标航向；
+    5. 到达黄色图形上方后亮红灯，动作完成后发布完成消息。
 
 监听：/obj/target_message，/left/image_raw，/status/vel（可选），/tf
 发布：/cmd/pose/ned，/cmd/actuator，/finished
@@ -18,9 +18,11 @@
 2026.7.14
     初版，用于单独验证 Task1 图形识别、前往图形和黄色动作流程。
 2026.7.16
-    同步正式 Task1 的启动等待、10 帧稳定识别、手控制动、速度稳定、动作前后定点和黑色 MZ 旋转。
-    增加亮灯次数、旋转方向、MZ 步长、减速区和航向反馈过滤参数。
-    黑色单项测试改为连续 3 帧 rectangle 且每帧置信度不低于 0.30。
+    将脚本改为纯黄色图形测试，删除黑色图形识别、旋转和无关状态。
+    搜索基准航向直接读取节点启动时的机器人当前航向，不再使用人工配置参数。
+    锁定黄色图形后直接发布其中心为动力定位目标，只以 XY 距离判断到达。
+    未识别时采用“前进 0.5 m、左转 30 度、右转 30 度”的定点搜索流程。
+    精简运行日志，只保留相机状态、识别状态、当前位置、目标位置、距离和完成状态。
 """
 
 import copy
@@ -34,9 +36,7 @@ from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
-MODE_DEPTH_HDG = 3
 MODE_DPROV = 4
-DEFAULT_INITIAL_HEADING_DEG = 0.0
 
 
 def clamp(value, lower, upper):
@@ -71,20 +71,27 @@ def class_names(param_name, default):
     return list(value)
 
 
-class Task1MarkerActionTest:
-    """搜索一个指定图形，前往图形上方并执行动作。"""
+class YellowMarkerTest:
+    """搜索黄色图形，前往图形中心并执行亮灯动作。"""
 
-    STEP_SEARCH = "SEARCH_MARKER"
-    STEP_MOVE = "MOVE_TO_MARKER"
+    STEP_WAIT_CAMERA = "WAIT_CAMERA"
+    STEP_SEARCH_FORWARD = "SEARCH_FORWARD"
+    STEP_SEARCH_LEFT = "SEARCH_LEFT"
+    STEP_SEARCH_RIGHT = "SEARCH_RIGHT"
+    STEP_SEARCH_CENTER = "SEARCH_CENTER"
+    STEP_MOVE = "MOVE_TO_YELLOW"
     STEP_LIGHT = "LIGHT_ACTION"
-    STEP_ROTATE = "ROTATE_BLACK"
     STEP_FINISH = "FINISH"
-    STEP_WAIT_READY = "WAIT_READY"
-    STEP_SETTLE = "SETTLE"
 
-    def __init__(self, node_name, marker_kind):
-        self.node_name = node_name
-        self.marker_kind = marker_kind
+    SEARCH_STEPS = {
+        STEP_SEARCH_FORWARD,
+        STEP_SEARCH_LEFT,
+        STEP_SEARCH_RIGHT,
+        STEP_SEARCH_CENTER,
+    }
+
+    def __init__(self):
+        self.node_name = "test_task1_v2_yellow_marker"
         self.rate = rospy.Rate(float(rospy.get_param("~rate", 5.0)))
         self.tf_listener = tf.TransformListener()
 
@@ -92,77 +99,62 @@ class Task1MarkerActionTest:
         self.target_topic = rospy.get_param("~target_topic", "/obj/target_message")
         self.actuator_topic = rospy.get_param("~actuator_topic", "/cmd/actuator")
         self.finished_topic = rospy.get_param("~finished_topic", "/finished")
-
-        self.initial_search_yaw = math.radians(float(rospy.get_param(
-            "~initial_heading_deg", DEFAULT_INITIAL_HEADING_DEG
-        )))
-        self.search_forward_force = float(rospy.get_param("~search_forward_force", 1000.0))
-        self.manual_force_step = float(rospy.get_param("~manual_force_step", 200.0))
-        self.manual_brake_step = float(rospy.get_param("~manual_brake_step", 300.0))
-        self.manual_tx_sign = float(rospy.get_param("~manual_tx_sign", 1.0))
-
-        self.max_xy_step = float(rospy.get_param("~max_xy_step", 0.4))
-        self.position_tolerance = float(rospy.get_param("~position_tolerance", 0.15))
-        self.yaw_tolerance = math.radians(float(rospy.get_param("~yaw_tolerance_deg", 3.0)))
-        self.max_yaw_step = math.radians(float(rospy.get_param("~max_yaw_step_deg", 2.0)))
-        self.max_camera_distance = float(rospy.get_param("~max_camera_distance", 5.0))
-        self.marker_sample_count = int(rospy.get_param("~marker_sample_count", 10))
-        self.black_min_confidence = float(rospy.get_param(
-            "~black_min_confidence", 0.30
-        ))
-        self.marker_cluster_distance = float(rospy.get_param(
-            "~marker_cluster_distance", 0.25
-        ))
-
-        self.light_seconds = float(rospy.get_param("~light_seconds", 3.0))
-        self.gap_seconds = float(rospy.get_param("~gap_seconds", 0.5))
-        self.yellow_light_count = int(rospy.get_param("~yellow_light_count", 1))
-        self.black_light_count = int(rospy.get_param("~black_light_count", 2))
-        self.black_rotation_angle = math.radians(float(rospy.get_param(
-            "~black_rotation_angle_deg", 720.0
-        )))
-        self.rotation_stop_margin = math.radians(float(rospy.get_param(
-            "~rotation_stop_margin_deg", 10.0
-        )))
-        self.black_rotation_mz = float(rospy.get_param("~black_rotation_mz", 3000.0))
-        direction = float(rospy.get_param("~black_rotation_direction", 1.0))
-        self.black_rotation_direction = 1.0 if direction >= 0.0 else -1.0
-        self.black_rotation_mz_step = abs(float(rospy.get_param(
-            "~black_rotation_mz_step", 500.0
-        )))
-        self.black_rotation_slow_angle = math.radians(float(rospy.get_param(
-            "~black_rotation_slow_angle_deg", 30.0
-        )))
-        self.black_rotation_slow_mz = abs(float(rospy.get_param(
-            "~black_rotation_slow_mz", 1000.0
-        )))
-        self.rotation_feedback_deadband = math.radians(float(rospy.get_param(
-            "~rotation_feedback_deadband_deg", 0.05
-        )))
-        self.rotation_feedback_max_delta = math.radians(float(rospy.get_param(
-            "~rotation_feedback_max_delta_deg", 45.0
-        )))
-
         self.camera_topic = rospy.get_param("~camera_topic", "/left/image_raw")
+        self.velocity_topic = rospy.get_param("~velocity_topic", "/status/vel")
+
+        self.search_forward_distance = float(rospy.get_param(
+            "~search_forward_distance", 0.5
+        ))
+        self.search_yaw_offset = math.radians(float(rospy.get_param(
+            "~search_yaw_offset_deg", 30.0
+        )))
+        self.position_tolerance = float(rospy.get_param(
+            "~position_tolerance", 0.15
+        ))
+        self.yaw_tolerance = math.radians(float(rospy.get_param(
+            "~yaw_tolerance_deg", 3.0
+        )))
+        self.max_yaw_step = math.radians(float(rospy.get_param(
+            "~max_yaw_step_deg", 2.0
+        )))
+
         self.camera_message_timeout = float(rospy.get_param(
             "~camera_message_timeout", 2.0
         ))
-        self.startup_hold_seconds = float(rospy.get_param("~startup_hold_seconds", 10.0))
-        self.transition_hold_seconds = float(rospy.get_param(
-            "~transition_hold_seconds", 4.0
-        ))
-        self.velocity_topic = rospy.get_param("~velocity_topic", "/status/vel")
         self.velocity_message_timeout = float(rospy.get_param(
             "~velocity_message_timeout", 1.0
         ))
-        self.stable_linear_speed = float(rospy.get_param("~stable_linear_speed", 0.05))
+        self.transition_hold_seconds = float(rospy.get_param(
+            "~transition_hold_seconds", 4.0
+        ))
+        self.stable_linear_speed = float(rospy.get_param(
+            "~stable_linear_speed", 0.05
+        ))
         self.stable_angular_speed = math.radians(float(rospy.get_param(
             "~stable_angular_speed_deg", 3.0
         )))
 
-        self.yellow_classes = class_names("~yellow_classes", ["triangle", "circle"])
-        self.black_classes = class_names("~black_classes", ["rectangle"])
+        self.yellow_classes = class_names(
+            "~yellow_classes", ["triangle", "circle"]
+        )
+        self.marker_sample_count = max(1, int(rospy.get_param(
+            "~marker_sample_count", 10
+        )))
+        self.marker_cluster_distance = float(rospy.get_param(
+            "~marker_cluster_distance", 0.25
+        ))
+        self.marker_sample_timeout = float(rospy.get_param(
+            "~marker_sample_timeout", 1.0
+        ))
+        self.max_camera_distance = float(rospy.get_param(
+            "~max_camera_distance", 5.0
+        ))
 
+        self.light_seconds = float(rospy.get_param("~light_seconds", 3.0))
+        self.gap_seconds = float(rospy.get_param("~gap_seconds", 0.5))
+        self.yellow_light_count = max(1, int(rospy.get_param(
+            "~yellow_light_count", 1
+        )))
         self.light1 = int(rospy.get_param("~light1", 0))
         self.light2 = int(rospy.get_param("~light2", 0))
         self.heading_servo = int(rospy.get_param("~heading_servo", 0x80))
@@ -170,57 +162,43 @@ class Task1MarkerActionTest:
         self.drive_cmd = int(rospy.get_param("~drive_cmd", 0))
         self.drive_speed = int(rospy.get_param("~drive_speed", 0))
 
-        self.cmd_pub = rospy.Publisher(self.cmd_topic, PoseNEDcmd, queue_size=10)
-        self.actuator_pub = rospy.Publisher(self.actuator_topic, ActuatorControl, queue_size=10)
-        self.finished_pub = rospy.Publisher(self.finished_topic, String, queue_size=10)
-        rospy.Subscriber(self.target_topic, TargetDetection, self.target_callback)
-        rospy.Subscriber(self.camera_topic, rospy.AnyMsg, self.camera_callback, queue_size=1)
-        rospy.Subscriber(self.velocity_topic, TwistStamped, self.velocity_callback, queue_size=5)
+        self.cmd_pub = rospy.Publisher(
+            self.cmd_topic, PoseNEDcmd, queue_size=10
+        )
+        self.actuator_pub = rospy.Publisher(
+            self.actuator_topic, ActuatorControl, queue_size=10
+        )
+        self.finished_pub = rospy.Publisher(
+            self.finished_topic, String, queue_size=10
+        )
+        rospy.Subscriber(
+            self.target_topic, TargetDetection, self.target_callback, queue_size=10
+        )
+        rospy.Subscriber(
+            self.camera_topic, rospy.AnyMsg, self.camera_callback, queue_size=1
+        )
+        rospy.Subscriber(
+            self.velocity_topic, TwistStamped, self.velocity_callback, queue_size=5
+        )
 
-        self.step = self.STEP_WAIT_READY
-        self.step_started = rospy.Time.now()
+        self.step = self.STEP_WAIT_CAMERA
         self.start_pose = None
         self.hold_z = None
-        self.detected_marker = None
-        self.move_target = None
-        self.light_action_state = None
-        self.rotation_state = None
-        self.marker_samples = []
-        self.last_manual_tx = 0
-        self.last_manual_ty = 0
+        self.search_base_yaw = None
         self.last_camera_time = None
         self.latest_velocity = None
         self.latest_velocity_time = None
         self.pose_speed_sample = None
-        self.settle_target = None
-        self.settle_next_step = None
-        self.settle_reason = ""
-        self.settle_stable_since = None
 
-        rospy.loginfo(
-            "%s: initialized marker_kind=%s initial_heading=%.1fdeg target_topic=%s",
-            self.node_name,
-            self.marker_kind,
-            math.degrees(self.initial_search_yaw),
-            self.target_topic,
-        )
+        self.marker_samples = []
+        self.last_marker_sample_time = None
+        self.detected_marker = None
+        self.move_target = None
 
-    def set_step(self, step):
-        old_step = self.step
-        elapsed = (rospy.Time.now() - self.step_started).to_sec()
-        self.step = step
-        self.step_started = rospy.Time.now()
-        if old_step != step:
-            rospy.loginfo(
-                "%s: step %s -> %s, previous_step_elapsed=%.1fs",
-                self.node_name,
-                old_step,
-                step,
-                elapsed,
-            )
-
-    def step_elapsed(self):
-        return (rospy.Time.now() - self.step_started).to_sec()
+        self.search_target = None
+        self.search_stable_since = None
+        self.search_arrival_logged = False
+        self.light_started_at = None
 
     def camera_callback(self, _message):
         self.last_camera_time = rospy.Time.now()
@@ -236,61 +214,6 @@ class Task1MarkerActionTest:
             <= self.camera_message_timeout
         )
 
-    @staticmethod
-    def approach_zero(value, step):
-        if value > 0:
-            return max(0, value - step)
-        if value < 0:
-            return min(0, value + step)
-        return 0
-
-    def limit_force(self, desired, previous):
-        return int(round(clamp(
-            desired,
-            previous - self.manual_force_step,
-            previous + self.manual_force_step,
-        )))
-
-    def motion_is_stable(self, current):
-        now = rospy.Time.now()
-        if (
-            self.latest_velocity is not None
-            and self.latest_velocity_time is not None
-            and (now - self.latest_velocity_time).to_sec()
-            <= self.velocity_message_timeout
-        ):
-            linear = math.hypot(
-                self.latest_velocity.linear.x, self.latest_velocity.linear.y
-            )
-            angular = abs(self.latest_velocity.angular.z)
-            source = "velocity_topic"
-        else:
-            yaw = yaw_from_quaternion(current.pose.orientation)
-            sample = (now, current.pose.position.x, current.pose.position.y, yaw)
-            previous = self.pose_speed_sample
-            self.pose_speed_sample = sample
-            if previous is None or (now - previous[0]).to_sec() <= 0.05:
-                rospy.loginfo_throttle(1.0, "%s: TF speed estimate warming", self.node_name)
-                return False
-            elapsed = (now - previous[0]).to_sec()
-            linear = math.hypot(sample[1] - previous[1], sample[2] - previous[2]) / elapsed
-            angular = abs(wrap_angle(sample[3] - previous[3])) / elapsed
-            source = "tf_difference"
-        stable = (
-            linear <= self.stable_linear_speed
-            and angular <= self.stable_angular_speed
-        )
-        rospy.loginfo_throttle(
-            1.0,
-            "%s: stable check source=%s linear=%.3fm/s angular=%.2fdeg/s result=%s",
-            self.node_name,
-            source,
-            linear,
-            math.degrees(angular),
-            stable,
-        )
-        return stable
-
     def get_current_pose(self):
         try:
             self.tf_listener.waitForTransform(
@@ -300,7 +223,9 @@ class Task1MarkerActionTest:
                 "map", "base_link", rospy.Time(0)
             )
         except tf.Exception as error:
-            rospy.logwarn_throttle(2, "%s: cannot read current pose: %s", self.node_name, error)
+            rospy.logwarn_throttle(
+                2.0, "%s: 无法获取当前位姿: %s", self.node_name, error
+            )
             return None
 
         pose = PoseStamped()
@@ -313,103 +238,45 @@ class Task1MarkerActionTest:
     def initialize_start_pose(self):
         if self.start_pose is not None:
             return True
-
         current = self.get_current_pose()
         if current is None:
             return False
-
         self.start_pose = copy.deepcopy(current)
         self.hold_z = current.pose.position.z
-        rospy.loginfo(
-            "%s: start pose recorded x=%.2f, y=%.2f, z=%.2f, current_yaw=%.1fdeg, "
-            "search_yaw=%.1fdeg",
-            self.node_name,
-            current.pose.position.x,
-            current.pose.position.y,
-            current.pose.position.z,
-            math.degrees(yaw_from_quaternion(current.pose.orientation)),
-            math.degrees(self.initial_search_yaw),
-        )
+        self.search_base_yaw = yaw_from_quaternion(current.pose.orientation)
         return True
 
-    def make_pose(self, x, y, yaw):
+    @staticmethod
+    def make_pose(x, y, z, yaw):
         pose = PoseStamped()
         pose.header.frame_id = "map"
         pose.header.stamp = rospy.Time.now()
         pose.pose.position.x = x
         pose.pose.position.y = y
-        pose.pose.position.z = self.hold_z
+        pose.pose.position.z = z
         pose.pose.orientation = Quaternion(*quaternion_from_euler(0.0, 0.0, yaw))
         return pose
 
-    @staticmethod
-    def force_value(value):
-        return int(round(clamp(value, -10000, 10000)))
+    def publish_dprov(self, target):
+        command = PoseNEDcmd()
+        command.mode = MODE_DPROV
+        command.target = copy.deepcopy(target)
+        command.target.header.frame_id = "map"
+        command.target.header.stamp = rospy.Time.now()
+        self.cmd_pub.publish(command)
 
-    def publish_pose_cmd(self, mode, target, tx=0, ty=0, mz=0):
-        cmd = PoseNEDcmd()
-        cmd.mode = int(mode)
-        cmd.target = copy.deepcopy(target)
-        cmd.target.header.frame_id = "map"
-        cmd.target.header.stamp = rospy.Time.now()
-        cmd.force.TX = self.force_value(tx)
-        cmd.force.TY = self.force_value(ty)
-        cmd.force.MZ = self.force_value(mz)
-        self.cmd_pub.publish(cmd)
-        rospy.loginfo_throttle(
-            1.0,
-            "%s: pose cmd mode=%d target=(%.2f, %.2f, %.2f, yaw=%.1fdeg) force=(%d,%d,MZ=%d)",
-            self.node_name,
-            cmd.mode,
-            cmd.target.pose.position.x,
-            cmd.target.pose.position.y,
-            cmd.target.pose.position.z,
-            math.degrees(yaw_from_quaternion(cmd.target.pose.orientation)),
-            cmd.force.TX,
-            cmd.force.TY,
-            cmd.force.MZ,
-        )
-
-    def publish_current_manual_cmd(self, yaw, tx=0, ty=0):
+    def publish_position_target(self, point):
+        """发布定点目标，但把当前航向原样带入，不主动规划航向。"""
         current = self.get_current_pose()
         if current is None:
             return False
-        self.publish_pose_cmd(
-            MODE_DEPTH_HDG,
-            self.make_pose(current.pose.position.x, current.pose.position.y, yaw),
-            tx=tx,
-            ty=ty,
-        )
+        target = PoseStamped()
+        target.header.frame_id = "map"
+        target.header.stamp = rospy.Time.now()
+        target.pose.position = Point(point.x, point.y, self.hold_z)
+        target.pose.orientation = copy.deepcopy(current.pose.orientation)
+        self.publish_dprov(target)
         return True
-
-    def publish_lights(self, red=0, green=0):
-        light_msg = ActuatorControl()
-        light_msg.mode = 1
-        light_msg.light1 = self.light1
-        light_msg.light2 = self.light2
-        self.actuator_pub.publish(light_msg)
-
-        msg = ActuatorControl()
-        msg.mode = 2
-        msg.heading_servo = self.heading_servo
-        msg.clamp_servo = self.clamp_servo
-        msg.drive_cmd = self.drive_cmd
-        msg.drive_speed = self.drive_speed
-        msg.red_light = int(red)
-        msg.yellow_light = 0
-        msg.green_light = int(green)
-        self.actuator_pub.publish(msg)
-        rospy.loginfo_throttle(
-            1.0,
-            "%s: actuator red=%d green=%d light=(%d,%d) servo=(%d,%d)",
-            self.node_name,
-            msg.red_light,
-            msg.green_light,
-            light_msg.light1,
-            light_msg.light2,
-            msg.heading_servo,
-            msg.clamp_servo,
-        )
 
     def transform_pose_to_map(self, pose):
         try:
@@ -422,483 +289,310 @@ class Task1MarkerActionTest:
                 self.tf_listener.waitForTransform(
                     "map", pose.header.frame_id, rospy.Time(0), rospy.Duration(1.0)
                 )
-                return self.tf_listener.transformPose("map", pose)
+                latest_pose = copy.deepcopy(pose)
+                latest_pose.header.stamp = rospy.Time(0)
+                return self.tf_listener.transformPose("map", latest_pose)
             except tf.Exception as error:
-                rospy.logwarn_throttle(2, "%s: marker transform failed: %s", self.node_name, error)
+                rospy.logwarn_throttle(
+                    2.0, "%s: 黄色图形坐标转换失败: %s", self.node_name, error
+                )
                 return None
 
-    def marker_type_from_class(self, class_name):
-        if class_name in self.yellow_classes:
-            return "yellow"
-        if class_name in self.black_classes:
-            return "black"
-        return None
-
     def target_callback(self, message):
+        """只接收黄色图形；多帧稳定后立即切换到定点靠近。"""
         if self.hold_z is None and not self.initialize_start_pose():
             return
-
-        if self.detected_marker is not None or self.step != self.STEP_SEARCH:
+        if self.detected_marker is not None or not self.camera_ready():
             return
         if message.type and message.type != "center":
-            if self.marker_kind == "black" and self.marker_samples:
-                rospy.loginfo(
-                    "%s: black rectangle streak interrupted by type=%s; restart",
-                    self.node_name,
-                    message.type,
-                )
-                self.marker_samples = []
+            return
+        if message.class_name not in self.yellow_classes:
             return
 
-        detected_kind = self.marker_type_from_class(message.class_name)
-        if detected_kind != self.marker_kind:
-            if self.marker_kind == "black" and self.marker_samples:
-                rospy.loginfo(
-                    "%s: black rectangle streak interrupted by class=%s; restart",
-                    self.node_name,
-                    message.class_name,
-                )
-                self.marker_samples = []
-            return
-
-        if self.marker_kind == "black" and message.conf < self.black_min_confidence:
-            rospy.loginfo_throttle(
-                1.0,
-                "%s: reject black rectangle conf=%.2f < %.2f; restart streak",
-                self.node_name,
-                message.conf,
-                self.black_min_confidence,
-            )
-            self.marker_samples = []
-            return
-
+        camera_point = message.pose.pose.position
         if math.sqrt(
-            message.pose.pose.position.x ** 2
-            + message.pose.pose.position.y ** 2
-            + message.pose.pose.position.z ** 2
+            camera_point.x ** 2 + camera_point.y ** 2 + camera_point.z ** 2
         ) > self.max_camera_distance:
-            rospy.loginfo_throttle(
-                2.0,
-                "%s: ignore far %s marker camera_pos=(%.2f, %.2f, %.2f)",
-                self.node_name,
-                detected_kind,
-                message.pose.pose.position.x,
-                message.pose.pose.position.y,
-                message.pose.pose.position.z,
-            )
-            if self.marker_kind == "black":
-                self.marker_samples = []
             return
 
         marker = self.transform_pose_to_map(message.pose)
         if marker is None:
-            if self.marker_kind == "black":
-                self.marker_samples = []
             return
 
-        if self.marker_samples and xy_distance(
-            marker.pose.position, self.marker_samples[0].pose.position
-        ) > self.marker_cluster_distance:
-            rospy.loginfo(
-                "%s: marker cluster moved %.2fm; restart frame collection",
-                self.node_name,
-                xy_distance(marker.pose.position, self.marker_samples[0].pose.position),
-            )
+        now = rospy.Time.now()
+        if (
+            self.last_marker_sample_time is None
+            or (now - self.last_marker_sample_time).to_sec()
+            > self.marker_sample_timeout
+        ):
             self.marker_samples = []
+        self.last_marker_sample_time = now
+
+        if self.marker_samples:
+            center_x = sum(
+                item.pose.position.x for item in self.marker_samples
+            ) / len(self.marker_samples)
+            center_y = sum(
+                item.pose.position.y for item in self.marker_samples
+            ) / len(self.marker_samples)
+            if math.hypot(
+                marker.pose.position.x - center_x,
+                marker.pose.position.y - center_y,
+            ) > self.marker_cluster_distance:
+                self.marker_samples = []
+
         self.marker_samples.append(copy.deepcopy(marker))
-        rospy.loginfo_throttle(
-            1.0,
-            "%s: collecting %s marker samples=%d/%d latest=(%.2f,%.2f)",
-            self.node_name,
-            detected_kind,
-            len(self.marker_samples),
-            self.marker_sample_count,
-            marker.pose.position.x,
-            marker.pose.position.y,
-        )
         if len(self.marker_samples) < self.marker_sample_count:
             return
 
         marker.pose.position.x = sum(
-            sample.pose.position.x for sample in self.marker_samples
+            item.pose.position.x for item in self.marker_samples
         ) / len(self.marker_samples)
         marker.pose.position.y = sum(
-            sample.pose.position.y for sample in self.marker_samples
+            item.pose.position.y for item in self.marker_samples
         ) / len(self.marker_samples)
         marker.pose.position.z = self.hold_z
+        self.detected_marker = copy.deepcopy(marker)
+        self.move_target = copy.deepcopy(marker.pose.position)
+        self.search_target = None
+        self.search_stable_since = None
 
-        self.detected_marker = marker
         current = self.get_current_pose()
         if current is None:
             self.detected_marker = None
+            self.move_target = None
             self.marker_samples = []
             return
-        yaw = self.initial_search_yaw
-        self.move_target = self.make_pose(marker.pose.position.x, marker.pose.position.y, yaw)
 
+        distance = xy_distance(current.pose.position, self.move_target)
         rospy.loginfo(
-            "%s: detected %s marker class=%s conf=%.2f map=(%.2f, %.2f, %.2f), "
-            "move_target=(%.2f, %.2f, %.2f, yaw=%.1fdeg)",
+            "%s: 识别状态=已识别；当前位置=(%.2f, %.2f, %.2f)，"
+            "目标位置=(%.2f, %.2f, %.2f)，水平距离=%.2f m",
             self.node_name,
-            detected_kind,
-            message.class_name,
-            message.conf,
-            marker.pose.position.x,
-            marker.pose.position.y,
-            marker.pose.position.z,
-            self.move_target.pose.position.x,
-            self.move_target.pose.position.y,
-            self.move_target.pose.position.z,
-            math.degrees(yaw),
+            current.pose.position.x,
+            current.pose.position.y,
+            current.pose.position.z,
+            self.move_target.x,
+            self.move_target.y,
+            self.move_target.z,
+            distance,
         )
-        if current is not None:
-            hold_target = self.make_pose(
+        self.step = self.STEP_MOVE
+
+    def motion_is_stable(self, current):
+        now = rospy.Time.now()
+        if (
+            self.latest_velocity is not None
+            and self.latest_velocity_time is not None
+            and (now - self.latest_velocity_time).to_sec()
+            <= self.velocity_message_timeout
+        ):
+            linear_speed = math.hypot(
+                self.latest_velocity.linear.x,
+                self.latest_velocity.linear.y,
+            )
+            angular_speed = abs(self.latest_velocity.angular.z)
+        else:
+            yaw = yaw_from_quaternion(current.pose.orientation)
+            sample = (
+                now,
                 current.pose.position.x,
                 current.pose.position.y,
-                self.initial_search_yaw,
+                yaw,
             )
-            self.begin_settle(
-                hold_target,
-                self.STEP_MOVE,
-                "stable_marker_detected",
-            )
+            previous = self.pose_speed_sample
+            self.pose_speed_sample = sample
+            if previous is None:
+                return False
+            elapsed = (now - previous[0]).to_sec()
+            if elapsed <= 0.05:
+                return False
+            linear_speed = math.hypot(
+                sample[1] - previous[1], sample[2] - previous[2]
+            ) / elapsed
+            angular_speed = abs(wrap_angle(sample[3] - previous[3])) / elapsed
 
-    def search_marker(self):
-        self.last_manual_tx = self.limit_force(
-            self.manual_tx_sign * self.search_forward_force,
-            self.last_manual_tx,
-        )
-        self.last_manual_ty = self.approach_zero(
-            self.last_manual_ty, self.manual_brake_step
-        )
-        self.publish_current_manual_cmd(
-            self.initial_search_yaw,
-            tx=self.last_manual_tx,
-            ty=self.last_manual_ty,
-        )
-        rospy.loginfo_throttle(
-            1.0,
-            "%s: searching %s marker heading=%.1fdeg force=%.0f",
-            self.node_name,
-            self.marker_kind,
-            math.degrees(self.initial_search_yaw),
-            self.last_manual_tx,
+        return (
+            linear_speed <= self.stable_linear_speed
+            and angular_speed <= self.stable_angular_speed
         )
 
-    def move_to_pose(self, target):
-        """慢速定点到指定 XY，最后恢复目标航向。"""
-        if target is None:
+    def set_search_step(self, step):
+        self.step = step
+        self.search_target = None
+        self.search_stable_since = None
+        self.search_arrival_logged = False
+        self.pose_speed_sample = None
+
+    def wait_until_search_target_stable(self, current, reached):
+        if not reached:
+            self.search_stable_since = None
             return False
+        if not self.search_arrival_logged:
+            rospy.loginfo("%s: SEARCH 目标已到达，等待机器人静止", self.node_name)
+            self.search_arrival_logged = True
+        if not self.motion_is_stable(current):
+            self.search_stable_since = None
+            return False
+        if self.search_stable_since is None:
+            self.search_stable_since = rospy.Time.now()
+        return (
+            rospy.Time.now() - self.search_stable_since
+        ).to_sec() >= self.transition_hold_seconds
+
+    def run_search_forward(self, current):
+        if self.search_target is None:
+            self.search_target = Point(
+                current.pose.position.x
+                + self.search_forward_distance * math.cos(self.search_base_yaw),
+                current.pose.position.y
+                + self.search_forward_distance * math.sin(self.search_base_yaw),
+                self.hold_z,
+            )
+            rospy.loginfo(
+                "%s: 识别状态=未识别；SEARCH 定点向前移动 %.2f m",
+                self.node_name,
+                self.search_forward_distance,
+            )
+
+        self.publish_position_target(self.search_target)
+        reached = xy_distance(
+            current.pose.position, self.search_target
+        ) <= self.position_tolerance
+        if self.wait_until_search_target_stable(current, reached):
+            self.set_search_step(self.STEP_SEARCH_LEFT)
+
+    def run_search_rotation(self, current, offset, next_step, label):
+        if self.search_target is None:
+            self.search_target = copy.deepcopy(current)
+            rospy.loginfo(
+                "%s: 识别状态=未识别；SEARCH 在当前位置%s %.1f 度",
+                self.node_name,
+                label,
+                abs(math.degrees(offset)),
+            )
+
+        desired_yaw = wrap_angle(self.search_base_yaw + offset)
+        current_yaw = yaw_from_quaternion(current.pose.orientation)
+        yaw_error = wrap_angle(desired_yaw - current_yaw)
+        command_yaw = current_yaw + clamp(
+            yaw_error, -self.max_yaw_step, self.max_yaw_step
+        )
+        target = self.make_pose(
+            self.search_target.pose.position.x,
+            self.search_target.pose.position.y,
+            self.hold_z,
+            command_yaw,
+        )
+        self.publish_dprov(target)
+
+        reached = abs(yaw_error) <= self.yaw_tolerance
+        if self.wait_until_search_target_stable(current, reached):
+            self.set_search_step(next_step)
+
+    def run_search(self):
+        if self.detected_marker is not None:
+            self.step = self.STEP_MOVE
+            return
         current = self.get_current_pose()
         if current is None:
-            return False
-
-        dx = target.pose.position.x - current.pose.position.x
-        dy = target.pose.position.y - current.pose.position.y
-        distance = math.hypot(dx, dy)
-        current_yaw = yaw_from_quaternion(current.pose.orientation)
-        target_yaw = yaw_from_quaternion(target.pose.orientation)
-
-        if distance > self.position_tolerance:
-            move_yaw = math.atan2(dy, dx)
-            yaw_error = wrap_angle(move_yaw - current_yaw)
-            if abs(yaw_error) > self.yaw_tolerance:
-                cmd_yaw = current_yaw + clamp(yaw_error, -self.max_yaw_step, self.max_yaw_step)
-                target = self.make_pose(current.pose.position.x, current.pose.position.y, cmd_yaw)
-                self.publish_pose_cmd(MODE_DPROV, target)
-                rospy.loginfo_throttle(
-                    1.0,
-                    "%s: DPROV align distance=%.2f yaw_error=%.1fdeg",
-                    self.node_name,
-                    distance,
-                    math.degrees(yaw_error),
-                )
-                return False
-
-            step = min(self.max_xy_step, distance)
-            scale = step / distance
-            target = self.make_pose(
-                current.pose.position.x + dx * scale,
-                current.pose.position.y + dy * scale,
-                move_yaw,
-            )
-            self.publish_pose_cmd(MODE_DPROV, target)
-            rospy.loginfo_throttle(
-                1.0,
-                "%s: move to marker distance=%.2f step=%.2f current=(%.2f, %.2f) "
-                "target=(%.2f, %.2f)",
-                self.node_name,
-                distance,
-                step,
-                current.pose.position.x,
-                current.pose.position.y,
-                target.pose.position.x,
-                target.pose.position.y,
-            )
-            return False
-
-        yaw_error = wrap_angle(target_yaw - current_yaw)
-        if abs(yaw_error) > self.yaw_tolerance:
-            cmd_yaw = current_yaw + clamp(yaw_error, -self.max_yaw_step, self.max_yaw_step)
-            self.publish_pose_cmd(
-                MODE_DPROV,
-                self.make_pose(target.pose.position.x, target.pose.position.y, cmd_yaw),
-            )
-            rospy.loginfo_throttle(
-                1.0,
-                "%s: final marker yaw align yaw_error=%.1fdeg",
-                self.node_name,
-                math.degrees(yaw_error),
-            )
-            return False
-
-        self.publish_pose_cmd(MODE_DPROV, target)
-        return True
-
-    def move_to_marker(self):
-        if self.move_target is None:
-            self.set_step(self.STEP_SEARCH)
-            return False
-        reached = self.move_to_pose(self.move_target)
-        if reached:
-            rospy.loginfo_throttle(
-                1.0,
-                "%s: arrived above %s marker",
-                self.node_name,
-                self.marker_kind,
-            )
-        return reached
-
-    def begin_settle(self, target, next_step, reason):
-        self.settle_target = copy.deepcopy(target)
-        self.settle_next_step = next_step
-        self.settle_reason = reason
-        self.settle_stable_since = None
-        self.pose_speed_sample = None
-        rospy.loginfo(
-            "%s: begin settle reason=%s target=(%.2f,%.2f,yaw=%.1fdeg) hold=%.1fs",
-            self.node_name,
-            reason,
-            target.pose.position.x,
-            target.pose.position.y,
-            math.degrees(yaw_from_quaternion(target.pose.orientation)),
-            self.transition_hold_seconds,
-        )
-        self.set_step(self.STEP_SETTLE)
-
-    def run_settle(self):
-        if self.last_manual_tx != 0 or self.last_manual_ty != 0:
-            self.last_manual_tx = self.approach_zero(
-                self.last_manual_tx, self.manual_brake_step
-            )
-            self.last_manual_ty = self.approach_zero(
-                self.last_manual_ty, self.manual_brake_step
-            )
-            self.publish_current_manual_cmd(
-                yaw_from_quaternion(self.settle_target.pose.orientation),
-                self.last_manual_tx,
-                self.last_manual_ty,
-            )
-            self.settle_stable_since = None
-            rospy.loginfo_throttle(
-                1.0,
-                "%s: braking before DPROV force=(%d,%d)",
-                self.node_name,
-                self.last_manual_tx,
-                self.last_manual_ty,
-            )
             return
-        if not self.move_to_pose(self.settle_target):
-            self.settle_stable_since = None
-            return
-        current = self.get_current_pose()
-        if current is None or not self.motion_is_stable(current):
-            self.settle_stable_since = None
-            return
-        if self.settle_stable_since is None:
-            self.settle_stable_since = rospy.Time.now()
-        stable_seconds = (rospy.Time.now() - self.settle_stable_since).to_sec()
+
         rospy.loginfo_throttle(
-            1.0,
-            "%s: point hold reason=%s stable=%.1f/%.1fs",
-            self.node_name,
-            self.settle_reason,
-            stable_seconds,
-            self.transition_hold_seconds,
+            3.0, "%s: 识别状态=未识别", self.node_name
         )
-        if stable_seconds >= self.transition_hold_seconds:
-            next_step = self.settle_next_step
-            rospy.loginfo("%s: settle complete reason=%s", self.node_name, self.settle_reason)
-            self.settle_target = None
-            self.settle_stable_since = None
-            self.set_step(next_step)
+        if self.step == self.STEP_SEARCH_FORWARD:
+            self.run_search_forward(current)
+        elif self.step == self.STEP_SEARCH_LEFT:
+            self.run_search_rotation(
+                current,
+                self.search_yaw_offset,
+                self.STEP_SEARCH_RIGHT,
+                "左转",
+            )
+        elif self.step == self.STEP_SEARCH_RIGHT:
+            self.run_search_rotation(
+                current,
+                -self.search_yaw_offset,
+                self.STEP_SEARCH_CENTER,
+                "右转",
+            )
+        elif self.step == self.STEP_SEARCH_CENTER:
+            self.run_search_rotation(
+                current,
+                0.0,
+                self.STEP_SEARCH_FORWARD,
+                "回到初始航向",
+            )
 
-    def start_light_action(self):
-        if self.light_action_state is not None:
+    def run_move_to_marker(self):
+        current = self.get_current_pose()
+        if current is None or self.move_target is None:
             return
 
-        if self.marker_kind == "yellow":
-            self.light_action_state = {
-                "count": self.yellow_light_count,
-                "red": 1,
-                "green": 0,
-            }
-        else:
-            self.light_action_state = {
-                "count": self.black_light_count,
-                "red": 0,
-                "green": 1,
-            }
-
-        rospy.loginfo(
-            "%s: light action start marker=%s count=%d on=%.1fs off=%.1fs",
+        distance = xy_distance(current.pose.position, self.move_target)
+        rospy.loginfo_throttle(
+            2.0,
+            "%s: 识别状态=已识别；当前位置=(%.2f, %.2f, %.2f)，"
+            "目标位置=(%.2f, %.2f, %.2f)，水平距离=%.2f m",
             self.node_name,
-            self.marker_kind,
-            self.light_action_state["count"],
-            self.light_seconds,
-            self.gap_seconds,
+            current.pose.position.x,
+            current.pose.position.y,
+            current.pose.position.z,
+            self.move_target.x,
+            self.move_target.y,
+            self.move_target.z,
+            distance,
         )
+
+        # 直接把黄色图形中心作为动力定位目标。目标姿态使用机器人当前姿态，
+        # 不根据位置差计算航向，也不把航向误差作为到达条件。
+        self.publish_position_target(self.move_target)
+        if distance <= self.position_tolerance:
+            rospy.loginfo(
+                "%s: 已到达黄色图形位置，开始执行亮灯动作", self.node_name
+            )
+            self.light_started_at = rospy.Time.now()
+            self.step = self.STEP_LIGHT
+
+    def publish_lights(self, red):
+        camera_light = ActuatorControl()
+        camera_light.mode = 1
+        camera_light.light1 = self.light1
+        camera_light.light2 = self.light2
+        self.actuator_pub.publish(camera_light)
+
+        actuator = ActuatorControl()
+        actuator.mode = 2
+        actuator.heading_servo = self.heading_servo
+        actuator.clamp_servo = self.clamp_servo
+        actuator.drive_cmd = self.drive_cmd
+        actuator.drive_speed = self.drive_speed
+        actuator.red_light = int(red)
+        actuator.yellow_light = 0
+        actuator.green_light = 0
+        self.actuator_pub.publish(actuator)
 
     def run_light_action(self):
-        self.start_light_action()
-        self.publish_pose_cmd(MODE_DPROV, self.move_target)
+        self.publish_position_target(self.move_target)
+        elapsed = (rospy.Time.now() - self.light_started_at).to_sec()
+        cycle_seconds = self.light_seconds + self.gap_seconds
+        cycle_index = int(elapsed // cycle_seconds)
+        if cycle_index >= self.yellow_light_count:
+            self.publish_lights(0)
+            self.step = self.STEP_FINISH
+            return
 
-        elapsed = self.step_elapsed()
-        cycle = self.light_seconds + self.gap_seconds
-        current_count = int(elapsed // cycle)
-        if current_count >= self.light_action_state["count"]:
-            self.publish_lights(0, 0)
-            rospy.loginfo(
-                "%s: light action complete marker=%s elapsed=%.1fs",
-                self.node_name,
-                self.marker_kind,
-                elapsed,
-            )
-            return True
-
-        in_cycle = elapsed - current_count * cycle
-        if in_cycle < self.light_seconds:
-            self.publish_lights(self.light_action_state["red"], self.light_action_state["green"])
-            rospy.loginfo_throttle(
-                1.0,
-                "%s: light action running marker=%s cycle=%d/%d elapsed=%.1fs",
-                self.node_name,
-                self.marker_kind,
-                current_count + 1,
-                self.light_action_state["count"],
-                elapsed,
-            )
-        else:
-            self.publish_lights(0, 0)
-            rospy.loginfo_throttle(
-                1.0,
-                "%s: light action off-gap marker=%s cycle=%d/%d elapsed=%.1fs",
-                self.node_name,
-                self.marker_kind,
-                current_count + 1,
-                self.light_action_state["count"],
-                elapsed,
-            )
-        return False
-
-    def rotate_black(self):
-        current = self.get_current_pose()
-        if current is None:
-            return False
-
-        current_yaw = yaw_from_quaternion(current.pose.orientation)
-        if self.rotation_state is None:
-            self.rotation_state = {
-                "last_yaw": current_yaw,
-                "accumulated": 0.0,
-                "direction": self.black_rotation_direction,
-                "commanded_mz": 0.0,
-            }
-            rospy.loginfo(
-                "%s: black rotation start yaw=%.1fdeg target=%.1fdeg",
-                self.node_name,
-                math.degrees(current_yaw),
-                math.degrees(self.black_rotation_angle),
-            )
-
-        delta = wrap_angle(current_yaw - self.rotation_state["last_yaw"])
-        directed_delta = delta * self.rotation_state["direction"]
-        if abs(delta) > self.rotation_feedback_max_delta:
-            rospy.logwarn_throttle(
-                1.0,
-                "%s: ignore abnormal yaw feedback jump %.1fdeg",
-                self.node_name,
-                math.degrees(delta),
-            )
-        elif directed_delta > self.rotation_feedback_deadband:
-            self.rotation_state["accumulated"] += directed_delta
-        self.rotation_state["last_yaw"] = current_yaw
-
-        finish_angle = max(0.0, self.black_rotation_angle - self.rotation_stop_margin)
-        if self.rotation_state["accumulated"] >= finish_angle:
-            self.publish_lights(0, 0)
-            self.publish_pose_cmd(MODE_DPROV, self.move_target)
-            rospy.loginfo(
-                "%s: black rotation complete accumulated=%.1fdeg",
-                self.node_name,
-                math.degrees(self.rotation_state["accumulated"]),
-            )
-            return True
-
-        target = self.make_pose(
-            self.move_target.pose.position.x,
-            self.move_target.pose.position.y,
-            current_yaw,
-        )
-        remaining = max(
-            0.0,
-            finish_angle - self.rotation_state["accumulated"],
-        )
-        desired_mz_magnitude = (
-            self.black_rotation_slow_mz
-            if remaining <= self.black_rotation_slow_angle
-            else abs(self.black_rotation_mz)
-        )
-        desired_mz = self.rotation_state["direction"] * desired_mz_magnitude
-        self.rotation_state["commanded_mz"] = clamp(
-            desired_mz,
-            self.rotation_state["commanded_mz"] - self.black_rotation_mz_step,
-            self.rotation_state["commanded_mz"] + self.black_rotation_mz_step,
-        )
-        self.publish_lights(0, 0)
-        self.publish_pose_cmd(
-            MODE_DPROV,
-            target,
-            mz=self.rotation_state["commanded_mz"],
-        )
-        rospy.loginfo_throttle(
-            1.0,
-            "%s: black rotating with point hold accumulated=%.1f/%.1fdeg "
-            "remaining=%.1fdeg current_yaw=%.1fdeg MZ=%d",
-            self.node_name,
-            math.degrees(self.rotation_state["accumulated"]),
-            math.degrees(self.black_rotation_angle),
-            math.degrees(remaining),
-            math.degrees(current_yaw),
-            int(self.rotation_state["commanded_mz"]),
-        )
-        return False
+        cycle_elapsed = elapsed - cycle_index * cycle_seconds
+        self.publish_lights(1 if cycle_elapsed < self.light_seconds else 0)
 
     def finish(self):
-        self.publish_lights(0, 0)
-        current = self.get_current_pose()
-        if current is not None:
-            self.publish_pose_cmd(
-                MODE_DPROV,
-                self.make_pose(
-                    current.pose.position.x,
-                    current.pose.position.y,
-                    yaw_from_quaternion(current.pose.orientation),
-                ),
-            )
-        self.finished_pub.publish(String(data="%s finished" % self.node_name))
-        rospy.loginfo("%s: finished %s marker test", self.node_name, self.marker_kind)
-        rospy.signal_shutdown("%s complete" % self.node_name)
+        self.publish_lights(0)
+        if self.move_target is not None:
+            self.publish_position_target(self.move_target)
+        self.finished_pub.publish(String(data="yellow marker finished"))
+        rospy.loginfo("%s: FINISH 黄色图形动作完成", self.node_name)
+        rospy.signal_shutdown("yellow marker test complete")
 
     def run(self):
         while not rospy.is_shutdown():
@@ -906,65 +600,37 @@ class Task1MarkerActionTest:
                 self.rate.sleep()
                 continue
 
-            if self.step == self.STEP_WAIT_READY:
-                hold = self.make_pose(
-                    self.start_pose.pose.position.x,
-                    self.start_pose.pose.position.y,
-                    yaw_from_quaternion(self.start_pose.pose.orientation),
-                )
-                self.publish_pose_cmd(MODE_DPROV, hold)
+            current = self.get_current_pose()
+            if current is None:
+                self.rate.sleep()
+                continue
+
+            if self.step == self.STEP_WAIT_CAMERA:
+                self.publish_dprov(self.start_pose)
+                camera_state = "已开启" if self.camera_ready() else "未开启"
                 rospy.loginfo_throttle(
-                    1.0,
-                    "%s: startup point hold elapsed=%.1f/%.1fs camera_ready=%s topic=%s",
+                    2.0,
+                    "%s: 摄像头状态=%s；当前自身位置=(%.2f, %.2f, %.2f)，"
+                    "当前航向=%.1f 度",
                     self.node_name,
-                    self.step_elapsed(),
-                    self.startup_hold_seconds,
-                    self.camera_ready(),
-                    self.camera_topic,
+                    camera_state,
+                    current.pose.position.x,
+                    current.pose.position.y,
+                    current.pose.position.z,
+                    math.degrees(yaw_from_quaternion(current.pose.orientation)),
                 )
-                if self.step_elapsed() >= self.startup_hold_seconds and self.camera_ready():
-                    self.begin_settle(
-                        self.make_pose(
-                            self.start_pose.pose.position.x,
-                            self.start_pose.pose.position.y,
-                            self.initial_search_yaw,
-                        ),
-                        self.STEP_SEARCH,
-                        "startup_heading_alignment",
+                if self.camera_ready():
+                    rospy.loginfo(
+                        "%s: 摄像头状态=已开启，进入黄色图形识别阶段",
+                        self.node_name,
                     )
-            elif self.step == self.STEP_SETTLE:
-                self.run_settle()
-            elif self.step == self.STEP_SEARCH:
-                self.search_marker()
+                    self.set_search_step(self.STEP_SEARCH_FORWARD)
+            elif self.step in self.SEARCH_STEPS:
+                self.run_search()
             elif self.step == self.STEP_MOVE:
-                if self.move_to_marker():
-                    self.begin_settle(
-                        self.move_target,
-                        self.STEP_LIGHT,
-                        "arrived_above_marker",
-                    )
+                self.run_move_to_marker()
             elif self.step == self.STEP_LIGHT:
-                if self.run_light_action():
-                    if self.marker_kind == "black":
-                        self.rotation_state = None
-                        self.begin_settle(
-                            self.move_target,
-                            self.STEP_ROTATE,
-                            "light_to_black_rotation",
-                        )
-                    else:
-                        self.begin_settle(
-                            self.move_target,
-                            self.STEP_FINISH,
-                            "return_to_yellow_marker",
-                        )
-            elif self.step == self.STEP_ROTATE:
-                if self.rotate_black():
-                    self.begin_settle(
-                        self.move_target,
-                        self.STEP_FINISH,
-                        "return_to_black_marker",
-                    )
+                self.run_light_action()
             elif self.step == self.STEP_FINISH:
                 self.finish()
 
@@ -973,7 +639,7 @@ class Task1MarkerActionTest:
 
 def main():
     rospy.init_node("test_task1_v2_yellow_marker")
-    Task1MarkerActionTest("test_task1_v2_yellow_marker", "yellow").run()
+    YellowMarkerTest().run()
 
 
 if __name__ == "__main__":
