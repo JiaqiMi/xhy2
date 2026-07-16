@@ -1,17 +1,51 @@
 <launch>
     <!-- 2026.7.13：执行器下行话题调整为 /cmd/actuator。 -->
-    <!-- 任务 3 子任务 2：读取 ArUco 编号并点亮对应颜色灯。
-         只使用新的 /cmd/actuator 接口。 -->
+    <!-- 任务3子任务2：mode=3 保持人工放置后的启动定点，
+         读取 ArUco 编号并通过 /cmd/actuator 点亮对应颜色灯。 -->
 
     <arg name="rate" default="10.0" />
-    <arg name="actuator_topic" default="/cmd/actuator" />
+    <!-- 人工把机器人停到目标正前方后，节点记录当前 map -> base_link 位姿。
+         固定使用 mode=3 保持深度和当前航向，并根据位置误差和 /status/auv
+         水平速度反馈计算 TX/TY 保持定点。悬停10秒结束后才累计识别帧。 -->
+    <arg name="pose_cmd_topic" default="/cmd/pose/ned" />
+    <arg name="status_topic" default="/status/auv" />
+    <arg name="status_timeout" default="0.5" />
+    <arg name="status_wait_timeout" default="5.0" />
+    <arg name="status_linear_velocity_scale" default="1.0" />
+    <arg name="hold_map_frame" default="map" />
+    <arg name="hold_base_frame" default="base_link" />
+    <arg name="initial_hover_seconds" default="10.0" />
+    <arg name="hold_pose_timeout" default="5.0" />
 
-    <!-- topic：从 /task3/aruco_id 读取真实编号。mock：使用固定编号序列进行台架测试。 -->
+    <!-- mode=3 水平定点调参：位置误差生成基础推力，速度阻尼抑制惯性。
+         越过定点时优先增大对应速度阻尼；来回摆动时降低增益或最大力。 -->
+    <arg name="hold_forward_position_gain" default="600.0" />
+    <arg name="hold_lateral_position_gain" default="600.0" />
+    <arg name="hold_forward_velocity_damping" default="300.0" />
+    <arg name="hold_lateral_velocity_damping" default="300.0" />
+    <arg name="hold_max_force" default="120.0" />
+    <arg name="hold_position_tolerance" default="0.02" />
+    <arg name="hold_speed_deadband" default="0.03" />
+    <arg name="hold_force_step" default="50.0" />
+    <!-- 如果实机前后或左右控制方向相反，分别改为 -1.0。 -->
+    <arg name="hold_tx_sign" default="1.0" />
+    <arg name="hold_ty_sign" default="1.0" />
+
+    <arg name="actuator_topic" default="/cmd/actuator" />
+    <!-- 执行器协议控制模式：0表示不响应，1表示仅补光灯，2表示仅执行器。
+         子任务2控制三色指示灯，因此默认使用模式2。 -->
+    <arg name="actuator_mode" default="2" />
+
+    <!-- 默认启动鱼眼 ArUco 识别；如果已在外部启动，将该参数设为 false。 -->
+    <arg name="start_aruco_model" default="true" />
+
+    <!-- topic：从 /obj/target_message 读取 TargetDetection。mock：使用固定编号序列。 -->
     <arg name="input_mode" default="topic" />
     <arg name="mock_aruco_ids" default="[1, 3, 5, 2, 4, 6]" />
-    <arg name="aruco_topic" default="/task3/aruco_id" />
+    <arg name="aruco_topic" default="/obj/target_message" />
+    <arg name="min_confidence" default="0.5" />
     <arg name="max_topic_markers" default="1" />
-    <arg name="stable_marker_count" default="1" />
+    <arg name="stable_marker_count" default="3" />
     <arg name="marker_timeout" default="1.0" />
 
     <arg name="light_seconds" default="3.0" />
@@ -24,15 +58,40 @@
     <arg name="drive_cmd" default="0" />
     <arg name="drive_speed" default="0" />
 
+    <!-- 鱼眼 ArUco 模型文件由其他伙伴合并后生效。 -->
+    <include if="$(arg start_aruco_model)"
+             file="$(find stereo_depth)/launch/test_aruco_detection_fisheye.launch" />
+
     <node pkg="auv_control"
           type="test_task3_2_get_task.py"
           name="test_task3_2_get_task"
           output="screen">
         <param name="rate" type="double" value="$(arg rate)" />
+        <param name="pose_cmd_topic" type="string" value="$(arg pose_cmd_topic)" />
+        <param name="status_topic" type="string" value="$(arg status_topic)" />
+        <param name="status_timeout" type="double" value="$(arg status_timeout)" />
+        <param name="status_wait_timeout" type="double" value="$(arg status_wait_timeout)" />
+        <param name="status_linear_velocity_scale" type="double" value="$(arg status_linear_velocity_scale)" />
+        <param name="hold_map_frame" type="string" value="$(arg hold_map_frame)" />
+        <param name="hold_base_frame" type="string" value="$(arg hold_base_frame)" />
+        <param name="initial_hover_seconds" type="double" value="$(arg initial_hover_seconds)" />
+        <param name="hold_pose_timeout" type="double" value="$(arg hold_pose_timeout)" />
+        <param name="hold_forward_position_gain" type="double" value="$(arg hold_forward_position_gain)" />
+        <param name="hold_lateral_position_gain" type="double" value="$(arg hold_lateral_position_gain)" />
+        <param name="hold_forward_velocity_damping" type="double" value="$(arg hold_forward_velocity_damping)" />
+        <param name="hold_lateral_velocity_damping" type="double" value="$(arg hold_lateral_velocity_damping)" />
+        <param name="hold_max_force" type="double" value="$(arg hold_max_force)" />
+        <param name="hold_position_tolerance" type="double" value="$(arg hold_position_tolerance)" />
+        <param name="hold_speed_deadband" type="double" value="$(arg hold_speed_deadband)" />
+        <param name="hold_force_step" type="double" value="$(arg hold_force_step)" />
+        <param name="hold_tx_sign" type="double" value="$(arg hold_tx_sign)" />
+        <param name="hold_ty_sign" type="double" value="$(arg hold_ty_sign)" />
         <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
+        <param name="actuator_mode" type="int" value="$(arg actuator_mode)" />
         <param name="input_mode" type="string" value="$(arg input_mode)" />
         <param name="mock_aruco_ids" type="yaml" value="$(arg mock_aruco_ids)" />
         <param name="aruco_topic" type="string" value="$(arg aruco_topic)" />
+        <param name="min_confidence" type="double" value="$(arg min_confidence)" />
         <param name="max_topic_markers" type="int" value="$(arg max_topic_markers)" />
         <param name="stable_marker_count" type="int" value="$(arg stable_marker_count)" />
         <param name="marker_timeout" type="double" value="$(arg marker_timeout)" />
