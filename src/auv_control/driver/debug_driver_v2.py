@@ -6,6 +6,7 @@
 作者：BroXu
 监听：/cmd/pose/lla (PoseLLAcmd.msg，经纬度坐标系)
 发布：/status/auv (AUVData.msg)
+      /status/vel (geometry_msgs/TwistStamped)
 记录：
 2026.7.11
     基于 debug_driver.py 重构，新增定深(mode=2)和定深定向(mode=3)模式
@@ -16,9 +17,13 @@
     调整至 driver 目录，归入硬件驱动层
     下层控制接口使用 LLA 坐标系的 PoseLLAcmd 整包消息。
     上行 AUV 状态话题调整为 /status/auv。
+2026.7.16
+    新增 /status/vel 速度话题，使用 TwistStamped 发布 base_link 坐标系下的三轴线速度和角速度。
+    线速度单位为 m/s，角速度由 deg/s 转换为 rad/s。
 """
 
 import json
+import math
 import os
 from datetime import datetime
 
@@ -29,6 +34,7 @@ import threading
 import time
 from auv_control.msg import AUVData, PoseLLAcmd
 from functools import reduce
+from geometry_msgs.msg import TwistStamped
 
 # 运行模式常量
 MODE_DEPTH       = 2   # 定深：闭环深度，其余开环力控
@@ -48,12 +54,12 @@ class ControlTarget:
         self.pitch = 0.0
         self.yaw = 0.0
         self.speed = 0.0
-        self.tx = 0      # X轴力 0-10000
-        self.ty = 0      # Y轴力 0-10000
-        self.tz = 0      # Z轴力 0-10000
-        self.mx = 0      # 绕X轴力矩 0-10000
-        self.my = 0      # 绕Y轴力矩 0-10000
-        self.mz = 0      # 绕Z轴力矩 0-10000
+        self.tx = 0      # X轴力 -10000～10000
+        self.ty = 0      # Y轴力 -10000～10000
+        self.tz = 0      # Z轴力 -10000～10000
+        self.mx = 0      # 绕X轴力矩 -10000～10000
+        self.my = 0      # 绕Y轴力矩 -10000～10000
+        self.mz = 0      # 绕Z轴力矩 -10000～10000
 
 
 class LowPassFilter:
@@ -159,6 +165,7 @@ class DebugDriverV2:
         # 接收由 auv_tf_handler 转换后的 LLA 整包控制指令。
         rospy.Subscriber('/cmd/pose/lla', PoseLLAcmd, self.control_cmd_callback)
         self.data_pub = rospy.Publisher('/status/auv', AUVData, queue_size=10)
+        self.velocity_pub = rospy.Publisher('/status/vel', TwistStamped, queue_size=10)
         rospy.loginfo("debug_driver_v2: 已启动, 监听 /cmd/pose/lla")
 
     def open_raw_save_file(self):
@@ -271,6 +278,18 @@ class DebugDriverV2:
         msg.time.second = parsed.utc_time[5]
         self.data_pub.publish(msg)
 
+        # TwistStamped 使用 m/s 和 rad/s，并明确速度所属的 AUV 本体坐标系。
+        velocity_msg = TwistStamped()
+        velocity_msg.header.stamp = msg.header.stamp
+        velocity_msg.header.frame_id = "base_link"
+        velocity_msg.twist.linear.x = parsed.linear_velocity[0]
+        velocity_msg.twist.linear.y = parsed.linear_velocity[1]
+        velocity_msg.twist.linear.z = parsed.linear_velocity[2]
+        velocity_msg.twist.angular.x = math.radians(parsed.angular_velocity[0])
+        velocity_msg.twist.angular.y = math.radians(parsed.angular_velocity[1])
+        velocity_msg.twist.angular.z = math.radians(parsed.angular_velocity[2])
+        self.velocity_pub.publish(velocity_msg)
+
     # ── 下行组包（严格遵循协议）─────────────────────────────────────
 
     def build_54_packet(self):
@@ -330,10 +349,25 @@ class DebugDriverV2:
         # 28-31: 期望航向角 float32
         packet[28:32] = struct.pack('<f', self.target.yaw)
 
-        # 32-43: 6自由度力/力矩 int16×6 大端序，原始值 0-10000
-        struct.pack_into('>6h', packet, 32,
+        # 32-43: 6自由度力/力矩 int16×6 大端序，协议范围 -10000～10000
+        raw_forces = (
             self.target.tx, self.target.ty, self.target.tz,
-            self.target.mx, self.target.my, self.target.mz)
+            self.target.mx, self.target.my, self.target.mz,
+        )
+        forces = []
+        for value in raw_forces:
+            limited = max(-10000, min(10000, int(value)))
+            if limited != value:
+                rospy.logwarn_throttle(
+                    1.0,
+                    "debug_driver_v2: 力/力矩 %s 超出协议范围，已限制为 %d",
+                    value,
+                    limited,
+                )
+            forces.append(limited)
+        struct.pack_into('>6h', packet, 32,
+            forces[0], forces[1], forces[2],
+            forces[3], forces[4], forces[5])
 
         # 44: 是否打开模式，严格保持 0x00（跟踪模式）
         packet[44] = 0x00

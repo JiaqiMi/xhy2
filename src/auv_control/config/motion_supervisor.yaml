@@ -1,0 +1,44 @@
+# 运动管理层控制频率与反馈处理
+control_rate_hz: 5.0
+feedback_timeout: 0.5
+velocity_filter_alpha: 0.35
+pitch_offset_deg: 0.0
+
+# 正常运动与刹停时的工作限幅，协议绝对范围为 [-10000, 10000]
+max_tx: 300.0
+max_ty: 180.0
+max_mz: 120.0
+brake_max_tx: 300.0
+brake_max_ty: 180.0
+brake_max_mz: 120.0
+force_slew_per_cycle: 50.0
+
+# 无积分位置/航向控制增益
+kp_x: 200.0
+kp_y: 200.0
+kv_x: 300.0
+kv_y: 300.0
+kp_yaw: 100.0
+kr_yaw: 100.0
+brake_gain_x: 1000.0
+brake_gain_y: 1000.0
+brake_gain_yaw: 1000.0
+
+# 停车距离模型；实船标定后必须更新有效减速度
+brake_acceleration: 0.10
+angular_brake_acceleration: 0.30
+control_delay: 0.35
+brake_margin: 0.15
+yaw_brake_margin_deg: 3.0
+
+# 捕获、接管和异常回退阈值
+capture_radius: 0.25
+capture_exit_radius: 0.35
+horizontal_speed_threshold: 0.05
+yaw_tolerance_deg: 5.0
+path_yaw_tolerance_deg: 5.0
+yaw_rate_threshold_deg_s: 3.0
+stable_frames: 5
+hover_fault_speed: 0.08
+hover_fault_yaw_rate_deg_s: 6.0
+mode_ack_timeout: 1.0

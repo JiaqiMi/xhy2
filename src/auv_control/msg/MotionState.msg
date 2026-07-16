@@ -1,0 +1,23 @@
+uint8 IDLE=0
+uint8 ALIGN_PATH=1
+uint8 ALIGN_PATH_BRAKE=2
+uint8 TRANSLATE=3
+uint8 TRANSLATE_BRAKE=4
+uint8 ALIGN_FINAL=5
+uint8 FINAL_BRAKE=6
+uint8 CAPTURE=7
+uint8 HOVER=8
+uint8 SAFE=9
+
+std_msgs/Header header
+uint8 state
+bool goal_active
+geometry_msgs/PoseStamped goal
+float32 position_error
+float32 yaw_error
+float32 horizontal_speed
+float32 yaw_rate
+int16 tx
+int16 ty
+int16 mz
+string reason
