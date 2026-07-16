@@ -7,15 +7,16 @@
 ## 技术核心
 
 - **视觉目标识别与定位**：
+
   - 利用双目相机结合YOLOv8分割模型，实现对水下二维码类目标（如标识点、维修接口等）的检测与分割；
   - 基于立体视觉原理与像素匹配，计算目标在相机坐标系下的3D位置，进而转换到载体与导航坐标系中。
-
 - **航行器姿态控制**：
+
   - 通过 IMU 传感器获取载体在导航坐标系下的欧拉角；
   - 实现二维码坐标系的对准目标向量（如 z 轴）与载体本体坐标系（如 x 轴）的空间对齐；
   - 计算姿态变换所需的旋转角度，指导 AUV 进行精确对接或目标朝向控制。
-
 - **坐标系转换与对齐策略**：
+
   - 采用 `ZYX` 欧拉角变换序列处理导航坐标系与相机/二维码坐标系之间的空间变换；
   - 利用旋转矩阵实现各坐标系之间的姿态解析和向量投影；
   - 支持对目标向量（如二维码 z 轴）在导航系的投影分析与角度计算，辅助控制系统调整航向。
@@ -29,14 +30,19 @@
 ## 应用前景
 
 “小黄鱼”系统具备可扩展的目标识别、导航控制与环境感知能力，适用于：
+
 - 海底构造巡检；
 - 水下管线识别与定位；
 - 自主作业中的目标引导与姿态校准任务。
+
 ## quick start
+
 `git clone git@github.com:JiaqiMi/xhy2.git`
 `cd xhy2`
 `catkin_make`
+
 ## 分支说明
+
 - main 主分支
 - main-backup 实际部署分支备份
 - control 控制更新分支
@@ -57,6 +63,7 @@ source /home/xhy/xhy_env/bin/activate
 
 export PYTHONPATH=/home/xhy/catkin_ws/devel_isolated/cv_bridge/lib/python3/dist-packages:$PYTHONPATH
 ```
+
 这部分已经放到~/.bashrc中，理论上不需要重复执行。
 
 ## 7. Shapes 多类别任务
@@ -408,6 +415,7 @@ roslaunch stereo_depth test_aruco_detection_fisheye.launch
 ```
 
 发布话题： obj/target_message, 内容如下：
+
 ```base
 pose: 
   header: 
@@ -430,7 +438,6 @@ conf: 0.0
 type: "aruco_not_detected"
 class_name: "-1"
 ```
-
 
 ## 11. Web 使用说明
 
@@ -588,7 +595,6 @@ fuser /dev/video0 2>/dev/null
 ss -lntp | grep 8080
 ```
 
-
 ## rosbag视频回放功能
 
 ```bash
@@ -601,4 +607,26 @@ roslaunch stereo_depth test_rosbag.launch \
   bag_file:=/home/xhy/xhy_records/stereo_input_0.bag
 ```
 
+## hsx 控制侧
 
+开启tf和map
+
+```bash
+roslaunch auv_control begin.launch
+```
+
+初始化世界坐标原点
+
+```bash
+roslaunch auv_control reset_world origin.launch
+```
+
+关键话题
+
+```bash
+/cmd/pose/ned (PoseNEDcmd.msg)
+/cmd/actuator (ActuatorControl.msg)
+/status/actuator (ActuatorControl.msg)
+/status/power (SensorStatus.msg)
+/status/auv (AUVData.msg)
+```
