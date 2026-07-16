@@ -23,7 +23,7 @@
     <arg name="hold_lateral_position_gain" default="600.0" />
     <arg name="hold_forward_velocity_damping" default="300.0" />
     <arg name="hold_lateral_velocity_damping" default="300.0" />
-    <arg name="hold_max_force" default="120.0" />
+    <arg name="hold_max_force" default="1" />
     <arg name="hold_position_tolerance" default="0.02" />
     <arg name="hold_speed_deadband" default="0.03" />
     <arg name="hold_force_step" default="50.0" />
@@ -45,7 +45,7 @@
     <arg name="aruco_topic" default="/obj/target_message" />
     <arg name="min_confidence" default="0.5" />
     <arg name="max_topic_markers" default="1" />
-    <arg name="stable_marker_count" default="3" />
+    <arg name="stable_marker_count" default="1" />
     <arg name="marker_timeout" default="1.0" />
 
     <arg name="light_seconds" default="3.0" />

@@ -8,9 +8,9 @@ pitch_offset_deg: 0.0
 max_tx: 300.0
 max_ty: 180.0
 max_mz: 120.0
-brake_max_tx: 300.0
-brake_max_ty: 180.0
-brake_max_mz: 120.0
+brake_max_tx: 2000.0
+brake_max_ty: 3000.0
+brake_max_mz: 2000.0
 force_slew_per_cycle: 50.0
 
 # 无积分位置/航向控制增益

@@ -3,7 +3,7 @@
     <!-- 用法: roslaunch auv_control begin.launch -->
 
     <!-- 包含任务参数 -->
-    <include file="$(find auv_control)/launch/param.launch"/>
+    <!-- <include file="$(find auv_control)/launch/param.launch"/> -->
     <arg name="save_dir" default="$(env HOME)/.ros/auv_logs" />
     <arg name="vehicle_ip" default="192.168.1.115" />
 

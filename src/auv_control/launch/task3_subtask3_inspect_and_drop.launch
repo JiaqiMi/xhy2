@@ -7,7 +7,7 @@
          下位机驱动仍需要单独启动。 -->
 
     <!-- 任务运行方式和主循环频率。默认使用人工操作模式。 -->
-    <arg name="operation_mode" default="manual" />
+    <arg name="operation_mode" default="auto" />
     <arg name="rate" default="5.0" />
 
     <!-- 默认包含 test_rectangles_detection.launch，并直接使用该文件内部的方框模型、
@@ -16,7 +16,7 @@
 
     <!-- 模型识别参数：读取模型发布的全部候选结果，并连续多帧确认目标。 -->
     <arg name="model_detection_topic" default="/web/detections" />
-    <arg name="target_color" default="yellow" />
+    <arg name="target_color" default="red" />
     <arg name="min_confidence" default="0.35" />
     <!-- 人工模式连续稳定识别帧数。 -->
     <arg name="stable_detection_count" default="5" />
@@ -50,8 +50,8 @@
          auto_search_forward_force：前进搜索时使用的 TX 绝对值；
          auto_search_lateral_force：向左、向右搜索时共同使用的 TY 绝对值。
          建议先用较小值下水测试，再逐步增加。 -->
-    <arg name="auto_search_forward_force" default="120.0" />
-    <arg name="auto_search_lateral_force" default="120.0" />
+    <arg name="auto_search_forward_force" default="500.0" />
+    <arg name="auto_search_lateral_force" default="1500.0" />
     <arg name="auto_search_first_forward_distance" default="0.30" />
     <arg name="auto_search_second_forward_distance" default="0.20" />
     <arg name="auto_search_third_forward_distance" default="0.10" />
