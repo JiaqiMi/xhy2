@@ -8,34 +8,87 @@
         roslaunch auv_control task1_v2_test_line_follow.launch initial_heading_deg:=0
     -->
 
+    <!-- 基础：控制循环频率（Hz）和初始搜索航向（deg）。 -->
     <arg name="rate" default="5.0" />
     <arg name="initial_heading_deg" default="45.0" />
 
+    <!-- 话题：运动指令、红线识别、完成消息、相机就绪、可选速度反馈和轨迹 JSON。 -->
     <arg name="cmd_topic" default="/cmd/pose/ned" />
     <arg name="line_topic" default="/obj/line_message" />
     <arg name="finished_topic" default="/finished" />
+    <arg name="camera_topic" default="/left/image_raw" />
+    <arg name="velocity_topic" default="/status/vel" />
+    <arg name="trajectory_topic" default="/task1/trajectory" />
+    <!-- 网页开关及绑定地址；浏览器默认访问 http://192.168.1.117:8082。 -->
+    <arg name="trajectory_web_enabled" default="true" />
+    <!-- 轨迹网页绑定的机器人网卡地址；必须是机器人本机实际拥有的 IP。 -->
+    <arg name="trajectory_web_host" default="192.168.1.117" />
+    <!-- 轨迹网页端口；浏览器访问 http://192.168.1.117:8082。 -->
+    <arg name="trajectory_web_port" default="8082" />
 
+    <!-- 搜索推进：正常/减速 TX、单次前进距离（m）和开始减速的剩余距离（m）。 -->
     <arg name="search_forward_force" default="1000.0" />
+    <arg name="search_slow_forward_force" default="300.0" />
+    <arg name="search_forward_step" default="0.5" />
+    <arg name="search_deceleration_distance" default="0.2" />
+    <!-- 搜索扫描：每个角度稳定停留时间（s）及相对搜索航向的角度序列（deg）。 -->
+    <arg name="search_scan_hold_seconds" default="2.0" />
+    <arg name="search_scan_offsets_deg" default="0.0, 30.0, -30.0, 0.0" />
+    <!-- LOS 前进：正常/慢速 TX。 -->
     <arg name="manual_forward_force" default="1000.0" />
-    <arg name="manual_slow_forward_force" default="120.0" />
-    <arg name="manual_lateral_gain" default="250.0" />
-    <arg name="manual_max_lateral_force" default="180.0" />
-    <arg name="manual_force_step" default="50.0" />
+    <arg name="manual_slow_forward_force" default="300.0" />
+    <!-- LOS 横移：误差增益、非零 TY 有效范围和横向误差死区（m）。 -->
+    <arg name="manual_lateral_gain" default="6000.0" />
+    <arg name="manual_min_lateral_force" default="1500.0" />
+    <arg name="manual_max_lateral_force" default="3000.0" />
+    <arg name="manual_lateral_deadband" default="0.03" />
+    <!-- 力变化：正常增减步长和切入定点前的卸力步长。 -->
+    <arg name="manual_force_step" default="200.0" />
+    <arg name="manual_brake_step" default="300.0" />
+    <!-- 前右下坐标系的 TX/TY 方向符号，实机方向相反时改为 -1。 -->
     <arg name="manual_tx_sign" default="1.0" />
     <arg name="manual_ty_sign" default="1.0" />
 
+    <!-- LOS 前视距离（m）及触发慢速的航向误差（deg）和横向误差（m）。 -->
     <arg name="los_lookahead_distance" default="0.6" />
     <arg name="manual_slow_yaw_error_deg" default="20.0" />
     <arg name="manual_slow_lateral_error" default="0.25" />
+    <!-- 稳定等待：启动最少等待和任务过渡定点时间（s）。 -->
+    <arg name="startup_hold_seconds" default="10.0" />
+    <arg name="transition_hold_seconds" default="4.0" />
+    <!-- 消息有效期：相机和速度反馈超时（s）；速度超时后使用 TF 差分。 -->
+    <arg name="camera_message_timeout" default="2.0" />
+    <arg name="velocity_message_timeout" default="1.0" />
+    <!-- 静止判据：最大水平线速度（m/s）和航向角速度（deg/s）。 -->
+    <arg name="stable_linear_speed" default="0.05" />
+    <arg name="stable_angular_speed_deg" default="3.0" />
+    <!-- 动力定位细节：每周期最大 XY/航向目标步长及位置/航向容差。 -->
+    <arg name="max_xy_step" default="0.4" />
+    <arg name="max_yaw_step_deg" default="2.0" />
+    <arg name="position_tolerance" default="0.15" />
+    <arg name="yaw_tolerance_deg" default="2.0" />
 
+    <!-- 丢线处理：结束/重搜超时和允许沿已知曲线盲巡的时间（s）。 -->
     <arg name="line_lost_timeout" default="5.0" />
     <arg name="curve_blind_follow_timeout" default="2.0" />
+    <!-- 曲线点集：点融合半径（m）、原始点上限、采样点数、拟合阶数和最短拟合长度（m）。 -->
     <arg name="line_point_merge_distance" default="0.15" />
     <arg name="line_curve_max_points" default="120" />
     <arg name="line_curve_sample_count" default="80" />
     <arg name="line_curve_degree" default="3" />
     <arg name="line_curve_min_length" default="0.4" />
+    <!-- 红线过滤：类别名和相对上一方向允许的最大突变角（deg）。 -->
     <arg name="line_classes" default="line" />
+    <arg name="max_line_direction_change_deg" default="75.0" />
+    <!-- 终点稳定：连续帧数和 P1 样本最大散布（m）。 -->
+    <arg name="endpoint_stable_count" default="8" />
+    <arg name="endpoint_position_tolerance" default="0.12" />
+    <!-- 曲线停止增长：最小增长量（m）和连续停止时间（s）。 -->
+    <arg name="endpoint_growth_tolerance" default="0.05" />
+    <arg name="endpoint_stall_seconds" default="3.0" />
+    <!-- 终点启用条件：最短已完成里程和机器人到候选终点的最大距离（m）。 -->
+    <arg name="endpoint_min_completed_length" default="1.0" />
+    <arg name="endpoint_robot_distance" default="0.8" />
 
 <!-- 
     <include file="$(find stereo_depth)/launch/test_line_detection.launch"/> -->
@@ -50,17 +103,40 @@
         <param name="cmd_topic" type="string" value="$(arg cmd_topic)" />
         <param name="line_topic" type="string" value="$(arg line_topic)" />
         <param name="finished_topic" type="string" value="$(arg finished_topic)" />
+        <param name="camera_topic" type="string" value="$(arg camera_topic)" />
+        <param name="velocity_topic" type="string" value="$(arg velocity_topic)" />
+        <param name="trajectory_topic" type="string" value="$(arg trajectory_topic)" />
+        <param name="trajectory_web_enabled" type="bool" value="$(arg trajectory_web_enabled)" />
+        <param name="trajectory_web_host" type="string" value="$(arg trajectory_web_host)" />
+        <param name="trajectory_web_port" type="int" value="$(arg trajectory_web_port)" />
         <param name="search_forward_force" type="double" value="$(arg search_forward_force)" />
+        <param name="search_slow_forward_force" type="double" value="$(arg search_slow_forward_force)" />
+        <param name="search_forward_step" type="double" value="$(arg search_forward_step)" />
+        <param name="search_deceleration_distance" type="double" value="$(arg search_deceleration_distance)" />
+        <param name="search_scan_hold_seconds" type="double" value="$(arg search_scan_hold_seconds)" />
         <param name="manual_forward_force" type="double" value="$(arg manual_forward_force)" />
         <param name="manual_slow_forward_force" type="double" value="$(arg manual_slow_forward_force)" />
         <param name="manual_lateral_gain" type="double" value="$(arg manual_lateral_gain)" />
+        <param name="manual_min_lateral_force" type="double" value="$(arg manual_min_lateral_force)" />
         <param name="manual_max_lateral_force" type="double" value="$(arg manual_max_lateral_force)" />
+        <param name="manual_lateral_deadband" type="double" value="$(arg manual_lateral_deadband)" />
         <param name="manual_force_step" type="double" value="$(arg manual_force_step)" />
+        <param name="manual_brake_step" type="double" value="$(arg manual_brake_step)" />
         <param name="manual_tx_sign" type="double" value="$(arg manual_tx_sign)" />
         <param name="manual_ty_sign" type="double" value="$(arg manual_ty_sign)" />
         <param name="los_lookahead_distance" type="double" value="$(arg los_lookahead_distance)" />
         <param name="manual_slow_yaw_error_deg" type="double" value="$(arg manual_slow_yaw_error_deg)" />
         <param name="manual_slow_lateral_error" type="double" value="$(arg manual_slow_lateral_error)" />
+        <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
+        <param name="transition_hold_seconds" type="double" value="$(arg transition_hold_seconds)" />
+        <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
+        <param name="velocity_message_timeout" type="double" value="$(arg velocity_message_timeout)" />
+        <param name="stable_linear_speed" type="double" value="$(arg stable_linear_speed)" />
+        <param name="stable_angular_speed_deg" type="double" value="$(arg stable_angular_speed_deg)" />
+        <param name="max_xy_step" type="double" value="$(arg max_xy_step)" />
+        <param name="max_yaw_step_deg" type="double" value="$(arg max_yaw_step_deg)" />
+        <param name="position_tolerance" type="double" value="$(arg position_tolerance)" />
+        <param name="yaw_tolerance_deg" type="double" value="$(arg yaw_tolerance_deg)" />
         <param name="line_lost_timeout" type="double" value="$(arg line_lost_timeout)" />
         <param name="curve_blind_follow_timeout" type="double" value="$(arg curve_blind_follow_timeout)" />
         <param name="line_point_merge_distance" type="double" value="$(arg line_point_merge_distance)" />
@@ -69,5 +145,13 @@
         <param name="line_curve_degree" type="int" value="$(arg line_curve_degree)" />
         <param name="line_curve_min_length" type="double" value="$(arg line_curve_min_length)" />
         <param name="line_classes" type="string" value="$(arg line_classes)" />
+        <param name="max_line_direction_change_deg" type="double" value="$(arg max_line_direction_change_deg)" />
+        <param name="endpoint_stable_count" type="int" value="$(arg endpoint_stable_count)" />
+        <param name="endpoint_position_tolerance" type="double" value="$(arg endpoint_position_tolerance)" />
+        <param name="endpoint_growth_tolerance" type="double" value="$(arg endpoint_growth_tolerance)" />
+        <param name="endpoint_stall_seconds" type="double" value="$(arg endpoint_stall_seconds)" />
+        <param name="endpoint_min_completed_length" type="double" value="$(arg endpoint_min_completed_length)" />
+        <param name="endpoint_robot_distance" type="double" value="$(arg endpoint_robot_distance)" />
+        <rosparam param="search_scan_offsets_deg" subst_value="true">[$(arg search_scan_offsets_deg)]</rosparam>
     </node>
 </launch>
