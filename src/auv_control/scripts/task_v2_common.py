@@ -15,6 +15,7 @@
     执行器下行话题调整为 /cmd/actuator。
 2026.7.15
     运动控制移除 /target 兼容，统一使用 /cmd/pose/ned 整包指令。
+    外设控制拆分为 mode=1 补光灯消息和 mode=2 执行器消息。
 """
 
 import copy
