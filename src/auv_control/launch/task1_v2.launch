@@ -1,0 +1,332 @@
+<launch>
+    <!--
+        Task1 正式任务启动文件。
+
+        默认轨迹网页：http://192.168.1.117:8082
+        如果机器人网卡没有配置 192.168.1.117，网页服务会启动失败，但任务控制仍继续运行；
+        此时应将 trajectory_web_host 改成机器人本机实际 IP。
+
+        启动示例：
+        roslaunch auv_control task1_v2.launch initial_heading_deg:=0 reference_height:=0.4
+    -->
+
+    <!-- ============================== ROS 话题 ============================== -->
+    <!-- 机器人运动控制指令话题，消息类型 PoseNEDcmd。 -->
+    <arg name="pose_cmd_topic" default="/cmd/pose/ned" />
+    <!-- 灯光、舵机等外设控制话题，消息类型 ActuatorControl。 -->
+    <arg name="actuator_topic" default="/cmd/actuator" />
+    <!-- Task1 完成消息话题。 -->
+    <arg name="finished_topic" default="/finished" />
+    <!-- 黄色/黑色图形识别结果话题。 -->
+    <arg name="target_topic" default="/obj/target_message" />
+    <!-- 红色长线 P1/P2/P3 识别结果话题。 -->
+    <arg name="line_topic" default="/obj/line_message" />
+    <!-- 用于确认相机已持续出图的图像话题。 -->
+    <arg name="camera_topic" default="/left/image_raw" />
+    <!-- 驱动速度反馈话题；没有该话题时 Task1 自动使用 TF 差分估速。 -->
+    <arg name="velocity_topic" default="/status/vel" />
+    <!-- 供网页和其他监视节点订阅的 Task1 JSON 轨迹话题。 -->
+    <arg name="trajectory_topic" default="/task1/trajectory" />
+
+    <!-- ========================== 基础位姿与运行频率 ========================== -->
+    <!-- Task1 主循环频率，单位 Hz。 -->
+    <arg name="rate_hz" default="5.0" />
+    <!-- map 原点上方的运行高度，单位 m；NED 下代码自动转换为目标 z=-height。 -->
+    <arg name="reference_height" default="0.4" />
+    <!-- 目标 NED z 的高级覆盖值；auto 表示自动使用 -reference_height，通常不要修改。 -->
+    <arg name="reference_z" default="auto" />
+    <!-- 人工给定的初始搜索航向，单位 deg；0 度沿 map +X。 -->
+    <arg name="initial_heading_deg" default="0.0" />
+    <!-- 下发目标的俯仰补偿角，单位 deg，通常保持 0。 -->
+    <arg name="pitch_offset_deg" default="0.0" />
+    <!-- 动力定位每次允许下发的最大 XY 目标步长，单位 m；调小更稳但移动更慢。 -->
+    <arg name="max_xy_step" default="0.5" />
+    <!-- 动力定位每周期最大航向变化，单位 deg；默认 2 度用于降低转向漂移。 -->
+    <arg name="max_yaw_step_deg" default="2.0" />
+    <!-- 判定到达目标点的水平距离容差，单位 m。 -->
+    <arg name="position_tolerance" default="0.15" />
+    <!-- 判定航向到达的角度容差，单位 deg。 -->
+    <arg name="yaw_tolerance_deg" default="2.0" />
+
+    <!-- =========================== 启动和过渡稳定 ============================ -->
+    <!-- 节点启动后最少定点等待时间，单位 s；同时还必须收到相机消息。 -->
+    <arg name="startup_hold_seconds" default="10.0" />
+    <!-- 巡线、图形动作等阶段切换时连续定点稳定时间，单位 s。 -->
+    <arg name="transition_hold_seconds" default="4.0" />
+    <!-- 超过该时间没有新图像则认为相机未就绪，单位 s。 -->
+    <arg name="camera_message_timeout" default="2.0" />
+    <!-- 超过该时间没有新速度消息则改用 TF 差分估速，单位 s。 -->
+    <arg name="velocity_message_timeout" default="1.0" />
+    <!-- 判定基本静止的最大水平线速度，单位 m/s。 -->
+    <arg name="stable_linear_speed" default="0.05" />
+    <!-- 判定基本静止的最大航向角速度，单位 deg/s。 -->
+    <arg name="stable_angular_speed_deg" default="3.0" />
+
+    <!-- ============================= 红线搜索 ================================ -->
+    <!-- 完成一轮左右扫描仍未找到红线时的前进距离，单位 m。 -->
+    <arg name="search_forward_step" default="0.5" />
+    <!-- 搜索红线时定深定向前进的正常 TX。 -->
+    <arg name="search_forward_force" default="1000" />
+    <!-- 搜索前进接近 0.5 m 终点时使用的减速 TX。 -->
+    <arg name="search_slow_forward_force" default="300" />
+    <!-- 距搜索前进终点小于该距离时开始减速，单位 m。 -->
+    <arg name="search_deceleration_distance" default="0.20" />
+    <!-- 每个扫描角度达到且速度稳定后的停留时间，单位 s。 -->
+    <arg name="search_scan_hold_seconds" default="2.0" />
+    <!-- 相对当前搜索航向的扫描角度序列，单位 deg；默认中心、左30、右30、回中心。 -->
+    <arg name="search_scan_offsets_deg" default="0.0, 30.0, -30.0, 0.0" />
+
+    <!-- =========================== 曲线融合与 LOS ============================ -->
+    <!-- 红线最后一帧之后允许沿已知曲线继续手控巡线的时间，单位 s。 -->
+    <arg name="curve_blind_follow_timeout" default="2.0" />
+    <!-- 红线丢失达到该时间后进入结束判定或重新搜索，单位 s。 -->
+    <arg name="line_lost_timeout" default="5.0" />
+    <!-- 新红线方向相对上一方向允许的最大突变，单位 deg；超出会被视为反向红线。 -->
+    <arg name="max_line_direction_change_deg" default="75.0" />
+    <!-- 两个视觉红线点小于该距离时进行融合而非新增，单位 m。 -->
+    <arg name="line_point_merge_distance" default="0.15" />
+    <!-- 保存的最大原始红线点数量；调小可降低长路径计算和网页数据量。 -->
+    <arg name="line_curve_max_points" default="120" />
+    <!-- 拟合曲线重新采样的控制点数量。 -->
+    <arg name="line_curve_sample_count" default="80" />
+    <!-- 多项式曲线拟合阶数；默认 3 阶。 -->
+    <arg name="line_curve_degree" default="3" />
+    <!-- 已知红线短于该值时不进行多项式拟合，单位 m。 -->
+    <arg name="line_curve_min_length" default="0.4" />
+    <!-- LOS 前视距离，单位 m；调大更平滑，调小对弯道响应更快。 -->
+    <arg name="los_lookahead_distance" default="0.6" />
+    <!-- 判断机器人接近当前已知曲线末端的路径余量，单位 m。 -->
+    <arg name="line_end_margin" default="0.5" />
+    <!-- 感知发布的红线类别名，可按发布方实际类别修改。 -->
+    <arg name="line_classes" default="line" />
+
+    <!-- ============================ 巡线手动控制 ============================= -->
+    <!-- 正常 LOS 巡线前进 TX。 -->
+    <arg name="manual_forward_force" default="1000" />
+    <!-- 大航向误差、大横向误差、接近图形时使用的慢速 TX。 -->
+    <arg name="manual_slow_forward_force" default="300" />
+    <!-- 横向误差到 TY 的比例系数；TY 仍会被限制在下方有效范围。 -->
+    <arg name="manual_lateral_gain" default="6000.0" />
+    <!-- 非零横移 TY 的最小有效值。 -->
+    <arg name="manual_min_lateral_force" default="1500" />
+    <!-- 横移 TY 的最大值。 -->
+    <arg name="manual_max_lateral_force" default="3000" />
+    <!-- 横向误差小于该值时 TY 逐步回零，单位 m。 -->
+    <arg name="manual_lateral_deadband" default="0.03" />
+    <!-- 手控力每个主循环允许增加或减少的最大量。 -->
+    <arg name="manual_force_step" default="200" />
+    <!-- 从手控切到动力定位前，每个主循环卸掉的力值。 -->
+    <arg name="manual_brake_step" default="300" />
+    <!-- 航向误差超过该角度时巡线 TX 改用慢速值，单位 deg。 -->
+    <arg name="manual_slow_yaw_error_deg" default="20.0" />
+    <!-- 横向误差超过该距离时巡线 TX 改用慢速值，单位 m。 -->
+    <arg name="manual_slow_lateral_error" default="0.25" />
+    <!-- TX 方向符号；正常前进为 1，若实机方向相反则改为 -1。 -->
+    <arg name="manual_tx_sign" default="1.0" />
+    <!-- TY 方向符号；前右下坐标系正常为 1，若实机方向相反则改为 -1。 -->
+    <arg name="manual_ty_sign" default="1.0" />
+
+    <!-- ============================ 图形识别与动作 ============================ -->
+    <!-- 图形距离小于该值时巡线提前降到慢速，单位 m。 -->
+    <arg name="marker_slow_distance" default="0.8" />
+    <!-- 黄色图形需要累计的稳定识别帧数。 -->
+    <arg name="marker_sample_count" default="10" />
+    <!-- 黑色 rectangle 需要连续识别的帧数；任一帧不符合时重新计数。 -->
+    <arg name="black_marker_sample_count" default="3" />
+    <!-- 黑色 rectangle 单帧最低置信度，消息范围为 0~1，0.30 表示 30%。 -->
+    <arg name="black_min_confidence" default="0.30" />
+    <!-- 多帧图形位置归入同一聚类的最大距离，单位 m。 -->
+    <arg name="marker_cluster_distance" default="0.25" />
+    <!-- 已完成图形的位置去重半径，单位 m。 -->
+    <arg name="marker_ignore_distance" default="0.5" />
+    <!-- 机器人沿曲线接近图形至该距离后触发动作，单位 m。 -->
+    <arg name="marker_arrival_tolerance" default="0.15" />
+    <!-- 接受图形识别结果的最大相机坐标距离，单位 m；用于过滤明显异常的远点。 -->
+    <arg name="marker_max_camera_distance" default="5.0" />
+    <!-- 黄色/黑色单次亮灯持续时间，单位 s。 -->
+    <arg name="light_on_seconds" default="3.0" />
+    <!-- 多次闪灯之间的灭灯间隔，单位 s。 -->
+    <arg name="light_off_seconds" default="0.5" />
+    <!-- 黄色图形亮红灯次数。 -->
+    <arg name="yellow_light_count" default="1" />
+    <!-- 黑色图形亮绿灯次数。 -->
+    <arg name="black_light_count" default="2" />
+    <!-- 黄色图形类别名，逗号分隔；按感知发布方实际类别修改。 -->
+    <arg name="yellow_classes" default="triangle,circle" />
+    <!-- 黑色图形类别名，逗号分隔。 -->
+    <arg name="black_classes" default="rectangle" />
+
+    <!-- ============================= 黑色旋转 ================================ -->
+    <!-- 黑色图形累计旋转目标角度，单位 deg；720 表示两圈。 -->
+    <arg name="black_rotation_angle_deg" default="720.0" />
+    <!-- 考虑惯性，在目标角度前提前撤掉 MZ 的角度，单位 deg。 -->
+    <arg name="rotation_stop_margin_deg" default="10.0" />
+    <!-- 黑色旋转时直接下发的航向力矩 MZ。 -->
+    <arg name="black_rotation_mz" default="3000" />
+    <!-- 黑色旋转方向：1 为正向，-1 为反向。 -->
+    <arg name="black_rotation_direction" default="1.0" />
+    <!-- MZ 每个控制周期允许增减的最大步长；调小启动/减速更平缓。 -->
+    <arg name="black_rotation_mz_step" default="500" />
+    <!-- 距提前停止角小于该角度时进入旋转减速区，单位 deg。 -->
+    <arg name="black_rotation_slow_angle_deg" default="30.0" />
+    <!-- 进入旋转减速区后使用的较小 MZ。 -->
+    <arg name="black_rotation_slow_mz" default="1000" />
+    <!-- 单帧航向变化小于该值时不累计，单位 deg；用于过滤姿态噪声。 -->
+    <arg name="rotation_feedback_deadband_deg" default="0.05" />
+    <!-- 单帧航向跳变超过该值时视为 TF 异常并忽略，单位 deg。 -->
+    <arg name="rotation_feedback_max_delta_deg" default="45.0" />
+
+    <!-- ============================= 结束判据 ================================ -->
+    <!-- Task1 正常结束前要求完成的黄色图形数量。 -->
+    <arg name="required_yellow_count" default="2" />
+    <!-- Task1 正常结束前要求完成的黑色图形数量。 -->
+    <arg name="required_black_count" default="2" />
+    <!-- P1 远端点需要连续稳定的帧数。 -->
+    <arg name="endpoint_stable_count" default="8" />
+    <!-- 稳定 P1 远端点样本相对中心允许的最大散布，单位 m。 -->
+    <arg name="endpoint_position_tolerance" default="0.12" />
+    <!-- 拟合曲线增长小于该值时视为没有显著增长，单位 m。 -->
+    <arg name="endpoint_growth_tolerance" default="0.05" />
+    <!-- 曲线连续停止增长达到该时间后才允许生成终点候选，单位 s。 -->
+    <arg name="endpoint_stall_seconds" default="3.0" />
+    <!-- 至少完成该长度后才允许判断终点，单位 m。 -->
+    <arg name="endpoint_min_completed_length" default="1.0" />
+    <!-- 机器人到稳定 P1 远端点的最大距离，单位 m。 -->
+    <arg name="endpoint_robot_distance" default="0.8" />
+
+    <!-- ============================== 外设默认值 ============================== -->
+    <!-- 航向舵机保持值，直接按 ActuatorControl 真实值下发。 -->
+    <arg name="heading_servo" default="128" />
+    <!-- 夹爪舵机保持值。 -->
+    <arg name="clamp_servo" default="0" />
+    <!-- 推拉杆/驱动机构默认命令；Task1 当前保持为 0。 -->
+    <arg name="drive_cmd" default="0" />
+    <!-- 推拉杆/驱动机构默认速度；Task1 当前保持为 0。 -->
+    <arg name="drive_speed" default="0" />
+
+    <!-- ============================ 实时轨迹网页 ============================== -->
+    <!-- 是否启动内置只读轨迹网页。 -->
+    <arg name="trajectory_web_enabled" default="true" />
+    <!-- 网页绑定地址，必须是机器人本机网卡实际拥有的 IP。 -->
+    <arg name="trajectory_web_host" default="192.168.1.117" />
+    <!-- 网页端口；默认访问 http://192.168.1.117:8082。 -->
+    <arg name="trajectory_web_port" default="8082" />
+    <!-- 最多保留的机器人实际轨迹点数量。 -->
+    <arg name="trajectory_max_points" default="2000" />
+    <!-- 机器人移动超过该距离才新增一个实际轨迹点，单位 m。 -->
+    <arg name="trajectory_sample_distance" default="0.03" />
+    <!-- 轨迹 JSON 和网页数据更新周期，单位 s。 -->
+    <arg name="trajectory_publish_period" default="0.5" />
+
+    <node pkg="auv_control"
+          type="task1_v2.py"
+          name="task1_v2"
+          output="screen">
+        <!-- 私有基础控制参数。 -->
+        <param name="rate_hz" type="double" value="$(arg rate_hz)" />
+        <param name="max_xy_step" type="double" value="$(arg max_xy_step)" />
+        <param name="max_yaw_step_deg" type="double" value="$(arg max_yaw_step_deg)" />
+        <param name="position_tolerance" type="double" value="$(arg position_tolerance)" />
+        <param name="yaw_tolerance_deg" type="double" value="$(arg yaw_tolerance_deg)" />
+
+        <!-- 全局 Task1 参数，保持与 task1_v2.py 中的参数名一致。 -->
+        <param name="/task1_v2_pose_cmd_topic" value="$(arg pose_cmd_topic)" />
+        <param name="/task1_v2_actuator_topic" value="$(arg actuator_topic)" />
+        <param name="/task1_v2_finished_topic" value="$(arg finished_topic)" />
+        <param name="/task1_v2_target_topic" value="$(arg target_topic)" />
+        <param name="/task1_v2_line_topic" value="$(arg line_topic)" />
+        <param name="/task1_v2_camera_topic" value="$(arg camera_topic)" />
+        <param name="/task1_v2_velocity_topic" value="$(arg velocity_topic)" />
+        <param name="/task1_v2_trajectory_topic" value="$(arg trajectory_topic)" />
+
+        <param name="/task1_v2_reference_height" type="double" value="$(arg reference_height)" />
+        <param name="/task1_v2_reference_z" value="$(arg reference_z)" />
+        <param name="/task1_v2_initial_heading_deg" type="double" value="$(arg initial_heading_deg)" />
+        <param name="/pitch_offset" type="double" value="$(arg pitch_offset_deg)" />
+
+        <param name="/task1_v2_startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
+        <param name="/task1_v2_transition_hold_seconds" type="double" value="$(arg transition_hold_seconds)" />
+        <param name="/task1_v2_camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
+        <param name="/task1_v2_velocity_message_timeout" type="double" value="$(arg velocity_message_timeout)" />
+        <param name="/task1_v2_stable_linear_speed" type="double" value="$(arg stable_linear_speed)" />
+        <param name="/task1_v2_stable_angular_speed_deg" type="double" value="$(arg stable_angular_speed_deg)" />
+
+        <param name="/task1_v2_search_forward_step" type="double" value="$(arg search_forward_step)" />
+        <param name="/task1_v2_search_forward_force" type="double" value="$(arg search_forward_force)" />
+        <param name="/task1_v2_search_slow_forward_force" type="double" value="$(arg search_slow_forward_force)" />
+        <param name="/task1_v2_search_deceleration_distance" type="double" value="$(arg search_deceleration_distance)" />
+        <param name="/task1_v2_search_scan_hold_seconds" type="double" value="$(arg search_scan_hold_seconds)" />
+        <rosparam param="/task1_v2_search_scan_offsets_deg" subst_value="true">[$(arg search_scan_offsets_deg)]</rosparam>
+
+        <param name="/task1_v2_curve_blind_follow_timeout" type="double" value="$(arg curve_blind_follow_timeout)" />
+        <param name="/task1_v2_line_lost_timeout" type="double" value="$(arg line_lost_timeout)" />
+        <param name="/task1_v2_max_line_direction_change_deg" type="double" value="$(arg max_line_direction_change_deg)" />
+        <param name="/task1_v2_line_point_merge_distance" type="double" value="$(arg line_point_merge_distance)" />
+        <param name="/task1_v2_line_curve_max_points" type="int" value="$(arg line_curve_max_points)" />
+        <param name="/task1_v2_line_curve_sample_count" type="int" value="$(arg line_curve_sample_count)" />
+        <param name="/task1_v2_line_curve_degree" type="int" value="$(arg line_curve_degree)" />
+        <param name="/task1_v2_line_curve_min_length" type="double" value="$(arg line_curve_min_length)" />
+        <param name="/task1_v2_los_lookahead_distance" type="double" value="$(arg los_lookahead_distance)" />
+        <param name="/task1_v2_line_end_margin" type="double" value="$(arg line_end_margin)" />
+        <param name="/task1_v2_line_classes" value="$(arg line_classes)" />
+
+        <param name="/task1_v2_manual_forward_force" type="double" value="$(arg manual_forward_force)" />
+        <param name="/task1_v2_manual_slow_forward_force" type="double" value="$(arg manual_slow_forward_force)" />
+        <param name="/task1_v2_manual_lateral_gain" type="double" value="$(arg manual_lateral_gain)" />
+        <param name="/task1_v2_manual_min_lateral_force" type="double" value="$(arg manual_min_lateral_force)" />
+        <param name="/task1_v2_manual_max_lateral_force" type="double" value="$(arg manual_max_lateral_force)" />
+        <param name="/task1_v2_manual_lateral_deadband" type="double" value="$(arg manual_lateral_deadband)" />
+        <param name="/task1_v2_manual_force_step" type="double" value="$(arg manual_force_step)" />
+        <param name="/task1_v2_manual_brake_step" type="double" value="$(arg manual_brake_step)" />
+        <param name="/task1_v2_manual_slow_yaw_error_deg" type="double" value="$(arg manual_slow_yaw_error_deg)" />
+        <param name="/task1_v2_manual_slow_lateral_error" type="double" value="$(arg manual_slow_lateral_error)" />
+        <param name="/task1_v2_manual_tx_sign" type="double" value="$(arg manual_tx_sign)" />
+        <param name="/task1_v2_manual_ty_sign" type="double" value="$(arg manual_ty_sign)" />
+
+        <param name="/task1_v2_marker_slow_distance" type="double" value="$(arg marker_slow_distance)" />
+        <param name="/task1_v2_marker_sample_count" type="int" value="$(arg marker_sample_count)" />
+        <param name="/task1_v2_black_marker_sample_count" type="int" value="$(arg black_marker_sample_count)" />
+        <param name="/task1_v2_black_min_confidence" type="double" value="$(arg black_min_confidence)" />
+        <param name="/task1_v2_marker_cluster_distance" type="double" value="$(arg marker_cluster_distance)" />
+        <param name="/task1_v2_marker_ignore_distance" type="double" value="$(arg marker_ignore_distance)" />
+        <param name="/task1_v2_marker_arrival_tolerance" type="double" value="$(arg marker_arrival_tolerance)" />
+        <param name="/task1_v2_marker_max_camera_distance" type="double" value="$(arg marker_max_camera_distance)" />
+        <param name="/task1_v2_light_on_seconds" type="double" value="$(arg light_on_seconds)" />
+        <param name="/task1_v2_light_off_seconds" type="double" value="$(arg light_off_seconds)" />
+        <param name="/task1_v2_yellow_light_count" type="int" value="$(arg yellow_light_count)" />
+        <param name="/task1_v2_black_light_count" type="int" value="$(arg black_light_count)" />
+        <param name="/task1_v2_yellow_classes" value="$(arg yellow_classes)" />
+        <param name="/task1_v2_black_classes" value="$(arg black_classes)" />
+
+        <param name="/task1_v2_black_rotation_angle_deg" type="double" value="$(arg black_rotation_angle_deg)" />
+        <param name="/task1_v2_rotation_stop_margin_deg" type="double" value="$(arg rotation_stop_margin_deg)" />
+        <param name="/task1_v2_black_rotation_mz" type="double" value="$(arg black_rotation_mz)" />
+        <param name="/task1_v2_black_rotation_direction" type="double" value="$(arg black_rotation_direction)" />
+        <param name="/task1_v2_black_rotation_mz_step" type="double" value="$(arg black_rotation_mz_step)" />
+        <param name="/task1_v2_black_rotation_slow_angle_deg" type="double" value="$(arg black_rotation_slow_angle_deg)" />
+        <param name="/task1_v2_black_rotation_slow_mz" type="double" value="$(arg black_rotation_slow_mz)" />
+        <param name="/task1_v2_rotation_feedback_deadband_deg" type="double" value="$(arg rotation_feedback_deadband_deg)" />
+        <param name="/task1_v2_rotation_feedback_max_delta_deg" type="double" value="$(arg rotation_feedback_max_delta_deg)" />
+
+        <param name="/task1_v2_required_yellow_count" type="int" value="$(arg required_yellow_count)" />
+        <param name="/task1_v2_required_black_count" type="int" value="$(arg required_black_count)" />
+        <param name="/task1_v2_endpoint_stable_count" type="int" value="$(arg endpoint_stable_count)" />
+        <param name="/task1_v2_endpoint_position_tolerance" type="double" value="$(arg endpoint_position_tolerance)" />
+        <param name="/task1_v2_endpoint_growth_tolerance" type="double" value="$(arg endpoint_growth_tolerance)" />
+        <param name="/task1_v2_endpoint_stall_seconds" type="double" value="$(arg endpoint_stall_seconds)" />
+        <param name="/task1_v2_endpoint_min_completed_length" type="double" value="$(arg endpoint_min_completed_length)" />
+        <param name="/task1_v2_endpoint_robot_distance" type="double" value="$(arg endpoint_robot_distance)" />
+
+        <param name="/task_v2_heading_servo" type="int" value="$(arg heading_servo)" />
+        <param name="/task_v2_clamp_servo" type="int" value="$(arg clamp_servo)" />
+        <param name="/task_v2_drive_cmd" type="int" value="$(arg drive_cmd)" />
+        <param name="/task_v2_drive_speed" type="int" value="$(arg drive_speed)" />
+
+        <param name="/task1_v2_trajectory_web_enabled" type="bool" value="$(arg trajectory_web_enabled)" />
+        <param name="/task1_v2_trajectory_web_host" value="$(arg trajectory_web_host)" />
+        <param name="/task1_v2_trajectory_web_port" type="int" value="$(arg trajectory_web_port)" />
+        <param name="/task1_v2_trajectory_max_points" type="int" value="$(arg trajectory_max_points)" />
+        <param name="/task1_v2_trajectory_sample_distance" type="double" value="$(arg trajectory_sample_distance)" />
+        <param name="/task1_v2_trajectory_publish_period" type="double" value="$(arg trajectory_publish_period)" />
+    </node>
+</launch>
