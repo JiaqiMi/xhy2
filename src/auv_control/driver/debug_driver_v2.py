@@ -54,12 +54,12 @@ class ControlTarget:
         self.pitch = 0.0
         self.yaw = 0.0
         self.speed = 0.0
-        self.tx = 0      # X轴力 0-10000
-        self.ty = 0      # Y轴力 0-10000
-        self.tz = 0      # Z轴力 0-10000
-        self.mx = 0      # 绕X轴力矩 0-10000
-        self.my = 0      # 绕Y轴力矩 0-10000
-        self.mz = 0      # 绕Z轴力矩 0-10000
+        self.tx = 0      # X轴力 -10000～10000
+        self.ty = 0      # Y轴力 -10000～10000
+        self.tz = 0      # Z轴力 -10000～10000
+        self.mx = 0      # 绕X轴力矩 -10000～10000
+        self.my = 0      # 绕Y轴力矩 -10000～10000
+        self.mz = 0      # 绕Z轴力矩 -10000～10000
 
 
 class LowPassFilter:
@@ -349,10 +349,25 @@ class DebugDriverV2:
         # 28-31: 期望航向角 float32
         packet[28:32] = struct.pack('<f', self.target.yaw)
 
-        # 32-43: 6自由度力/力矩 int16×6 大端序，原始值 0-10000
-        struct.pack_into('>6h', packet, 32,
+        # 32-43: 6自由度力/力矩 int16×6 大端序，协议范围 -10000～10000
+        raw_forces = (
             self.target.tx, self.target.ty, self.target.tz,
-            self.target.mx, self.target.my, self.target.mz)
+            self.target.mx, self.target.my, self.target.mz,
+        )
+        forces = []
+        for value in raw_forces:
+            limited = max(-10000, min(10000, int(value)))
+            if limited != value:
+                rospy.logwarn_throttle(
+                    1.0,
+                    "debug_driver_v2: 力/力矩 %s 超出协议范围，已限制为 %d",
+                    value,
+                    limited,
+                )
+            forces.append(limited)
+        struct.pack_into('>6h', packet, 32,
+            forces[0], forces[1], forces[2],
+            forces[3], forces[4], forces[5])
 
         # 44: 是否打开模式，严格保持 0x00（跟踪模式）
         packet[44] = 0x00

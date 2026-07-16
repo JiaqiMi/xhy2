@@ -1,0 +1,25 @@
+<launch>
+    <!--
+      原型节点必须是 /cmd/pose/ned 的唯一发布者。
+      使用本启动文件时不要同时启动 task1～task4 或其他运动测试节点。
+    -->
+    <arg name="config_file" default="$(find auv_control)/config/motion_supervisor.yaml" />
+    <arg name="start_goal_test" default="false" />
+    <arg name="target_x" default="1.0" />
+    <arg name="target_y" default="0.0" />
+    <arg name="target_z" default="1.5" />
+    <arg name="target_yaw_deg" default="0.0" />
+
+    <node pkg="auv_control" type="motion_supervisor.py"
+          name="motion_supervisor" output="screen" required="true">
+        <rosparam command="load" file="$(arg config_file)" />
+    </node>
+
+    <node if="$(arg start_goal_test)" pkg="auv_control" type="motion_goal_test.py"
+          name="motion_goal_test" output="screen">
+        <param name="target_x" value="$(arg target_x)" />
+        <param name="target_y" value="$(arg target_y)" />
+        <param name="target_z" value="$(arg target_z)" />
+        <param name="target_yaw_deg" value="$(arg target_yaw_deg)" />
+    </node>
+</launch>

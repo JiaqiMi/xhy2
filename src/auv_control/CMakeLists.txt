@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
   geometry_msgs
+  tf
   message_generation
 )
 
@@ -65,6 +66,7 @@ add_message_files(
   TargetDetection3.msg
   PoseNEDcmd.msg
   PoseLLAcmd.msg
+  MotionState.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -122,7 +124,7 @@ catkin_package(
 #  LIBRARIES auv_control
 #  CATKIN_DEPENDS roscpp rospy
 #  DEPENDS system_lib
-  CATKIN_DEPENDS message_runtime std_msgs geometry_msgs
+  CATKIN_DEPENDS message_runtime std_msgs geometry_msgs tf
 )
 
 ###########
@@ -202,6 +204,9 @@ catkin_install_python(PROGRAMS
   driver/nav_driver.py
   driver/sensor_status_node.py
   driver/sensor_actuator_node.py
+  scripts/motion_supervisor.py
+  scripts/motion_supervisor_core.py
+  scripts/motion_goal_test.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -227,11 +232,9 @@ catkin_install_python(PROGRAMS
 # )
 
 ## Mark other files for installation (e.g. launch and bag files, etc.)
-# install(FILES
-#   # myfile1
-#   # myfile2
-#   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
-# )
+install(DIRECTORY launch config docs
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
 
 #############
 ## Testing ##
@@ -244,4 +247,6 @@ catkin_install_python(PROGRAMS
 # endif()
 
 ## Add folders to be run by python nosetests
-# catkin_add_nosetests(test)
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_motion_supervisor_core.py)
+endif()
