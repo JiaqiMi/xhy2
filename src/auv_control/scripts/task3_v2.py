@@ -12,6 +12,10 @@
 发布：/cmd/pose/ned，/cmd/actuator，/finished
 说明：真实 ArUco 识别不在本节点实现，当前用随机编号跳过识别流程。
       黄色灯由红灯和绿灯同时点亮表示。
+修改记录：
+    2026.7.15：
+        1. 通过 MissionBase 将运动控制迁移到 /cmd/pose/ned。
+        2. 外设控制更新为 /cmd/actuator，并按 mode 分离补光灯与执行器命令。
 """
 
 import random

@@ -14,8 +14,8 @@
         4. 统一日志格式，日志正文以节点名称 task2_v2 开头。
         5. 执行器下行话题调整为 /cmd/actuator。
     2026-07-15：
-        1. 运动控制统一使用 /cmd/pose/ned。
-        2. 推杆命令明确使用执行器模式 mode=2。
+        1. 通过 MissionBase 将运动控制从 /target 迁移到 /cmd/pose/ned。
+        2. 推杆命令使用 mode=2，仅更新执行器字段。
 """
 
 import math

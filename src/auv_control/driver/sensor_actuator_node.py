@@ -17,6 +17,9 @@
     调整至 driver 目录，归入硬件驱动层
     下行控制话题调整为 /cmd/actuator，上行状态话题调整为 /status/actuator。
     补光灯与执行器命令按实际变化分别发送，增加 ACK 超时重发。
+2026.7.15
+    新增 ActuatorControl.mode 分流：mode=1 仅更新补光灯，mode=2 仅更新执行器。
+    mode=0 和其他值不响应，/status/actuator 状态消息固定使用 mode=0。
 """
 
 import socket
@@ -101,7 +104,7 @@ class SensorActuatorNode:
 
         # --- ROS 接口 ---
         rospy.Subscriber('/cmd/actuator', ActuatorControl, self.actuator_callback)
-        self.status_pub = rospy.Publisher('/status/actuator', ActuatorControl, queue_size=10)
+        self.status_pub = rospy.Publisher('/status/actuator', ActuatorControl, queue_size=10) 
 
         self.connect()
         rospy.loginfo("sensor_actuator: 已启动（执行器控制+反馈模式）")
