@@ -19,7 +19,8 @@
     新增 PoseNEDcmd（NED）→ PoseLLAcmd（LLA）控制指令转换。
     AUV 状态订阅话题调整为 /status/auv。
 2026.7.15
-    删除旧版 /target 到 /auv_control 的兼容链路，仅保留整包控制指令转换。
+    删除旧版 /target 订阅、/auv_control 发布器及对应转换回调。
+    取消旧链路兼容，仅保留 /cmd/pose/ned 到 /cmd/pose/lla 的整包指令转换。
 """
 
 import threading

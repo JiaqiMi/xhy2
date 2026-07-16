@@ -1,5 +1,7 @@
 # 执行器控制消息 - sensor debug协议下行控制
 # 对应下位机 CAMERA_LIGHT_SET (cmd=0x10) 和 ACTUATOR_SET (cmd=0x30)
+# 修改记录：
+# 2026.7.15 新增 mode 字段，分离补光灯与执行器控制。
 
 uint8 mode                # 控制模式：0=不响应，1=仅补光灯，2=仅执行器
 
