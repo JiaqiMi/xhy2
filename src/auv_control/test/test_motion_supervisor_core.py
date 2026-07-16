@@ -18,9 +18,9 @@ import sys
 import unittest
 
 
-SCRIPT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts'))
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
+DRIVER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'driver'))
+if DRIVER_DIR not in sys.path:
+    sys.path.insert(0, DRIVER_DIR)
 
 from motion_supervisor_core import (  # noqa: E402
     ALIGN_FINAL,
