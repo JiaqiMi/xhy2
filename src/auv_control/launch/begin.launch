@@ -6,6 +6,9 @@
     <!-- <include file="$(find auv_control)/launch/param.launch"/> -->
     <arg name="save_dir" default="$(env HOME)/.ros/auv_logs" />
     <arg name="vehicle_ip" default="192.168.1.115" />
+    <arg name="enable_state_web" default="true" />
+    <arg name="state_web_host" default="0.0.0.0" />
+    <arg name="state_web_port" default="8088" />
 
     <!-- ===== 硬件驱动层 ===== -->
 
@@ -43,6 +46,14 @@
 
     <!-- TF 坐标变换（/cmd/pose/ned NED 整包消息转换为 /cmd/pose/lla LLA 整包消息） -->
     <node pkg="auv_control" type="auv_tf_handler.py" name="auv_tf_handler" output="screen"/>
+
+    <!-- 运行状态 Web：声明在坐标系节点之后，自行等待 /world_origin 和 map -> base_link TF 就绪 -->
+    <group if="$(arg enable_state_web)">
+        <include file="$(find state_web)/launch/state_web.launch">
+            <arg name="host" value="$(arg state_web_host)" />
+            <arg name="port" value="$(arg state_web_port)" />
+        </include>
+    </group>
 
     <!-- <node pkg="auv_control" type="state_control.py" name="state_control" output="screen"/> -->
     <!-- 启动 USB 相机 -->

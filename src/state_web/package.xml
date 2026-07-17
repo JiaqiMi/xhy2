@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>state_web</name>
+  <version>0.1.0</version>
+  <description>AUV runtime state monitoring Web dashboard.</description>
+
+  <maintainer email="xhy@todo.todo">xhy</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>auv_control</depend>
+  <depend>cv_bridge</depend>
+  <depend>geometry_msgs</depend>
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf</depend>
+
+  <exec_depend>python3-flask</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-rospkg</exec_depend>
+
+  <test_depend>python3-nose</test_depend>
+
+  <export/>
+</package>
