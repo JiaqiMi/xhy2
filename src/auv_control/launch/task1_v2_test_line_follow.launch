@@ -19,9 +19,9 @@
     <arg name="trajectory_topic" default="/task1/trajectory" />
 
     <!-- 未识别红线：每轮先以动力定位模式沿启动航向前进的距离，单位 m。 -->
-    <arg name="search_forward_distance" default="0.5" />
+    <arg name="search_forward_distance" default="0.2" />
     <!-- 未识别红线：前进后向左、回中、向右、回中的单段横移距离，单位 m。 -->
-    <arg name="search_lateral_distance" default="0.5" />
+    <arg name="search_lateral_distance" default="0.0" />
     <!-- 未识别红线：定深定向横移所用 TY 绝对值。 -->
     <arg name="search_lateral_force" default="1500.0" />
     <!-- 搜索横移：每个控制周期允许增加的 TY，减小突变。 -->
@@ -51,10 +51,10 @@
     <!-- 首次见线后的候选窗口，窗口内选择置信度最高的红线并永久锁定，单位 s。 -->
     <arg name="line_lock_window_seconds" default="0.5" />
     <!-- 低置信阈值；低于该值的新点使用更严格的拟合关联条件。 -->
-    <arg name="line_low_confidence_threshold" default="0.70" />
+    <arg name="line_low_confidence_threshold" default="0.50" />
 
     <!-- 局部三点中相邻点允许的最小间距，单位 m。 -->
-    <arg name="line_min_point_spacing" default="0.03" />
+    <arg name="line_min_point_spacing" default="0.01" />
     <!-- 局部三点中相邻点允许的最大间距，单位 m。 -->
     <arg name="line_max_point_spacing" default="3.0" />
     <!-- 局部三点中间点偏离首尾弦线的最大距离，单位 m。 -->
@@ -138,7 +138,8 @@
     <!-- 网页绑定的机器人本机网卡地址。 -->
     <arg name="trajectory_web_host" default="192.168.1.117" />
     <!-- 网页端口；默认访问 http://192.168.1.117:8082。 -->
-    <arg name="trajectory_web_port" default="8082" />
+    <arg name="trajectory_web_port" default="8081" />
+
 
     <node pkg="auv_control"
           type="test_task1_v2_line_follow.py"

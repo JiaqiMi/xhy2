@@ -1,12 +1,12 @@
 <launch>
     <!-- 箭头识别：YOLO bbox -> 二维方向估计 -> 连续话题 -> Web -->
 
-    <arg name="start_camera" default="true" />
-    <arg name="start_splitter" default="true" />
+    <arg name="start_camera" default="false" />
+    <arg name="start_splitter" default="false" />
     <arg name="start_web" default="true" />
 
     <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/arrow0709.pt" />
+         default="/home/xhy/catkin_ws/models/arrow0717.pt" />
     <arg name="conf_thre" default="0.2" />
     <arg name="top_k" default="3" />
     <arg name="rate" default="5.0" />

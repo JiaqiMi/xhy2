@@ -1,8 +1,8 @@
 <launch>
     <!-- Shapes识别：检测框中心 -> 单点三维坐标 -> Web -->
     <!-- 是否使用真实相机 -->
-    <arg name="start_camera" default="true" /> 
-    <arg name="start_splitter" default="true" />
+    <arg name="start_camera" default="false" /> 
+    <arg name="start_splitter" default="false" />
     <arg name="start_web" default="true" />
     <arg name="model_path"
         default="/home/xhy/catkin_ws/models/shapes0714.pt" />

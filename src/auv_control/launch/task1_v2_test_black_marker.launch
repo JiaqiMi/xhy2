@@ -19,8 +19,8 @@
     <arg name="velocity_topic" default="/status/vel" />
 
     <!-- 搜索距离：每轮定点前进距离，以及左右两侧相对搜索中心的横移幅度（m）。 -->
-    <arg name="search_forward_distance" default="0.5" />
-    <arg name="search_lateral_distance" default="0.5" />
+    <arg name="search_forward_distance" default="0.2" />
+    <arg name="search_lateral_distance" default="0.0" />
 
     <!-- 横移控制：mode=3 保持启动航向，仅输出 TY。
          search_ty_sign=1 表示正 TY 向右；如果实机方向相反改为 -1。 -->
@@ -35,8 +35,8 @@
     <!-- 黑色方形过滤：rectangle 连续3帧、每帧置信度至少0.30。
          同时限制相机距离、相邻帧间隔和多帧位置聚类范围。 -->
     <arg name="black_classes" default="rectangle" />
-    <arg name="black_min_confidence" default="0.30" />
-    <arg name="marker_sample_count" default="3" />
+    <arg name="black_min_confidence" default="0.35" />
+    <arg name="marker_sample_count" default="2" />
     <arg name="marker_sample_timeout" default="1.0" />
     <arg name="marker_cluster_distance" default="0.25" />
     <arg name="max_camera_distance" default="5.0" />
@@ -90,6 +90,8 @@
     <arg name="clamp_servo" default="0" />
     <arg name="drive_cmd" default="0" />
     <arg name="drive_speed" default="0" />
+
+    <include file="$(find stereo_depth)/launch/test_shapes_detection.launch" />
 
     <node pkg="auv_control"
           type="test_task1_v2_black_marker.py"

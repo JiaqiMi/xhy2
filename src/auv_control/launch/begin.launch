@@ -6,9 +6,21 @@
     <!-- <include file="$(find auv_control)/launch/param.launch"/> -->
     <arg name="save_dir" default="$(env HOME)/.ros/auv_logs" />
     <arg name="vehicle_ip" default="192.168.1.115" />
+    <arg name="start_camera" default="true" />
+    <arg name="start_splitter" default="true" />
     <arg name="enable_state_web" default="true" />
     <arg name="state_web_host" default="0.0.0.0" />
     <arg name="state_web_port" default="8088" />
+
+    <!-- 鱼眼相机驱动 -->
+    <arg name="start_driver" default="true" />
+    <arg name="camera_host" default="192.168.1.122" />
+    <arg name="camera_port" default="554" />
+    <arg name="username" default="admin" />
+    <arg name="password" default="admin" />
+    <arg name="channel" default="1" />
+    <arg name="subtype" default="0" />
+    <arg name="image_topic" default="/fisheye_camera/image_raw" />
 
     <!-- ===== 硬件驱动层 ===== -->
 
@@ -57,8 +69,20 @@
 
     <!-- <node pkg="auv_control" type="state_control.py" name="state_control" output="screen"/> -->
     <!-- 启动 USB 相机 -->
-    <!-- <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" /> -->
+    <node if="$(arg start_camera)" name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
 
     <!-- 图像左右分割节点 -->
-    <!-- <node pkg="stereo_splitter" type="split_stereo_image.py" name="split_stereo_image" output="screen" /> -->
+    <node if="$(arg start_splitter)" pkg="stereo_splitter" type="split_stereo_image.py" name="split_stereo_image" output="screen" />
+
+    <!-- 启动鱼眼相机 -->
+    <include if="$(arg start_driver)"
+             file="$(find fisheye_camera_driver)/launch/driver.launch">
+        <arg name="host" value="$(arg camera_host)" />
+        <arg name="port" value="$(arg camera_port)" />
+        <arg name="username" value="$(arg username)" />
+        <arg name="password" value="$(arg password)" />
+        <arg name="channel" value="$(arg channel)" />
+        <arg name="subtype" value="$(arg subtype)" />
+        <arg name="image_topic" value="$(arg image_topic)" />
+    </include>
 </launch>

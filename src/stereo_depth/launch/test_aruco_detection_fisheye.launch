@@ -2,7 +2,7 @@
     <!-- RTSP鱼眼相机 -> 畸变校正 -> ArUco检测/位姿 -> Web -->
 
     <!-- 鱼眼相机驱动 -->
-    <arg name="start_driver" default="true" />
+    <arg name="start_driver" default="false" />
     <arg name="camera_host" default="192.168.1.122" />
     <arg name="camera_port" default="554" />
     <arg name="username" default="admin" />
