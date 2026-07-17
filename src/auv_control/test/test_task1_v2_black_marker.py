@@ -273,7 +273,7 @@ class BlackMarkerTest(YellowMarkerTest):
         target.pose.position.x = self.move_target.x
         target.pose.position.y = self.move_target.y
         target.pose.position.z = self.hold_z
-        self.publish_pose_command(MODE_DPROV, target, mz=mz)
+        self.publish_pose_command(2, target, mz=mz)
 
     def run_black_rotation(self):
         current = self.get_current_pose()

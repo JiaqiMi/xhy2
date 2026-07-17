@@ -8,9 +8,9 @@ pitch_offset_deg: 0.0
 fixed_target_z: -0.6
 
 # 首轮入水运动限幅；参考实测 1000 TX 约对应 0.1 m/s，协议范围为 [-10000, 10000]
-max_tx: 1000.0
+max_tx: 2000.0
 max_ty: 2000.0
-max_mz: 1000.0
+max_mz: 2000.0
 brake_max_tx_positive: 2000.0
 brake_max_tx_negative: 3000.0
 brake_max_ty_positive: 2000.0
@@ -32,19 +32,19 @@ brake_gain_y: 40000.0
 brake_gain_yaw: -6000.0
 
 # 停车距离模型；参数后缀表示实际刹车力/力矩的符号
-brake_acceleration_tx_positive: 0.05
-brake_acceleration_tx_negative: 0.05
-brake_acceleration_ty_positive: 0.025
-brake_acceleration_ty_negative: 0.025
-angular_brake_acceleration_mz_positive: 0.25
-angular_brake_acceleration_mz_negative: 0.30
+brake_acceleration_tx_positive: 0.1
+brake_acceleration_tx_negative: 0.1
+brake_acceleration_ty_positive: 0.05
+brake_acceleration_ty_negative: 0.05
+angular_brake_acceleration_mz_positive: 0.5
+angular_brake_acceleration_mz_negative: 0.6
 control_delay: 0.35
-brake_margin: 0.15
+brake_margin: 0.1
 yaw_brake_margin_deg: 3.0
 
 # 捕获、接管和异常回退阈值
-capture_radius: 0.25
-capture_exit_radius: 0.35
+capture_radius: 0.15
+capture_exit_radius: 0.25
 horizontal_speed_threshold: 0.015
 yaw_tolerance_deg: 5.0
 path_yaw_tolerance_deg: 5.0

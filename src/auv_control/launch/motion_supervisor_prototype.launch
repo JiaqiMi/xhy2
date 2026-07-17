@@ -18,7 +18,14 @@
       false：只启动 motion_supervisor，目标由其他节点发布；
       true：启动 motion_goal_test，并自动发布下方参数定义的测试目标。
     -->
-    <arg name="start_goal_test" default="false" />
+    <arg name="start_goal_test" default="true" />
+
+    <!--
+      NED/map 坐标系下的绝对目标深度，单位 m。
+      按当前系统的 z 符号约定输入，默认水下 0.6 m 为 -0.6。
+      此参数同时传给 motion_supervisor 和 motion_goal_test，确保目标深度一致。
+    -->
+    <arg name="target_z" default="-0.6" />
 
     <!--
       NED/map 坐标系下的绝对目标深度，单位 m。
@@ -39,20 +46,20 @@
       offset_frame=base_link：正值向前，负值向后；
       offset_frame=map：正值向北，负值向南。
     -->
-    <arg name="offset_x" default="1.0" />
+    <arg name="offset_x" default="0.0" />
 
     <!--
       相对目标 y 偏置，单位 m，可输入正负值。
       offset_frame=base_link：正值向右，负值向左；
       offset_frame=map：正值向东，负值向西。
     -->
-    <arg name="offset_y" default="0.0" />
+    <arg name="offset_y" default="2.0" />
 
     <!--
       相对于初始航向的偏差，单位 deg，可输入正负值。
       目标航向会归一化到 [-180°, 180°)。
     -->
-    <arg name="yaw_offset_deg" default="0.0" />
+    <arg name="yaw_offset_deg" default="90.0" />
 
     <!--
       测试节点启动后、锁定初始 TF 前的等待时间，单位 s。

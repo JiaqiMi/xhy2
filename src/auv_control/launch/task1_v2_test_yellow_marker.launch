@@ -36,7 +36,7 @@
          相邻采样最大间隔（s）和位置聚类距离（m）。 -->
     <arg name="yellow_classes" default="triangle,circle" />
     <arg name="max_camera_distance" default="5.0" />
-    <arg name="marker_sample_count" default="10" />
+    <arg name="marker_sample_count" default="3" />
     <arg name="marker_sample_timeout" default="1.0" />
     <arg name="marker_cluster_distance" default="0.25" />
 
@@ -63,6 +63,8 @@
     <arg name="clamp_servo" default="0" />
     <arg name="drive_cmd" default="0" />
     <arg name="drive_speed" default="0" />
+
+    <include file="$(find stereo_depth)/launch/test_shapes_detection.launch" />
 
     <node pkg="auv_control"
           type="test_task1_v2_yellow_marker.py"
