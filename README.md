@@ -93,6 +93,7 @@ roslaunch stereo_depth test_shapes_detection.launch
 ```text
 /yolo_unified/target_center      geometry_msgs/PointStamped
 /obj/target_message              auv_control/TargetDetection
+```
 
 ---
 
@@ -107,6 +108,7 @@ roslaunch stereo_depth test_arrow_detection.launch
 ```text
 /yolo_unified/target_bbox        stereo_depth/BoundingBox
 /arrow/direction                 std_msgs/String
+```
 
 ---
 
@@ -121,6 +123,7 @@ roslaunch stereo_depth test_rectangles_detection.launch
 ```text
 /yolo_unified/target_center      geometry_msgs/PointStamped
 /obj/target_message              auv_control/TargetDetection
+```
 
 ---
 
@@ -133,8 +136,8 @@ roslaunch stereo_depth test_aruco_detection_fisheye.launch
 关键话题：
 
 ```text
-/yolo_unified/target_center      geometry_msgs/PointStamped
 /obj/target_message              auv_control/TargetDetection
+```
 
 ---
 
