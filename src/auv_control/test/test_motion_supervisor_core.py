@@ -16,6 +16,8 @@
     增加固定目标深度在目标、兜底和取消路径中的回归测试。
 2026.7.17
     增加最终转向期间水平刹停和漂出捕获区回退测试。
+2026.7.17
+    增加停车主轴、最小刹转力矩和定点接管保护测试。
 """
 
 import math
@@ -164,6 +166,27 @@ class MotionSupervisorCoreTest(unittest.TestCase):
             0.03,
         )
 
+    def test_horizontal_deceleration_ignores_minor_cross_axis(self):
+        core = MotionSupervisorCore({
+            'brake_axis_relevance_ratio': 0.20,
+            'brake_acceleration_tx_positive': 0.10,
+            'brake_acceleration_tx_negative': 0.10,
+            'brake_acceleration_ty_positive': 0.05,
+            'brake_acceleration_ty_negative': 0.05,
+        })
+        mostly_forward = self.vehicle(u=0.20, v=0.01)
+        diagonal = self.vehicle(u=0.20, v=0.10)
+        self.assertAlmostEqual(
+            core._horizontal_brake_acceleration(
+                mostly_forward, 1.0, 0.05),
+            0.10,
+        )
+        self.assertAlmostEqual(
+            core._horizontal_brake_acceleration(
+                diagonal, 1.0, 0.50),
+            0.05,
+        )
+
     def test_angular_deceleration_uses_mz_direction(self):
         core = MotionSupervisorCore({
             'brake_gain_yaw': -6000.0,
@@ -195,6 +218,21 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(
             (negative_velocity.tx, negative_velocity.ty, negative_velocity.mz),
             (2000, 2000, -3000),
+        )
+
+    def test_yaw_brake_uses_minimum_effective_moment(self):
+        core = MotionSupervisorCore({
+            'brake_gain_yaw': -6000.0,
+            'brake_min_mz': 100.0,
+            'yaw_rate_threshold': math.radians(0.3),
+        })
+        self.assertEqual(
+            core._yaw_brake_command(math.radians(0.5)),
+            100.0,
+        )
+        self.assertAlmostEqual(
+            core._yaw_brake_command(math.radians(0.1)),
+            6000.0 * math.radians(0.1),
         )
 
     def test_stopping_distance_includes_delay_and_margin(self):
@@ -234,18 +272,18 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertGreater(output.tx, 0)
         self.assertEqual(output.mode, MODE_DEPTH)
 
-        output = self.core.step(self.vehicle(x=1.80, u=0.20))
+        output = self.core.step(self.vehicle(x=1.90, u=0.20))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertLess(output.tx, 0)
 
-        self.core.step(self.vehicle(x=1.80))
-        output = self.core.step(self.vehicle(x=1.80))
+        self.core.step(self.vehicle(x=1.90))
+        output = self.core.step(self.vehicle(x=1.90))
         self.assertEqual(output.state, ALIGN_FINAL)
 
-        output = self.core.step(self.vehicle(x=1.80))
+        output = self.core.step(self.vehicle(x=1.90))
         self.assertEqual(output.state, FINAL_BRAKE)
-        self.core.step(self.vehicle(x=1.80))
-        output = self.core.step(self.vehicle(x=1.80))
+        self.core.step(self.vehicle(x=1.90))
+        output = self.core.step(self.vehicle(x=1.90))
         self.assertEqual(output.state, HOVER)
         self.assertEqual(output.mode, MODE_DPROV)
         self.assertEqual((output.tx, output.ty, output.mz), (0, 0, 0))
@@ -262,6 +300,13 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertGreater(output.mz, 0)
 
         output = self.core.step(self.vehicle(x=0.4, yaw=0.0))
+        self.assertEqual(output.state, ALIGN_PATH)
+        self.assertEqual(output.mode, MODE_DEPTH)
+
+    def test_final_brake_requires_capture_radius_before_hover(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = FINAL_BRAKE
+        output = self.core.step(self.vehicle(x=0.20))
         self.assertEqual(output.state, ALIGN_PATH)
         self.assertEqual(output.mode, MODE_DEPTH)
 
@@ -311,6 +356,31 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.core.state = HOVER
         self.core.hover_started_at = self.now
         output = self.core.step(self.vehicle(u=0.09, mode=MODE_DPROV))
+        self.assertEqual(output.state, TRANSLATE_BRAKE)
+        self.assertEqual(output.mode, MODE_DEPTH)
+
+    def test_hover_yaw_error_and_rate_fallback(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = HOVER
+        self.core.hover_started_at = self.now
+        output = self.core.step(
+            self.vehicle(yaw=math.radians(11.0), mode=MODE_DPROV))
+        self.assertEqual(output.state, TRANSLATE_BRAKE)
+        self.assertEqual(output.mode, MODE_DEPTH)
+
+    def test_hover_position_error_fallback(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = HOVER
+        self.core.hover_started_at = self.now
+        output = self.core.step(
+            self.vehicle(x=0.30, mode=MODE_DPROV))
+        self.assertEqual(output.state, TRANSLATE_BRAKE)
+        self.assertEqual(output.mode, MODE_DEPTH)
+
+        self.core.state = HOVER
+        self.core.hover_started_at = self.now
+        output = self.core.step(
+            self.vehicle(r=math.radians(2.1), mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
 

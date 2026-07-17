@@ -1,55 +1,58 @@
 # 运动管理层控制频率与反馈处理
-control_rate_hz: 5.0
-feedback_timeout: 0.5
-velocity_filter_alpha: 0.35
-pitch_offset_deg: 0.0
+control_rate_hz: 5.0          # 上位机状态机控制频率，单位 Hz，应与驱动指令发送频率一致
+feedback_timeout: 0.5         # TF 或速度反馈最大允许间隔，单位 s，超时后进入 SAFE
+velocity_filter_alpha: 0.35   # 速度一阶低通新数据权重，范围 (0,1]，越大响应越快
+pitch_offset_deg: 0.0         # 发送目标姿态时附加的固定俯仰角，单位 deg
 
 # 下位机定深和定点使用的固定 NED 目标深度；launch 的 target_z 会覆盖此默认值
-fixed_target_z: -0.6
+fixed_target_z: -0.6          # NED/map 下的绝对目标 z，单位 m，当前约定水下为负值
 
 # 首轮入水运动限幅；参考实测 1000 TX 约对应 0.1 m/s，协议范围为 [-10000, 10000]
-max_tx: 2000.0
-max_ty: 2000.0
-max_mz: 2000.0
-brake_max_tx_positive: 2000.0
-brake_max_tx_negative: 3000.0
-brake_max_ty_positive: 2000.0
-brake_max_ty_negative: 4000.0
-brake_max_mz_positive: 3000.0
-brake_max_mz_negative: 3000.0
-force_slew_per_cycle: 10000.0
-brake_force_slew_per_cycle: 10000.0
+max_tx: 2000.0                # 正常运动阶段 TX 双向绝对限幅
+max_ty: 2000.0                # 正常运动阶段 TY 双向绝对限幅
+max_mz: 1000.0                # 正常转向阶段 MZ 双向绝对限幅
+brake_max_tx_positive: 2000.0 # 主动刹车阶段正 TX 最大值
+brake_max_tx_negative: 3000.0 # 主动刹车阶段负 TX 绝对值上限
+brake_max_ty_positive: 2000.0 # 主动刹车阶段正 TY 最大值
+brake_max_ty_negative: 4000.0 # 主动刹车阶段负 TY 绝对值上限
+brake_max_mz_positive: 3000.0 # 主动刹转阶段正 MZ 最大值
+brake_max_mz_negative: 3000.0 # 主动刹转阶段负 MZ 绝对值上限
+force_slew_per_cycle: 10000.0 # 正常运动每控制周期允许的最大力矩变化量
+brake_force_slew_per_cycle: 10000.0 # 刹车每控制周期允许的最大力矩变化量
 
 # 无积分位置/航向控制增益；0.5 m 或约 10 deg 误差时接近首轮运动限幅
-kp_x: 2000.0
-kp_y: 4000.0
-kv_x: 1000.0
-kv_y: 2000.0
-kp_yaw: 6000.0
-kr_yaw: -2000.0
-brake_gain_x: 30000.0
-brake_gain_y: 40000.0
-brake_gain_yaw: -6000.0
+kp_x: 2000.0                 # 本体 x 位置误差比例增益，输出单位/米
+kp_y: 4000.0                 # 本体 y 位置误差比例增益，输出单位/米
+kv_x: 1000.0                 # 前向速度阻尼增益，输出单位/(m/s)
+kv_y: 2000.0                 # 横向速度阻尼增益，输出单位/(m/s)
+kp_yaw: 6000.0               # TF 航向误差比例增益，输出单位/rad
+kr_yaw: -2000.0              # 航向角速度阻尼增益，负号适配当前 /status/vel 的 r 方向
+brake_gain_x: 30000.0        # 前向主动刹车增益，输出单位/(m/s)
+brake_gain_y: 40000.0        # 横向主动刹车增益，输出单位/(m/s)
+brake_gain_yaw: -6000.0      # 主动刹转增益，输出单位/(rad/s)，负号适配当前 r 方向
+brake_min_mz: 100.0          # 超过角速度停稳阈值时使用的最小有效 MZ 绝对值
 
-# 停车距离模型；参数后缀表示实际刹车力/力矩的符号
-brake_acceleration_tx_positive: 0.1
-brake_acceleration_tx_negative: 0.1
-brake_acceleration_ty_positive: 0.05
-brake_acceleration_ty_negative: 0.05
-angular_brake_acceleration_mz_positive: 0.5
-angular_brake_acceleration_mz_negative: 0.6
-control_delay: 0.35
-brake_margin: 0.1
-yaw_brake_margin_deg: 3.0
+# 停车距离模型；小于主轴 20% 的伴随分量不参与保守减速度选择
+brake_axis_relevance_ratio: 0.20 # 伴随轴纳入停车模型的误差或速度占比阈值，范围 (0,1]
+brake_acceleration_tx_positive: 0.1 # 输出正 TX 刹车时的实测有效减速度，单位 m/s²
+brake_acceleration_tx_negative: 0.1 # 输出负 TX 刹车时的实测有效减速度，单位 m/s²
+brake_acceleration_ty_positive: 0.05 # 输出正 TY 刹车时的实测有效减速度，单位 m/s²
+brake_acceleration_ty_negative: 0.05 # 输出负 TY 刹车时的实测有效减速度，单位 m/s²
+angular_brake_acceleration_mz_positive: 0.1 # 输出正 MZ 刹转时的有效角减速度，单位 rad/s²
+angular_brake_acceleration_mz_negative: 0.1 # 输出负 MZ 刹转时的有效角减速度，单位 rad/s²
+control_delay: 0.35          # 反馈、计算、通信和执行的综合延迟估计，单位 s
+brake_margin: 0.1            # 水平停车距离附加安全余量，单位 m
+yaw_brake_margin_deg: 3.0    # 航向刹转角度附加安全余量，单位 deg
 
 # 捕获、接管和异常回退阈值
-capture_radius: 0.15
-capture_exit_radius: 0.25
-horizontal_speed_threshold: 0.015
-yaw_tolerance_deg: 5.0
-path_yaw_tolerance_deg: 5.0
-yaw_rate_threshold_deg_s: 0.3
-stable_frames: 5
-hover_fault_speed: 0.08
-hover_fault_yaw_rate_deg_s: 6.0
-mode_ack_timeout: 1.0
+capture_radius: 0.15         # 允许进入最终转向和 mode=4 的水平位置误差，单位 m
+capture_exit_radius: 0.25    # 转向或定点时触发重新接近的水平位置误差，单位 m
+horizontal_speed_threshold: 0.015 # 判定水平停稳的合速度上限，单位 m/s
+yaw_tolerance_deg: 5.0       # 最终航向允许误差，单位 deg
+path_yaw_tolerance_deg: 5.0  # 平移前路径航向允许误差，单位 deg
+yaw_rate_threshold_deg_s: 0.3 # 判定转动停稳的角速度上限，单位 deg/s
+stable_frames: 5             # 捕获或停稳条件需要连续满足的控制帧数，5 Hz 下约为 1 s
+hover_fault_speed: 0.08      # mode=4 接管后触发回退的水平速度，单位 m/s
+hover_fault_yaw_rate_deg_s: 2.0 # mode=4 接管后触发回退的航向角速度，单位 deg/s
+hover_fault_yaw_error_deg: 10.0 # mode=4 接管后触发回退的航向误差，单位 deg
+mode_ack_timeout: 1.0        # 等待下位机反馈 mode=4 的最长时间，单位 s

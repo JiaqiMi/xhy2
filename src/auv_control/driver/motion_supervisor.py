@@ -20,6 +20,8 @@
     新增分阶段运动、主动刹停、稳定捕获、定点接管和反馈超时保护。
 2026.7.17
     TF 改为按 Time(0) 获取最新可用变换，所有目标统一使用可配置固定深度。
+2026.7.17
+    增加定点接管航向误差保护参数。
 """
 
 from __future__ import division
@@ -100,6 +102,7 @@ class MotionSupervisorNode(object):
             'path_yaw_tolerance': 'path_yaw_tolerance_deg',
             'yaw_rate_threshold': 'yaw_rate_threshold_deg_s',
             'hover_fault_yaw_rate': 'hover_fault_yaw_rate_deg_s',
+            'hover_fault_yaw_error': 'hover_fault_yaw_error_deg',
         }
         for name, default in DEFAULT_PARAMETERS.items():
             if name in degree_parameters:

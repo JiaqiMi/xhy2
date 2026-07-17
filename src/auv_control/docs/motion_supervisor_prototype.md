@@ -129,3 +129,32 @@ brake_force_slew_per_cycle: 10000.0
 ```
 
 当前 TX 正向刹车尚无完整的反向运动—停稳样本，暂时使用 `2000` 和 `0.05 m/s²`。后续补测后只需更新 `brake_max_tx_positive` 与 `brake_acceleration_tx_positive`。
+
+## 2026-07-17 入水日志修正
+
+1.5 m 前进测试中，`TX=2000` 对应最高约 `0.20 m/s`，主动刹车实测
+纵向减速度约 `0.10 m/s²`。90° 转向测试表明，`MZ=2000` 会产生约
+`16 deg/s` 的角速度，按实际刹转过程估算的有效角减速度约为
+`0.10 rad/s²`。当前首轮安全参数为：
+
+```yaml
+max_tx: 2000.0
+max_ty: 2000.0
+max_mz: 1000.0
+brake_acceleration_tx_positive: 0.10
+brake_acceleration_tx_negative: 0.10
+brake_acceleration_ty_positive: 0.05
+brake_acceleration_ty_negative: 0.05
+angular_brake_acceleration_mz_positive: 0.10
+angular_brake_acceleration_mz_negative: 0.10
+brake_min_mz: 100.0
+```
+
+停车距离只在某轴的误差或速度达到主轴的 20% 时才纳入该轴，避免微小
+横向分量使纯前进测试错误采用较小的 TY 减速度。切换和保持 `mode=4`
+时增加以下保护：
+
+- 进入定点前必须位于 `capture_radius` 内；
+- 定点后位置误差超过 `capture_exit_radius` 时退回刹停；
+- 定点后航向误差超过 `10°` 或角速度超过 `2 deg/s` 时退回刹停；
+- 角速度超过停稳阈值时，航向刹车力矩绝对值不低于 `100`。
