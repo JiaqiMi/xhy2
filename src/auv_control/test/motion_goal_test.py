@@ -9,25 +9,39 @@
     1. 启动后读取初始 map -> base_link 位姿；
     2. offset_frame=base_link 时，offset_x/offset_y 表示前/右偏置；
     3. offset_frame=map 时，offset_x/offset_y 表示北/东偏置；
-    4. 目标航向为初始航向加 yaw_offset_deg，目标 z 固定为 -0.6 m；
+    4. 目标航向为初始航向加 yaw_offset_deg，目标 z 使用绝对值参数 target_z；
     5. 发布器使用锁存模式，仅用于运动管理原型的水池测试。
 记录：
 2026.7.16
     新增原型目标发布工具。
 2026.7.16
     改为读取初始位姿后发布 base_link 或 map 坐标系下的相对目标。
+2026.7.17
+    适配 test 与 driver 分目录结构，补充控制核心模块搜索路径。
+2026.7.17
+    增加可配置的 NED/map 绝对目标深度参数 target_z。
 """
 
 import math
+import os
+import sys
 
 import rospy
 import tf
 from geometry_msgs.msg import PoseStamped
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
+
+
+# catkin devel 模式直接执行 test 下的源码，需要显式加入相邻 driver 目录。
+DRIVER_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..', 'driver'))
+if DRIVER_DIR not in sys.path:
+    sys.path.insert(0, DRIVER_DIR)
+
 from motion_supervisor_core import relative_target_xy, wrap_angle
 
 
-TARGET_Z = -0.6
+DEFAULT_TARGET_Z = -0.6
 SUPPORTED_OFFSET_FRAMES = ('base_link', 'map')
 
 
@@ -41,10 +55,18 @@ def main():
     offset_x = float(rospy.get_param('~offset_x', 1.0))
     offset_y = float(rospy.get_param('~offset_y', 0.0))
     yaw_offset_deg = float(rospy.get_param('~yaw_offset_deg', 0.0))
+    target_z = float(rospy.get_param('~target_z', DEFAULT_TARGET_Z))
     publish_delay = max(0.0, float(rospy.get_param('~publish_delay', 1.0)))
     tf_timeout = max(0.1, float(rospy.get_param('~tf_timeout', 5.0)))
 
-    values = (offset_x, offset_y, yaw_offset_deg, publish_delay, tf_timeout)
+    values = (
+        offset_x,
+        offset_y,
+        yaw_offset_deg,
+        target_z,
+        publish_delay,
+        tf_timeout,
+    )
     if not all(math.isfinite(value) for value in values):
         rospy.logfatal('motion_goal_test: 参数必须是有限数值')
         return
@@ -91,7 +113,7 @@ def main():
     target.header.frame_id = 'map'
     target.pose.position.x = target_x
     target.pose.position.y = target_y
-    target.pose.position.z = TARGET_Z
+    target.pose.position.z = target_z
     quaternion = quaternion_from_euler(
         0.0, 0.0, target_yaw)
     target.pose.orientation.x = quaternion[0]
@@ -120,7 +142,7 @@ def main():
         '(x=%.2f, y=%.2f, z=%.2f, yaw=%.1fdeg)',
         target_x,
         target_y,
-        TARGET_Z,
+        target_z,
         math.degrees(target_yaw),
     )
     rospy.spin()

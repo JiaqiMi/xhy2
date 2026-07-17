@@ -18,6 +18,8 @@
 记录：
 2026.7.16
     新增分阶段运动、主动刹停、稳定捕获、定点接管和反馈超时保护。
+2026.7.17
+    TF 改为按 Time(0) 获取最新可用变换，所有目标统一使用可配置固定深度。
 """
 
 from __future__ import division
@@ -81,8 +83,10 @@ class MotionSupervisorNode(object):
             '/status/auv', AUVData, self.status_callback, queue_size=10)
 
         rospy.loginfo(
-            'motion_supervisor: 已启动，控制频率 %.1f Hz，等待 TF 和速度反馈',
-            self.control_rate_hz)
+            'motion_supervisor: 已启动，控制频率 %.1f Hz，'
+            '绝对目标 z=%.2f m，等待 TF 和速度反馈',
+            self.control_rate_hz,
+            self.core.parameters['fixed_target_z'])
 
     @staticmethod
     def _parameter(name, default):
@@ -134,7 +138,7 @@ class MotionSupervisorNode(object):
             goal = MotionGoal(
                 message.pose.position.x,
                 message.pose.position.y,
-                message.pose.position.z,
+                self.core.parameters['fixed_target_z'],
                 yaw,
             )
         except ValueError as error:
@@ -177,15 +181,21 @@ class MotionSupervisorNode(object):
 
     def _update_pose(self, now):
         try:
-            latest = self.tf_listener.getLatestCommonTime('map', 'base_link')
+            # 与现有任务节点一致，Time(0) 表示读取 TF 缓冲区中的最新可用变换。
+            self.tf_listener.waitForTransform(
+                'map',
+                'base_link',
+                rospy.Time(0),
+                rospy.Duration(self.feedback_timeout),
+            )
             translation, rotation = self.tf_listener.lookupTransform(
-                'map', 'base_link', latest)
+                'map', 'base_link', rospy.Time(0))
             yaw = euler_from_quaternion(rotation)[2]
             values = (translation[0], translation[1], translation[2], yaw)
             if not all(math.isfinite(value) for value in values):
                 raise ValueError('TF 包含非有限值')
             self.last_pose = values
-            self.last_pose_stamp = latest if latest != rospy.Time(0) else now
+            self.last_pose_stamp = now
         except (tf.Exception, ValueError) as error:
             rospy.logwarn_throttle(
                 2.0, 'motion_supervisor: 无法更新 AUV 位姿: %s', error)

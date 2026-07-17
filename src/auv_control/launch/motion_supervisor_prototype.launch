@@ -3,7 +3,7 @@
       原型节点必须是 /cmd/pose/ned 的唯一发布者。
       使用本启动文件时不要同时启动 task1～task4 或其他运动测试节点。
       motion_goal_test 启动后只获取一次初始位姿并发布一次锁存目标。
-      测试目标的 z 固定为 -0.6 m，不通过 launch 参数修改。
+      目标 z 是 NED/map 坐标系下的绝对深度值，通过 target_z 设置。
     -->
 
     <!--
@@ -19,6 +19,13 @@
       true：启动 motion_goal_test，并自动发布下方参数定义的测试目标。
     -->
     <arg name="start_goal_test" default="false" />
+
+    <!--
+      NED/map 坐标系下的绝对目标深度，单位 m。
+      按当前系统的 z 符号约定输入，默认水下 0.6 m 为 -0.6。
+      此参数同时传给 motion_supervisor 和 motion_goal_test，确保目标深度一致。
+    -->
+    <arg name="target_z" default="-0.6" />
 
     <!--
       水平偏置所使用的坐标系，只支持 base_link 或 map。
@@ -67,6 +74,8 @@
           name="motion_supervisor" output="screen" required="true">
         <!-- 将 config_file 中的参数加载到 motion_supervisor 私有命名空间。 -->
         <rosparam command="load" file="$(arg config_file)" />
+        <!-- 覆盖 YAML 中的默认固定深度，使用 launch 输入的绝对目标 z。 -->
+        <param name="fixed_target_z" value="$(arg target_z)" />
     </node>
 
     <!--
@@ -83,6 +92,8 @@
         <param name="offset_y" value="$(arg offset_y)" />
         <!-- 初始航向基础上的角度偏差，单位 deg。 -->
         <param name="yaw_offset_deg" value="$(arg yaw_offset_deg)" />
+        <!-- NED/map 坐标系下的绝对目标深度，单位 m。 -->
+        <param name="target_z" value="$(arg target_z)" />
         <!-- 锁定初始位姿前的等待时间，单位 s。 -->
         <param name="publish_delay" value="$(arg goal_publish_delay)" />
         <!-- TF 等待超时时间，单位 s。 -->
