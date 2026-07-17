@@ -18,14 +18,19 @@
     <arg name="camera_topic" default="/left/image_raw" />
     <arg name="velocity_topic" default="/status/vel" />
 
-    <!-- 定点搜索：每轮前进距离（m）、左右搜索角度（deg）。 -->
+    <!-- 搜索距离：每轮定点前进距离，以及左右两侧相对搜索中心的横移幅度（m）。 -->
     <arg name="search_forward_distance" default="0.5" />
-    <arg name="search_yaw_offset_deg" default="30.0" />
+    <arg name="search_lateral_distance" default="0.5" />
 
-    <!-- 到达判断：水平位置容差（m）；航向容差和航向步长只用于定点旋转搜索。 -->
+    <!-- 横移控制：mode=3 保持启动航向，仅输出 TY。
+         search_ty_sign=1 表示正 TY 向右；如果实机方向相反改为 -1。 -->
+    <arg name="search_lateral_force" default="1500.0" />
+    <arg name="search_force_step" default="300.0" />
+    <arg name="search_brake_step" default="500.0" />
+    <arg name="search_ty_sign" default="1.0" />
+
+    <!-- 到达判断：定点前进和前往黄色图形共用的水平位置容差（m）。 -->
     <arg name="position_tolerance" default="0.15" />
-    <arg name="yaw_tolerance_deg" default="3.0" />
-    <arg name="max_yaw_step_deg" default="2.0" />
 
     <!-- 黄色图形过滤：类别名、最大相机距离（m）、稳定识别帧数、
          相邻采样最大间隔（s）和位置聚类距离（m）。 -->
@@ -35,7 +40,7 @@
     <arg name="marker_sample_timeout" default="1.0" />
     <arg name="marker_cluster_distance" default="0.25" />
 
-    <!-- 搜索过渡：前进或旋转目标到达后，保持速度稳定的时间（s）。 -->
+    <!-- 搜索过渡：前进或横移结束后，保持速度稳定的时间（s）。 -->
     <arg name="transition_hold_seconds" default="4.0" />
 
     <!-- 消息有效期：相机/速度反馈超时（s），速度超时后改用 TF 差分。 -->
@@ -71,10 +76,12 @@
         <param name="camera_topic" type="string" value="$(arg camera_topic)" />
         <param name="velocity_topic" type="string" value="$(arg velocity_topic)" />
         <param name="search_forward_distance" type="double" value="$(arg search_forward_distance)" />
-        <param name="search_yaw_offset_deg" type="double" value="$(arg search_yaw_offset_deg)" />
+        <param name="search_lateral_distance" type="double" value="$(arg search_lateral_distance)" />
+        <param name="search_lateral_force" type="double" value="$(arg search_lateral_force)" />
+        <param name="search_force_step" type="double" value="$(arg search_force_step)" />
+        <param name="search_brake_step" type="double" value="$(arg search_brake_step)" />
+        <param name="search_ty_sign" type="double" value="$(arg search_ty_sign)" />
         <param name="position_tolerance" type="double" value="$(arg position_tolerance)" />
-        <param name="yaw_tolerance_deg" type="double" value="$(arg yaw_tolerance_deg)" />
-        <param name="max_yaw_step_deg" type="double" value="$(arg max_yaw_step_deg)" />
         <param name="yellow_classes" type="string" value="$(arg yellow_classes)" />
         <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
         <param name="marker_sample_count" type="int" value="$(arg marker_sample_count)" />

@@ -6,7 +6,7 @@
 
 流程：
     1. 定点保持启动位姿，等待相机节点持续发布图像；
-    2. 未识别到黄色图形时，定点向初始航向前进 0.5 m，静止后左右旋转 30 度搜索；
+    2. 未识别到黄色图形时，定点向启动航向前进，静止后使用 TY 左右横移搜索；
     3. 连续多帧确认黄色图形位置后，使用动力定位模式直接前往图形中心；
     4. 前往图形时只判断水平位置误差，不规划或校正目标航向；
     5. 到达黄色图形上方后亮红灯，动作完成后发布完成消息。
@@ -21,7 +21,7 @@
     将脚本改为纯黄色图形测试，删除黑色图形识别、旋转和无关状态。
     搜索基准航向直接读取节点启动时的机器人当前航向，不再使用人工配置参数。
     锁定黄色图形后直接发布其中心为动力定位目标，只以 XY 距离判断到达。
-    未识别时采用“前进 0.5 m、左转 30 度、右转 30 度”的定点搜索流程。
+    未识别时采用“前进、左移、回中心、右移、回中心”的搜索流程，横移仅输出 TY。
     精简运行日志，只保留相机状态、识别状态、当前位置、目标位置、距离和完成状态。
 """
 
@@ -36,6 +36,7 @@ from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
+MODE_DEPTH_HDG = 3
 MODE_DPROV = 4
 
 
@@ -77,6 +78,7 @@ class YellowMarkerTest:
     STEP_WAIT_CAMERA = "WAIT_CAMERA"
     STEP_SEARCH_FORWARD = "SEARCH_FORWARD"
     STEP_SEARCH_LEFT = "SEARCH_LEFT"
+    STEP_SEARCH_LEFT_CENTER = "SEARCH_LEFT_CENTER"
     STEP_SEARCH_RIGHT = "SEARCH_RIGHT"
     STEP_SEARCH_CENTER = "SEARCH_CENTER"
     STEP_MOVE = "MOVE_TO_YELLOW"
@@ -86,12 +88,14 @@ class YellowMarkerTest:
     SEARCH_STEPS = {
         STEP_SEARCH_FORWARD,
         STEP_SEARCH_LEFT,
+        STEP_SEARCH_LEFT_CENTER,
         STEP_SEARCH_RIGHT,
         STEP_SEARCH_CENTER,
     }
 
     def __init__(self):
         self.node_name = "test_task1_v2_yellow_marker"
+        self.marker_display_name = "黄色图形"
         self.rate = rospy.Rate(float(rospy.get_param("~rate", 5.0)))
         self.tf_listener = tf.TransformListener()
 
@@ -105,18 +109,23 @@ class YellowMarkerTest:
         self.search_forward_distance = float(rospy.get_param(
             "~search_forward_distance", 0.5
         ))
-        self.search_yaw_offset = math.radians(float(rospy.get_param(
-            "~search_yaw_offset_deg", 30.0
+        self.search_lateral_distance = float(rospy.get_param(
+            "~search_lateral_distance", 0.5
+        ))
+        self.search_lateral_force = abs(float(rospy.get_param(
+            "~search_lateral_force", 1500.0
         )))
+        self.search_force_step = abs(float(rospy.get_param(
+            "~search_force_step", 300.0
+        )))
+        self.search_brake_step = abs(float(rospy.get_param(
+            "~search_brake_step", 500.0
+        )))
+        ty_sign = float(rospy.get_param("~search_ty_sign", 1.0))
+        self.search_ty_sign = 1.0 if ty_sign >= 0.0 else -1.0
         self.position_tolerance = float(rospy.get_param(
             "~position_tolerance", 0.15
         ))
-        self.yaw_tolerance = math.radians(float(rospy.get_param(
-            "~yaw_tolerance_deg", 3.0
-        )))
-        self.max_yaw_step = math.radians(float(rospy.get_param(
-            "~max_yaw_step_deg", 2.0
-        )))
 
         self.camera_message_timeout = float(rospy.get_param(
             "~camera_message_timeout", 2.0
@@ -171,16 +180,6 @@ class YellowMarkerTest:
         self.finished_pub = rospy.Publisher(
             self.finished_topic, String, queue_size=10
         )
-        rospy.Subscriber(
-            self.target_topic, TargetDetection, self.target_callback, queue_size=10
-        )
-        rospy.Subscriber(
-            self.camera_topic, rospy.AnyMsg, self.camera_callback, queue_size=1
-        )
-        rospy.Subscriber(
-            self.velocity_topic, TwistStamped, self.velocity_callback, queue_size=5
-        )
-
         self.step = self.STEP_WAIT_CAMERA
         self.start_pose = None
         self.hold_z = None
@@ -198,7 +197,21 @@ class YellowMarkerTest:
         self.search_target = None
         self.search_stable_since = None
         self.search_arrival_logged = False
+        self.lateral_phase_start = None
+        self.lateral_hold_pose = None
+        self.last_search_ty = 0.0
         self.light_started_at = None
+
+        # 状态字段全部就绪后再创建订阅，避免首帧消息在构造期间触发回调。
+        rospy.Subscriber(
+            self.target_topic, TargetDetection, self.target_callback, queue_size=10
+        )
+        rospy.Subscriber(
+            self.camera_topic, rospy.AnyMsg, self.camera_callback, queue_size=1
+        )
+        rospy.Subscriber(
+            self.velocity_topic, TwistStamped, self.velocity_callback, queue_size=5
+        )
 
     def camera_callback(self, _message):
         self.last_camera_time = rospy.Time.now()
@@ -257,13 +270,28 @@ class YellowMarkerTest:
         pose.pose.orientation = Quaternion(*quaternion_from_euler(0.0, 0.0, yaw))
         return pose
 
-    def publish_dprov(self, target):
+    def publish_pose_command(self, mode, target, ty=0.0, mz=0.0):
         command = PoseNEDcmd()
-        command.mode = MODE_DPROV
+        command.mode = int(mode)
         command.target = copy.deepcopy(target)
         command.target.header.frame_id = "map"
         command.target.header.stamp = rospy.Time.now()
+        command.force.TY = int(round(clamp(ty, -10000.0, 10000.0)))
+        command.force.MZ = int(round(clamp(mz, -10000.0, 10000.0)))
         self.cmd_pub.publish(command)
+
+    def publish_dprov(self, target):
+        self.publish_pose_command(MODE_DPROV, target)
+
+    def publish_lateral_command(self, current, ty):
+        """定深定向横移：保持启动航向，只输出 TY。"""
+        target = self.make_pose(
+            current.pose.position.x,
+            current.pose.position.y,
+            self.hold_z,
+            self.search_base_yaw,
+        )
+        self.publish_pose_command(MODE_DEPTH_HDG, target, ty=ty)
 
     def publish_position_target(self, point):
         """发布定点目标，但把当前航向原样带入，不主动规划航向。"""
@@ -423,6 +451,9 @@ class YellowMarkerTest:
         self.search_stable_since = None
         self.search_arrival_logged = False
         self.pose_speed_sample = None
+        self.lateral_phase_start = None
+        self.lateral_hold_pose = None
+        self.last_search_ty = 0.0
 
     def wait_until_search_target_stable(self, current, reached):
         if not reached:
@@ -462,32 +493,55 @@ class YellowMarkerTest:
         if self.wait_until_search_target_stable(current, reached):
             self.set_search_step(self.STEP_SEARCH_LEFT)
 
-    def run_search_rotation(self, current, offset, next_step, label):
-        if self.search_target is None:
-            self.search_target = copy.deepcopy(current)
+    def run_search_lateral(self, current, direction, distance, next_step, label):
+        if self.lateral_phase_start is None:
+            self.lateral_phase_start = copy.deepcopy(current.pose.position)
             rospy.loginfo(
-                "%s: 识别状态=未识别；SEARCH 在当前位置%s %.1f 度",
+                "%s: 识别状态=未识别；SEARCH %s %.2f m，仅输出 TY=%d",
                 self.node_name,
                 label,
-                abs(math.degrees(offset)),
+                distance,
+                int(direction * self.search_ty_sign * self.search_lateral_force),
             )
 
-        desired_yaw = wrap_angle(self.search_base_yaw + offset)
-        current_yaw = yaw_from_quaternion(current.pose.orientation)
-        yaw_error = wrap_angle(desired_yaw - current_yaw)
-        command_yaw = current_yaw + clamp(
-            yaw_error, -self.max_yaw_step, self.max_yaw_step
-        )
-        target = self.make_pose(
-            self.search_target.pose.position.x,
-            self.search_target.pose.position.y,
-            self.hold_z,
-            command_yaw,
-        )
-        self.publish_dprov(target)
+        traveled = xy_distance(current.pose.position, self.lateral_phase_start)
+        if traveled < distance:
+            desired_ty = direction * self.search_ty_sign * self.search_lateral_force
+            self.last_search_ty = clamp(
+                desired_ty,
+                self.last_search_ty - self.search_force_step,
+                self.last_search_ty + self.search_force_step,
+            )
+            self.publish_lateral_command(current, self.last_search_ty)
+            self.search_stable_since = None
+            return
 
-        reached = abs(yaw_error) <= self.yaw_tolerance
-        if self.wait_until_search_target_stable(current, reached):
+        if abs(self.last_search_ty) > 0.0:
+            if self.last_search_ty > 0.0:
+                self.last_search_ty = max(
+                    0.0, self.last_search_ty - self.search_brake_step
+                )
+            else:
+                self.last_search_ty = min(
+                    0.0, self.last_search_ty + self.search_brake_step
+                )
+            self.publish_lateral_command(current, self.last_search_ty)
+            self.search_stable_since = None
+            return
+
+        if self.lateral_hold_pose is None:
+            self.lateral_hold_pose = copy.deepcopy(current)
+            self.pose_speed_sample = None
+            rospy.loginfo("%s: SEARCH 横移完成，定点等待机器人静止", self.node_name)
+        self.publish_dprov(self.lateral_hold_pose)
+        if not self.motion_is_stable(current):
+            self.search_stable_since = None
+            return
+        if self.search_stable_since is None:
+            self.search_stable_since = rospy.Time.now()
+        if (
+            rospy.Time.now() - self.search_stable_since
+        ).to_sec() >= self.transition_hold_seconds:
             self.set_search_step(next_step)
 
     def run_search(self):
@@ -504,25 +558,36 @@ class YellowMarkerTest:
         if self.step == self.STEP_SEARCH_FORWARD:
             self.run_search_forward(current)
         elif self.step == self.STEP_SEARCH_LEFT:
-            self.run_search_rotation(
+            self.run_search_lateral(
                 current,
-                self.search_yaw_offset,
+                -1.0,
+                self.search_lateral_distance,
+                self.STEP_SEARCH_LEFT_CENTER,
+                "向左横移",
+            )
+        elif self.step == self.STEP_SEARCH_LEFT_CENTER:
+            self.run_search_lateral(
+                current,
+                1.0,
+                self.search_lateral_distance,
                 self.STEP_SEARCH_RIGHT,
-                "左转",
+                "从左侧回到搜索中心",
             )
         elif self.step == self.STEP_SEARCH_RIGHT:
-            self.run_search_rotation(
+            self.run_search_lateral(
                 current,
-                -self.search_yaw_offset,
+                1.0,
+                self.search_lateral_distance,
                 self.STEP_SEARCH_CENTER,
-                "右转",
+                "向右横移",
             )
         elif self.step == self.STEP_SEARCH_CENTER:
-            self.run_search_rotation(
+            self.run_search_lateral(
                 current,
-                0.0,
+                -1.0,
+                self.search_lateral_distance,
                 self.STEP_SEARCH_FORWARD,
-                "回到初始航向",
+                "回到搜索中心",
             )
 
     def run_move_to_marker(self):
@@ -550,7 +615,9 @@ class YellowMarkerTest:
         self.publish_position_target(self.move_target)
         if distance <= self.position_tolerance:
             rospy.loginfo(
-                "%s: 已到达黄色图形位置，开始执行亮灯动作", self.node_name
+                "%s: 已到达%s位置，开始执行亮灯动作",
+                self.node_name,
+                self.marker_display_name,
             )
             self.light_started_at = rospy.Time.now()
             self.step = self.STEP_LIGHT
@@ -621,8 +688,9 @@ class YellowMarkerTest:
                 )
                 if self.camera_ready():
                     rospy.loginfo(
-                        "%s: 摄像头状态=已开启，进入黄色图形识别阶段",
+                        "%s: 摄像头状态=已开启，进入%s识别阶段",
                         self.node_name,
+                        self.marker_display_name,
                     )
                     self.set_search_step(self.STEP_SEARCH_FORWARD)
             elif self.step in self.SEARCH_STEPS:
