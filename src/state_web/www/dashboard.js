@@ -52,6 +52,22 @@ function radToDeg(value) {
 }
 
 
+function numericDifference(target, actual) {
+    const targetNumber = finiteNumber(target);
+    const actualNumber = finiteNumber(actual);
+    return targetNumber === null || actualNumber === null
+        ? null
+        : targetNumber - actualNumber;
+}
+
+
+function shortestAngleDifference(target, actual) {
+    const difference = numericDifference(target, actual);
+    if (difference === null) return null;
+    return ((difference + 540) % 360) - 180;
+}
+
+
 function hexadecimal(value, width = 2) {
     const number = finiteNumber(value);
     if (number === null) return "--";
@@ -118,6 +134,9 @@ function setAxisRows(containerId, rows) {
             const valueCell = document.createElement("div");
             valueCell.className = `axis-cell ${cell.className || ""}`.trim();
             if (cell.title) valueCell.title = cell.title;
+            if (cell.span) {
+                valueCell.style.gridColumn = `span ${cell.span}`;
+            }
 
             const axis = document.createElement("span");
             axis.className = "axis-name";
@@ -231,10 +250,21 @@ function renderCoreStatus(data) {
     const targetPosition = target.position_m || {};
     const targetOrientation = target.orientation_deg || {};
     const targetForce = command.force || {};
+    const motion = data.motion_state?.data || {};
     const tfClass = snapshotClass(data.tf);
     const commandClass = snapshotClass(data.pose_command);
     const feedbackClass = snapshotClass(data.feedback);
     const velocityClass = snapshotClass(data.velocity);
+    const motionClass = snapshotClass(data.motion_state);
+    const poseErrorClass = (
+        data.tf?.online && data.pose_command?.online
+            ? ""
+            : (
+                data.tf?.data && data.pose_command?.data
+                    ? "stale"
+                    : "bad"
+            )
+    );
 
     setAxisRows("core-status", [
         {
@@ -268,6 +298,31 @@ function renderCoreStatus(data) {
             ],
         },
         {
+            label: "运行状态",
+            cells: [
+                {
+                    axis: "debug_driver",
+                    value: feedback.control_mode_name
+                        ? `${feedback.control_mode_name} (${feedback.control_mode})`
+                        : "--",
+                    className: feedbackClass,
+                },
+                {
+                    axis: "motion_state",
+                    value: motion.state_name
+                        ? `${motion.state_name} (${motion.state})`
+                        : "--",
+                    className: motionClass,
+                },
+                {
+                    axis: "状态原因",
+                    value: motion.reason || "--",
+                    className: motionClass,
+                    title: motion.reason || "",
+                },
+            ],
+        },
+        {
             label: "实际位置",
             cells: [
                 {axis: "X / North", value: numberText(tfPosition.x, 3, " m"), className: tfClass},
@@ -284,6 +339,15 @@ function renderCoreStatus(data) {
             ],
         },
         {
+            label: "位置误差",
+            title: "目标位置减实际 TF 位置",
+            cells: [
+                {axis: "ΔX", value: numberText(numericDifference(targetPosition.x, tfPosition.x), 3, " m"), className: poseErrorClass},
+                {axis: "ΔY", value: numberText(numericDifference(targetPosition.y, tfPosition.y), 3, " m"), className: poseErrorClass},
+                {axis: "ΔZ", value: numberText(numericDifference(targetPosition.z, tfPosition.z), 3, " m"), className: poseErrorClass},
+            ],
+        },
+        {
             label: "实际姿态",
             cells: [
                 {axis: "Roll", value: numberText(tfOrientation.roll_deg, 2, "°"), className: tfClass},
@@ -297,6 +361,25 @@ function renderCoreStatus(data) {
                 {axis: "Roll", value: numberText(targetOrientation.roll_deg, 2, "°"), className: commandClass},
                 {axis: "Pitch", value: numberText(targetOrientation.pitch_deg, 2, "°"), className: commandClass},
                 {axis: "Heading", value: numberText(targetOrientation.heading_deg, 2, "°"), className: commandClass},
+            ],
+        },
+        {
+            label: "姿态误差",
+            title: "目标 Yaw 减实际 TF Yaw，范围为 [-180°, 180°)",
+            cells: [
+                {
+                    axis: "ΔYaw（目标 − 实际）",
+                    value: numberText(
+                        shortestAngleDifference(
+                            targetOrientation.heading_deg,
+                            tfOrientation.heading_deg,
+                        ),
+                        2,
+                        "°",
+                    ),
+                    className: poseErrorClass,
+                    span: 3,
+                },
             ],
         },
         {
@@ -598,6 +681,103 @@ function drawDirectionalPose(ctx, screen, heading, options) {
 }
 
 
+function drawActualFrameArrow(ctx, points, heading, options) {
+    const {
+        color,
+        label,
+        frameNames,
+    } = options;
+    const {imu, base, camera} = points;
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 3;
+
+    // 使用真实 TF 点位连接 IMU、机体中心和相机。
+    ctx.beginPath();
+    ctx.moveTo(imu.x, imu.y);
+    ctx.lineTo(base.x, base.y);
+    ctx.lineTo(camera.x, camera.y);
+    ctx.stroke();
+
+    let directionX = camera.x - base.x;
+    let directionY = camera.y - base.y;
+    let directionLength = Math.hypot(directionX, directionY);
+    if (directionLength < 0.5) {
+        directionX = camera.x - imu.x;
+        directionY = camera.y - imu.y;
+        directionLength = Math.hypot(directionX, directionY);
+    }
+    if (directionLength < 0.5 && heading !== null) {
+        const radians = heading * Math.PI / 180;
+        directionX = Math.sin(radians);
+        directionY = -Math.cos(radians);
+        directionLength = 1;
+    }
+
+    // 箭头尖端严格落在 camera 坐标点。
+    if (directionLength >= 0.5) {
+        const unitX = directionX / directionLength;
+        const unitY = directionY / directionLength;
+        const normalX = -unitY;
+        const normalY = unitX;
+        const headLength = 10;
+        const headWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(camera.x, camera.y);
+        ctx.lineTo(
+            camera.x - unitX * headLength + normalX * headWidth,
+            camera.y - unitY * headLength + normalY * headWidth,
+        );
+        ctx.moveTo(camera.x, camera.y);
+        ctx.lineTo(
+            camera.x - unitX * headLength - normalX * headWidth,
+            camera.y - unitY * headLength - normalY * headWidth,
+        );
+        ctx.stroke();
+    }
+
+    // 尾部、中心点和箭头端分别标出三个坐标系。
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(imu.x, imu.y, 4, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(base.x, base.y, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#031018";
+    ctx.stroke();
+
+    ctx.fillStyle = color;
+    ctx.font = "bold 10px Microsoft YaHei, Consolas, monospace";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(3, 16, 24, 0.94)";
+
+    ctx.textBaseline = "bottom";
+    ctx.textAlign = "right";
+    ctx.strokeText(frameNames.imu, imu.x - 6, imu.y - 6);
+    ctx.fillText(frameNames.imu, imu.x - 6, imu.y - 6);
+
+    ctx.textAlign = "center";
+    ctx.strokeText(frameNames.base, base.x, base.y - 10);
+    ctx.fillText(frameNames.base, base.x, base.y - 10);
+
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.strokeText(frameNames.camera, camera.x + 8, camera.y + 7);
+    ctx.fillText(frameNames.camera, camera.x + 8, camera.y + 7);
+
+    ctx.font = "bold 11px Microsoft YaHei, Consolas, monospace";
+    ctx.strokeText(label, base.x + 10, base.y + 25);
+    ctx.fillText(label, base.x + 10, base.y + 25);
+    ctx.restore();
+}
+
+
 function drawXYMap(data) {
     const canvas = document.getElementById("xy-canvas");
     const {context: ctx, width, height} = resizeCanvas(canvas);
@@ -655,14 +835,33 @@ function drawXYMap(data) {
         y: originY - north * scale,
     });
 
-    const position = data.tf?.data?.position_m;
+    const tfData = data.tf?.data || {};
+    const position = tfData.position_m;
     const north = finiteNumber(position?.x);
     const east = finiteNumber(position?.y);
     const actualScreen = north !== null && east !== null
         ? worldToScreen(north, east)
         : null;
     const actualHeading = finiteNumber(
-        data.tf?.data?.orientation_deg?.heading_deg,
+        tfData.orientation_deg?.heading_deg,
+    );
+    const framePoses = tfData.frame_poses || {};
+    const frameScreen = (framePose) => {
+        const frameNorth = finiteNumber(framePose?.position_m?.x);
+        const frameEast = finiteNumber(framePose?.position_m?.y);
+        return frameNorth !== null && frameEast !== null
+            ? worldToScreen(frameNorth, frameEast)
+            : null;
+    };
+    const actualFramePoints = {
+        imu: frameScreen(framePoses.imu),
+        base: frameScreen(framePoses.base) || actualScreen,
+        camera: frameScreen(framePoses.camera),
+    };
+    const hasActualFrameArrow = Boolean(
+        actualFramePoints.imu
+        && actualFramePoints.base
+        && actualFramePoints.camera
     );
 
     const targetPose = data.pose_command?.data?.target;
@@ -693,7 +892,7 @@ function drawXYMap(data) {
         drawDirectionalPose(ctx, targetScreen, targetHeading, {
             color: data.pose_command?.online ? "#ff62cf" : "#7f8994",
             label: [
-                `目标 N ${numberText(targetNorth, 2)}  E ${numberText(targetEast, 2)}`,
+                `目标 base_link N ${numberText(targetNorth, 2)}  E ${numberText(targetEast, 2)}`,
                 annotation,
             ].filter(Boolean).join(" · "),
             marker: "diamond",
@@ -703,13 +902,32 @@ function drawXYMap(data) {
 
     if (actualScreen) {
         const annotation = snapshotAnnotation(data.tf);
-        drawDirectionalPose(ctx, actualScreen, actualHeading, {
-            color: data.tf?.online ? "#42e7a8" : "#8a97a6",
-            label: [
-                `实际 N ${numberText(north, 2)}  E ${numberText(east, 2)}`,
-                annotation,
-            ].filter(Boolean).join(" · "),
-        });
+        const actualColor = data.tf?.online ? "#42e7a8" : "#8a97a6";
+        const actualLabel = [
+            `实际 N ${numberText(north, 2)}  E ${numberText(east, 2)}`,
+            annotation,
+        ].filter(Boolean).join(" · ");
+        if (hasActualFrameArrow) {
+            drawActualFrameArrow(
+                ctx,
+                actualFramePoints,
+                actualHeading,
+                {
+                    color: actualColor,
+                    label: actualLabel,
+                    frameNames: {
+                        imu: data.frames?.imu || "imu",
+                        base: data.frames?.base || "base_link",
+                        camera: data.frames?.camera || "camera",
+                    },
+                },
+            );
+        } else {
+            drawDirectionalPose(ctx, actualScreen, actualHeading, {
+                color: actualColor,
+                label: actualLabel,
+            });
+        }
     }
 
     const scaleDistance = niceDistance(110 / scale);
@@ -747,6 +965,14 @@ function drawXYMap(data) {
     }
     if (!data.pose_command?.online) {
         notices.push(`目标位姿：${snapshotAnnotation(data.pose_command)}`);
+    }
+    if (data.tf?.data && !hasActualFrameArrow) {
+        const missingFrames = [
+            actualFramePoints.imu ? null : (data.frames?.imu || "imu"),
+            actualFramePoints.base ? null : (data.frames?.base || "base_link"),
+            actualFramePoints.camera ? null : (data.frames?.camera || "camera"),
+        ].filter(Boolean);
+        notices.push(`缺少 TF：${missingFrames.join("、")}`);
     }
     if (notices.length) {
         ctx.fillStyle = "rgba(7, 17, 29, 0.82)";

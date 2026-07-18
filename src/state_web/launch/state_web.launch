@@ -17,6 +17,8 @@
 
     <arg name="world_frame" default="map" />
     <arg name="base_frame" default="base_link" />
+    <arg name="imu_frame" default="imu" />
+    <arg name="camera_frame" default="camera" />
 
     <arg name="stream_fps" default="8.0" />
     <arg name="jpeg_quality" default="75" />
@@ -51,6 +53,8 @@
 
         <param name="world_frame" value="$(arg world_frame)" />
         <param name="base_frame" value="$(arg base_frame)" />
+        <param name="imu_frame" value="$(arg imu_frame)" />
+        <param name="camera_frame" value="$(arg camera_frame)" />
 
         <param name="stream_fps" value="$(arg stream_fps)" />
         <param name="jpeg_quality" value="$(arg jpeg_quality)" />
