@@ -34,7 +34,7 @@ roslaunch auv_control begin.launch enable_state_web:=false
 
 - 页面只订阅 ROS 话题，不发布控制消息。
 - 双目和鱼眼相机驱动需要独立启动；缺少图像时对应画面显示离线。
-- 位置图按真实 TF 点位绘制 `imu → base_link → camera` 箭头；`cmdned`
+- 位置图按真实 TF 点位绘制 `base_link → camera` 箭头；`cmdned`
   目标位姿始终表示 `base_link`，不记录运行轨迹。
 - 2D 位置图和深度图使用独立比例尺；两者均支持滚轮缩放，2D 图支持
   平面拖动，深度图支持上下拖动。

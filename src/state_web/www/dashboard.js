@@ -687,7 +687,7 @@ function drawActualFrameArrow(ctx, points, heading, options) {
         label,
         frameNames,
     } = options;
-    const {imu, base, camera} = points;
+    const {base, camera} = points;
 
     ctx.save();
     ctx.strokeStyle = color;
@@ -696,21 +696,15 @@ function drawActualFrameArrow(ctx, points, heading, options) {
     ctx.lineJoin = "round";
     ctx.lineWidth = 3;
 
-    // 使用真实 TF 点位连接 IMU、机体中心和相机。
+    // 使用真实 TF 点位从机体中心连接到相机。
     ctx.beginPath();
-    ctx.moveTo(imu.x, imu.y);
-    ctx.lineTo(base.x, base.y);
+    ctx.moveTo(base.x, base.y);
     ctx.lineTo(camera.x, camera.y);
     ctx.stroke();
 
     let directionX = camera.x - base.x;
     let directionY = camera.y - base.y;
     let directionLength = Math.hypot(directionX, directionY);
-    if (directionLength < 0.5) {
-        directionX = camera.x - imu.x;
-        directionY = camera.y - imu.y;
-        directionLength = Math.hypot(directionX, directionY);
-    }
     if (directionLength < 0.5 && heading !== null) {
         const radians = heading * Math.PI / 180;
         directionX = Math.sin(radians);
@@ -740,12 +734,8 @@ function drawActualFrameArrow(ctx, points, heading, options) {
         ctx.stroke();
     }
 
-    // 尾部、中心点和箭头端分别标出三个坐标系。
+    // 起点和箭头端分别标出 base_link 与 camera 坐标系。
     ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(imu.x, imu.y, 4, 0, Math.PI * 2);
-    ctx.stroke();
-
     ctx.beginPath();
     ctx.arc(base.x, base.y, 6, 0, Math.PI * 2);
     ctx.fill();
@@ -758,10 +748,6 @@ function drawActualFrameArrow(ctx, points, heading, options) {
     ctx.strokeStyle = "rgba(3, 16, 24, 0.94)";
 
     ctx.textBaseline = "bottom";
-    ctx.textAlign = "right";
-    ctx.strokeText(frameNames.imu, imu.x - 6, imu.y - 6);
-    ctx.fillText(frameNames.imu, imu.x - 6, imu.y - 6);
-
     ctx.textAlign = "center";
     ctx.strokeText(frameNames.base, base.x, base.y - 10);
     ctx.fillText(frameNames.base, base.x, base.y - 10);
@@ -854,13 +840,11 @@ function drawXYMap(data) {
             : null;
     };
     const actualFramePoints = {
-        imu: frameScreen(framePoses.imu),
         base: frameScreen(framePoses.base) || actualScreen,
         camera: frameScreen(framePoses.camera),
     };
     const hasActualFrameArrow = Boolean(
-        actualFramePoints.imu
-        && actualFramePoints.base
+        actualFramePoints.base
         && actualFramePoints.camera
     );
 
@@ -916,7 +900,6 @@ function drawXYMap(data) {
                     color: actualColor,
                     label: actualLabel,
                     frameNames: {
-                        imu: data.frames?.imu || "imu",
                         base: data.frames?.base || "base_link",
                         camera: data.frames?.camera || "camera",
                     },
@@ -968,7 +951,6 @@ function drawXYMap(data) {
     }
     if (data.tf?.data && !hasActualFrameArrow) {
         const missingFrames = [
-            actualFramePoints.imu ? null : (data.frames?.imu || "imu"),
             actualFramePoints.base ? null : (data.frames?.base || "base_link"),
             actualFramePoints.camera ? null : (data.frames?.camera || "camera"),
         ].filter(Boolean);
