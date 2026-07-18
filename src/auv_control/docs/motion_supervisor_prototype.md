@@ -4,8 +4,10 @@
 
 - `motion_supervisor` 是原型运行时 `/cmd/pose/ned` 的唯一发布者。
 - 运动和刹停使用 `mode=2`：下位机保持目标深度，上位机仅输出 `TX、TY、MZ`。
-- 到达目标位置后先调整最终航向；最终刹停连续稳定后立即使用 `mode=4`，
-  六轴外部力清零并将完整 target 位姿交给下位机定点。
+- 到达目标位置后先调整最终航向；最终刹停连续稳定后进入 `CAPTURE`，
+  使用 `mode=4`、六轴外部力清零并等待下位机定点接管反馈。
+- 只有 `/status/auv.control_mode==4` 后才进入 `HOVER`。因此任务节点可以
+  将 5 Hz `/motion/state.state==HOVER` 作为“目标到达且定点接管完成”。
 - 运动管理器的目标深度使用每条 `/cmd/motion/goal` 中的 z；launch 的
   `target_z` 仅用于 `motion_goal_test` 生成测试目标。
 - 平移阶段保持开始运动时的当前航向，通过 `TX/TY` 接近并刹停到目标位置，
@@ -28,6 +30,10 @@
 | 输入 | `/status/auv`        | `auv_control/AUVData`        | 下位机模式反馈           |
 | 输出 | `/cmd/pose/ned`      | `auv_control/PoseNEDcmd`     | 唯一运动控制输出         |
 | 输出 | `/motion/state`      | `auv_control/MotionState`    | 状态、误差、速度和输出力 |
+
+面向任务节点的完整调用约定、状态含义和指令示例见：
+
+- [运动管理器任务节点接口](motion_supervisor_task_interface.md)
 
 ## 启动
 

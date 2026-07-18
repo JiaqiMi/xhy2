@@ -26,6 +26,8 @@
     目标深度改为使用消息中的 z，并支持连续目标切换阈值。
 2026.7.18
     增加每控制周期 CSV 完整数据日志，便于水池试验复盘和参数标定。
+2026.7.18
+    状态反馈固定随控制循环发布，TF 查询改为非阻塞并在首帧前发布 SAFE。
 """
 
 from __future__ import division
@@ -48,6 +50,7 @@ from motion_supervisor_core import (
     MotionGoal,
     MotionSupervisorCore,
     STATE_NAMES,
+    SAFE,
     VehicleState,
     map_error_to_body,
     wrap_angle,
@@ -303,13 +306,8 @@ class MotionSupervisorNode(object):
 
     def _update_pose(self, now):
         try:
-            # 与现有任务节点一致，Time(0) 表示读取 TF 缓冲区中的最新可用变换。
-            self.tf_listener.waitForTransform(
-                'map',
-                'base_link',
-                rospy.Time(0),
-                rospy.Duration(self.feedback_timeout),
-            )
+            # Time(0) 读取最新可用变换；这里不能阻塞等待，否则 TF 异常时
+            # /motion/state 无法保持控制频率发布。
             translation, rotation = self.tf_listener.lookupTransform(
                 'map', 'base_link', rospy.Time(0))
             yaw = euler_from_quaternion(rotation)[2]
@@ -467,6 +465,31 @@ class MotionSupervisorNode(object):
         message.reason = output.reason
         self.state_pub.publish(message)
 
+    def _publish_waiting_state(self, now):
+        """首帧 TF 到达前以 SAFE 状态保持任务侧 5 Hz 反馈。"""
+        message = MotionState()
+        message.header.stamp = now
+        message.header.frame_id = 'map'
+        message.state = SAFE
+        message.goal_active = self.core.goal_active
+        target = self.core.goal or self.core.pending_goal
+        if target is not None:
+            message.goal = self._target_pose(
+                target, now, self.pitch_offset)
+        else:
+            message.goal.header.stamp = now
+            message.goal.header.frame_id = 'map'
+            message.goal.pose.orientation.w = 1.0
+        message.position_error = 0.0
+        message.yaw_error = 0.0
+        message.horizontal_speed = 0.0
+        message.yaw_rate = 0.0
+        message.tx = 0
+        message.ty = 0
+        message.mz = 0
+        message.reason = '等待首帧 TF，尚未下发控制指令'
+        self.state_pub.publish(message)
+
     def run(self):
         rate = rospy.Rate(self.control_rate_hz)
         while not rospy.is_shutdown():
@@ -475,6 +498,7 @@ class MotionSupervisorNode(object):
 
             # 首次获得位姿前不能构造可靠的定深安全指令，因此只发布诊断日志。
             if self.last_pose is None:
+                self._publish_waiting_state(now)
                 rospy.logwarn_throttle(2.0, 'motion_supervisor: 等待首帧 TF')
                 rate.sleep()
                 continue
@@ -491,6 +515,10 @@ class MotionSupervisorNode(object):
                 velocity[2],
                 feedback_fresh=self._feedback_is_fresh(now),
                 reported_mode=self.reported_mode,
+                reported_mode_stamp=(
+                    None
+                    if self.last_status_stamp is None
+                    else self.last_status_stamp.to_sec()),
             )
             output = self.core.step(vehicle)
             self._publish_command(output, now)

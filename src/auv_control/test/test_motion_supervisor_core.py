@@ -20,6 +20,8 @@
     增加停车主轴、最小刹转力矩和定点接管保护测试。
 2026.7.18
     覆盖目标深度跟随、保持当前航向平移和连续目标切换机制。
+2026.7.18
+    验证 CAPTURE 等待 mode=4 反馈且 HOVER 仅表示定点接管已确认。
 """
 
 import math
@@ -68,11 +70,15 @@ class MotionSupervisorCoreTest(unittest.TestCase):
 
     def vehicle(
             self, x=0.0, y=0.0, z=1.5, yaw=0.0, u=0.0, v=0.0,
-            r=0.0, fresh=True, mode=MODE_DEPTH):
+            r=0.0, fresh=True, mode=MODE_DEPTH, mode_stamp=None):
         self.now += 0.2
+        if mode_stamp is None:
+            mode_stamp = self.now
         return VehicleState(
             self.now, x, y, z, yaw, u, v, r,
-            feedback_fresh=fresh, reported_mode=mode)
+            feedback_fresh=fresh,
+            reported_mode=mode,
+            reported_mode_stamp=mode_stamp)
 
     def test_coordinate_conversion_for_cardinal_yaws(self):
         cases = (
@@ -275,9 +281,14 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.state, FINAL_BRAKE)
         self.core.step(self.vehicle(x=1.90))
         output = self.core.step(self.vehicle(x=1.90))
-        self.assertEqual(output.state, HOVER)
+        self.assertEqual(output.state, CAPTURE)
         self.assertEqual(output.mode, MODE_DPROV)
         self.assertEqual((output.tx, output.ty, output.mz), (0, 0, 0))
+
+        output = self.core.step(self.vehicle(x=1.90, mode=MODE_DPROV))
+        self.assertEqual(output.state, HOVER)
+        self.assertEqual(output.mode, MODE_DPROV)
+        self.assertEqual(output.reason, '下位机定点接管已确认，目标到达')
 
     def test_align_final_brakes_translation_and_reacquires_after_drift(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.2)
@@ -345,7 +356,6 @@ class MotionSupervisorCoreTest(unittest.TestCase):
     def test_near_goal_update_leaves_hover_without_braking(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = HOVER
-        self.core.hover_started_at = self.now
 
         self.core.set_goal(MotionGoal(0.4, 0.0, -0.8, 0.0))
         output = self.core.step(self.vehicle(mode=MODE_DPROV))
@@ -382,20 +392,50 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertAlmostEqual(output.target.x, 0.4)
         self.assertAlmostEqual(output.target.z, 1.5)
 
-    def test_hover_ack_timeout_and_abnormal_speed_fallback(self):
+    def test_capture_waits_for_ack_and_times_out(self):
         self.core.goal = MotionGoal(0.0, 0.0, 1.5, 0.0)
-        self.core.state = HOVER
-        self.core.hover_started_at = 0.0
+        self.core.state = CAPTURE
+        self.core.handover_started_at = 0.0
         output = self.core.step(self.vehicle(mode=MODE_DEPTH))
-        self.assertEqual(output.state, HOVER)
+        self.assertEqual(output.state, CAPTURE)
+        self.assertEqual(output.mode, MODE_DPROV)
 
         self.now = 1.2
         output = self.core.step(self.vehicle(mode=MODE_DEPTH))
         self.assertEqual(output.state, SAFE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
+    def test_capture_enters_hover_only_after_mode_ack(self):
+        self.core.goal = MotionGoal(0.0, 0.0, 1.5, 0.0)
+        self.core.state = CAPTURE
+        self.core.handover_started_at = self.now
+        output = self.core.step(self.vehicle(mode=MODE_DPROV))
+        self.assertEqual(output.state, HOVER)
+        self.assertEqual(output.mode, MODE_DPROV)
+        self.assertEqual(output.reason, '下位机定点接管已确认，目标到达')
+
+    def test_capture_rejects_stale_mode_ack(self):
+        self.core.goal = MotionGoal(0.0, 0.0, 1.5, 0.0)
+        self.core.state = CAPTURE
+        self.core.handover_started_at = 1.0
+        self.now = 1.0
+        output = self.core.step(
+            self.vehicle(mode=MODE_DPROV, mode_stamp=0.5))
+        self.assertEqual(output.state, CAPTURE)
+        self.assertEqual(output.mode, MODE_DPROV)
+
+    def test_capture_rechecks_stability_while_waiting_for_ack(self):
+        self.core.goal = MotionGoal(0.0, 0.0, 1.5, 0.0)
+        self.core.state = CAPTURE
+        self.core.handover_started_at = self.now
+        output = self.core.step(self.vehicle(u=0.02, mode=MODE_DEPTH))
+        self.assertEqual(output.state, CAPTURE)
+        self.assertEqual(output.mode, MODE_DEPTH)
+        self.assertIsNone(self.core.handover_started_at)
+
+    def test_hover_abnormal_speed_fallback(self):
+        self.core.goal = MotionGoal(0.0, 0.0, 1.5, 0.0)
         self.core.state = HOVER
-        self.core.hover_started_at = self.now
         output = self.core.step(self.vehicle(u=0.09, mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
@@ -403,7 +443,6 @@ class MotionSupervisorCoreTest(unittest.TestCase):
     def test_hover_yaw_error_and_rate_fallback(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = HOVER
-        self.core.hover_started_at = self.now
         output = self.core.step(
             self.vehicle(yaw=math.radians(11.0), mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
@@ -412,18 +451,33 @@ class MotionSupervisorCoreTest(unittest.TestCase):
     def test_hover_position_error_fallback(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = HOVER
-        self.core.hover_started_at = self.now
         output = self.core.step(
             self.vehicle(x=0.30, mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
         self.core.state = HOVER
-        self.core.hover_started_at = self.now
         output = self.core.step(
             self.vehicle(r=math.radians(2.1), mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
+
+    def test_hover_loses_mode_feedback_and_enters_safe(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = HOVER
+        output = self.core.step(self.vehicle(mode=MODE_DEPTH))
+        self.assertEqual(output.state, SAFE)
+        self.assertEqual(output.mode, MODE_DEPTH)
+        self.assertEqual((output.tx, output.ty, output.mz), (0, 0, 0))
+
+    def test_hover_mode_feedback_timeout_enters_safe(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = HOVER
+        self.now = 2.0
+        output = self.core.step(
+            self.vehicle(mode=MODE_DPROV, mode_stamp=0.5))
+        self.assertEqual(output.state, SAFE)
+        self.assertEqual(output.reason, '定点模式反馈超时')
 
 
 if __name__ == '__main__':

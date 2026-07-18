@@ -21,6 +21,8 @@
     根据大角度测试修正停车主轴选择、航向刹车参数和定点接管保护。
 2026.7.18
     目标深度改为跟随 goal，取消路径预对准并增加连续目标切换机制。
+2026.7.18
+    收紧 HOVER 语义，仅在下位机反馈 mode=4 后表示目标到达并完成定点接管。
 """
 
 from __future__ import division
@@ -139,7 +141,8 @@ class VehicleState(object):
 
     def __init__(
             self, now, x, y, z, yaw, forward_velocity, lateral_velocity,
-            yaw_rate, feedback_fresh=True, reported_mode=None):
+            yaw_rate, feedback_fresh=True, reported_mode=None,
+            reported_mode_stamp=None):
         self.now = float(now)
         self.x = float(x)
         self.y = float(y)
@@ -150,6 +153,11 @@ class VehicleState(object):
         self.yaw_rate = float(yaw_rate)
         self.feedback_fresh = bool(feedback_fresh)
         self.reported_mode = reported_mode
+        self.reported_mode_stamp = (
+            None
+            if reported_mode_stamp is None
+            else float(reported_mode_stamp)
+        )
 
 
 class ControlOutput(object):
@@ -236,7 +244,7 @@ class MotionSupervisorCore(object):
         self.hover_direct_update = False
         self.translation_yaw = 0.0
         self.stable_count = 0
-        self.hover_started_at = None
+        self.handover_started_at = None
         self.last_tx = 0.0
         self.last_ty = 0.0
         self.last_mz = 0.0
@@ -342,8 +350,8 @@ class MotionSupervisorCore(object):
             self.state = new_state
             self.stable_count = 0
         self.reason = reason
-        if new_state != HOVER:
-            self.hover_started_at = None
+        if new_state != CAPTURE:
+            self.handover_started_at = None
 
     def _activate_pending_goal(self, vehicle):
         if self.pending_goal is None:
@@ -688,8 +696,8 @@ class MotionSupervisorCore(object):
             if self._stable(
                     distance <= self.parameters['capture_radius']
                     and pose_stopped):
-                self._transition(HOVER, '目标位姿刹停稳定，切换下位机定点')
-                self.hover_started_at = vehicle.now
+                self._transition(CAPTURE, '目标位姿刹停稳定，等待下位机定点接管')
+                self.handover_started_at = vehicle.now
                 return self._output(
                     vehicle, MODE_DPROV, immediate_zero=True)
             return self._brake_output(vehicle)
@@ -713,9 +721,36 @@ class MotionSupervisorCore(object):
                 and speed <= self.parameters['horizontal_speed_threshold']
                 and yaw_rate_abs <= self.parameters['yaw_rate_threshold']
             )
+            if self.handover_started_at is not None:
+                if not captured:
+                    self.handover_started_at = None
+                    self.stable_count = 0
+                    self.reason = '定点接管等待期间离开捕获条件，重新刹停确认'
+                    return self._brake_output(vehicle)
+                mode_acknowledged = (
+                    vehicle.reported_mode == MODE_DPROV
+                    and vehicle.reported_mode_stamp is not None
+                    and vehicle.reported_mode_stamp
+                    >= self.handover_started_at
+                )
+                if mode_acknowledged:
+                    self._transition(
+                        HOVER,
+                        '下位机定点接管已确认，目标到达',
+                    )
+                    return self._output(
+                        vehicle, MODE_DPROV, immediate_zero=True)
+                if (
+                        vehicle.now - self.handover_started_at
+                        > self.parameters['mode_ack_timeout']):
+                    self._transition(SAFE, '定点模式确认超时')
+                    return self._output(
+                        vehicle, MODE_DEPTH, immediate_zero=True)
+                return self._output(
+                    vehicle, MODE_DPROV, immediate_zero=True)
             if self._stable(captured):
-                self._transition(HOVER, '捕获稳定，切换下位机定点')
-                self.hover_started_at = vehicle.now
+                self.handover_started_at = vehicle.now
+                self.reason = '捕获稳定，等待下位机定点接管'
                 return self._output(
                     vehicle, MODE_DPROV, immediate_zero=True)
             return self._brake_output(vehicle)
@@ -753,12 +788,17 @@ class MotionSupervisorCore(object):
             if abs(hover_yaw_error) > self.parameters['hover_fault_yaw_error']:
                 self._transition(TRANSLATE_BRAKE, '定点接管后航向误差异常')
                 return self._brake_output(vehicle)
-            if (
-                    vehicle.reported_mode != MODE_DPROV
-                    and self.hover_started_at is not None
-                    and vehicle.now - self.hover_started_at
-                    > self.parameters['mode_ack_timeout']):
-                self._transition(SAFE, '定点模式确认超时')
+            mode_feedback_timed_out = (
+                vehicle.reported_mode_stamp is None
+                or vehicle.now - vehicle.reported_mode_stamp
+                > self.parameters['mode_ack_timeout']
+            )
+            if mode_feedback_timed_out:
+                self._transition(SAFE, '定点模式反馈超时')
+                return self._output(
+                    vehicle, MODE_DEPTH, immediate_zero=True)
+            if vehicle.reported_mode != MODE_DPROV:
+                self._transition(SAFE, '定点模式反馈丢失')
                 return self._output(
                     vehicle, MODE_DEPTH, immediate_zero=True)
             return self._output(
