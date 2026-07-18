@@ -10,7 +10,7 @@
     <arg name="start_splitter" default="true" />
     <arg name="start_state_web" default="true" />
     <arg name="start_fisheye" default="true" />
-    <arg name="start_motion_supervisor" default="true" />
+    <arg name="start_motion_supervisor" default="false" />
     <!-- web 参数 -->    
     <arg name="state_web_host" default="0.0.0.0" />
     <arg name="state_web_port" default="8088" />
@@ -90,4 +90,5 @@
     <include if="$(arg start_motion_supervisor)"
              file="$(find auv_control)/launch/motion_supervisor_prototype.launch">
         <arg name="start_goal_test" value="false" />
+    </include>
 </launch>
