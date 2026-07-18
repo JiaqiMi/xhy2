@@ -14,13 +14,19 @@
     <arg name="turn_step_deg" default="90.0" />
     <!-- 正向和负向分别执行的完整圈数。 -->
     <arg name="turns_each_direction" default="3" />
-    <!-- 开始旋转前当前位置 mode=4 稳定接管时间，单位 s。 -->
+    <!-- 开始旋转前锁定首帧位置并以 mode=4 稳定接管的时间，单位 s。 -->
     <arg name="initial_hold_seconds" default="3.0" />
-    <!-- 每个 90° 段结束后当前位置 mode=4 稳定接管时间，单位 s。 -->
+    <!--
+      每个 90° 段结束后回到同一锁定初始位置，并以该段目标航向执行
+      mode=4 稳定接管的时间，单位 s；稳定确认完成后才进入下一段。
+    -->
     <arg name="handover_hold_seconds" default="2.0" />
     <!-- 单个自由旋转段的最大允许时间，单位 s。 -->
     <arg name="step_timeout" default="90.0" />
-    <!-- TF、速度或模式反馈最大允许年龄，单位 s。 -->
+    <!--
+      最新 map -> base_link TF、速度或模式反馈最大允许年龄，单位 s。
+      TF 查询使用 Time(0)，允许发布链路存在固定延迟，但实际反馈年龄仍需小于该值。
+    -->
     <arg name="feedback_timeout" default="0.5" />
     <!-- 航向和角速度同时满足条件所需的连续帧数。 -->
     <arg name="stable_frames" default="5" />
@@ -30,6 +36,11 @@
     <arg name="yaw_rate_threshold_deg_s" default="0.5" />
     <!-- mode=4 接管时允许的 IMU 点水平速度，单位 m/s。 -->
     <arg name="handover_speed_threshold" default="0.05" />
+    <!--
+      mode=4 接管时当前位置到全程锁定初始水平位置的最大误差，单位 m。
+      位置、航向、水平速度和角速度必须同时连续满足 stable_frames 帧。
+    -->
+    <arg name="handover_position_tolerance" default="0.15" />
     <!-- /status/vel 一阶低通中新样本权重，范围 (0,1]。 -->
     <arg name="velocity_filter_alpha" default="0.35" />
     <!-- 原始 r 到 TF yaw 角速度的符号；当前系统 r 与 TF yaw 相反。 -->
@@ -63,14 +74,18 @@
     <arg name="minimum_brake_mz" default="100.0" />
     <!-- 单个自由旋转段 IMU 点最大允许平面漂移，单位 m，超限立即接管。 -->
     <arg name="drift_abort_radius" default="0.75" />
-    <!-- 进入拟合样本的最低角速度，单位 deg/s。 -->
+    <!--
+      TRACK 阶段进入拟合样本的最低角速度，单位 deg/s。
+      BRAKE 阶段即使 MZ 反号也不参与另一计划方向中心的拟合。
+    -->
     <arg name="sample_min_yaw_rate_deg_s" default="1.0" />
     <!-- 自由旋转允许的最大角速度，单位 deg/s，超限立即 mode=4 接管。 -->
     <arg name="max_yaw_rate_deg_s" default="45.0" />
-    <!-- 航向连续远离目标的最长允许时间，单位 s，用于发现符号错误。 -->
+    <!--
+      尚未越过目标时，航向连续远离目标的最长允许时间，单位 s。
+      用于发现 MZ 或 yaw 反馈符号错误；越过目标后的正常刹车超调不累计该计时。
+    -->
     <arg name="moving_away_timeout" default="3.0" />
-    <!-- 正、负方向拟合杆臂允许的最大平面差，单位 m，超限时结果仅供排查。 -->
-    <arg name="direction_consistency_tolerance" default="0.05" />
     <!-- 原始 CSV 和拟合 YAML 的保存目录。 -->
     <arg name="log_directory"
          default="$(env HOME)/.ros/auv_logs/rotation_center_calibration" />
@@ -95,6 +110,8 @@
                value="$(arg yaw_rate_threshold_deg_s)" />
         <param name="handover_speed_threshold"
                value="$(arg handover_speed_threshold)" />
+        <param name="handover_position_tolerance"
+               value="$(arg handover_position_tolerance)" />
         <param name="velocity_filter_alpha"
                value="$(arg velocity_filter_alpha)" />
         <param name="yaw_rate_feedback_sign"
@@ -125,8 +142,6 @@
                value="$(arg max_yaw_rate_deg_s)" />
         <param name="moving_away_timeout"
                value="$(arg moving_away_timeout)" />
-        <param name="direction_consistency_tolerance"
-               value="$(arg direction_consistency_tolerance)" />
         <param name="log_directory" value="$(arg log_directory)" />
     </node>
 </launch>

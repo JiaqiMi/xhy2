@@ -2,16 +2,24 @@
 # -*- coding: utf-8 -*-
 """
 名称：rotation_center_calibration_core.py
-功能：提供自由偏航控制和分段共享杆臂的旋转中心最小二乘拟合
+功能：提供自由偏航控制和正负计划方向独立旋转中心的最小二乘拟合
 作者：BroXu
 监听：无
 发布：无
 说明：
-    每个自由旋转段允许具有不同的 map 圆心，但所有段共享同一个
-    control_link -> imu 机体系杆臂，从而排除段间 mode=4 接管平移的影响。
+    每个自由旋转段允许具有不同的 map 圆心；同一计划方向的各段共享一个
+    control_link -> imu 机体系杆臂，正、负计划方向分别拟合，从而同时排除
+    段间 mode=4 接管平移和正反桨差异的影响。
 记录：
 2026.7.18
     新增直接 MZ 转向控制、角度展开和旋转中心稳健拟合算法。
+2026.7.18
+    增加分阶段远离目标判断，目标尚未越过时保留符号保护，刹转越过目标后
+    不再误报方向错误。
+2026.7.18
+    增加固定初始位置接管的稳定条件判断。
+2026.7.19
+    正负计划旋转方向分别拟合独立旋转中心，不再强制共享同一杆臂。
 """
 
 from __future__ import division
@@ -45,6 +53,60 @@ def clamp_directional(value, positive_limit, negative_limit):
     return max(
         -float(negative_limit),
         min(float(positive_limit), float(value)),
+    )
+
+
+def rotation_is_unexpectedly_moving_away(
+        yaw_error, yaw_rate, direction, yaw_rate_threshold):
+    """判断目标尚未越过时是否持续向目标反方向旋转。"""
+    values = (yaw_error, yaw_rate, direction, yaw_rate_threshold)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError('远离目标判断参数必须为有限值')
+    if abs(float(direction)) < 1e-9:
+        raise ValueError('旋转方向不能为 0')
+    return (
+        float(direction) * float(yaw_error) > 0.0
+        and float(yaw_error) * float(yaw_rate) < 0.0
+        and abs(float(yaw_rate)) > float(yaw_rate_threshold)
+    )
+
+
+def locked_handover_is_stable(
+        reported_mode,
+        position_error,
+        horizontal_speed,
+        yaw_error,
+        yaw_rate,
+        required_mode,
+        position_tolerance,
+        speed_threshold,
+        yaw_tolerance,
+        yaw_rate_threshold):
+    """判断固定初始位置的闭环接管是否已经连续稳定。"""
+    values = (
+        position_error,
+        horizontal_speed,
+        yaw_error,
+        yaw_rate,
+        position_tolerance,
+        speed_threshold,
+        yaw_tolerance,
+        yaw_rate_threshold,
+    )
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError('接管稳定条件必须为有限值')
+    if min(
+            float(position_tolerance),
+            float(speed_threshold),
+            float(yaw_tolerance),
+            float(yaw_rate_threshold)) < 0.0:
+        raise ValueError('接管稳定阈值不能为负数')
+    return (
+        int(reported_mode) == int(required_mode)
+        and abs(float(position_error)) <= float(position_tolerance)
+        and abs(float(horizontal_speed)) <= float(speed_threshold)
+        and abs(float(yaw_error)) <= float(yaw_tolerance)
+        and abs(float(yaw_rate)) <= float(yaw_rate_threshold)
     )
 
 
@@ -195,7 +257,7 @@ def _build_fit(samples):
 
 
 def fit_segmented_rotation_center(samples, outlier_sigma=3.5):
-    """稳健拟合共享 control_link -> imu 杆臂和每段 map 圆心。"""
+    """稳健拟合同一计划方向共享的杆臂和每段 map 圆心。"""
     converted = [
         CalibrationSample(
             int(sample.segment),
@@ -245,3 +307,14 @@ def fit_segmented_rotation_center(samples, outlier_sigma=3.5):
         'outlier_threshold': threshold,
     })
     return result
+
+
+def fit_planned_direction_centers(
+        positive_samples, negative_samples, outlier_sigma=3.5):
+    """分别拟合正向和负向计划旋转对应的 control_link -> imu 杆臂。"""
+    return {
+        'positive': fit_segmented_rotation_center(
+            positive_samples, outlier_sigma=outlier_sigma),
+        'negative': fit_segmented_rotation_center(
+            negative_samples, outlier_sigma=outlier_sigma),
+    }

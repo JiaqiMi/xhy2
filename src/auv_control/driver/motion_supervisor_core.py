@@ -28,6 +28,8 @@
     正常控制、主动刹车、限幅、减速度和停车余量均支持按输出正负方向配置。
 2026.7.18
     最终转向和刹转阶段增加 control_link 平面位置保持，固定实际旋转中心。
+2026.7.19
+    增加计划 yaw 方向锁存逻辑，主动刹转阶段不随 MZ 反号切换旋转中心。
 """
 
 from __future__ import division
@@ -118,6 +120,21 @@ def relative_target_xy(
     else:
         raise ValueError('offset_frame 仅支持 base_link 或 map')
     return initial_x + delta_x, initial_y + delta_y
+
+
+def select_planned_rotation_direction(
+        yaw_error, current_direction=1, direction_locked=False,
+        deadband=0.0):
+    """按计划 yaw 误差选择正负方向；锁存或死区内保持当前方向。"""
+    values = (yaw_error, current_direction, deadband)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError('计划旋转方向参数必须为有限值')
+    if float(deadband) < 0.0:
+        raise ValueError('计划旋转方向死区不能为负数')
+    current_direction = 1 if float(current_direction) >= 0.0 else -1
+    if direction_locked or abs(float(yaw_error)) <= float(deadband):
+        return current_direction
+    return 1 if float(yaw_error) > 0.0 else -1
 
 
 def stopping_distance(closing_speed, brake_acceleration, delay, margin):

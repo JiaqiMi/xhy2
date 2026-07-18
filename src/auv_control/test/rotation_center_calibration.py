@@ -14,11 +14,22 @@
     1. 运行时必须停止 motion_supervisor，本节点独占 /cmd/pose/ned；
     2. mode=2 仅输出 MZ，TX/TY 始终为零，避免平移控制污染旋转中心；
     3. 默认每 90° 刹停并以当前位置 mode=4 接管，正反各三圈；
-    4. 每个旋转段允许不同 map 圆心，最终拟合共享 control_link -> imu 杆臂；
-    5. 程序结束后输出原始 CSV 和可直接写入 launch 的 YAML 结果。
+    4. 每个旋转段允许不同 map 圆心，计划正向和负向分别拟合独立旋转中心；
+    5. 拟合只使用 TRACK 阶段样本，不把反号主动刹转样本混入计划方向中心；
+    6. 程序结束后输出原始 CSV 和可直接写入 launch 的 YAML 结果。
 记录：
 2026.7.18
     新增自由旋转、主动刹转、定点接管和旋转中心自动拟合程序。
+2026.7.18
+    TF 改为读取最新 map -> base_link，并在启动时等待首帧；base_link 与
+    IMU 重合时复用同一位姿，避免不同 TF 链时间不一致造成外推。
+    远离目标保护只在尚未越过目标时累计，允许 BRAKE 正常超调并继续减速。
+2026.7.18
+    首帧有效位姿只锁定一次；全程 mode=2 和段间 mode=4 均使用同一初始
+    水平位置，每段确认位置、航向、线速度和角速度稳定后才进入下一段。
+2026.7.19
+    按计划旋转方向分别拟合正向和负向旋转中心；拟合仅使用 TRACK 且达到
+    最低角速度的样本，主动刹转样本不混入计划方向中心。
 """
 
 from __future__ import division
@@ -46,7 +57,9 @@ if TEST_DIR not in sys.path:
 from rotation_center_calibration_core import (  # noqa: E402
     CalibrationSample,
     direct_yaw_command,
-    fit_segmented_rotation_center,
+    fit_planned_direction_centers,
+    locked_handover_is_stable,
+    rotation_is_unexpectedly_moving_away,
     unwrap_angle,
     wrap_angle,
 )
@@ -58,7 +71,7 @@ MODE_DPROV = 4
 
 
 class RotationCenterCalibration(object):
-    """执行自由偏航并拟合 control_link 到 IMU 的水平杆臂。"""
+    """执行自由偏航并分别拟合正、负计划方向的水平旋转中心。"""
 
     LOG_FIELDS = (
         'ros_time',
@@ -74,6 +87,9 @@ class RotationCenterCalibration(object):
         'base_x',
         'base_y',
         'base_z',
+        'target_x',
+        'target_y',
+        'target_z',
         'wrapped_yaw_deg',
         'unwrapped_yaw_deg',
         'yaw_error_deg',
@@ -112,6 +128,8 @@ class RotationCenterCalibration(object):
             rospy.get_param('~yaw_rate_threshold_deg_s', 0.5)))
         self.handover_speed_threshold = float(
             rospy.get_param('~handover_speed_threshold', 0.05))
+        self.handover_position_tolerance = float(
+            rospy.get_param('~handover_position_tolerance', 0.15))
         self.velocity_filter_alpha = float(
             rospy.get_param('~velocity_filter_alpha', 0.35))
         self.yaw_rate_feedback_sign = float(
@@ -149,8 +167,6 @@ class RotationCenterCalibration(object):
             rospy.get_param('~max_yaw_rate_deg_s', 45.0)))
         self.moving_away_timeout = float(
             rospy.get_param('~moving_away_timeout', 3.0))
-        self.direction_consistency_tolerance = float(rospy.get_param(
-            '~direction_consistency_tolerance', 0.05))
         self.log_directory = os.path.abspath(os.path.expanduser(str(
             rospy.get_param(
                 '~log_directory',
@@ -168,6 +184,7 @@ class RotationCenterCalibration(object):
             self.yaw_tolerance,
             self.yaw_rate_threshold,
             self.handover_speed_threshold,
+            self.handover_position_tolerance,
             self.velocity_filter_alpha,
             self.yaw_rate_feedback_sign,
             self.mz_to_yaw_sign,
@@ -187,7 +204,6 @@ class RotationCenterCalibration(object):
             self.sample_min_yaw_rate,
             self.max_yaw_rate,
             self.moving_away_timeout,
-            self.direction_consistency_tolerance,
         )
         if not all(math.isfinite(value) for value in numeric):
             raise ValueError('旋转中心标定参数必须为有限值')
@@ -199,11 +215,11 @@ class RotationCenterCalibration(object):
                 or self.step_timeout <= 0.0
                 or self.feedback_timeout <= 0.0
                 or self.stable_frames <= 0
+                or self.handover_position_tolerance <= 0.0
                 or not 0.0 < self.velocity_filter_alpha <= 1.0
                 or self.drift_abort_radius <= 0.0
                 or self.max_yaw_rate <= 0.0
-                or self.moving_away_timeout <= 0.0
-                or self.direction_consistency_tolerance <= 0.0):
+                or self.moving_away_timeout <= 0.0):
             raise ValueError(
                 '频率、角度、圈数、超时和漂移半径参数不在有效范围；'
                 '当前 turn_step_deg 必须为 90')
@@ -216,10 +232,11 @@ class RotationCenterCalibration(object):
         self.last_status_stamp = None
         self.current_imu_pose = None
         self.current_base_pose = None
+        self.locked_initial_pose = None
+        self.locked_initial_yaw = None
         self.last_tf_stamp = None
         self.unwrapped_yaw = None
-        self.samples = []
-        self.segment_directions = {}
+        self.direction_samples = {1: [], -1: []}
         self.latest_command = None
         self.completed = False
         self.log_file = None
@@ -328,26 +345,28 @@ class RotationCenterCalibration(object):
 
     def _update_tf(self):
         try:
-            imu_position, imu_rotation, imu_yaw = self._lookup_pose('imu')
-            base_position, base_rotation, unused_base_yaw = (
-                self._lookup_pose('base_link'))
-            del unused_base_yaw
-            stamp = self.tf_listener.getLatestCommonTime('map', 'imu')
+            # 与其他任务节点一致，Time(0) 读取最新可用 map -> base_link。
+            # 当前 base_link 与 IMU 重合，复用同一帧可避免旧式静态 TF
+            # 与动态 TF 时间戳不同步时 map -> imu 出现外推。
+            base_position, base_rotation, base_yaw = self._lookup_pose(
+                'base_link')
+            stamp = self.tf_listener.getLatestCommonTime(
+                'map', 'base_link')
         except (tf.Exception, ValueError) as error:
             rospy.logwarn_throttle(
                 2.0, '%s: TF 更新失败: %s', NODE_NAME, error)
             return False
         self.current_imu_pose = (
-            imu_position, imu_rotation, imu_yaw)
+            base_position, base_rotation, base_yaw)
         self.current_base_pose = (
             base_position, base_rotation)
         self.last_tf_stamp = (
             stamp if stamp != rospy.Time(0) else rospy.Time.now())
         if self.unwrapped_yaw is None:
-            self.unwrapped_yaw = imu_yaw
+            self.unwrapped_yaw = base_yaw
         else:
             self.unwrapped_yaw = unwrap_angle(
-                self.unwrapped_yaw, imu_yaw)
+                self.unwrapped_yaw, base_yaw)
         return True
 
     @staticmethod
@@ -372,13 +391,28 @@ class RotationCenterCalibration(object):
     def _wait_for_feedback(self):
         deadline = rospy.Time.now() + rospy.Duration(30.0)
         rate = rospy.Rate(self.control_rate_hz)
+        try:
+            # 先等待 TF 监听器完成缓存，避免节点刚启动时立即查询产生
+            # “请求时间早于缓冲区首帧”的暂态外推警告。
+            self.tf_listener.waitForTransform(
+                'map',
+                'base_link',
+                rospy.Time(0),
+                rospy.Duration(5.0),
+            )
+        except tf.Exception as error:
+            rospy.logwarn(
+                '%s: 等待首帧 map -> base_link TF 超时，将继续重试: %s',
+                NODE_NAME,
+                error,
+            )
         while not rospy.is_shutdown() and rospy.Time.now() < deadline:
             self._update_tf()
             if self._feedback_fresh():
                 return True
             rospy.loginfo_throttle(
                 2.0,
-                '%s: 等待 map->imu、map->base_link、速度和模式反馈',
+                '%s: 等待最新 map->base_link、速度和模式反馈',
                 NODE_NAME,
             )
             rate.sleep()
@@ -422,6 +456,7 @@ class RotationCenterCalibration(object):
         raw_r = (
             0.0 if self.raw_velocity is None else self.raw_velocity[2])
         yaw_rate = self.yaw_rate_feedback_sign * velocity[2]
+        command_target = self.latest_command.target.pose.position
         self.log_writer.writerow({
             'ros_time': rospy.Time.now().to_sec(),
             'phase': phase,
@@ -436,6 +471,9 @@ class RotationCenterCalibration(object):
             'base_x': base_position[0],
             'base_y': base_position[1],
             'base_z': base_position[2],
+            'target_x': command_target.x,
+            'target_y': command_target.y,
+            'target_z': command_target.z,
             'wrapped_yaw_deg': math.degrees(imu_yaw),
             'unwrapped_yaw_deg': math.degrees(self.unwrapped_yaw),
             'yaw_error_deg': math.degrees(yaw_error),
@@ -450,13 +488,15 @@ class RotationCenterCalibration(object):
         })
         self.log_file.flush()
 
-    def _hold_current(self, duration, label):
+    def _hold_locked_position(
+            self, duration, label, target_yaw, segment=0, direction=0,
+            turn_index=0, quarter_index=0):
         if not self._update_tf() or not self._feedback_fresh():
             raise RuntimeError('{} 前反馈无效'.format(label))
-        hold_pose = self.current_base_pose
-        hold_yaw = self.current_imu_pose[2]
+        if self.locked_initial_pose is None:
+            raise RuntimeError('{} 前尚未锁定初始位置'.format(label))
         command = self._make_command(
-            MODE_DPROV, hold_pose, hold_yaw, mz=0)
+            MODE_DPROV, self.locked_initial_pose, target_yaw, mz=0)
         stable_count = 0
         started_at = rospy.Time.now()
         deadline = started_at + rospy.Duration(
@@ -472,21 +512,35 @@ class RotationCenterCalibration(object):
             velocity = self.filtered_velocity
             yaw_rate = abs(
                 self.yaw_rate_feedback_sign * velocity[2])
-            stable = (
-                self.reported_mode == MODE_DPROV
-                and math.hypot(velocity[0], velocity[1])
-                <= self.handover_speed_threshold
-                and yaw_rate <= self.yaw_rate_threshold
+            current_position = self.current_base_pose[0]
+            locked_position = self.locked_initial_pose[0]
+            position_error = math.hypot(
+                current_position[0] - locked_position[0],
+                current_position[1] - locked_position[1],
+            )
+            yaw_error = wrap_angle(
+                target_yaw - self.current_imu_pose[2])
+            stable = locked_handover_is_stable(
+                self.reported_mode,
+                position_error,
+                math.hypot(velocity[0], velocity[1]),
+                yaw_error,
+                yaw_rate,
+                MODE_DPROV,
+                self.handover_position_tolerance,
+                self.handover_speed_threshold,
+                self.yaw_tolerance,
+                self.yaw_rate_threshold,
             )
             stable_count = stable_count + 1 if stable else 0
             self._log_cycle(
                 label,
-                0,
-                0,
-                0,
-                0,
-                self.unwrapped_yaw,
-                0.0,
+                segment,
+                direction,
+                turn_index,
+                quarter_index,
+                target_yaw,
+                yaw_error,
                 MODE_DPROV,
                 0,
                 'HOLD',
@@ -498,15 +552,29 @@ class RotationCenterCalibration(object):
                 return
             if now >= deadline:
                 raise RuntimeError('{} mode=4 稳定接管超时'.format(label))
+            rospy.loginfo_throttle(
+                2.0,
+                '%s: %s，位置误差=%.2f m，航向误差=%.1f deg，'
+                '水平速度=%.3f m/s，角速度=%.2f deg/s，稳定帧=%d/%d',
+                NODE_NAME,
+                label,
+                position_error,
+                math.degrees(yaw_error),
+                math.hypot(velocity[0], velocity[1]),
+                math.degrees(yaw_rate),
+                stable_count,
+                self.stable_frames,
+            )
             rate.sleep()
 
     def _rotate_segment(
             self, segment, direction, turn_index, quarter_index):
         if not self._update_tf() or not self._feedback_fresh():
             raise RuntimeError('自由旋转前反馈无效')
-        segment_start_position = self.current_imu_pose[0]
+        if self.locked_initial_pose is None:
+            raise RuntimeError('自由旋转前尚未锁定初始位置')
+        segment_start_position = self.locked_initial_pose[0]
         segment_start_yaw = self.unwrapped_yaw
-        self.segment_directions[segment] = int(direction)
         target_unwrapped = (
             segment_start_yaw + direction * self.turn_step)
         stable_count = 0
@@ -548,22 +616,6 @@ class RotationCenterCalibration(object):
                         math.degrees(abs(yaw_rate)),
                         math.degrees(self.max_yaw_rate),
                     ))
-            moving_away = (
-                yaw_error * yaw_rate < 0.0
-                and abs(yaw_rate) > self.yaw_rate_threshold
-            )
-            if moving_away:
-                if moving_away_started_at is None:
-                    moving_away_started_at = now
-                elif (
-                        now - moving_away_started_at
-                ).to_sec() > self.moving_away_timeout:
-                    raise RuntimeError(
-                        '自由旋转段 {} 连续 {:.1f} s 远离目标，'
-                        '检查 MZ 与 yaw 反馈符号'.format(
-                            segment, self.moving_away_timeout))
-            else:
-                moving_away_started_at = None
             command_mz, controller_phase, stopping_angle = (
                 direct_yaw_command(
                     yaw_error,
@@ -585,9 +637,29 @@ class RotationCenterCalibration(object):
                     self.mz_to_yaw_sign,
                 )
             )
+            moving_away = rotation_is_unexpectedly_moving_away(
+                yaw_error,
+                yaw_rate,
+                direction,
+                self.yaw_rate_threshold,
+            )
+            if moving_away:
+                if moving_away_started_at is None:
+                    moving_away_started_at = now
+                elif (
+                        now - moving_away_started_at
+                ).to_sec() > self.moving_away_timeout:
+                    raise RuntimeError(
+                        '自由旋转段 {} 在尚未越过目标时连续 {:.1f} s '
+                        '远离目标，检查 MZ 与 yaw 反馈符号'.format(
+                            segment, self.moving_away_timeout))
+            else:
+                # 越过目标后仍按原方向运动属于正常刹转超调，
+                # 不累计方向错误计时；未越过时的真实反向运动仍受保护。
+                moving_away_started_at = None
             command = self._make_command(
                 MODE_DEPTH,
-                self.current_base_pose,
+                self.locked_initial_pose,
                 target_unwrapped,
                 mz=command_mz,
             )
@@ -606,14 +678,15 @@ class RotationCenterCalibration(object):
                 stopping_angle,
             )
             if (
-                    controller_phase != 'HOLD'
-                    or abs(yaw_rate) >= self.sample_min_yaw_rate):
-                self.samples.append(CalibrationSample(
+                    controller_phase == 'TRACK'
+                    and abs(yaw_rate) >= self.sample_min_yaw_rate):
+                sample = CalibrationSample(
                     segment,
                     imu_position[0],
                     imu_position[1],
                     self.current_imu_pose[2],
-                ))
+                )
+                self.direction_samples[int(direction)].append(sample)
             stable = (
                 controller_phase == 'HOLD'
                 and abs(yaw_error) <= self.yaw_tolerance
@@ -621,7 +694,7 @@ class RotationCenterCalibration(object):
             )
             stable_count = stable_count + 1 if stable else 0
             if stable_count >= self.stable_frames:
-                return
+                return target_unwrapped
             if now >= deadline:
                 raise RuntimeError(
                     '自由旋转段 {} 在 {:.1f} s 内未停稳'.format(
@@ -640,7 +713,7 @@ class RotationCenterCalibration(object):
             )
             rate.sleep()
 
-    def _write_result(self, result, positive_result, negative_result):
+    def _write_result(self, positive_result, negative_result):
         direction_difference = math.hypot(
             positive_result['offset_x'] - negative_result['offset_x'],
             positive_result['offset_y'] - negative_result['offset_y'],
@@ -649,55 +722,79 @@ class RotationCenterCalibration(object):
             stream.write(
                 '# 由 rotation_center_calibration.py 自动生成\n')
             stream.write(
-                'control_to_imu_x: {:.6f}\n'.format(result['offset_x']))
+                '# 按计划旋转方向选择；主动刹车时保持原计划方向，不切换中心\n')
             stream.write(
-                'control_to_imu_y: {:.6f}\n'.format(result['offset_y']))
-            stream.write(
-                'control_to_imu_z: {:.6f}\n'.format(
-                    self.control_to_imu_z))
-            stream.write(
-                'radius: {:.6f}\n'.format(math.hypot(
-                    result['offset_x'], result['offset_y'])))
-            stream.write(
-                'rms_residual: {:.6f}\n'.format(result['rms_residual']))
-            stream.write(
-                'max_residual: {:.6f}\n'.format(result['max_residual']))
-            stream.write(
-                'sample_count: {}\n'.format(result['sample_count']))
-            stream.write(
-                'used_sample_count: {}\n'.format(
-                    result['used_sample_count']))
-            stream.write(
-                'rejected_sample_count: {}\n'.format(
-                    result['rejected_sample_count']))
-            stream.write('positive_direction:\n')
-            stream.write(
-                '  control_to_imu_x: {:.6f}\n'.format(
+                'control_to_imu_positive_x: {:.6f}\n'.format(
                     positive_result['offset_x']))
             stream.write(
-                '  control_to_imu_y: {:.6f}\n'.format(
+                'control_to_imu_positive_y: {:.6f}\n'.format(
                     positive_result['offset_y']))
+            stream.write(
+                'control_to_imu_positive_z: {:.6f}\n'.format(
+                    self.control_to_imu_z))
+            stream.write(
+                'control_to_imu_negative_x: {:.6f}\n'.format(
+                    negative_result['offset_x']))
+            stream.write(
+                'control_to_imu_negative_y: {:.6f}\n'.format(
+                    negative_result['offset_y']))
+            stream.write(
+                'control_to_imu_negative_z: {:.6f}\n'.format(
+                    self.control_to_imu_z))
+            stream.write(
+                'direction_offset_difference: {:.6f}\n'.format(
+                    direction_difference))
+            stream.write('positive_direction:\n')
+            stream.write(
+                '  radius: {:.6f}\n'.format(math.hypot(
+                    positive_result['offset_x'],
+                    positive_result['offset_y'])))
             stream.write(
                 '  rms_residual: {:.6f}\n'.format(
                     positive_result['rms_residual']))
+            stream.write(
+                '  max_residual: {:.6f}\n'.format(
+                    positive_result['max_residual']))
+            stream.write(
+                '  sample_count: {}\n'.format(
+                    positive_result['sample_count']))
+            stream.write(
+                '  used_sample_count: {}\n'.format(
+                    positive_result['used_sample_count']))
+            stream.write(
+                '  rejected_sample_count: {}\n'.format(
+                    positive_result['rejected_sample_count']))
+            stream.write('  segment_centers:\n')
+            for segment in positive_result['segments']:
+                center = positive_result['centers'][segment]
+                stream.write(
+                    '    {}: [{:.6f}, {:.6f}]\n'.format(
+                        segment, center[0], center[1]))
             stream.write('negative_direction:\n')
             stream.write(
-                '  control_to_imu_x: {:.6f}\n'.format(
-                    negative_result['offset_x']))
-            stream.write(
-                '  control_to_imu_y: {:.6f}\n'.format(
-                    negative_result['offset_y']))
+                '  radius: {:.6f}\n'.format(math.hypot(
+                    negative_result['offset_x'],
+                    negative_result['offset_y'])))
             stream.write(
                 '  rms_residual: {:.6f}\n'.format(
                     negative_result['rms_residual']))
             stream.write(
-                'direction_offset_difference: {:.6f}\n'.format(
-                    direction_difference))
-            stream.write('segment_centers:\n')
-            for segment in result['segments']:
-                center = result['centers'][segment]
+                '  max_residual: {:.6f}\n'.format(
+                    negative_result['max_residual']))
+            stream.write(
+                '  sample_count: {}\n'.format(
+                    negative_result['sample_count']))
+            stream.write(
+                '  used_sample_count: {}\n'.format(
+                    negative_result['used_sample_count']))
+            stream.write(
+                '  rejected_sample_count: {}\n'.format(
+                    negative_result['rejected_sample_count']))
+            stream.write('  segment_centers:\n')
+            for segment in negative_result['segments']:
+                center = negative_result['centers'][segment]
                 stream.write(
-                    '  {}: [{:.6f}, {:.6f}]\n'.format(
+                    '    {}: [{:.6f}, {:.6f}]\n'.format(
                         segment, center[0], center[1]))
 
     def emergency_hold(self):
@@ -735,57 +832,69 @@ class RotationCenterCalibration(object):
         )
         if not self._wait_for_feedback():
             raise RuntimeError('等待 TF、速度和模式反馈超时')
-        self._hold_current(self.initial_hold_seconds, 'INITIAL_HOLD')
+        self.locked_initial_pose = (
+            tuple(self.current_base_pose[0]),
+            tuple(self.current_base_pose[1]),
+        )
+        self.locked_initial_yaw = float(self.unwrapped_yaw)
+        rospy.logwarn(
+            '%s: 已锁定全程初始位姿，x=%.3f m，y=%.3f m，z目标=%.3f m，'
+            'yaw=%.1f deg；后续不再用实时位置更新定点目标',
+            NODE_NAME,
+            self.locked_initial_pose[0][0],
+            self.locked_initial_pose[0][1],
+            self.target_z,
+            math.degrees(self.locked_initial_yaw),
+        )
+        self._hold_locked_position(
+            self.initial_hold_seconds,
+            'INITIAL_HOLD',
+            self.locked_initial_yaw,
+        )
 
         segment = 0
         for direction in (1, -1):
             for turn_index in range(1, self.turns_each_direction + 1):
                 for quarter_index in range(1, 5):
                     segment += 1
-                    self._rotate_segment(
+                    target_yaw = self._rotate_segment(
                         segment,
                         direction,
                         turn_index,
                         quarter_index,
                     )
-                    self._hold_current(
+                    self._hold_locked_position(
                         self.handover_hold_seconds,
                         'SEGMENT_HOLD',
+                        target_yaw,
+                        segment,
+                        direction,
+                        turn_index,
+                        quarter_index,
                     )
 
-        result = fit_segmented_rotation_center(self.samples)
-        positive_result = fit_segmented_rotation_center([
-            sample for sample in self.samples
-            if self.segment_directions[sample.segment] > 0
-        ])
-        negative_result = fit_segmented_rotation_center([
-            sample for sample in self.samples
-            if self.segment_directions[sample.segment] < 0
-        ])
-        direction_difference = math.hypot(
-            positive_result['offset_x'] - negative_result['offset_x'],
-            positive_result['offset_y'] - negative_result['offset_y'],
+        results = fit_planned_direction_centers(
+            self.direction_samples[1],
+            self.direction_samples[-1],
         )
-        self._write_result(result, positive_result, negative_result)
+        positive_result = results['positive']
+        negative_result = results['negative']
+        self._write_result(positive_result, negative_result)
         self.completed = True
         self._close_log()
         rospy.loginfo(
-            '%s: 标定完成，control_link -> imu=(%.4f, %.4f, 0.0) m，'
-            '半径=%.4f m，RMS 残差=%.4f m',
+            '%s: 标定完成，计划正向 control_link -> imu='
+            '(%.4f, %.4f, %.4f) m，RMS=%.4f m；'
+            '计划负向=(%.4f, %.4f, %.4f) m，RMS=%.4f m',
             NODE_NAME,
-            result['offset_x'],
-            result['offset_y'],
-            math.hypot(result['offset_x'], result['offset_y']),
-            result['rms_residual'],
-        )
-        if direction_difference > self.direction_consistency_tolerance:
-            rospy.logwarn(
-                '%s: 正负方向杆臂差 %.4f m 超过阈值 %.4f m；'
-                '本次结果不得直接写入正式参数',
-                NODE_NAME,
-                direction_difference,
-                self.direction_consistency_tolerance,
-            )
+            positive_result['offset_x'],
+            positive_result['offset_y'],
+            self.control_to_imu_z,
+            positive_result['rms_residual'],
+            negative_result['offset_x'],
+            negative_result['offset_y'],
+            self.control_to_imu_z,
+            negative_result['rms_residual'])
         rospy.loginfo('%s: 结果文件: %s', NODE_NAME, self.result_path)
 
 
