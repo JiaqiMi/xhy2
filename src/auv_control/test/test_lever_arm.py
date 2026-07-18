@@ -11,6 +11,8 @@
     增加 0°、±90° 航向和双向位置换算回归测试。
 2026.7.18
     增加 control_link、base_link 和 IMU 之间的位置与速度换算测试。
+2026.7.18
+    增加 base_link 与 IMU 零偏置回归测试，并保留非零通用杆臂测试。
 """
 
 import math
@@ -59,7 +61,8 @@ def euler_quaternion(roll, pitch, yaw):
 class LeverArmTest(unittest.TestCase):
 
     def setUp(self):
-        self.base_to_imu = (-0.35, 0.0, 0.0)
+        # 使用非零测试值验证通用杆臂换算；运行时默认值已经恢复为零。
+        self.base_to_imu = (-0.20, 0.0, 0.0)
 
     def assert_vector_almost_equal(self, actual, expected):
         for actual_value, expected_value in zip(actual, expected):
@@ -67,7 +70,7 @@ class LeverArmTest(unittest.TestCase):
 
     def test_zero_yaw_moves_base_forward_from_imu(self):
         base = base_position_from_sensor(
-            (-0.35, 0.0, 0.0),
+            (-0.20, 0.0, 0.0),
             yaw_quaternion(0.0),
             self.base_to_imu,
         )
@@ -79,7 +82,7 @@ class LeverArmTest(unittest.TestCase):
             yaw_quaternion(math.pi / 2.0),
             self.base_to_imu,
         )
-        self.assert_vector_almost_equal(sensor, (0.0, -0.35, 0.0))
+        self.assert_vector_almost_equal(sensor, (0.0, -0.20, 0.0))
         recovered = base_position_from_sensor(
             sensor,
             yaw_quaternion(math.pi / 2.0),
@@ -93,7 +96,25 @@ class LeverArmTest(unittest.TestCase):
             yaw_quaternion(-math.pi / 2.0),
             self.base_to_imu,
         )
-        self.assert_vector_almost_equal(sensor, (1.0, 2.35, -0.8))
+        self.assert_vector_almost_equal(sensor, (1.0, 2.20, -0.8))
+
+    def test_zero_offset_keeps_base_and_imu_coincident(self):
+        position = (1.2, -0.7, -0.9)
+        orientation = euler_quaternion(
+            math.radians(5.0),
+            math.radians(-8.0),
+            math.radians(123.0),
+        )
+        self.assert_vector_almost_equal(
+            sensor_position_from_base(
+                position, orientation, (0.0, 0.0, 0.0)),
+            position,
+        )
+        self.assert_vector_almost_equal(
+            base_position_from_sensor(
+                position, orientation, (0.0, 0.0, 0.0)),
+            position,
+        )
 
     def test_round_trip_for_arbitrary_pose(self):
         base = (3.2, -1.4, 0.7)
@@ -124,7 +145,7 @@ class LeverArmTest(unittest.TestCase):
                 actual_value, expected_value, places=5)
 
     def test_control_and_base_goal_round_trip(self):
-        control_to_base = (0.35, 0.0, 0.0)
+        control_to_base = (0.20, 0.0, 0.0)
         orientation = yaw_quaternion(math.radians(60.0))
         control = (1.0, -2.0, -0.8)
         base = offset_point_from_origin(
@@ -145,7 +166,7 @@ class LeverArmTest(unittest.TestCase):
         self.assertAlmostEqual(control_v, 0.0, places=9)
 
     def test_fixed_control_center_reaches_final_base_pose_after_yaw(self):
-        control_to_base = (0.35, 0.0, 0.0)
+        control_to_base = (0.20, 0.0, 0.0)
         final_yaw = math.pi / 2.0
         final_orientation = yaw_quaternion(final_yaw)
         requested_base = (1.0, 2.0, -0.8)
@@ -162,11 +183,11 @@ class LeverArmTest(unittest.TestCase):
         self.assert_vector_almost_equal(recovered_base, requested_base)
 
     def test_control_to_base_is_derived_from_common_imu_point(self):
-        control_to_imu = (0.0, 0.0, 0.0)
-        base_to_imu = (-0.35, 0.0, 0.0)
+        control_to_imu = (0.12, -0.03, 0.0)
+        base_to_imu = (0.0, 0.0, 0.0)
         self.assert_vector_almost_equal(
             offset_between_origins(control_to_imu, base_to_imu),
-            (0.35, 0.0, 0.0),
+            control_to_imu,
         )
 
 

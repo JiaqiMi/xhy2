@@ -241,8 +241,11 @@ angular_brake_acceleration_mz_positive: 0.025
 angular_brake_acceleration_mz_negative: 0.040
 ```
 
-本批纯旋转数据还出现了大量 `TRANSLATE` 和 `TRANSLATE_BRAKE`。原因是
-`base_link` 前移 0.35 m 后，静态 TF 虽已设置
+> 以下 0.35 m 杆臂分析属于历史试验配置；当前 `base_link` 已恢复与
+> IMU/GNSS 定位点重合，不再使用该前移量。
+
+本批历史纯旋转数据还出现了大量 `TRANSLATE` 和 `TRANSLATE_BRAKE`。原因是
+当时 `base_link` 前移 0.35 m 后，静态 TF 虽已设置
 `base_link -> imu=(-0.35,0,0)`，但原 `auv_tf_handler` 仍把 IMU/GNSS
 经纬度直接发布成 `map -> base_link` 位置。
 
@@ -262,12 +265,13 @@ angular_brake_acceleration_mz_negative: 0.040
   杆臂，得到真实 `map -> base_link`；
 - 指令链路：由目标 base_link 位姿加上旋转后的杆臂，得到下位机定点闭环
   所需的 IMU/GNSS 目标 LLA；
-- 静态 TF 和动态换算共用同一组杆臂参数，默认 `(-0.35, 0, 0) m`。
+- 静态 TF 和动态换算共用同一组杆臂参数；当前默认 `(0, 0, 0) m`，
+  即 `base_link` 与 IMU/GNSS 定位点重合。
 
 ## 2026-07-18 旋转中心与轴解耦修正
 
-前一节直接以 `base_link` 作为控制位置仍不完整：前移后的 `base_link`
-不是实际旋转中心，纯转向时它本来就会沿刚体圆弧移动。当前实现改为：
+即使 `base_link` 已恢复与 IMU/GNSS 定位点重合，IMU 也不一定处于实际
+水平旋转中心，因此仍保留独立 `control_link`。当前实现为：
 
 ```text
 map -> control_link -> base_link -> imu
@@ -276,9 +280,12 @@ map -> control_link -> base_link -> imu
 - `map -> control_link` 由原始 IMU/GNSS 位置减去
   `control_link -> imu` 杆臂得到；
 - `control_link -> base_link` 由两组杆臂相减得到；
+- 当前 `base_link -> imu=(0,0,0)`，因此
+  `control_link -> base_link=control_link -> imu`；
 - 任务目标仍表示最终 `base_link` 位姿，内部按最终 yaw 换算成
   `control_link` 目标；
-- 最终转向固定 `control_link`，不再因 `base_link` 的正常圆弧运动退回平移；
+- 最终转向固定 `control_link`；若实际旋转中心与 IMU 存在杆臂，
+  `base_link` 与 IMU 会按刚体关系沿圆弧运动；
 - `/status/vel` 视为 IMU 点速度，使用 `v_control = v_imu - ω×r`
   换算为旋转中心速度。
 

@@ -15,6 +15,9 @@
     新增 IMU/GNSS 定位点与前移 base_link 之间的双向杆臂补偿。
 2026.7.18
     增加旋转中心、base_link 和 IMU 之间的通用位置及水平速度换算。
+2026.7.18
+    base_link 默认恢复与 IMU 重合；保留通用杆臂换算供 control_link
+    旋转中心标定及非零传感器偏置配置使用。
 """
 
 import math

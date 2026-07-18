@@ -31,6 +31,9 @@
 2026.7.18
     启动后锁定第一帧完整有效位姿并先完成定点接管，期间缓存最新任务目标。
     控制位姿改用 control_link，任务目标仍保持 base_link 最终位姿语义。
+2026.7.18
+    base_link 恢复与 IMU/GNSS 定位点重合，默认 base_link 到 IMU 杆臂归零；
+    control_link 仍作为可独立标定的水平旋转中心。
 """
 
 from __future__ import division
@@ -140,7 +143,7 @@ class MotionSupervisorNode(object):
         self.pitch_offset = math.radians(
             float(rospy.get_param('~pitch_offset_deg', 0.0)))
         self.base_to_imu = (
-            float(rospy.get_param('~base_to_imu_x', -0.35)),
+            float(rospy.get_param('~base_to_imu_x', 0.0)),
             float(rospy.get_param('~base_to_imu_y', 0.0)),
             float(rospy.get_param('~base_to_imu_z', 0.0)),
         )

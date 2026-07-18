@@ -258,7 +258,8 @@ goal.yaw = 目标绝对 yaw
 ALIGN_FINAL → FINAL_BRAKE → CAPTURE → HOVER
 ```
 
-旋转期间固定 `control_link`，允许前移后的 `base_link` 按刚体关系沿小圆弧
+当前 `base_link` 与 IMU/GNSS 定位点重合。旋转期间固定 `control_link`；
+若标定的旋转中心与 IMU 存在杆臂，`base_link` 与 IMU 会按刚体关系沿小圆弧
 运动。控制中心若真实漂出 `capture_exit_radius`，状态机会先重新平移，再继续
 最终转向；转向结束时 `base_link` 到达任务指定的最终位姿。
 

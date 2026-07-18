@@ -26,6 +26,9 @@
 2026.7.18
     动态导航 TF 改为 map -> control_link；base_link 通过静态刚体关系派生，
     避免把前移后的 base_link 误当作水平旋转中心。
+2026.7.18
+    base_link 恢复与 IMU/GNSS 定位点重合，默认 base_link 到 IMU 杆臂归零；
+    保留独立 control_link，用于标定实际水平旋转中心。
 """
 
 import threading
@@ -55,7 +58,7 @@ class AUVTfHandler:
 
         self.tf_broadcaster = tf.TransformBroadcaster()
         self.base_to_imu = (
-            float(rospy.get_param('~base_to_imu_x', -0.35)),
+            float(rospy.get_param('~base_to_imu_x', 0.0)),
             float(rospy.get_param('~base_to_imu_y', 0.0)),
             float(rospy.get_param('~base_to_imu_z', 0.0)),
         )

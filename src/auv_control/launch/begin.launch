@@ -11,8 +11,11 @@
     <arg name="start_state_web" default="true" />
     <arg name="start_fisheye" default="true" />
     <arg name="start_motion_supervisor" default="false" />
-    <!-- base_link 原点指向 IMU/GNSS 定位点的前、右、下偏置，单位 m。 -->
-    <arg name="base_to_imu_x" default="-0.35" />
+    <!--
+      base_link 原点指向 IMU/GNSS 定位点的前、右、下偏置，单位 m。
+      当前 base_link 与 IMU/GNSS 定位点重合，三个默认值均保持为 0。
+    -->
+    <arg name="base_to_imu_x" default="0.0" />
     <arg name="base_to_imu_y" default="0.0" />
     <arg name="base_to_imu_z" default="0.0" />
     <!-- control_link 旋转中心指向 IMU/GNSS 点的前、右、下偏置；标定前默认与 IMU 重合。 -->
