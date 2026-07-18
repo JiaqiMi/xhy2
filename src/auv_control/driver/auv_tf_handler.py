@@ -8,7 +8,7 @@
       /cmd/pose/ned (PoseNEDcmd.msg)
       /world_origin (NavSatFix.msg)
 发布：/cmd/pose/lla (PoseLLAcmd.msg)
-      /tf (from base_link to map)
+      /tf (from control_link to map)
 记录：
 2025.7.19 10:56
     第一版完成
@@ -23,6 +23,9 @@
     取消旧链路兼容，仅保留 /cmd/pose/ned 到 /cmd/pose/lla 的整包指令转换。
 2026.7.18
     增加 base_link 到 IMU/GNSS 定位点的杆臂补偿，同时修正状态 TF 和定点目标。
+2026.7.18
+    动态导航 TF 改为 map -> control_link；base_link 通过静态刚体关系派生，
+    避免把前移后的 base_link 误当作水平旋转中心。
 """
 
 import threading
@@ -34,7 +37,7 @@ from auv_control.msg import AUVData, PoseLLAcmd, PoseNEDcmd
 from sensor_msgs.msg import NavSatFix
 from tf import transformations
 
-from lever_arm import base_position_from_sensor, sensor_position_from_base
+from lever_arm import origin_from_offset_point, sensor_position_from_base
 from world_frame import WorldFrameManager
 
 
@@ -58,6 +61,13 @@ class AUVTfHandler:
         )
         if not np.all(np.isfinite(self.base_to_imu)):
             raise ValueError('base_link 到 IMU 的杆臂参数必须为有限值')
+        self.control_to_imu = (
+            float(rospy.get_param('~control_to_imu_x', 0.0)),
+            float(rospy.get_param('~control_to_imu_y', 0.0)),
+            float(rospy.get_param('~control_to_imu_z', 0.0)),
+        )
+        if not np.all(np.isfinite(self.control_to_imu)):
+            raise ValueError('control_link 到 IMU 的杆臂参数必须为有限值')
         self.current_pose = None
         self.current_yaw = 0.0
         self.control_cmd_pub = rospy.Publisher(
@@ -69,8 +79,9 @@ class AUVTfHandler:
         # map_initer 是 /world_origin 的唯一发布者；锁存初始值会被安全忽略。
         rospy.Subscriber('/world_origin', NavSatFix, self.origin_callback, queue_size=1)
         rospy.loginfo(
-            'auv_tf_handler: base_link -> imu 杆臂=(%.3f, %.3f, %.3f) m',
-            *self.base_to_imu
+            'auv_tf_handler: control_link -> imu=(%.3f, %.3f, %.3f) m，'
+            'base_link -> imu=(%.3f, %.3f, %.3f) m',
+            *(self.control_to_imu + self.base_to_imu)
         )
 
     def origin_callback(self, origin):
@@ -104,15 +115,15 @@ class AUVTfHandler:
             np.radians(msg.pose.pitch),
             np.radians(msg.pose.yaw),
         )
-        base_position = base_position_from_sensor(
+        control_position = origin_from_offset_point(
             (north, east, down),
             orientation,
-            self.base_to_imu,
+            self.control_to_imu,
         )
         self.current_pose = [
-            base_position[0],
-            base_position[1],
-            base_position[2],
+            control_position[0],
+            control_position[1],
+            control_position[2],
             orientation[0],
             orientation[1],
             orientation[2],
@@ -165,12 +176,12 @@ class AUVTfHandler:
         rospy.loginfo_throttle(5, "auv_tf_handler: 已发布 /cmd/pose/lla")
 
     def publish_tf(self):
-        """发布当前 map 到 base_link 的 NED 变换。"""
+        """发布当前 map 到 control_link 的 NED 变换。"""
         self.tf_broadcaster.sendTransform(
             tuple(self.current_pose[0:3]),
             tuple(self.current_pose[3:7]),
             rospy.Time.now(),
-            'base_link',
+            'control_link',
             'map',
         )
 

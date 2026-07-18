@@ -9,6 +9,8 @@
 记录：
 2026.7.18
     增加 0°、±90° 航向和双向位置换算回归测试。
+2026.7.18
+    增加 control_link、base_link 和 IMU 之间的位置与速度换算测试。
 """
 
 import math
@@ -24,6 +26,10 @@ if DRIVER_DIR not in sys.path:
 
 from lever_arm import (  # noqa: E402
     base_position_from_sensor,
+    offset_point_from_origin,
+    offset_between_origins,
+    origin_from_offset_point,
+    planar_origin_velocity_from_point,
     sensor_position_from_base,
 )
 from world_frame import WorldFrameManager  # noqa: E402
@@ -116,6 +122,52 @@ class LeverArmTest(unittest.TestCase):
                 recovered_base, base_target):
             self.assertAlmostEqual(
                 actual_value, expected_value, places=5)
+
+    def test_control_and_base_goal_round_trip(self):
+        control_to_base = (0.35, 0.0, 0.0)
+        orientation = yaw_quaternion(math.radians(60.0))
+        control = (1.0, -2.0, -0.8)
+        base = offset_point_from_origin(
+            control, orientation, control_to_base)
+        recovered = origin_from_offset_point(
+            base, orientation, control_to_base)
+        self.assert_vector_almost_equal(recovered, control)
+
+    def test_imu_velocity_is_shifted_to_rotation_center(self):
+        control_to_imu = (-0.20, 0.10, 0.0)
+        yaw_rate = 0.5
+        # 静止旋转中心对应的 IMU 杆臂速度 omega × r。
+        imu_u = -yaw_rate * control_to_imu[1]
+        imu_v = yaw_rate * control_to_imu[0]
+        control_u, control_v = planar_origin_velocity_from_point(
+            imu_u, imu_v, yaw_rate, control_to_imu)
+        self.assertAlmostEqual(control_u, 0.0, places=9)
+        self.assertAlmostEqual(control_v, 0.0, places=9)
+
+    def test_fixed_control_center_reaches_final_base_pose_after_yaw(self):
+        control_to_base = (0.35, 0.0, 0.0)
+        final_yaw = math.pi / 2.0
+        final_orientation = yaw_quaternion(final_yaw)
+        requested_base = (1.0, 2.0, -0.8)
+        control_target = origin_from_offset_point(
+            requested_base,
+            final_orientation,
+            control_to_base,
+        )
+        recovered_base = offset_point_from_origin(
+            control_target,
+            final_orientation,
+            control_to_base,
+        )
+        self.assert_vector_almost_equal(recovered_base, requested_base)
+
+    def test_control_to_base_is_derived_from_common_imu_point(self):
+        control_to_imu = (0.0, 0.0, 0.0)
+        base_to_imu = (-0.35, 0.0, 0.0)
+        self.assert_vector_almost_equal(
+            offset_between_origins(control_to_imu, base_to_imu),
+            (0.35, 0.0, 0.0),
+        )
 
 
 if __name__ == '__main__':
