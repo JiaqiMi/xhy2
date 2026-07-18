@@ -9,6 +9,10 @@
 记录：
 2026.7.18
     新增旋转中心标定纯算法单元测试。
+2026.7.18
+    增加目标前方向错误和越过目标后 BRAKE 正常超调的保护逻辑测试。
+2026.7.18
+    增加固定初始位置 mode=4 接管稳定条件测试。
 """
 
 import math
@@ -25,6 +29,8 @@ from rotation_center_calibration_core import (  # noqa: E402
     CalibrationSample,
     direct_yaw_command,
     fit_segmented_rotation_center,
+    locked_handover_is_stable,
+    rotation_is_unexpectedly_moving_away,
     unwrap_angle,
 )
 
@@ -71,6 +77,57 @@ class RotationCenterCalibrationCoreTest(unittest.TestCase):
         command, phase, unused_stop = self.command(
             math.radians(1.0), math.radians(0.5))
         self.assertEqual((command, phase), (0, 'HOLD'))
+
+    def test_moving_away_before_crossing_target_is_protected(self):
+        threshold = math.radians(0.5)
+        self.assertTrue(rotation_is_unexpectedly_moving_away(
+            math.radians(30.0),
+            math.radians(-1.1),
+            1,
+            threshold,
+        ))
+        self.assertTrue(rotation_is_unexpectedly_moving_away(
+            math.radians(-30.0),
+            math.radians(1.1),
+            -1,
+            threshold,
+        ))
+
+    def test_braking_overshoot_from_log_is_not_direction_error(self):
+        command, phase, unused_stop = self.command(
+            math.radians(-4.8), math.radians(1.1))
+        self.assertEqual(phase, 'BRAKE')
+        self.assertLess(command, 0)
+        self.assertFalse(rotation_is_unexpectedly_moving_away(
+            math.radians(-4.8),
+            math.radians(1.1),
+            1,
+            math.radians(0.5),
+        ))
+
+    def test_locked_handover_requires_all_conditions(self):
+        arguments = dict(
+            reported_mode=4,
+            position_error=0.10,
+            horizontal_speed=0.03,
+            yaw_error=math.radians(2.0),
+            yaw_rate=math.radians(0.3),
+            required_mode=4,
+            position_tolerance=0.15,
+            speed_threshold=0.05,
+            yaw_tolerance=math.radians(3.0),
+            yaw_rate_threshold=math.radians(0.5),
+        )
+        self.assertTrue(locked_handover_is_stable(**arguments))
+        for key, invalid_value in (
+                ('reported_mode', 2),
+                ('position_error', 0.16),
+                ('horizontal_speed', 0.06),
+                ('yaw_error', math.radians(4.0)),
+                ('yaw_rate', math.radians(0.6))):
+            changed = dict(arguments)
+            changed[key] = invalid_value
+            self.assertFalse(locked_handover_is_stable(**changed))
 
     def test_fit_recovers_shared_offset_with_different_centers(self):
         offset = (0.32, -0.07)
