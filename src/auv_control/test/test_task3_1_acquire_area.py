@@ -23,16 +23,18 @@ if DRIVER_DIR not in sys.path:
 
 import rospy
 import tf
-
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) # 添加src的父目
 from auv_control.msg import AUVData, PoseNEDcmd
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
-from motion_supervisor_core import map_error_to_body
+from driver.motion_supervisor_core import map_error_to_body
 
 
 NODE_NAME = "test_task3_1_acquire_area"
-MODE_DEPTH_HEADING = 3
+MODE_DEPTH_HEADING = 4
 
 
 def clamp(value, lower, upper):

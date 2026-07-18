@@ -5,12 +5,24 @@
 功能：运动—刹停—悬停控制器的纯算法核心
 作者：BroXu
 说明：
-    1. 实现航向对准、水平运动、主动刹停、捕获和悬停状态机；
+    1. 实现保持当前航向平移、主动刹停、最终转向和悬停状态机；
     2. 提供坐标转换、停车距离、力限幅和变化率限制等纯函数；
     3. 本模块不依赖 ROS，ROS 话题、TF 和消息转换由 motion_supervisor.py 负责。
 记录：
 2026.7.16
     新增纯 Python 状态机核心，支持离线单元测试。
+2026.7.16
+    根据实测数据增加正负方向独立刹车力、减速度和刹车步进参数。
+2026.7.17
+    将目标深度统一固定为参数值，避免兜底和取消路径跟随实时深度变化。
+2026.7.17
+    根据入水日志提高三轴运动力矩，并在最终转向期间持续水平刹停和监测漂移。
+2026.7.17
+    根据大角度测试修正停车主轴选择、航向刹车参数和定点接管保护。
+2026.7.18
+    目标深度改为跟随 goal，取消路径预对准并增加连续目标切换机制。
+2026.7.18
+    收紧 HOVER 语义，仅在下位机反馈 mode=4 后表示目标到达并完成定点接管。
 """
 
 from __future__ import division
@@ -77,6 +89,22 @@ def body_velocity_to_map(forward, lateral, yaw):
     )
 
 
+def relative_target_xy(
+        initial_x, initial_y, initial_yaw, offset_x, offset_y, offset_frame):
+    """把初始 base_link 或 map 下的水平偏置换算为 map 绝对坐标。"""
+    if offset_frame == 'base_link':
+        cosine = math.cos(initial_yaw)
+        sine = math.sin(initial_yaw)
+        delta_x = cosine * offset_x - sine * offset_y
+        delta_y = sine * offset_x + cosine * offset_y
+    elif offset_frame == 'map':
+        delta_x = offset_x
+        delta_y = offset_y
+    else:
+        raise ValueError('offset_frame 仅支持 base_link 或 map')
+    return initial_x + delta_x, initial_y + delta_y
+
+
 def stopping_distance(closing_speed, brake_acceleration, delay, margin):
     """根据闭合速度、有效减速度和链路延迟估算停车距离。"""
     speed = max(0.0, closing_speed)
@@ -113,7 +141,8 @@ class VehicleState(object):
 
     def __init__(
             self, now, x, y, z, yaw, forward_velocity, lateral_velocity,
-            yaw_rate, feedback_fresh=True, reported_mode=None):
+            yaw_rate, feedback_fresh=True, reported_mode=None,
+            reported_mode_stamp=None):
         self.now = float(now)
         self.x = float(x)
         self.y = float(y)
@@ -124,6 +153,11 @@ class VehicleState(object):
         self.yaw_rate = float(yaw_rate)
         self.feedback_fresh = bool(feedback_fresh)
         self.reported_mode = reported_mode
+        self.reported_mode_stamp = (
+            None
+            if reported_mode_stamp is None
+            else float(reported_mode_stamp)
+        )
 
 
 class ControlOutput(object):
@@ -147,36 +181,48 @@ class ControlOutput(object):
 
 
 DEFAULT_PARAMETERS = {
-    'max_tx': 300.0,
-    'max_ty': 180.0,
-    'max_mz': 120.0,
-    'brake_max_tx': 300.0,
-    'brake_max_ty': 180.0,
-    'brake_max_mz': 120.0,
-    'force_slew_per_cycle': 50.0,
-    'kp_x': 200.0,
-    'kp_y': 200.0,
-    'kv_x': 300.0,
-    'kv_y': 300.0,
-    'kp_yaw': 100.0,
-    'kr_yaw': 100.0,
-    'brake_gain_x': 1000.0,
-    'brake_gain_y': 1000.0,
-    'brake_gain_yaw': 1000.0,
-    'brake_acceleration': 0.10,
-    'angular_brake_acceleration': 0.30,
+    'max_tx': 2000.0,
+    'max_ty': 2000.0,
+    'max_mz': 1000.0,
+    'brake_max_tx_positive': 2000.0,
+    'brake_max_tx_negative': 3000.0,
+    'brake_max_ty_positive': 2000.0,
+    'brake_max_ty_negative': 4000.0,
+    'brake_max_mz_positive': 3000.0,
+    'brake_max_mz_negative': 3000.0,
+    'force_slew_per_cycle': 10000.0,
+    'brake_force_slew_per_cycle': 10000.0,
+    'kp_x': 2000.0,
+    'kp_y': 4000.0,
+    'kv_x': 1000.0,
+    'kv_y': 2000.0,
+    'kp_yaw': 6000.0,
+    'kr_yaw': -2000.0,
+    'brake_gain_x': 30000.0,
+    'brake_gain_y': 40000.0,
+    'brake_gain_yaw': -6000.0,
+    'brake_min_mz': 100.0,
+    'brake_axis_relevance_ratio': 0.20,
+    'brake_acceleration_tx_positive': 0.10,
+    'brake_acceleration_tx_negative': 0.10,
+    'brake_acceleration_ty_positive': 0.05,
+    'brake_acceleration_ty_negative': 0.05,
+    'angular_brake_acceleration_mz_positive': 0.025,
+    'angular_brake_acceleration_mz_negative': 0.040,
     'control_delay': 0.35,
-    'brake_margin': 0.15,
+    'brake_margin': 0.10,
     'yaw_brake_margin': math.radians(3.0),
-    'capture_radius': 0.25,
-    'capture_exit_radius': 0.35,
-    'horizontal_speed_threshold': 0.05,
+    'capture_radius': 0.15,
+    'capture_exit_radius': 0.25,
+    'horizontal_speed_threshold': 0.015,
     'yaw_tolerance': math.radians(5.0),
-    'path_yaw_tolerance': math.radians(5.0),
-    'yaw_rate_threshold': math.radians(3.0),
+    'yaw_rate_threshold': math.radians(0.3),
+    'goal_preempt_distance': 0.50,
+    'goal_preempt_yaw': math.radians(30.0),
     'stable_frames': 5,
     'hover_fault_speed': 0.08,
-    'hover_fault_yaw_rate': math.radians(6.0),
+    'hover_fault_yaw_rate': math.radians(2.0),
+    'hover_fault_yaw_error': math.radians(10.0),
     'mode_ack_timeout': 1.0,
 }
 
@@ -195,29 +241,51 @@ class MotionSupervisorCore(object):
         self.goal = None
         self.pending_goal = None
         self.cancel_requested = False
-        self.path_yaw = 0.0
+        self.hover_direct_update = False
+        self.translation_yaw = 0.0
         self.stable_count = 0
-        self.hover_started_at = None
+        self.handover_started_at = None
         self.last_tx = 0.0
         self.last_ty = 0.0
         self.last_mz = 0.0
 
     def _validate_parameters(self):
         positive_names = (
-            'max_tx', 'max_ty', 'max_mz', 'brake_max_tx', 'brake_max_ty',
-            'brake_max_mz', 'force_slew_per_cycle', 'brake_acceleration',
-            'angular_brake_acceleration', 'capture_radius',
+            'max_tx', 'max_ty', 'max_mz',
+            'brake_max_tx_positive', 'brake_max_tx_negative',
+            'brake_max_ty_positive', 'brake_max_ty_negative',
+            'brake_max_mz_positive', 'brake_max_mz_negative',
+            'force_slew_per_cycle', 'brake_force_slew_per_cycle',
+            'brake_min_mz',
+            'brake_acceleration_tx_positive',
+            'brake_acceleration_tx_negative',
+            'brake_acceleration_ty_positive',
+            'brake_acceleration_ty_negative',
+            'angular_brake_acceleration_mz_positive',
+            'angular_brake_acceleration_mz_negative', 'capture_radius',
             'capture_exit_radius', 'horizontal_speed_threshold',
-            'yaw_tolerance', 'path_yaw_tolerance', 'yaw_rate_threshold',
-            'stable_frames', 'mode_ack_timeout',
+            'yaw_tolerance', 'yaw_rate_threshold',
+            'goal_preempt_distance', 'goal_preempt_yaw',
+            'stable_frames', 'hover_fault_yaw_rate',
+            'hover_fault_yaw_error', 'mode_ack_timeout',
         )
         for name in positive_names:
             if self.parameters[name] <= 0:
                 raise ValueError('{} 必须大于 0'.format(name))
         if self.parameters['capture_exit_radius'] <= self.parameters['capture_radius']:
             raise ValueError('capture_exit_radius 必须大于 capture_radius')
-        for name in ('max_tx', 'max_ty', 'max_mz', 'brake_max_tx',
-                     'brake_max_ty', 'brake_max_mz'):
+        axis_ratio = self.parameters['brake_axis_relevance_ratio']
+        if not 0.0 < axis_ratio <= 1.0:
+            raise ValueError('brake_axis_relevance_ratio 必须在 (0, 1] 内')
+        if self.parameters['brake_min_mz'] > min(
+                self.parameters['brake_max_mz_positive'],
+                self.parameters['brake_max_mz_negative']):
+            raise ValueError('brake_min_mz 不能超过航向刹车限幅')
+        for name in (
+                'max_tx', 'max_ty', 'max_mz',
+                'brake_max_tx_positive', 'brake_max_tx_negative',
+                'brake_max_ty_positive', 'brake_max_ty_negative',
+                'brake_max_mz_positive', 'brake_max_mz_negative'):
             if self.parameters[name] > PROTOCOL_FORCE_LIMIT:
                 raise ValueError('{} 不能超过协议限制 {}'.format(
                     name, PROTOCOL_FORCE_LIMIT))
@@ -227,16 +295,46 @@ class MotionSupervisorCore(object):
         return self.goal is not None or self.pending_goal is not None
 
     def set_goal(self, goal):
-        """提交目标；运动中收到的新目标先触发刹停。"""
+        """提交目标；近目标直接更新，远目标先刹停再切换。"""
         if not isinstance(goal, MotionGoal):
             raise TypeError('goal 必须是 MotionGoal')
-        if self.goal is None and self.state in (IDLE, SAFE):
+
+        if self.pending_goal is not None:
             self.pending_goal = goal
-            self.reason = '收到新目标'
+            self.cancel_requested = False
+            self.hover_direct_update = False
+            self.reason = '刹停或等待期间更新待切换目标'
             return
+
+        if self.goal is None:
+            self.pending_goal = goal
+            self.hover_direct_update = False
+            self.reason = '收到首个目标'
+            return
+
+        position_shift = math.hypot(
+            goal.x - self.goal.x,
+            goal.y - self.goal.y,
+        )
+        yaw_shift = abs(wrap_angle(goal.yaw - self.goal.yaw))
+        far_update = (
+            position_shift > self.parameters['goal_preempt_distance']
+            or yaw_shift > self.parameters['goal_preempt_yaw']
+        )
+        if not far_update:
+            self.goal = goal
+            self.cancel_requested = False
+            self.hover_direct_update = self.state == HOVER
+            self.reason = '连续目标小幅更新，直接跟踪'
+            return
+
         self.pending_goal = goal
         self.cancel_requested = False
-        self._transition(TRANSLATE_BRAKE, '新目标抢占，先刹停')
+        self.hover_direct_update = False
+        self._transition(
+            TRANSLATE_BRAKE,
+            '新目标变化超过阈值，先刹停再切换',
+        )
 
     def cancel(self):
         """取消当前运动；停稳后以当前位置进入悬停。"""
@@ -244,6 +342,7 @@ class MotionSupervisorCore(object):
             return
         self.pending_goal = None
         self.cancel_requested = True
+        self.hover_direct_update = False
         self._transition(TRANSLATE_BRAKE, '收到取消指令，先刹停')
 
     def _transition(self, new_state, reason):
@@ -251,8 +350,8 @@ class MotionSupervisorCore(object):
             self.state = new_state
             self.stable_count = 0
         self.reason = reason
-        if new_state != HOVER:
-            self.hover_started_at = None
+        if new_state != CAPTURE:
+            self.handover_started_at = None
 
     def _activate_pending_goal(self, vehicle):
         if self.pending_goal is None:
@@ -260,14 +359,15 @@ class MotionSupervisorCore(object):
         self.goal = self.pending_goal
         self.pending_goal = None
         self.cancel_requested = False
+        self.hover_direct_update = False
         dx = self.goal.x - vehicle.x
         dy = self.goal.y - vehicle.y
         distance = math.hypot(dx, dy)
-        self.path_yaw = math.atan2(dy, dx) if distance > 1e-6 else vehicle.yaw
+        self.translation_yaw = vehicle.yaw
         if distance <= self.parameters['capture_radius']:
             self._transition(ALIGN_FINAL, '已在目标位置附近，调整最终航向')
         else:
-            self._transition(ALIGN_PATH, '对准目标运动方向')
+            self._transition(TRANSLATE, '保持当前航向，开始水平平移')
         return True
 
     def _goal_metrics(self, vehicle):
@@ -285,31 +385,114 @@ class MotionSupervisorCore(object):
             self.stable_count = 0
         return self.stable_count >= required
 
+    def _directional_parameter(self, prefix, command):
+        """按实际输出力符号选择正向或负向参数。"""
+        positive = self.parameters[prefix + '_positive']
+        negative = self.parameters[prefix + '_negative']
+        if command > 0.0:
+            return positive
+        if command < 0.0:
+            return negative
+        return min(positive, negative)
+
     def _angular_stop_threshold(self, yaw_rate):
-        acceleration = self.parameters['angular_brake_acceleration']
+        brake_command = (
+            -self.parameters['brake_gain_yaw'] * yaw_rate
+        )
+        acceleration = self._directional_parameter(
+            'angular_brake_acceleration_mz', brake_command)
         return (
             yaw_rate * yaw_rate / (2.0 * acceleration)
             + self.parameters['yaw_brake_margin']
         )
 
-    def _force_limits(self, braking):
-        prefix = 'brake_max_' if braking else 'max_'
-        return (
-            self.parameters[prefix + 'tx'],
-            self.parameters[prefix + 'ty'],
-            self.parameters[prefix + 'mz'],
+    def _horizontal_brake_acceleration(
+            self, vehicle, error_x_body, error_y_body):
+        """忽略微小伴随分量，按主要运动轴选择保守有效减速度。"""
+        reference_x = (
+            vehicle.forward_velocity
+            if abs(vehicle.forward_velocity) > 1e-6
+            else error_x_body
         )
+        reference_y = (
+            vehicle.lateral_velocity
+            if abs(vehicle.lateral_velocity) > 1e-6
+            else error_y_body
+        )
+        tx_command = -self.parameters['brake_gain_x'] * reference_x
+        ty_command = -self.parameters['brake_gain_y'] * reference_y
+        ratio = self.parameters['brake_axis_relevance_ratio']
+        error_scale = max(abs(error_x_body), abs(error_y_body), 1e-6)
+        speed_scale = max(
+            abs(vehicle.forward_velocity),
+            abs(vehicle.lateral_velocity),
+            1e-6,
+        )
+        x_relevant = (
+            abs(error_x_body) >= ratio * error_scale
+            or abs(vehicle.forward_velocity) >= ratio * speed_scale
+        )
+        y_relevant = (
+            abs(error_y_body) >= ratio * error_scale
+            or abs(vehicle.lateral_velocity) >= ratio * speed_scale
+        )
+        accelerations = []
+        if x_relevant:
+            accelerations.append(self._directional_parameter(
+                'brake_acceleration_tx', tx_command))
+        if y_relevant:
+            accelerations.append(self._directional_parameter(
+                'brake_acceleration_ty', ty_command))
+        if not accelerations:
+            accelerations.extend((
+                min(
+                    self.parameters['brake_acceleration_tx_positive'],
+                    self.parameters['brake_acceleration_tx_negative'],
+                ),
+                min(
+                    self.parameters['brake_acceleration_ty_positive'],
+                    self.parameters['brake_acceleration_ty_negative'],
+                ),
+            ))
+        return min(accelerations)
+
+    def _yaw_brake_command(self, yaw_rate):
+        """角速度超过停稳阈值时，保证刹转力矩越过实测有效下限。"""
+        command = -self.parameters['brake_gain_yaw'] * yaw_rate
+        if (
+                abs(yaw_rate) > self.parameters['yaw_rate_threshold']
+                and abs(command) < self.parameters['brake_min_mz']):
+            command = math.copysign(
+                self.parameters['brake_min_mz'], command)
+        return command
 
     def _limited_forces(self, tx, ty, mz, braking=False, immediate_zero=False):
         if immediate_zero:
             self.last_tx = self.last_ty = self.last_mz = 0.0
             return 0, 0, 0
 
-        max_tx, max_ty, max_mz = self._force_limits(braking)
-        tx = clamp(tx, -max_tx, max_tx)
-        ty = clamp(ty, -max_ty, max_ty)
-        mz = clamp(mz, -max_mz, max_mz)
-        maximum_step = self.parameters['force_slew_per_cycle']
+        if braking:
+            tx = clamp(
+                tx,
+                -self.parameters['brake_max_tx_negative'],
+                self.parameters['brake_max_tx_positive'],
+            )
+            ty = clamp(
+                ty,
+                -self.parameters['brake_max_ty_negative'],
+                self.parameters['brake_max_ty_positive'],
+            )
+            mz = clamp(
+                mz,
+                -self.parameters['brake_max_mz_negative'],
+                self.parameters['brake_max_mz_positive'],
+            )
+            maximum_step = self.parameters['brake_force_slew_per_cycle']
+        else:
+            tx = clamp(tx, -self.parameters['max_tx'], self.parameters['max_tx'])
+            ty = clamp(ty, -self.parameters['max_ty'], self.parameters['max_ty'])
+            mz = clamp(mz, -self.parameters['max_mz'], self.parameters['max_mz'])
+            maximum_step = self.parameters['force_slew_per_cycle']
         tx = slew_value(self.last_tx, tx, maximum_step)
         ty = slew_value(self.last_ty, ty, maximum_step)
         mz = slew_value(self.last_mz, mz, maximum_step)
@@ -318,7 +501,15 @@ class MotionSupervisorCore(object):
 
     def _output(self, vehicle, mode, tx=0.0, ty=0.0, mz=0.0,
                 braking=False, immediate_zero=False):
-        target = self.goal or MotionGoal(vehicle.x, vehicle.y, vehicle.z, vehicle.yaw)
+        source_target = self.goal or self.pending_goal
+        if source_target is None:
+            source_target = MotionGoal(
+                vehicle.x,
+                vehicle.y,
+                vehicle.z,
+                vehicle.yaw,
+            )
+        target = source_target
         dx, dy, distance, yaw_error = self._goal_metrics(vehicle)
         del dx, dy
         horizontal_speed = math.hypot(
@@ -335,7 +526,27 @@ class MotionSupervisorCore(object):
             MODE_DEPTH,
             -self.parameters['brake_gain_x'] * vehicle.forward_velocity,
             -self.parameters['brake_gain_y'] * vehicle.lateral_velocity,
-            -self.parameters['brake_gain_yaw'] * vehicle.yaw_rate,
+            self._yaw_brake_command(vehicle.yaw_rate),
+            braking=True,
+        )
+
+    def _final_alignment_output(self, vehicle, yaw_error):
+        """在目标附近转向时持续消除水平速度，并限制正常转向力矩。"""
+        mz = (
+            self.parameters['kp_yaw'] * yaw_error
+            - self.parameters['kr_yaw'] * vehicle.yaw_rate
+        )
+        mz = clamp(
+            mz,
+            -self.parameters['max_mz'],
+            self.parameters['max_mz'],
+        )
+        return self._output(
+            vehicle,
+            MODE_DEPTH,
+            -self.parameters['brake_gain_x'] * vehicle.forward_velocity,
+            -self.parameters['brake_gain_y'] * vehicle.lateral_velocity,
+            mz,
             braking=True,
         )
 
@@ -363,33 +574,15 @@ class MotionSupervisorCore(object):
                 return self._output(
                     vehicle, MODE_DEPTH, immediate_zero=True)
 
-        if self.state == ALIGN_PATH:
-            error = wrap_angle(self.path_yaw - vehicle.yaw)
-            if abs(error) <= max(
-                    self.parameters['path_yaw_tolerance'],
-                    self._angular_stop_threshold(vehicle.yaw_rate)):
-                self._transition(ALIGN_PATH_BRAKE, '路径航向进入刹转区')
-                return self._brake_output(vehicle)
-            mz = (
-                self.parameters['kp_yaw'] * error
-                - self.parameters['kr_yaw'] * vehicle.yaw_rate
-            )
-            return self._output(vehicle, MODE_DEPTH, mz=mz)
-
-        if self.state == ALIGN_PATH_BRAKE:
-            error = wrap_angle(self.path_yaw - vehicle.yaw)
-            if abs(error) > 2.0 * self.parameters['path_yaw_tolerance']:
-                self._transition(ALIGN_PATH, '刹转后航向偏差过大，重新对准')
-                return self._output(vehicle, MODE_DEPTH)
-            if self._stable(
-                    abs(error) <= self.parameters['path_yaw_tolerance']
-                    and yaw_rate_abs <= self.parameters['yaw_rate_threshold']):
-                self._transition(TRANSLATE, '路径航向稳定，开始平移')
-            return self._brake_output(vehicle)
+        if self.state in (ALIGN_PATH, ALIGN_PATH_BRAKE):
+            # 兼容旧状态编号；新流程不再朝向目标点，直接保持当前航向平移。
+            self.translation_yaw = vehicle.yaw
+            self._transition(TRANSLATE, '取消路径预对准，保持当前航向平移')
 
         if self.state == TRANSLATE:
             dx, dy, distance, unused_yaw_error = self._goal_metrics(vehicle)
             del unused_yaw_error
+            error_x, error_y = map_error_to_body(dx, dy, vehicle.yaw)
             north_velocity, east_velocity = body_velocity_to_map(
                 vehicle.forward_velocity, vehicle.lateral_velocity, vehicle.yaw)
             if distance > 1e-6:
@@ -399,9 +592,11 @@ class MotionSupervisorCore(object):
                 )
             else:
                 closing_speed = 0.0
+            brake_acceleration = self._horizontal_brake_acceleration(
+                vehicle, error_x, error_y)
             stop_distance = stopping_distance(
                 closing_speed,
-                self.parameters['brake_acceleration'],
+                brake_acceleration,
                 self.parameters['control_delay'],
                 self.parameters['brake_margin'],
             )
@@ -409,7 +604,6 @@ class MotionSupervisorCore(object):
                 self._transition(TRANSLATE_BRAKE, '进入水平停车距离')
                 return self._brake_output(vehicle)
 
-            error_x, error_y = map_error_to_body(dx, dy, vehicle.yaw)
             tx = (
                 self.parameters['kp_x'] * error_x
                 - self.parameters['kv_x'] * vehicle.forward_velocity
@@ -418,7 +612,7 @@ class MotionSupervisorCore(object):
                 self.parameters['kp_y'] * error_y
                 - self.parameters['kv_y'] * vehicle.lateral_velocity
             )
-            path_error = wrap_angle(self.path_yaw - vehicle.yaw)
+            path_error = wrap_angle(self.translation_yaw - vehicle.yaw)
             mz = (
                 self.parameters['kp_yaw'] * path_error
                 - self.parameters['kr_yaw'] * vehicle.yaw_rate
@@ -435,58 +629,88 @@ class MotionSupervisorCore(object):
                     self._activate_pending_goal(vehicle)
                 elif self.cancel_requested:
                     self.goal = MotionGoal(
-                        vehicle.x, vehicle.y, vehicle.z, vehicle.yaw)
+                        vehicle.x,
+                        vehicle.y,
+                        vehicle.z,
+                        vehicle.yaw,
+                    )
                     self.cancel_requested = False
                     self._transition(CAPTURE, '取消后已停稳，悬停当前位置')
                 elif self.goal is not None:
                     dx, dy, distance, unused_yaw_error = self._goal_metrics(vehicle)
                     del dx, dy, unused_yaw_error
-                    if distance > self.parameters['capture_exit_radius']:
-                        self.path_yaw = math.atan2(
-                            self.goal.y - vehicle.y, self.goal.x - vehicle.x)
-                        self._transition(ALIGN_PATH, '刹停后漂出捕获区，重新接近')
+                    if distance > self.parameters['capture_radius']:
+                        self.translation_yaw = vehicle.yaw
+                        self._transition(
+                            TRANSLATE,
+                            '刹停点尚未进入目标区，保持当前航向重新接近',
+                        )
                     else:
                         self._transition(ALIGN_FINAL, '水平运动停稳，调整最终航向')
             return self._brake_output(vehicle)
 
         if self.state == ALIGN_FINAL:
-            error = wrap_angle(self.goal.yaw - vehicle.yaw)
+            dx, dy, distance, error = self._goal_metrics(vehicle)
+            del dx, dy
+            if distance > self.parameters['capture_exit_radius']:
+                self.translation_yaw = vehicle.yaw
+                self._transition(
+                    TRANSLATE,
+                    '最终转向时漂出捕获区，保持当前航向重新接近',
+                )
+                return self._brake_output(vehicle)
             if abs(error) <= max(
                     self.parameters['yaw_tolerance'],
                     self._angular_stop_threshold(vehicle.yaw_rate)):
                 self._transition(FINAL_BRAKE, '最终航向进入刹转区')
                 return self._brake_output(vehicle)
-            mz = (
-                self.parameters['kp_yaw'] * error
-                - self.parameters['kr_yaw'] * vehicle.yaw_rate
-            )
-            return self._output(vehicle, MODE_DEPTH, mz=mz)
+            return self._final_alignment_output(vehicle, error)
 
         if self.state == FINAL_BRAKE:
             dx, dy, distance, yaw_error = self._goal_metrics(vehicle)
             del dx, dy
             if distance > self.parameters['capture_exit_radius']:
-                self.path_yaw = math.atan2(
-                    self.goal.y - vehicle.y, self.goal.x - vehicle.x)
-                self._transition(ALIGN_PATH, '最终刹转时漂出捕获区')
-                return self._output(vehicle, MODE_DEPTH)
+                self.translation_yaw = vehicle.yaw
+                self._transition(
+                    TRANSLATE,
+                    '最终刹转时漂出捕获区，保持当前航向重新接近',
+                )
+                return self._brake_output(vehicle)
             if abs(yaw_error) > 2.0 * self.parameters['yaw_tolerance']:
                 self._transition(ALIGN_FINAL, '最终航向偏差过大，重新调整')
                 return self._output(vehicle, MODE_DEPTH)
+            pose_stopped = (
+                abs(yaw_error) <= self.parameters['yaw_tolerance']
+                and speed <= self.parameters['horizontal_speed_threshold']
+                and yaw_rate_abs <= self.parameters['yaw_rate_threshold']
+            )
+            if (
+                    distance > self.parameters['capture_radius']
+                    and pose_stopped):
+                self.translation_yaw = vehicle.yaw
+                self._transition(
+                    TRANSLATE,
+                    '最终刹停点仍在捕获区外，保持当前航向重新接近',
+                )
+                return self._brake_output(vehicle)
             if self._stable(
-                    abs(yaw_error) <= self.parameters['yaw_tolerance']
-                    and speed <= self.parameters['horizontal_speed_threshold']
-                    and yaw_rate_abs <= self.parameters['yaw_rate_threshold']):
-                self._transition(CAPTURE, '最终航向停稳，确认捕获条件')
+                    distance <= self.parameters['capture_radius']
+                    and pose_stopped):
+                self._transition(CAPTURE, '目标位姿刹停稳定，等待下位机定点接管')
+                self.handover_started_at = vehicle.now
+                return self._output(
+                    vehicle, MODE_DPROV, immediate_zero=True)
             return self._brake_output(vehicle)
 
         if self.state == CAPTURE:
             dx, dy, distance, yaw_error = self._goal_metrics(vehicle)
             del dx, dy
             if distance > self.parameters['capture_exit_radius']:
-                self.path_yaw = math.atan2(
-                    self.goal.y - vehicle.y, self.goal.x - vehicle.x)
-                self._transition(ALIGN_PATH, '捕获期间漂出位置范围')
+                self.translation_yaw = vehicle.yaw
+                self._transition(
+                    TRANSLATE,
+                    '捕获期间漂出位置范围，保持当前航向重新接近',
+                )
                 return self._output(vehicle, MODE_DEPTH)
             if abs(yaw_error) > 2.0 * self.parameters['yaw_tolerance']:
                 self._transition(ALIGN_FINAL, '捕获期间航向偏差过大')
@@ -497,25 +721,84 @@ class MotionSupervisorCore(object):
                 and speed <= self.parameters['horizontal_speed_threshold']
                 and yaw_rate_abs <= self.parameters['yaw_rate_threshold']
             )
+            if self.handover_started_at is not None:
+                if not captured:
+                    self.handover_started_at = None
+                    self.stable_count = 0
+                    self.reason = '定点接管等待期间离开捕获条件，重新刹停确认'
+                    return self._brake_output(vehicle)
+                mode_acknowledged = (
+                    vehicle.reported_mode == MODE_DPROV
+                    and vehicle.reported_mode_stamp is not None
+                    and vehicle.reported_mode_stamp
+                    >= self.handover_started_at
+                )
+                if mode_acknowledged:
+                    self._transition(
+                        HOVER,
+                        '下位机定点接管已确认，目标到达',
+                    )
+                    return self._output(
+                        vehicle, MODE_DPROV, immediate_zero=True)
+                if (
+                        vehicle.now - self.handover_started_at
+                        > self.parameters['mode_ack_timeout']):
+                    self._transition(SAFE, '定点模式确认超时')
+                    return self._output(
+                        vehicle, MODE_DEPTH, immediate_zero=True)
+                return self._output(
+                    vehicle, MODE_DPROV, immediate_zero=True)
             if self._stable(captured):
-                self._transition(HOVER, '捕获稳定，切换下位机定点')
-                self.hover_started_at = vehicle.now
+                self.handover_started_at = vehicle.now
+                self.reason = '捕获稳定，等待下位机定点接管'
                 return self._output(
                     vehicle, MODE_DPROV, immediate_zero=True)
             return self._brake_output(vehicle)
 
         if self.state == HOVER:
-            if (
-                    speed > self.parameters['hover_fault_speed']
-                    or yaw_rate_abs > self.parameters['hover_fault_yaw_rate']):
-                self._transition(TRANSLATE_BRAKE, '定点接管后检测到异常速度')
+            unused_dx, unused_dy, hover_distance, hover_yaw_error = (
+                self._goal_metrics(vehicle))
+            del unused_dx, unused_dy
+            if self.hover_direct_update:
+                self.hover_direct_update = False
+                if hover_distance > self.parameters['capture_radius']:
+                    self.translation_yaw = vehicle.yaw
+                    self._transition(
+                        TRANSLATE,
+                        '定点期间收到近距离目标，直接平移跟踪',
+                    )
+                    return self._output(
+                        vehicle, MODE_DEPTH, immediate_zero=True)
+                if abs(hover_yaw_error) > self.parameters['yaw_tolerance']:
+                    self._transition(
+                        ALIGN_FINAL,
+                        '定点期间收到近航向目标，直接调整航向',
+                    )
+                    return self._final_alignment_output(
+                        vehicle, hover_yaw_error)
+            if speed > self.parameters['hover_fault_speed']:
+                self._transition(TRANSLATE_BRAKE, '定点接管后水平速度异常')
                 return self._brake_output(vehicle)
-            if (
-                    vehicle.reported_mode != MODE_DPROV
-                    and self.hover_started_at is not None
-                    and vehicle.now - self.hover_started_at
-                    > self.parameters['mode_ack_timeout']):
-                self._transition(SAFE, '定点模式确认超时')
+            if hover_distance > self.parameters['capture_exit_radius']:
+                self._transition(TRANSLATE_BRAKE, '定点接管后位置误差超限')
+                return self._brake_output(vehicle)
+            if yaw_rate_abs > self.parameters['hover_fault_yaw_rate']:
+                self._transition(TRANSLATE_BRAKE, '定点接管后航向角速度异常')
+                return self._brake_output(vehicle)
+            if abs(hover_yaw_error) > self.parameters['hover_fault_yaw_error']:
+                self._transition(TRANSLATE_BRAKE, '定点接管后航向误差异常')
+                return self._brake_output(vehicle)
+            mode_feedback_timed_out = (
+                vehicle.reported_mode_stamp is None
+                or vehicle.now - vehicle.reported_mode_stamp
+                > self.parameters['mode_ack_timeout']
+            )
+            if mode_feedback_timed_out:
+                self._transition(SAFE, '定点模式反馈超时')
+                return self._output(
+                    vehicle, MODE_DEPTH, immediate_zero=True)
+            if vehicle.reported_mode != MODE_DPROV:
+                self._transition(SAFE, '定点模式反馈丢失')
                 return self._output(
                     vehicle, MODE_DEPTH, immediate_zero=True)
             return self._output(

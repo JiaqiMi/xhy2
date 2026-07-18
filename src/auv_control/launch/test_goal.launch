@@ -1,0 +1,68 @@
+<launch>
+ <!--
+      NED/map 坐标系下的绝对目标深度，单位 m。
+      按当前系统的 z 符号约定输入，默认水下 0.6 m 为 -0.6。
+      此参数只传给 motion_goal_test；motion_supervisor 始终采用收到的 goal.z。
+    -->
+    <arg name="target_z" default="-0.9" />
+
+    <!--
+      水平偏置所使用的坐标系，只支持 base_link 或 map。
+      base_link：使用测试节点启动时的初始艇体坐标系；
+      map：使用固定 NED/map 坐标系，不随初始航向旋转。
+    -->
+    <arg name="offset_frame" default="base_link" />
+
+    <!--
+      相对目标 x 偏置，单位 m，可输入正负值。
+      offset_frame=base_link：正值向前，负值向后；
+      offset_frame=map：正值向北，负值向南。
+    -->
+    <arg name="offset_x" default="-0.5" />
+
+    <!--
+      相对目标 y 偏置，单位 m，可输入正负值。
+      offset_frame=base_link：正值向右，负值向左；
+      offset_frame=map：正值向东，负值向西。
+    -->
+    <arg name="offset_y" default="0" />
+
+    <!--
+      相对于初始航向的偏差，单位 deg，可输入正负值。
+      目标航向会归一化到 [-180°, 180°)。
+    -->
+    <arg name="yaw_offset_deg" default="0.0" />
+
+    <!--
+      测试节点启动后、锁定初始 TF 前的等待时间，单位 s。
+      用于等待 TF、地图原点和状态反馈完成初始化。
+    -->
+    <arg name="goal_publish_delay" default="1.0" />
+
+    <!--
+      等待 map -> base_link TF 的最长时间，单位 s。
+      超时后测试节点不发布目标并直接退出。
+    -->
+    <arg name="goal_tf_timeout" default="5.0" />
+
+    <!--
+      可选的单次相对目标发布节点。
+      节点读取初始 map -> base_link，计算 map 下的绝对目标后锁存发布。
+    -->
+    <node pkg="auv_control" type="motion_goal_test.py" name="motion_goal_test" output="screen">
+        <!-- 偏置坐标系：base_link 或 map。 -->
+        <param name="offset_frame" value="$(arg offset_frame)" />
+        <!-- 水平 x 偏置，单位 m。 -->
+        <param name="offset_x" value="$(arg offset_x)" />
+        <!-- 水平 y 偏置，单位 m。 -->
+        <param name="offset_y" value="$(arg offset_y)" />
+        <!-- 初始航向基础上的角度偏差，单位 deg。 -->
+        <param name="yaw_offset_deg" value="$(arg yaw_offset_deg)" />
+        <!-- NED/map 坐标系下的绝对目标深度，单位 m。 -->
+        <param name="target_z" value="$(arg target_z)" />
+        <!-- 锁定初始位姿前的等待时间，单位 s。 -->
+        <param name="publish_delay" value="$(arg goal_publish_delay)" />
+        <!-- TF 等待超时时间，单位 s。 -->
+        <param name="tf_timeout" value="$(arg goal_tf_timeout)" />
+    </node>
+</launch>

@@ -1,44 +1,61 @@
 # 运动管理层控制频率与反馈处理
-control_rate_hz: 5.0
-feedback_timeout: 0.5
-velocity_filter_alpha: 0.35
-pitch_offset_deg: 0.0
+control_rate_hz: 5.0          # 状态机、控制指令和 /motion/state 的发布频率，单位 Hz
+feedback_timeout: 0.5         # TF 或速度反馈最大允许间隔，单位 s，超时后进入 SAFE
+velocity_filter_alpha: 0.35   # 速度一阶低通新数据权重，范围 (0,1]，越大响应越快
+pitch_offset_deg: 0.0         # 发送目标姿态时附加的固定俯仰角，单位 deg
 
-# 正常运动与刹停时的工作限幅，协议绝对范围为 [-10000, 10000]
-max_tx: 300.0
-max_ty: 180.0
-max_mz: 120.0
-brake_max_tx: 2000.0
-brake_max_ty: 3000.0
-brake_max_mz: 2000.0
-force_slew_per_cycle: 50.0
+# 每个控制周期的完整 CSV 记录；目录中的 ~ 会展开为运行节点用户的主目录
+log_enabled: true             # 是否记录当前/目标位姿、速度、状态、模式和力矩等完整数据
+log_directory: ~/.ros/auv_logs/motion_supervisor # CSV 日志目录，每次启动自动新建带时间戳文件
+log_flush_every: 5            # 每累计多少个控制周期刷新磁盘，5 Hz 下取 5 表示约每秒刷新
 
-# 无积分位置/航向控制增益
-kp_x: 200.0
-kp_y: 200.0
-kv_x: 300.0
-kv_y: 300.0
-kp_yaw: 100.0
-kr_yaw: 100.0
-brake_gain_x: 1000.0
-brake_gain_y: 1000.0
-brake_gain_yaw: 1000.0
+# 首轮入水运动限幅；参考实测 1000 TX 约对应 0.1 m/s，协议范围为 [-10000, 10000]
+max_tx: 2000.0                # 正常运动阶段 TX 双向绝对限幅
+max_ty: 2000.0                # 正常运动阶段 TY 双向绝对限幅
+max_mz: 1000.0                # 正常转向阶段 MZ 双向绝对限幅
+brake_max_tx_positive: 2000.0 # 主动刹车阶段正 TX 最大值
+brake_max_tx_negative: 3000.0 # 主动刹车阶段负 TX 绝对值上限
+brake_max_ty_positive: 2000.0 # 主动刹车阶段正 TY 最大值
+brake_max_ty_negative: 4000.0 # 主动刹车阶段负 TY 绝对值上限
+brake_max_mz_positive: 3000.0 # 主动刹转阶段正 MZ 最大值
+brake_max_mz_negative: 3000.0 # 主动刹转阶段负 MZ 绝对值上限
+force_slew_per_cycle: 10000.0 # 正常运动每控制周期允许的最大力矩变化量
+brake_force_slew_per_cycle: 10000.0 # 刹车每控制周期允许的最大力矩变化量
 
-# 停车距离模型；实船标定后必须更新有效减速度
-brake_acceleration: 0.10
-angular_brake_acceleration: 0.30
-control_delay: 0.35
-brake_margin: 0.15
-yaw_brake_margin_deg: 3.0
+# 无积分位置/航向控制增益；0.5 m 或约 10 deg 误差时接近首轮运动限幅
+kp_x: 2000.0                 # 本体 x 位置误差比例增益，输出单位/米
+kp_y: 4000.0                 # 本体 y 位置误差比例增益，输出单位/米
+kv_x: 1000.0                 # 前向速度阻尼增益，输出单位/(m/s)
+kv_y: 2000.0                 # 横向速度阻尼增益，输出单位/(m/s)
+kp_yaw: 6000.0               # TF 航向误差比例增益，输出单位/rad
+kr_yaw: -2000.0              # 航向角速度阻尼增益，负号适配当前 /status/vel 的 r 方向
+brake_gain_x: 30000.0        # 前向主动刹车增益，输出单位/(m/s)
+brake_gain_y: 40000.0        # 横向主动刹车增益，输出单位/(m/s)
+brake_gain_yaw: -6000.0      # 主动刹转增益，输出单位/(rad/s)，负号适配当前 r 方向
+brake_min_mz: 100.0          # 超过角速度停稳阈值时使用的最小有效 MZ 绝对值
+
+# 停车距离模型；小于主轴 20% 的伴随分量不参与保守减速度选择
+brake_axis_relevance_ratio: 0.20 # 伴随轴纳入停车模型的误差或速度占比阈值，范围 (0,1]
+brake_acceleration_tx_positive: 0.1 # 输出正 TX 刹车时的实测有效减速度，单位 m/s²
+brake_acceleration_tx_negative: 0.1 # 输出负 TX 刹车时的实测有效减速度，单位 m/s²
+brake_acceleration_ty_positive: 0.05 # 输出正 TY 刹车时的实测有效减速度，单位 m/s²
+brake_acceleration_ty_negative: 0.05 # 输出负 TY 刹车时的实测有效减速度，单位 m/s²
+angular_brake_acceleration_mz_positive: 0.025 # 输出正 MZ 刹转的保守有效角减速度，来自负向 yaw 试验
+angular_brake_acceleration_mz_negative: 0.04 # 输出负 MZ 刹转的保守有效角减速度，来自正向 yaw 试验
+control_delay: 0.35          # 反馈、计算、通信和执行的综合延迟估计，单位 s
+brake_margin: 0.1            # 水平停车距离附加安全余量，单位 m
+yaw_brake_margin_deg: 3.0    # 航向刹转角度附加安全余量，单位 deg
 
 # 捕获、接管和异常回退阈值
-capture_radius: 0.25
-capture_exit_radius: 0.35
-horizontal_speed_threshold: 0.05
-yaw_tolerance_deg: 5.0
-path_yaw_tolerance_deg: 5.0
-yaw_rate_threshold_deg_s: 3.0
-stable_frames: 5
-hover_fault_speed: 0.08
-hover_fault_yaw_rate_deg_s: 6.0
-mode_ack_timeout: 1.0
+capture_radius: 0.15         # 允许进入最终转向和 mode=4 的水平位置误差，单位 m
+capture_exit_radius: 0.25    # 转向或定点时触发重新接近的水平位置误差，单位 m
+horizontal_speed_threshold: 0.015 # 判定水平停稳的合速度上限，单位 m/s
+yaw_tolerance_deg: 5.0       # 最终航向允许误差，单位 deg
+yaw_rate_threshold_deg_s: 0.3 # 判定转动停稳的角速度上限，单位 deg/s
+goal_preempt_distance: 0.50  # 新旧目标水平距离超过此值时先刹停切换，单位 m
+goal_preempt_yaw_deg: 30.0   # 新旧目标航向差超过此值时先刹停切换，单位 deg
+stable_frames: 5             # 捕获或停稳条件需要连续满足的控制帧数，5 Hz 下约为 1 s
+hover_fault_speed: 0.08      # mode=4 接管后触发回退的水平速度，单位 m/s
+hover_fault_yaw_rate_deg_s: 2.0 # mode=4 接管后触发回退的航向角速度，单位 deg/s
+hover_fault_yaw_error_deg: 10.0 # mode=4 接管后触发回退的航向误差，单位 deg
+mode_ack_timeout: 1.0        # 接管确认及 HOVER 模式反馈最大允许间隔，单位 s

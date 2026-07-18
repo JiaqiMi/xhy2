@@ -22,16 +22,15 @@
          search_forward_force越小搜索越慢；达到1.2米仍未识别则安全失败。
          现场先用较小前进力确认TX方向，避免识别尚未稳定时移动过快。 -->
     <arg name="initial_hover_seconds" default="10.0" />
-    <arg name="search_forward_force" default="80.0" />
-    <arg name="max_search_distance" default="1.20" />
+    <arg name="search_forward_force" default="100.0" />
+    <arg name="max_search_distance" default="1.0" />
     <!-- begin.launch中的static_tf_broadcaster发布base_link -> camera。 -->
     <arg name="camera_frame" default="camera" />
 
-    <!-- 第一次看到箭头后，连续3帧且中心抖动稳定就锁定目标；此时不要求
-         箭头方向已经稳定，方向会在完成居中悬停后重新确认。 -->
-    <arg name="stable_detection_count" default="3" />
-    <arg name="stable_center_tolerance_px" default="40.0" />
-    <arg name="stable_angle_tolerance_deg" default="12.0" />
+    <!-- 第一次看到箭头后，连续3帧的中心和角度稳定才进入细对准。 -->
+    <arg name="stable_detection_count" default="2" />
+    <arg name="stable_center_tolerance_px" default="30.0" />
+    <arg name="stable_angle_tolerance_deg" default="10.0" />
 
     <!-- 图像中心参数。箭头模型使用左目640x480图像；目标中心比例0.5/0.5
          表示先让下视摄像头位于箭头正上方，随后再补偿到机器人本体。 -->
@@ -41,10 +40,10 @@
     <arg name="target_center_v_ratio" default="0.5" />
     <arg name="center_tolerance_u_px" default="35.0" />
     <arg name="center_tolerance_v_px" default="35.0" />
-    <!-- 首次视觉居中，以及最后中心和航向同时进入容差，均需连续5帧。 -->
-    <arg name="center_stable_detection_count" default="5" />
-    <!-- 箭头居中且机器人停稳后，悬停状态下重新确认方向连续3帧。 -->
-    <arg name="heading_stable_detection_count" default="3" />
+    <!-- 中心和航向同时进入容差后，需要连续5帧有效。 -->
+    <arg name="center_stable_detection_count" default="3" />
+    <!-- 直行停止后先单独确认航向连续3帧，再开始视觉靠近。 -->
+    <arg name="heading_stable_detection_count" default="2" />
 
     <!-- 箭头角度协议：图像右方=0度、上方=90度。默认相机图像上方对应
          机器人前方，因此 camera_forward_angle_deg=90。
@@ -76,11 +75,10 @@
     <arg name="max_lateral_force" default="100.0" />
     <arg name="min_correction_force" default="35.0" />
     <!-- 每个控制周期最大推力变化量，越小越平滑但响应越慢。 -->
-    <arg name="force_step" default="30.0" />
-    <!-- 根据实际速度施加反向力，抑制惯性和来回振荡。
-         越过中心先增加阻尼；反向摆动明显则降低阻尼或视觉增益。 -->
-    <arg name="forward_velocity_damping" default="300.0" />
-    <arg name="lateral_velocity_damping" default="300.0" />
+    <arg name="force_step" default="10.0" />
+    <!-- 根据实际速度施加反向力，抑制惯性和来回振荡。 -->
+    <arg name="forward_velocity_damping" default="200.0" />
+    <arg name="lateral_velocity_damping" default="200.0" />
     <arg name="speed_deadband" default="0.03" />
     <arg name="tx_sign" default="1.0" />
     <arg name="ty_sign" default="1.0" />
@@ -105,9 +103,9 @@
     <!-- base_link到达箭头map坐标后连续稳定悬停10秒；30秒内无法稳定则失败。 -->
     <arg name="final_hold_seconds" default="10.0" />
     <arg name="final_hold_timeout" default="30.0" />
-
+<!-- 
     <include if="$(arg start_arrow_model)"
-             file="$(find stereo_depth)/launch/test_arrow_detection.launch" />
+             file="$(find stereo_depth)/launch/test_arrow_detection.launch" /> -->
 
     <!-- required=true使任务节点成功或失败退出后，同一launch启动的相机、
          箭头模型和网页节点一起关闭。 -->

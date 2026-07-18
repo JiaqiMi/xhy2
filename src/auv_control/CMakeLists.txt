@@ -180,6 +180,7 @@ catkin_install_python(PROGRAMS
   driver/auv_tf_handler.py
   driver/debug_driver.py
   driver/debug_driver_v2.py
+  driver/lever_arm.py
   driver/map_initer.py
   driver/motion_supervisor.py
   driver/motion_supervisor_core.py
