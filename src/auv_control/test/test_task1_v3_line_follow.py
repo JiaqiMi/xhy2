@@ -49,6 +49,8 @@
     LOS 只跟踪已固定曲线，走完当前固定快照后才接入新固定段。
     新增 v3：搜索、起点、对向、巡线和终点全部改发 map 绝对目标；LOS
     不再直接输出 TX/MZ，相邻目标经位置和 yaw 步长限制后交由运动监督器。
+    将曲线点融合权重、实际轨迹记录间距和最大保存点数开放为 launch 参数，
+    便于实测时调整拟合平滑程度和 Web 轨迹数据量。
 """
 
 import copy
@@ -299,6 +301,9 @@ class Task1LineFollowTest:
         self.line_point_merge_distance = float(rospy.get_param(
             "~line_point_merge_distance", 0.12
         ))
+        self.line_point_update_alpha = clamp(float(rospy.get_param(
+            "~line_point_update_alpha", 0.20
+        )), 0.0, 1.0)
         self.line_curve_max_points = max(3, int(rospy.get_param(
             "~line_curve_max_points", 200
         )))
@@ -381,6 +386,12 @@ class Task1LineFollowTest:
         self.trajectory_publish_period = float(rospy.get_param(
             "~trajectory_publish_period", 0.5
         ))
+        self.actual_path_min_spacing = max(0.001, float(rospy.get_param(
+            "~actual_path_min_spacing", 0.03
+        )))
+        self.actual_path_max_points = max(10, int(rospy.get_param(
+            "~actual_path_max_points", 2000
+        )))
         self.trajectory_web_enabled = bool(rospy.get_param(
             "~trajectory_web_enabled", True
         ))
@@ -1036,8 +1047,15 @@ class Task1LineFollowTest:
                 self.line_raw_points, key=lambda old: xy_distance(old, point)
             )
             if xy_distance(nearest, point) <= self.line_point_merge_distance:
-                nearest.x = 0.8 * nearest.x + 0.2 * point.x
-                nearest.y = 0.8 * nearest.y + 0.2 * point.y
+                old_weight = 1.0 - self.line_point_update_alpha
+                nearest.x = (
+                    old_weight * nearest.x
+                    + self.line_point_update_alpha * point.x
+                )
+                nearest.y = (
+                    old_weight * nearest.y
+                    + self.line_point_update_alpha * point.y
+                )
             else:
                 self.line_raw_points.append(point)
         self.roll_line_fit_window()
@@ -1802,11 +1820,14 @@ class Task1LineFollowTest:
         current = self.get_current_pose()
         if current is not None and (
             not self.actual_trajectory
-            or xy_distance(current.pose.position, self.actual_trajectory[-1]) >= 0.03
+            or xy_distance(current.pose.position, self.actual_trajectory[-1])
+            >= self.actual_path_min_spacing
         ):
             self.actual_trajectory.append(copy.deepcopy(current.pose.position))
-            if len(self.actual_trajectory) > 2000:
-                self.actual_trajectory = self.actual_trajectory[-2000:]
+            if len(self.actual_trajectory) > self.actual_path_max_points:
+                self.actual_trajectory = self.actual_trajectory[
+                    -self.actual_path_max_points:
+                ]
 
         def point_data(point):
             return [round(point.x, 3), round(point.y, 3)] if point else None

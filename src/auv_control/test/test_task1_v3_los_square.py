@@ -23,6 +23,7 @@
     明确正方形在启动时一次生成并整体冻结；运行期间任何外部点都不能修改该轨迹。
     新增 v3：LOS 只计算前视目标，不再直接下发 TX 和目标模式；相邻目标位置
     与 yaw 做步长限制后交给 motion_supervisor，并以匹配目标的新鲜 HOVER 判定到达。
+    将 Web 实际轨迹最大保存点数开放为 launch 参数，避免长时间测试持续增长。
 """
 
 import copy
@@ -200,6 +201,9 @@ class LosSquareTest:
         )))
         self.actual_path_min_spacing = max(0.001, float(rospy.get_param(
             "~actual_path_min_spacing", 0.02
+        )))
+        self.actual_path_max_points = max(10, int(rospy.get_param(
+            "~actual_path_max_points", 2000
         )))
         self.trajectory_publish_period = max(0.05, float(rospy.get_param(
             "~trajectory_publish_period", 0.5
@@ -496,6 +500,10 @@ class LosSquareTest:
             >= self.actual_path_min_spacing
         ):
             self.actual_trajectory.append(copy.deepcopy(current.pose.position))
+            if len(self.actual_trajectory) > self.actual_path_max_points:
+                self.actual_trajectory = self.actual_trajectory[
+                    -self.actual_path_max_points:
+                ]
 
     def enter_hold_end(self):
         self.last_los_goal = None

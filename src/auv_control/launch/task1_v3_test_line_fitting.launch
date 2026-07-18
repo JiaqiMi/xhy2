@@ -49,6 +49,8 @@
 
     <!-- 新点距已有点小于该值时融合而不重复增加，单位 m。 -->
     <arg name="line_point_merge_distance" default="0.12" />
+    <!-- 合并重复点时新识别值的权重，范围 0~1；越小越平滑，越大越跟随新观测。 -->
+    <arg name="line_point_update_alpha" default="0.20" />
     <!-- 活动原始点安全上限；正常冻结由后续帧确认触发，超限只裁剪旧活动点。 -->
     <arg name="line_curve_max_points" default="200" />
     <arg name="line_curve_overlap_points" default="40" />
@@ -73,6 +75,8 @@
 
     <!-- Web 中机器人手动运动轨迹相邻记录点的最小间距，单位 m。 -->
     <arg name="actual_path_min_spacing" default="0.02" />
+    <!-- Web 手动运动轨迹最大保存点数，防止长时间观察时数据持续增长。 -->
+    <arg name="actual_path_max_points" default="2000" />
     <!-- 拟合 JSON/Web 数据刷新周期，单位 s。 -->
     <arg name="trajectory_publish_period" default="0.5" />
     <arg name="trajectory_web_enabled" default="true" />
@@ -110,6 +114,7 @@
         <param name="line_extension_max_gap" type="double" value="$(arg line_extension_max_gap)" />
 
         <param name="line_point_merge_distance" type="double" value="$(arg line_point_merge_distance)" />
+        <param name="line_point_update_alpha" type="double" value="$(arg line_point_update_alpha)" />
         <param name="line_curve_max_points" type="int" value="$(arg line_curve_max_points)" />
         <param name="line_curve_overlap_points" type="int" value="$(arg line_curve_overlap_points)" />
         <param name="line_window_backtrack_distance" type="double" value="$(arg line_window_backtrack_distance)" />
@@ -124,6 +129,7 @@
         <param name="curve_freeze_overlap_distance" type="double" value="$(arg curve_freeze_overlap_distance)" />
 
         <param name="actual_path_min_spacing" type="double" value="$(arg actual_path_min_spacing)" />
+        <param name="actual_path_max_points" type="int" value="$(arg actual_path_max_points)" />
         <param name="trajectory_publish_period" type="double" value="$(arg trajectory_publish_period)" />
         <param name="trajectory_web_enabled" type="bool" value="$(arg trajectory_web_enabled)" />
         <param name="trajectory_web_host" type="string" value="$(arg trajectory_web_host)" />

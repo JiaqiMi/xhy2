@@ -43,8 +43,9 @@
     <arg name="endpoint_position_tolerance" default="0.15" />
     <!-- 原点目标进入 HOVER 后的持续保持时间，单位 s。 -->
     <arg name="endpoint_hold_seconds" default="4.0" />
-    <!-- 实际轨迹相邻记录点的最小间距，单位 m。 -->
+    <!-- 实际轨迹相邻记录点的最小间距（m）和 Web 最大保存点数。 -->
     <arg name="actual_path_min_spacing" default="0.02" />
+    <arg name="actual_path_max_points" default="2000" />
     <!-- 轨迹 JSON/Web 数据刷新周期，单位 s。 -->
     <arg name="trajectory_publish_period" default="0.5" />
     <arg name="trajectory_web_enabled" default="true" />
@@ -83,6 +84,7 @@
         <param name="endpoint_hold_seconds" type="double" value="$(arg endpoint_hold_seconds)" />
 
         <param name="actual_path_min_spacing" type="double" value="$(arg actual_path_min_spacing)" />
+        <param name="actual_path_max_points" type="int" value="$(arg actual_path_max_points)" />
         <param name="trajectory_publish_period" type="double" value="$(arg trajectory_publish_period)" />
         <param name="trajectory_web_enabled" type="bool" value="$(arg trajectory_web_enabled)" />
         <param name="trajectory_web_host" type="string" value="$(arg trajectory_web_host)" />

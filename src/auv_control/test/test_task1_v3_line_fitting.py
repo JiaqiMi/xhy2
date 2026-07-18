@@ -28,6 +28,8 @@
     只接收能从固定曲线末端合理延伸的新点。
     新增 v3 独立入口。本子任务本来就不发布运动指令，因此无需接入
     motion_supervisor；保留为验证 v3 巡线所使用冻结曲线的纯感知工具。
+    将曲线点融合权重和实际轨迹最大保存点数开放为 launch 参数，保持与
+    v3 巡线节点使用相同的可调拟合逻辑，并限制 Web 历史轨迹数据量。
 """
 
 import copy
@@ -213,6 +215,9 @@ class LineFittingTest:
         self.line_point_merge_distance = max(0.001, float(rospy.get_param(
             "~line_point_merge_distance", 0.12
         )))
+        self.line_point_update_alpha = max(0.0, min(1.0, float(
+            rospy.get_param("~line_point_update_alpha", 0.20)
+        )))
         self.line_curve_max_points = max(3, int(rospy.get_param(
             "~line_curve_max_points", 200
         )))
@@ -257,6 +262,9 @@ class LineFittingTest:
 
         self.actual_path_min_spacing = max(0.001, float(rospy.get_param(
             "~actual_path_min_spacing", 0.02
+        )))
+        self.actual_path_max_points = max(10, int(rospy.get_param(
+            "~actual_path_max_points", 2000
         )))
         self.trajectory_publish_period = max(0.05, float(rospy.get_param(
             "~trajectory_publish_period", 0.5
@@ -688,9 +696,19 @@ class LineFittingTest:
                 self.line_raw_points, key=lambda old: xy_distance(old, point)
             )
             if xy_distance(nearest, point) <= self.line_point_merge_distance:
-                nearest.x = 0.8 * nearest.x + 0.2 * point.x
-                nearest.y = 0.8 * nearest.y + 0.2 * point.y
-                nearest.z = 0.8 * nearest.z + 0.2 * point.z
+                old_weight = 1.0 - self.line_point_update_alpha
+                nearest.x = (
+                    old_weight * nearest.x
+                    + self.line_point_update_alpha * point.x
+                )
+                nearest.y = (
+                    old_weight * nearest.y
+                    + self.line_point_update_alpha * point.y
+                )
+                nearest.z = (
+                    old_weight * nearest.z
+                    + self.line_point_update_alpha * point.z
+                )
             else:
                 self.line_raw_points.append(point)
         self.roll_line_fit_window()
@@ -949,6 +967,10 @@ class LineFittingTest:
             >= self.actual_path_min_spacing
         ):
             self.actual_trajectory.append(copy.deepcopy(current.pose.position))
+            if len(self.actual_trajectory) > self.actual_path_max_points:
+                self.actual_trajectory = self.actual_trajectory[
+                    -self.actual_path_max_points:
+                ]
 
     def publish_trajectory_status(self, current):
         now = rospy.Time.now()
