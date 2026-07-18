@@ -14,6 +14,8 @@
     添加base_link到camera的变换
 2025.8.3 11:32
     改为 10s的心跳包
+2026.7.18
+    base_link 前移 0.35 m，并将 base_link 到 IMU 的杆臂改为 ROS 参数。
 """
 
 import rospy
@@ -31,7 +33,11 @@ class Static_tf_broadcaster:
     def __init__(self):
         self.tf_broadcaster = tf.TransformBroadcaster()
         # base_link 到 imu的变换参数
-        self.imu_trans = (-0.35, 0.0, 0.0)
+        self.imu_trans = (
+            float(rospy.get_param('~base_to_imu_x', -0.35)),
+            float(rospy.get_param('~base_to_imu_y', 0.0)),
+            float(rospy.get_param('~base_to_imu_z', 0.0)),
+        )
         self.imu_rot = tf.transformations.quaternion_from_euler(0, 0, 0)
         
         # base_link 到 hand的变换参数
@@ -48,7 +54,11 @@ class Static_tf_broadcaster:
         
         # 发布频率 10Hz
         self.rate = rospy.Rate(10)
-        rospy.loginfo(f"{NODE_NAME}: 已启动")
+        rospy.loginfo(
+            "%s: 已启动，base_link -> imu=(%.3f, %.3f, %.3f) m",
+            NODE_NAME,
+            *self.imu_trans
+        )
 
     def run(self):
         """主循环：发布静态变换"""

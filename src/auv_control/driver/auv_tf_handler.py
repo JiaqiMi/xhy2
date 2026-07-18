@@ -21,6 +21,8 @@
 2026.7.15
     删除旧版 /target 订阅、/auv_control 发布器及对应转换回调。
     取消旧链路兼容，仅保留 /cmd/pose/ned 到 /cmd/pose/lla 的整包指令转换。
+2026.7.18
+    增加 base_link 到 IMU/GNSS 定位点的杆臂补偿，同时修正状态 TF 和定点目标。
 """
 
 import threading
@@ -32,6 +34,7 @@ from auv_control.msg import AUVData, PoseLLAcmd, PoseNEDcmd
 from sensor_msgs.msg import NavSatFix
 from tf import transformations
 
+from lever_arm import base_position_from_sensor, sensor_position_from_base
 from world_frame import WorldFrameManager
 
 
@@ -48,6 +51,13 @@ class AUVTfHandler:
         rospy.loginfo("auv_tf_handler: 初始世界坐标系已就绪: %s", self.origin_values)
 
         self.tf_broadcaster = tf.TransformBroadcaster()
+        self.base_to_imu = (
+            float(rospy.get_param('~base_to_imu_x', -0.35)),
+            float(rospy.get_param('~base_to_imu_y', 0.0)),
+            float(rospy.get_param('~base_to_imu_z', 0.0)),
+        )
+        if not np.all(np.isfinite(self.base_to_imu)):
+            raise ValueError('base_link 到 IMU 的杆臂参数必须为有限值')
         self.current_pose = None
         self.current_yaw = 0.0
         self.control_cmd_pub = rospy.Publisher(
@@ -58,6 +68,10 @@ class AUVTfHandler:
         rospy.Subscriber('/cmd/pose/ned', PoseNEDcmd, self.target_cmd_callback)
         # map_initer 是 /world_origin 的唯一发布者；锁存初始值会被安全忽略。
         rospy.Subscriber('/world_origin', NavSatFix, self.origin_callback, queue_size=1)
+        rospy.loginfo(
+            'auv_tf_handler: base_link -> imu 杆臂=(%.3f, %.3f, %.3f) m',
+            *self.base_to_imu
+        )
 
     def origin_callback(self, origin):
         """原子替换坐标换算器，使下一帧 TF 按新原点计算。"""
@@ -84,17 +98,26 @@ class AUVTfHandler:
         north, east, down = wfm.lld_to_ned(
             msg.pose.latitude, msg.pose.longitude, msg.pose.depth
         )
-        if self.current_pose is None:
-            self.current_pose = [north, east, down, 0, 0, 0, 1]
-        else:
-            self.current_pose[0:3] = [north, east, down]
-
         self.current_yaw = msg.pose.yaw
-        self.current_pose[3:7] = transformations.quaternion_from_euler(
+        orientation = transformations.quaternion_from_euler(
             np.radians(msg.pose.roll),
             np.radians(msg.pose.pitch),
             np.radians(msg.pose.yaw),
         )
+        base_position = base_position_from_sensor(
+            (north, east, down),
+            orientation,
+            self.base_to_imu,
+        )
+        self.current_pose = [
+            base_position[0],
+            base_position[1],
+            base_position[2],
+            orientation[0],
+            orientation[1],
+            orientation[2],
+            orientation[3],
+        ]
         self.publish_tf()
         rospy.loginfo_throttle(10, "auv_tf_handler: TF 已发布")
 
@@ -102,16 +125,31 @@ class AUVTfHandler:
         """将 NED 整包控制指令转换为 LLA 整包控制指令。"""
         wfm = self.get_world_frame_manager()
         pose = msg.target.pose
-        latitude, longitude, depth = wfm.ned_to_lld(
-            pose.position.x,
-            pose.position.y,
-            pose.position.z,
-        )
-        roll, pitch, yaw = tf.transformations.euler_from_quaternion([
+        orientation = (
             pose.orientation.x,
             pose.orientation.y,
             pose.orientation.z,
             pose.orientation.w,
+        )
+        sensor_target = sensor_position_from_base(
+            (
+                pose.position.x,
+                pose.position.y,
+                pose.position.z,
+            ),
+            orientation,
+            self.base_to_imu,
+        )
+        latitude, longitude, depth = wfm.ned_to_lld(
+            sensor_target[0],
+            sensor_target[1],
+            sensor_target[2],
+        )
+        roll, pitch, yaw = tf.transformations.euler_from_quaternion([
+            orientation[0],
+            orientation[1],
+            orientation[2],
+            orientation[3],
         ])
 
         output = PoseLLAcmd()

@@ -213,3 +213,48 @@ brake_min_mz: 100.0
 - 定点后位置误差超过 `capture_exit_radius` 时退回刹停；
 - 定点后航向误差超过 `10°` 或角速度超过 `2 deg/s` 时退回刹停；
 - 角速度超过停稳阈值时，航向刹车力矩绝对值不低于 `100`。
+
+## 2026-07-18 旋转试验与杆臂修正
+
+对 `motion_supervisor_20260718_152203_464906.csv` 中可识别的正负
+30°、60°、90° 旋转过程统计：
+
+- 最大滤波角速度约为 `6.97～10.54 deg/s`；
+- 首次刹转后仍产生约 `10.1～13.8°` 超调；
+- 正向 yaw 使用负 MZ 刹车，实测有效角减速度约
+  `0.043～0.057 rad/s²`；
+- 负向 yaw 使用正 MZ 刹车，实测有效角减速度约
+  `0.030～0.058 rad/s²`；
+- 旧配置 `0.10 rad/s²` 高估刹转能力，导致进入 `FINAL_BRAKE` 过晚。
+- CSV 中可识别的 11 段旋转累计出现约 `151.6 s TRANSLATE` 和
+  `63.4 s TRANSLATE_BRAKE`，纯旋转被杆臂误差反复打断。
+
+首轮保守调整为：
+
+```yaml
+angular_brake_acceleration_mz_positive: 0.025
+angular_brake_acceleration_mz_negative: 0.040
+```
+
+本批纯旋转数据还出现了大量 `TRANSLATE` 和 `TRANSLATE_BRAKE`。原因是
+`base_link` 前移 0.35 m 后，静态 TF 虽已设置
+`base_link -> imu=(-0.35,0,0)`，但原 `auv_tf_handler` 仍把 IMU/GNSS
+经纬度直接发布成 `map -> base_link` 位置。
+
+未补偿时，纯 yaw 旋转产生的理论水平位置差为：
+
+| 航向变化 | 0.35 m 杆臂对应的位置差 |
+|---:|---:|
+| 30° | 0.181 m |
+| 60° | 0.350 m |
+| 90° | 0.495 m |
+
+60° 和 90° 已超过或明显接近 `capture_exit_radius=0.25 m`，会触发状态机
+退出最终转向并重新平移。现在统一使用 launch 中的
+`base_to_imu_x/y/z`：
+
+- 状态链路：由 IMU/GNSS NED 位置减去旋转后的 `base_link -> imu`
+  杆臂，得到真实 `map -> base_link`；
+- 指令链路：由目标 base_link 位姿加上旋转后的杆臂，得到下位机定点闭环
+  所需的 IMU/GNSS 目标 LLA；
+- 静态 TF 和动态换算共用同一组杆臂参数，默认 `(-0.35, 0, 0) m`。
