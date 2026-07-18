@@ -24,6 +24,8 @@
     <arg name="line_topic" default="/obj/line_message" />
     <arg name="finished_topic" default="/finished" />
     <arg name="camera_topic" default="/left/image_raw" />
+    <!-- 巡线定位参考坐标系；拟合曲线由该双目摄像头的 XY 位置跟踪。 -->
+    <arg name="line_tracking_frame" default="camera" />
     <arg name="trajectory_topic" default="/task1/v3/trajectory" />
 
     <!-- 未识别红线：左右转并回到启动航向后，提交前方绝对目标的距离，单位 m。 -->
@@ -111,6 +113,8 @@
     <!-- 连续 LOS 目标单周期最大位置（m）和 yaw（deg）变化，均低于监督器抢占阈值。 -->
     <arg name="los_goal_max_step" default="0.20" />
     <arg name="los_goal_max_yaw_step_deg" default="20.0" />
+    <!-- 摄像头到达当前 LOS 航点后，切换下一航点允许的最大航向误差，单位 deg。 -->
+    <arg name="los_waypoint_yaw_tolerance_deg" default="10.0" />
 
     <!-- 到达起点并进入 HOVER 后持续确认的时间，单位 s。 -->
     <arg name="line_start_hold_seconds" default="4.0" />
@@ -127,7 +131,7 @@
     <arg name="endpoint_stable_frames" default="8" />
     <!-- 多帧最远点视为同一位置的最大坐标偏差，单位 m。 -->
     <arg name="endpoint_stable_position_tolerance" default="0.12" />
-    <!-- 机器人距当前最远点小于该值后才累计终点重复观测，避免把初始视野边缘当作终点，单位 m。 -->
+    <!-- 双目摄像头距当前最远点小于该值后才累计终点重复观测，避免把初始视野边缘当作终点，单位 m。 -->
     <arg name="endpoint_evidence_robot_distance" default="0.8" />
 
     <!-- 轨迹 JSON 和网页数据刷新周期，单位 s。 -->
@@ -158,6 +162,7 @@
         <param name="line_topic" type="string" value="$(arg line_topic)" />
         <param name="finished_topic" type="string" value="$(arg finished_topic)" />
         <param name="camera_topic" type="string" value="$(arg camera_topic)" />
+        <param name="line_tracking_frame" type="string" value="$(arg line_tracking_frame)" />
         <param name="trajectory_topic" type="string" value="$(arg trajectory_topic)" />
 
         <param name="search_forward_distance" type="double" value="$(arg search_forward_distance)" />
@@ -206,6 +211,7 @@
         <param name="los_lookahead_distance" type="double" value="$(arg los_lookahead_distance)" />
         <param name="los_goal_max_step" type="double" value="$(arg los_goal_max_step)" />
         <param name="los_goal_max_yaw_step_deg" type="double" value="$(arg los_goal_max_yaw_step_deg)" />
+        <param name="los_waypoint_yaw_tolerance_deg" type="double" value="$(arg los_waypoint_yaw_tolerance_deg)" />
         <param name="line_start_hold_seconds" type="double" value="$(arg line_start_hold_seconds)" />
         <param name="line_alignment_hold_seconds" type="double" value="$(arg line_alignment_hold_seconds)" />
         <param name="endpoint_arrival_tolerance" type="double" value="$(arg endpoint_arrival_tolerance)" />

@@ -4,7 +4,7 @@
         以节点启动时的当前位置和航向为起点，依次向前、向右、向后、回原点。
         本测试不使用视觉识别；请先启动真实下位机、TF 和 motion_supervisor。
         本节点不会发布 /cmd/pose/ned，motion_supervisor 必须是其唯一发布者。
-        Web 默认使用 192.168.1.117:8082，不能与其他占用 8082 的测试节点同时启动。
+        Web 默认使用 192.168.1.117:8083，不能与其他占用 8083 的测试节点同时启动。
     -->
 
     <!-- 基础坐标系和主循环频率。 -->
@@ -50,8 +50,8 @@
     <arg name="trajectory_publish_period" default="0.5" />
     <arg name="trajectory_web_enabled" default="true" />
     <arg name="trajectory_web_host" default="192.168.1.117" />
-    <!-- 默认访问 http://192.168.1.117:8081。 -->
-    <arg name="trajectory_web_port" default="8081" />
+    <!-- 默认访问 http://192.168.1.117:8083。 -->
+    <arg name="trajectory_web_port" default="8083" />
 
     <node pkg="auv_control"
           type="test_task1_v3_los_square.py"
