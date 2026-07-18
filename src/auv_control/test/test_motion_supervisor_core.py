@@ -18,6 +18,8 @@
     增加最终转向期间水平刹停和漂出捕获区回退测试。
 2026.7.17
     增加停车主轴、最小刹转力矩和定点接管保护测试。
+2026.7.18
+    覆盖目标深度跟随、保持当前航向平移和连续目标切换机制。
 """
 
 import math
@@ -32,8 +34,6 @@ if DRIVER_DIR not in sys.path:
 
 from motion_supervisor_core import (  # noqa: E402
     ALIGN_FINAL,
-    ALIGN_PATH,
-    ALIGN_PATH_BRAKE,
     CAPTURE,
     FINAL_BRAKE,
     HOVER,
@@ -241,36 +241,27 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertAlmostEqual(
             stopping_distance(-0.2, 0.1, 0.35, 0.15), 0.15, places=6)
 
-    def test_target_depth_is_fixed_for_all_output_paths(self):
+    def test_target_depth_follows_goal_and_cancel_pose(self):
         output = self.core.step(self.vehicle(z=-0.2))
-        self.assertAlmostEqual(output.target.z, -0.6)
+        self.assertAlmostEqual(output.target.z, -0.2)
 
         self.core.set_goal(MotionGoal(2.0, 0.0, -1.2, 0.0))
         output = self.core.step(self.vehicle(z=-0.3))
-        self.assertAlmostEqual(output.target.z, -0.6)
-        self.assertAlmostEqual(self.core.goal.z, -0.6)
+        self.assertAlmostEqual(output.target.z, -1.2)
+        self.assertAlmostEqual(self.core.goal.z, -1.2)
 
-        configured_core = MotionSupervisorCore({'fixed_target_z': -1.2})
-        configured_core.set_goal(MotionGoal(1.0, 0.0, -0.6, 0.0))
-        configured_output = configured_core.step(self.vehicle())
-        self.assertAlmostEqual(configured_output.target.z, -1.2)
+        self.core.set_goal(MotionGoal(2.1, 0.0, -0.8, 0.0))
+        output = self.core.step(self.vehicle(z=-0.4))
+        self.assertAlmostEqual(output.target.z, -0.8)
+        self.assertEqual(output.state, TRANSLATE)
 
     def test_complete_sequence_uses_depth_then_dprov(self):
         self.core.set_goal(MotionGoal(2.0, 0.0, 1.5, 0.0))
 
         output = self.core.step(self.vehicle())
-        self.assertEqual(output.state, ALIGN_PATH_BRAKE)
-        self.assertEqual(output.mode, MODE_DEPTH)
-
-        self.core.step(self.vehicle())
-        output = self.core.step(self.vehicle())
         self.assertEqual(output.state, TRANSLATE)
         self.assertEqual(output.mode, MODE_DEPTH)
-
-        output = self.core.step(self.vehicle())
-        self.assertEqual(output.state, TRANSLATE)
         self.assertGreater(output.tx, 0)
-        self.assertEqual(output.mode, MODE_DEPTH)
 
         output = self.core.step(self.vehicle(x=1.90, u=0.20))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
@@ -300,14 +291,14 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertGreater(output.mz, 0)
 
         output = self.core.step(self.vehicle(x=0.4, yaw=0.0))
-        self.assertEqual(output.state, ALIGN_PATH)
+        self.assertEqual(output.state, TRANSLATE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
     def test_final_brake_requires_capture_radius_before_hover(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = FINAL_BRAKE
         output = self.core.step(self.vehicle(x=0.20))
-        self.assertEqual(output.state, ALIGN_PATH)
+        self.assertEqual(output.state, TRANSLATE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
     def test_feedback_timeout_enters_safe_with_zero_force(self):
@@ -326,10 +317,60 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertLess(output.tx, 0)
 
+        self.core.set_goal(MotionGoal(
+            0.1, 2.2, -0.9, math.radians(80.0)))
         self.core.step(self.vehicle())
         output = self.core.step(self.vehicle())
-        self.assertEqual(output.state, ALIGN_PATH)
-        self.assertAlmostEqual(output.target.y, 2.0)
+        self.assertEqual(output.state, TRANSLATE)
+        self.assertAlmostEqual(output.target.x, 0.1)
+        self.assertAlmostEqual(output.target.y, 2.2)
+        self.assertAlmostEqual(output.target.z, -0.9)
+
+    def test_near_goal_updates_track_without_braking(self):
+        self.core.set_goal(MotionGoal(2.0, 0.0, -0.6, 0.0))
+        self.core.step(self.vehicle())
+
+        self.core.set_goal(MotionGoal(
+            2.2, 0.1, -0.8, math.radians(20.0)))
+        self.assertEqual(self.core.state, TRANSLATE)
+        self.assertIsNone(self.core.pending_goal)
+
+        output = self.core.step(self.vehicle())
+        self.assertEqual(output.state, TRANSLATE)
+        self.assertAlmostEqual(output.target.x, 2.2)
+        self.assertAlmostEqual(output.target.y, 0.1)
+        self.assertAlmostEqual(output.target.z, -0.8)
+        self.assertAlmostEqual(output.target.yaw, math.radians(20.0))
+
+    def test_near_goal_update_leaves_hover_without_braking(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = HOVER
+        self.core.hover_started_at = self.now
+
+        self.core.set_goal(MotionGoal(0.4, 0.0, -0.8, 0.0))
+        output = self.core.step(self.vehicle(mode=MODE_DPROV))
+        self.assertEqual(output.state, TRANSLATE)
+        self.assertEqual(output.mode, MODE_DEPTH)
+        self.assertEqual((output.tx, output.ty, output.mz), (0, 0, 0))
+        self.assertIsNone(self.core.pending_goal)
+
+        self.core.goal = MotionGoal(0.0, 0.0, -0.8, 0.0)
+        self.core.state = HOVER
+        self.core.set_goal(MotionGoal(
+            0.0, 0.0, -0.8, math.radians(20.0)))
+        output = self.core.step(self.vehicle(mode=MODE_DPROV))
+        self.assertEqual(output.state, ALIGN_FINAL)
+        self.assertEqual(output.mode, MODE_DEPTH)
+        self.assertGreater(output.mz, 0)
+
+    def test_translation_holds_initial_heading_and_uses_tx_ty(self):
+        self.core.set_goal(MotionGoal(1.0, 0.0, -0.6, 0.0))
+        output = self.core.step(self.vehicle(yaw=math.pi / 2.0))
+        self.assertEqual(output.state, TRANSLATE)
+        self.assertAlmostEqual(self.core.translation_yaw, math.pi / 2.0)
+        self.assertEqual(output.tx, 0)
+        self.assertLess(output.ty, 0)
+        self.assertEqual(output.mz, 0)
 
     def test_cancel_brakes_and_hovers_at_current_pose(self):
         self.core.set_goal(MotionGoal(2.0, 0.0, 1.5, 0.0))
@@ -339,7 +380,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         output = self.core.step(self.vehicle(x=0.4))
         self.assertEqual(output.state, CAPTURE)
         self.assertAlmostEqual(output.target.x, 0.4)
-        self.assertAlmostEqual(output.target.z, -0.6)
+        self.assertAlmostEqual(output.target.z, 1.5)
 
     def test_hover_ack_timeout_and_abnormal_speed_fallback(self):
         self.core.goal = MotionGoal(0.0, 0.0, 1.5, 0.0)

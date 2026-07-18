@@ -5,7 +5,7 @@
 功能：运动—刹停—悬停控制器的纯算法核心
 作者：BroXu
 说明：
-    1. 实现航向对准、水平运动、主动刹停、捕获和悬停状态机；
+    1. 实现保持当前航向平移、主动刹停、最终转向和悬停状态机；
     2. 提供坐标转换、停车距离、力限幅和变化率限制等纯函数；
     3. 本模块不依赖 ROS，ROS 话题、TF 和消息转换由 motion_supervisor.py 负责。
 记录：
@@ -19,6 +19,8 @@
     根据入水日志提高三轴运动力矩，并在最终转向期间持续水平刹停和监测漂移。
 2026.7.17
     根据大角度测试修正停车主轴选择、航向刹车参数和定点接管保护。
+2026.7.18
+    目标深度改为跟随 goal，取消路径预对准并增加连续目标切换机制。
 """
 
 from __future__ import division
@@ -171,7 +173,6 @@ class ControlOutput(object):
 
 
 DEFAULT_PARAMETERS = {
-    'fixed_target_z': -0.6,
     'max_tx': 2000.0,
     'max_ty': 2000.0,
     'max_mz': 1000.0,
@@ -207,8 +208,9 @@ DEFAULT_PARAMETERS = {
     'capture_exit_radius': 0.25,
     'horizontal_speed_threshold': 0.015,
     'yaw_tolerance': math.radians(5.0),
-    'path_yaw_tolerance': math.radians(5.0),
     'yaw_rate_threshold': math.radians(0.3),
+    'goal_preempt_distance': 0.50,
+    'goal_preempt_yaw': math.radians(30.0),
     'stable_frames': 5,
     'hover_fault_speed': 0.08,
     'hover_fault_yaw_rate': math.radians(2.0),
@@ -231,7 +233,8 @@ class MotionSupervisorCore(object):
         self.goal = None
         self.pending_goal = None
         self.cancel_requested = False
-        self.path_yaw = 0.0
+        self.hover_direct_update = False
+        self.translation_yaw = 0.0
         self.stable_count = 0
         self.hover_started_at = None
         self.last_tx = 0.0
@@ -239,8 +242,6 @@ class MotionSupervisorCore(object):
         self.last_mz = 0.0
 
     def _validate_parameters(self):
-        if not math.isfinite(self.parameters['fixed_target_z']):
-            raise ValueError('fixed_target_z 必须是有限数值')
         positive_names = (
             'max_tx', 'max_ty', 'max_mz',
             'brake_max_tx_positive', 'brake_max_tx_negative',
@@ -255,7 +256,8 @@ class MotionSupervisorCore(object):
             'angular_brake_acceleration_mz_positive',
             'angular_brake_acceleration_mz_negative', 'capture_radius',
             'capture_exit_radius', 'horizontal_speed_threshold',
-            'yaw_tolerance', 'path_yaw_tolerance', 'yaw_rate_threshold',
+            'yaw_tolerance', 'yaw_rate_threshold',
+            'goal_preempt_distance', 'goal_preempt_yaw',
             'stable_frames', 'hover_fault_yaw_rate',
             'hover_fault_yaw_error', 'mode_ack_timeout',
         )
@@ -285,22 +287,46 @@ class MotionSupervisorCore(object):
         return self.goal is not None or self.pending_goal is not None
 
     def set_goal(self, goal):
-        """提交目标；运动中收到的新目标先触发刹停。"""
+        """提交目标；近目标直接更新，远目标先刹停再切换。"""
         if not isinstance(goal, MotionGoal):
             raise TypeError('goal 必须是 MotionGoal')
-        goal = MotionGoal(
-            goal.x,
-            goal.y,
-            self.parameters['fixed_target_z'],
-            goal.yaw,
-        )
-        if self.goal is None and self.state in (IDLE, SAFE):
+
+        if self.pending_goal is not None:
             self.pending_goal = goal
-            self.reason = '收到新目标'
+            self.cancel_requested = False
+            self.hover_direct_update = False
+            self.reason = '刹停或等待期间更新待切换目标'
             return
+
+        if self.goal is None:
+            self.pending_goal = goal
+            self.hover_direct_update = False
+            self.reason = '收到首个目标'
+            return
+
+        position_shift = math.hypot(
+            goal.x - self.goal.x,
+            goal.y - self.goal.y,
+        )
+        yaw_shift = abs(wrap_angle(goal.yaw - self.goal.yaw))
+        far_update = (
+            position_shift > self.parameters['goal_preempt_distance']
+            or yaw_shift > self.parameters['goal_preempt_yaw']
+        )
+        if not far_update:
+            self.goal = goal
+            self.cancel_requested = False
+            self.hover_direct_update = self.state == HOVER
+            self.reason = '连续目标小幅更新，直接跟踪'
+            return
+
         self.pending_goal = goal
         self.cancel_requested = False
-        self._transition(TRANSLATE_BRAKE, '新目标抢占，先刹停')
+        self.hover_direct_update = False
+        self._transition(
+            TRANSLATE_BRAKE,
+            '新目标变化超过阈值，先刹停再切换',
+        )
 
     def cancel(self):
         """取消当前运动；停稳后以当前位置进入悬停。"""
@@ -308,6 +334,7 @@ class MotionSupervisorCore(object):
             return
         self.pending_goal = None
         self.cancel_requested = True
+        self.hover_direct_update = False
         self._transition(TRANSLATE_BRAKE, '收到取消指令，先刹停')
 
     def _transition(self, new_state, reason):
@@ -324,14 +351,15 @@ class MotionSupervisorCore(object):
         self.goal = self.pending_goal
         self.pending_goal = None
         self.cancel_requested = False
+        self.hover_direct_update = False
         dx = self.goal.x - vehicle.x
         dy = self.goal.y - vehicle.y
         distance = math.hypot(dx, dy)
-        self.path_yaw = math.atan2(dy, dx) if distance > 1e-6 else vehicle.yaw
+        self.translation_yaw = vehicle.yaw
         if distance <= self.parameters['capture_radius']:
             self._transition(ALIGN_FINAL, '已在目标位置附近，调整最终航向')
         else:
-            self._transition(ALIGN_PATH, '对准目标运动方向')
+            self._transition(TRANSLATE, '保持当前航向，开始水平平移')
         return True
 
     def _goal_metrics(self, vehicle):
@@ -470,15 +498,10 @@ class MotionSupervisorCore(object):
             source_target = MotionGoal(
                 vehicle.x,
                 vehicle.y,
-                self.parameters['fixed_target_z'],
+                vehicle.z,
                 vehicle.yaw,
             )
-        target = MotionGoal(
-            source_target.x,
-            source_target.y,
-            self.parameters['fixed_target_z'],
-            source_target.yaw,
-        )
+        target = source_target
         dx, dy, distance, yaw_error = self._goal_metrics(vehicle)
         del dx, dy
         horizontal_speed = math.hypot(
@@ -543,29 +566,10 @@ class MotionSupervisorCore(object):
                 return self._output(
                     vehicle, MODE_DEPTH, immediate_zero=True)
 
-        if self.state == ALIGN_PATH:
-            error = wrap_angle(self.path_yaw - vehicle.yaw)
-            if abs(error) <= max(
-                    self.parameters['path_yaw_tolerance'],
-                    self._angular_stop_threshold(vehicle.yaw_rate)):
-                self._transition(ALIGN_PATH_BRAKE, '路径航向进入刹转区')
-                return self._brake_output(vehicle)
-            mz = (
-                self.parameters['kp_yaw'] * error
-                - self.parameters['kr_yaw'] * vehicle.yaw_rate
-            )
-            return self._output(vehicle, MODE_DEPTH, mz=mz)
-
-        if self.state == ALIGN_PATH_BRAKE:
-            error = wrap_angle(self.path_yaw - vehicle.yaw)
-            if abs(error) > 2.0 * self.parameters['path_yaw_tolerance']:
-                self._transition(ALIGN_PATH, '刹转后航向偏差过大，重新对准')
-                return self._output(vehicle, MODE_DEPTH)
-            if self._stable(
-                    abs(error) <= self.parameters['path_yaw_tolerance']
-                    and yaw_rate_abs <= self.parameters['yaw_rate_threshold']):
-                self._transition(TRANSLATE, '路径航向稳定，开始平移')
-            return self._brake_output(vehicle)
+        if self.state in (ALIGN_PATH, ALIGN_PATH_BRAKE):
+            # 兼容旧状态编号；新流程不再朝向目标点，直接保持当前航向平移。
+            self.translation_yaw = vehicle.yaw
+            self._transition(TRANSLATE, '取消路径预对准，保持当前航向平移')
 
         if self.state == TRANSLATE:
             dx, dy, distance, unused_yaw_error = self._goal_metrics(vehicle)
@@ -600,7 +604,7 @@ class MotionSupervisorCore(object):
                 self.parameters['kp_y'] * error_y
                 - self.parameters['kv_y'] * vehicle.lateral_velocity
             )
-            path_error = wrap_angle(self.path_yaw - vehicle.yaw)
+            path_error = wrap_angle(self.translation_yaw - vehicle.yaw)
             mz = (
                 self.parameters['kp_yaw'] * path_error
                 - self.parameters['kr_yaw'] * vehicle.yaw_rate
@@ -619,7 +623,7 @@ class MotionSupervisorCore(object):
                     self.goal = MotionGoal(
                         vehicle.x,
                         vehicle.y,
-                        self.parameters['fixed_target_z'],
+                        vehicle.z,
                         vehicle.yaw,
                     )
                     self.cancel_requested = False
@@ -628,9 +632,11 @@ class MotionSupervisorCore(object):
                     dx, dy, distance, unused_yaw_error = self._goal_metrics(vehicle)
                     del dx, dy, unused_yaw_error
                     if distance > self.parameters['capture_radius']:
-                        self.path_yaw = math.atan2(
-                            self.goal.y - vehicle.y, self.goal.x - vehicle.x)
-                        self._transition(ALIGN_PATH, '刹停点尚未进入目标区，重新接近')
+                        self.translation_yaw = vehicle.yaw
+                        self._transition(
+                            TRANSLATE,
+                            '刹停点尚未进入目标区，保持当前航向重新接近',
+                        )
                     else:
                         self._transition(ALIGN_FINAL, '水平运动停稳，调整最终航向')
             return self._brake_output(vehicle)
@@ -639,9 +645,11 @@ class MotionSupervisorCore(object):
             dx, dy, distance, error = self._goal_metrics(vehicle)
             del dx, dy
             if distance > self.parameters['capture_exit_radius']:
-                self.path_yaw = math.atan2(
-                    self.goal.y - vehicle.y, self.goal.x - vehicle.x)
-                self._transition(ALIGN_PATH, '最终转向时漂出捕获区，重新接近')
+                self.translation_yaw = vehicle.yaw
+                self._transition(
+                    TRANSLATE,
+                    '最终转向时漂出捕获区，保持当前航向重新接近',
+                )
                 return self._brake_output(vehicle)
             if abs(error) <= max(
                     self.parameters['yaw_tolerance'],
@@ -654,9 +662,11 @@ class MotionSupervisorCore(object):
             dx, dy, distance, yaw_error = self._goal_metrics(vehicle)
             del dx, dy
             if distance > self.parameters['capture_exit_radius']:
-                self.path_yaw = math.atan2(
-                    self.goal.y - vehicle.y, self.goal.x - vehicle.x)
-                self._transition(ALIGN_PATH, '最终刹转时漂出捕获区')
+                self.translation_yaw = vehicle.yaw
+                self._transition(
+                    TRANSLATE,
+                    '最终刹转时漂出捕获区，保持当前航向重新接近',
+                )
                 return self._brake_output(vehicle)
             if abs(yaw_error) > 2.0 * self.parameters['yaw_tolerance']:
                 self._transition(ALIGN_FINAL, '最终航向偏差过大，重新调整')
@@ -669,9 +679,11 @@ class MotionSupervisorCore(object):
             if (
                     distance > self.parameters['capture_radius']
                     and pose_stopped):
-                self.path_yaw = math.atan2(
-                    self.goal.y - vehicle.y, self.goal.x - vehicle.x)
-                self._transition(ALIGN_PATH, '最终刹停点仍在捕获区外，重新接近')
+                self.translation_yaw = vehicle.yaw
+                self._transition(
+                    TRANSLATE,
+                    '最终刹停点仍在捕获区外，保持当前航向重新接近',
+                )
                 return self._brake_output(vehicle)
             if self._stable(
                     distance <= self.parameters['capture_radius']
@@ -686,9 +698,11 @@ class MotionSupervisorCore(object):
             dx, dy, distance, yaw_error = self._goal_metrics(vehicle)
             del dx, dy
             if distance > self.parameters['capture_exit_radius']:
-                self.path_yaw = math.atan2(
-                    self.goal.y - vehicle.y, self.goal.x - vehicle.x)
-                self._transition(ALIGN_PATH, '捕获期间漂出位置范围')
+                self.translation_yaw = vehicle.yaw
+                self._transition(
+                    TRANSLATE,
+                    '捕获期间漂出位置范围，保持当前航向重新接近',
+                )
                 return self._output(vehicle, MODE_DEPTH)
             if abs(yaw_error) > 2.0 * self.parameters['yaw_tolerance']:
                 self._transition(ALIGN_FINAL, '捕获期间航向偏差过大')
@@ -710,6 +724,23 @@ class MotionSupervisorCore(object):
             unused_dx, unused_dy, hover_distance, hover_yaw_error = (
                 self._goal_metrics(vehicle))
             del unused_dx, unused_dy
+            if self.hover_direct_update:
+                self.hover_direct_update = False
+                if hover_distance > self.parameters['capture_radius']:
+                    self.translation_yaw = vehicle.yaw
+                    self._transition(
+                        TRANSLATE,
+                        '定点期间收到近距离目标，直接平移跟踪',
+                    )
+                    return self._output(
+                        vehicle, MODE_DEPTH, immediate_zero=True)
+                if abs(hover_yaw_error) > self.parameters['yaw_tolerance']:
+                    self._transition(
+                        ALIGN_FINAL,
+                        '定点期间收到近航向目标，直接调整航向',
+                    )
+                    return self._final_alignment_output(
+                        vehicle, hover_yaw_error)
             if speed > self.parameters['hover_fault_speed']:
                 self._transition(TRANSLATE_BRAKE, '定点接管后水平速度异常')
                 return self._brake_output(vehicle)
