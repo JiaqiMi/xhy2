@@ -58,6 +58,8 @@ add_message_files(
     TargetDetection3.msg
     BoundingBox.msg
     LineBox.msg
+    LinePixels.msg
+    LineDetection.msg
 )
 
 ## Generate services in the 'srv' folder

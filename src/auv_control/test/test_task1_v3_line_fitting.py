@@ -19,7 +19,7 @@
 
 监听：/obj/line_message，/left/image_raw，/tf
 发布：/task1/line_fitting/trajectory（仅调试 JSON）
-网页：默认 http://192.168.1.117:8082
+网页：默认 http://192.168.1.117:8083
 
 记录：
 2026.7.18
@@ -276,7 +276,7 @@ class LineFittingTest:
             "~trajectory_web_host", "192.168.1.117"
         )
         self.trajectory_web_port = int(rospy.get_param(
-            "~trajectory_web_port", 8082
+            "~trajectory_web_port", 8083
         ))
 
         # 本节点只有调试 JSON 发布器，明确不创建运动控制发布器。

@@ -67,6 +67,7 @@ add_message_files(
   PoseNEDcmd.msg
   PoseLLAcmd.msg
   MotionState.msg
+  LineDetection.msg
 )
 
 ## Generate services in the 'srv' folder
