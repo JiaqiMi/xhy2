@@ -22,6 +22,14 @@
     <arg name="control_to_imu_x" default="0.0" />
     <arg name="control_to_imu_y" default="0.0" />
     <arg name="control_to_imu_z" default="0.0" />
+    <!-- motion_supervisor 计划正向 yaw 使用的独立旋转中心到 IMU 杆臂。 -->
+    <arg name="control_to_imu_positive_x" default="0.0" />
+    <arg name="control_to_imu_positive_y" default="0.0" />
+    <arg name="control_to_imu_positive_z" default="0.0" />
+    <!-- motion_supervisor 计划负向 yaw 使用的独立旋转中心到 IMU 杆臂。 -->
+    <arg name="control_to_imu_negative_x" default="0.0" />
+    <arg name="control_to_imu_negative_y" default="0.0" />
+    <arg name="control_to_imu_negative_z" default="0.0" />
     <!-- web 参数 -->    
     <arg name="state_web_host" default="0.0.0.0" />
     <arg name="state_web_port" default="8088" />
@@ -123,5 +131,17 @@
         <arg name="control_to_imu_x" value="$(arg control_to_imu_x)" />
         <arg name="control_to_imu_y" value="$(arg control_to_imu_y)" />
         <arg name="control_to_imu_z" value="$(arg control_to_imu_z)" />
+        <arg name="control_to_imu_positive_x"
+             value="$(arg control_to_imu_positive_x)" />
+        <arg name="control_to_imu_positive_y"
+             value="$(arg control_to_imu_positive_y)" />
+        <arg name="control_to_imu_positive_z"
+             value="$(arg control_to_imu_positive_z)" />
+        <arg name="control_to_imu_negative_x"
+             value="$(arg control_to_imu_negative_x)" />
+        <arg name="control_to_imu_negative_y"
+             value="$(arg control_to_imu_negative_y)" />
+        <arg name="control_to_imu_negative_z"
+             value="$(arg control_to_imu_negative_z)" />
     </include>
 </launch>

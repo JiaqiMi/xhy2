@@ -24,6 +24,8 @@
     验证 CAPTURE 等待 mode=4 反馈且 HOVER 仅表示定点接管已确认。
 2026.7.18
     验证水平轴独立切换、方向参数和最终转向时 control_link 位置保持。
+2026.7.19
+    验证计划旋转方向选择和刹转阶段方向锁存。
 """
 
 import math
@@ -55,6 +57,7 @@ from motion_supervisor_core import (  # noqa: E402
     map_error_to_body,
     protocol_force,
     relative_target_xy,
+    select_planned_rotation_direction,
     slew_value,
     stopping_distance,
     wrap_angle,
@@ -116,6 +119,30 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(actual, (4.0, -2.0))
         with self.assertRaises(ValueError):
             relative_target_xy(0.0, 0.0, 0.0, 1.0, 0.0, 'odom')
+
+    def test_planned_rotation_direction_uses_yaw_error_sign(self):
+        self.assertEqual(
+            select_planned_rotation_direction(math.radians(30.0)), 1)
+        self.assertEqual(
+            select_planned_rotation_direction(math.radians(-30.0)), -1)
+
+    def test_planned_rotation_direction_stays_latched_during_brake(self):
+        self.assertEqual(
+            select_planned_rotation_direction(
+                math.radians(-8.0),
+                current_direction=1,
+                direction_locked=True,
+            ),
+            1,
+        )
+        self.assertEqual(
+            select_planned_rotation_direction(
+                math.radians(2.0),
+                current_direction=-1,
+                deadband=math.radians(5.0),
+            ),
+            -1,
+        )
 
     def test_wrap_angle_crosses_180_degrees(self):
         error = wrap_angle(math.radians(-179.0) - math.radians(179.0))

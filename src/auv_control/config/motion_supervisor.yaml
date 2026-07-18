@@ -5,6 +5,16 @@ velocity_filter_alpha: 0.35   # 速度一阶低通新数据权重，范围 (0,1]
 pitch_offset_deg: 0.0         # 发送目标姿态时附加的固定俯仰角，单位 deg
 startup_hover_frames: 5       # 首帧锁定位姿进入 HOVER 后保持的发布帧数，完成后才执行缓存任务目标
 
+# 计划 yaw 方向对应的两套虚拟旋转中心到 IMU 杆臂，采用前、右、下约定，单位 m
+# 新目标进入最终转向前按 yaw 误差正负选择；ALIGN_FINAL/FINAL_BRAKE 内保持锁存
+# 主动刹转即使 MZ 反号也继续使用原计划方向中心，避免控制参考点发生跳变
+control_to_imu_positive_x: 0.0 # 计划正向 yaw 旋转中心到 IMU 的前向杆臂
+control_to_imu_positive_y: 0.0 # 计划正向 yaw 旋转中心到 IMU 的右向杆臂
+control_to_imu_positive_z: 0.0 # 计划正向 yaw 旋转中心到 IMU 的下向杆臂
+control_to_imu_negative_x: 0.0 # 计划负向 yaw 旋转中心到 IMU 的前向杆臂
+control_to_imu_negative_y: 0.0 # 计划负向 yaw 旋转中心到 IMU 的右向杆臂
+control_to_imu_negative_z: 0.0 # 计划负向 yaw 旋转中心到 IMU 的下向杆臂
+
 # 每个控制周期的完整 CSV 记录；目录中的 ~ 会展开为运行节点用户的主目录
 log_enabled: true             # 是否记录当前/目标位姿、速度、状态、模式和力矩等完整数据
 log_directory: ~/.ros/auv_logs/motion_supervisor # CSV 日志目录，每次启动自动新建带时间戳文件

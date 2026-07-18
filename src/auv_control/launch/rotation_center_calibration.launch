@@ -2,6 +2,8 @@
     <!--
       旋转中心自动标定。运行前必须停止 motion_supervisor 及所有其他
       /cmd/pose/ned 发布者。本节点以 mode=2 保持深度，TX=TY=0，仅输出 MZ。
+      自动按 low、medium、high 三档执行；每档正负各三圈，每 90° 刹停并
+      回到同一个锁定初始位置，默认共 72 个旋转段。
     -->
 
     <!-- 自由旋转和段间 mode=4 接管使用的 NED 绝对目标深度，单位 m。 -->
@@ -54,10 +56,16 @@
     <arg name="kd_yaw" default="2000.0" />
     <!-- 主动刹转增益，输出单位/(rad/s)。 -->
     <arg name="brake_gain_yaw" default="6000.0" />
-    <!-- TRACK 阶段正 MZ 限幅。 -->
-    <arg name="max_mz_positive" default="1000.0" />
-    <!-- TRACK 阶段负 MZ 绝对值限幅。 -->
-    <arg name="max_mz_negative" default="1000.0" />
+    <!--
+      low、medium、high 三档 TRACK 固定正向 MZ，必须为严格递增的三个
+      正数且不超过 10000。该数值同时作为对应档位上限。
+    -->
+    <arg name="positive_mz_levels" default="[1000.0, 2000.0, 3000.0]" />
+    <!--
+      TRACK 固定负向 MZ 绝对值相对同档正向值的倍率。
+      默认 1.5，对应负向三档为 1500、3000、4500。
+    -->
+    <arg name="negative_mz_scale" default="1.5" />
     <!-- BRAKE 阶段正 MZ 限幅。 -->
     <arg name="brake_max_mz_positive" default="3000.0" />
     <!-- BRAKE 阶段负 MZ 绝对值限幅。 -->
@@ -74,7 +82,10 @@
     <arg name="minimum_brake_mz" default="100.0" />
     <!-- 单个自由旋转段 IMU 点最大允许平面漂移，单位 m，超限立即接管。 -->
     <arg name="drift_abort_radius" default="0.75" />
-    <!-- 进入拟合样本的最低角速度，单位 deg/s。 -->
+    <!--
+      TRACK 阶段进入拟合样本的最低角速度，单位 deg/s。
+      BRAKE 阶段即使 MZ 反号也不参与另一计划方向中心的拟合。
+    -->
     <arg name="sample_min_yaw_rate_deg_s" default="1.0" />
     <!-- 自由旋转允许的最大角速度，单位 deg/s，超限立即 mode=4 接管。 -->
     <arg name="max_yaw_rate_deg_s" default="45.0" />
@@ -83,8 +94,18 @@
       用于发现 MZ 或 yaw 反馈符号错误；越过目标后的正常刹车超调不累计该计时。
     -->
     <arg name="moving_away_timeout" default="3.0" />
-    <!-- 正、负方向拟合杆臂允许的最大平面差，单位 m，超限时结果仅供排查。 -->
-    <arg name="direction_consistency_tolerance" default="0.05" />
+    <!--
+      推荐写入 motion_supervisor 的首选档位；支持 low、medium、high。
+      默认优先中速，低速漂动较大时不会因为单次最小残差直接覆盖中速结果。
+    -->
+    <arg name="preferred_profile" default="medium" />
+    <!--
+      首选档位质量评分相对最佳档位允许的倍率；评分为 RMS+0.25×最大残差。
+      首选评分超过“最佳评分×倍率+绝对余量”时才自动改用最佳档位。
+    -->
+    <arg name="recommendation_degradation_ratio" default="1.5" />
+    <!-- 推荐档位质量评分允许的绝对余量，单位 m。 -->
+    <arg name="recommendation_degradation_margin" default="0.01" />
     <!-- 原始 CSV 和拟合 YAML 的保存目录。 -->
     <arg name="log_directory"
          default="$(env HOME)/.ros/auv_logs/rotation_center_calibration" />
@@ -119,8 +140,10 @@
         <param name="kp_yaw" value="$(arg kp_yaw)" />
         <param name="kd_yaw" value="$(arg kd_yaw)" />
         <param name="brake_gain_yaw" value="$(arg brake_gain_yaw)" />
-        <param name="max_mz_positive" value="$(arg max_mz_positive)" />
-        <param name="max_mz_negative" value="$(arg max_mz_negative)" />
+        <rosparam subst_value="true"
+                  param="positive_mz_levels">$(arg positive_mz_levels)</rosparam>
+        <param name="negative_mz_scale"
+               value="$(arg negative_mz_scale)" />
         <param name="brake_max_mz_positive"
                value="$(arg brake_max_mz_positive)" />
         <param name="brake_max_mz_negative"
@@ -141,8 +164,12 @@
                value="$(arg max_yaw_rate_deg_s)" />
         <param name="moving_away_timeout"
                value="$(arg moving_away_timeout)" />
-        <param name="direction_consistency_tolerance"
-               value="$(arg direction_consistency_tolerance)" />
+        <param name="preferred_profile"
+               value="$(arg preferred_profile)" />
+        <param name="recommendation_degradation_ratio"
+               value="$(arg recommendation_degradation_ratio)" />
+        <param name="recommendation_degradation_margin"
+               value="$(arg recommendation_degradation_margin)" />
         <param name="log_directory" value="$(arg log_directory)" />
     </node>
 </launch>

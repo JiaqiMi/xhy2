@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 名称：rotation_center_calibration_core.py
-功能：提供自由偏航控制和分段共享杆臂的旋转中心最小二乘拟合
+功能：提供自由偏航控制和正负计划方向独立旋转中心的最小二乘拟合
 作者：BroXu
 监听：无
 发布：无
 说明：
-    每个自由旋转段允许具有不同的 map 圆心，但所有段共享同一个
-    control_link -> imu 机体系杆臂，从而排除段间 mode=4 接管平移的影响。
+    每个自由旋转段允许具有不同的 map 圆心；同一计划方向的各段共享一个
+    control_link -> imu 机体系杆臂，正、负计划方向分别拟合，从而同时排除
+    段间 mode=4 接管平移和正反桨差异的影响。
 记录：
 2026.7.18
     新增直接 MZ 转向控制、角度展开和旋转中心稳健拟合算法。
@@ -17,6 +18,10 @@
     不再误报方向错误。
 2026.7.18
     增加固定初始位置接管的稳定条件判断。
+2026.7.19
+    正负计划旋转方向分别拟合独立旋转中心，不再强制共享同一杆臂。
+2026.7.19
+    增加低、中、高三档不对称 MZ 配置和分档结果推荐算法。
 """
 
 from __future__ import division
@@ -31,6 +36,76 @@ CalibrationSample = namedtuple(
     'CalibrationSample',
     ('segment', 'x', 'y', 'yaw'),
 )
+TorqueProfile = namedtuple(
+    'TorqueProfile',
+    ('name', 'positive_limit', 'negative_limit'),
+)
+
+
+def build_torque_profiles(
+        positive_levels, negative_scale=1.5,
+        names=('low', 'medium', 'high')):
+    """构造低、中、高三档正负不对称 MZ 限幅。"""
+    levels = tuple(float(value) for value in positive_levels)
+    profile_names = tuple(str(value).strip() for value in names)
+    scale = float(negative_scale)
+    if len(levels) != 3 or len(profile_names) != 3:
+        raise ValueError('旋转中心标定必须配置低、中、高三个力矩档位')
+    if not all(
+            math.isfinite(value) and 0.0 < value <= 10000.0
+            for value in levels):
+        raise ValueError('正向力矩档位必须在 (0, 10000] 内')
+    if not levels[0] < levels[1] < levels[2]:
+        raise ValueError('正向力矩档位必须严格递增')
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError('负向力矩倍率必须为有限正数')
+    negative_levels = tuple(value * scale for value in levels)
+    if any(value > 10000.0 for value in negative_levels):
+        raise ValueError('负向力矩档位乘倍率后不能超过协议上限 10000')
+    if any(not name for name in profile_names):
+        raise ValueError('力矩档位名称不能为空')
+    return tuple(
+        TorqueProfile(name, positive, negative)
+        for name, positive, negative in zip(
+            profile_names, levels, negative_levels)
+    )
+
+
+def fit_quality_score(result):
+    """用稳健 RMS 和最大残差评价单方向旋转中心拟合质量。"""
+    rms = float(result['rms_residual'])
+    maximum = float(result['max_residual'])
+    if not all(math.isfinite(value) and value >= 0.0
+               for value in (rms, maximum)):
+        raise ValueError('旋转中心拟合质量必须为有限非负数')
+    return rms + 0.25 * maximum
+
+
+def select_recommended_profile(
+        profile_results, preferred='medium',
+        degradation_ratio=1.5, degradation_margin=0.01):
+    """优先中速；中速质量明显劣化时选择评分最低的档位。"""
+    results = dict(profile_results)
+    preferred = str(preferred)
+    ratio = float(degradation_ratio)
+    margin = float(degradation_margin)
+    if not results:
+        raise ValueError('至少需要一个力矩档位结果')
+    if preferred not in results:
+        raise ValueError('首选力矩档位不存在: {}'.format(preferred))
+    if (
+            not math.isfinite(ratio)
+            or ratio < 1.0
+            or not math.isfinite(margin)
+            or margin < 0.0):
+        raise ValueError('推荐档位劣化阈值不合法')
+    scores = {
+        name: fit_quality_score(result)
+        for name, result in results.items()
+    }
+    best = min(scores, key=lambda name: (scores[name], name))
+    preferred_limit = scores[best] * ratio + margin
+    return preferred if scores[preferred] <= preferred_limit else best
 
 
 def wrap_angle(angle):
@@ -51,6 +126,37 @@ def clamp_directional(value, positive_limit, negative_limit):
         -float(negative_limit),
         min(float(positive_limit), float(value)),
     )
+
+
+def fixed_track_command(
+        direction, mz_to_yaw_sign,
+        positive_limit, negative_limit):
+    """按计划 yaw 方向输出当前档位的固定 TRACK MZ。"""
+    values = (
+        direction,
+        mz_to_yaw_sign,
+        positive_limit,
+        negative_limit,
+    )
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError('固定 TRACK MZ 参数必须为有限值')
+    if abs(float(direction)) < 1e-9:
+        raise ValueError('计划旋转方向不能为 0')
+    if abs(float(mz_to_yaw_sign)) < 1e-9:
+        raise ValueError('mz_to_yaw_sign 不能为 0')
+    if min(float(positive_limit), float(negative_limit)) <= 0.0:
+        raise ValueError('固定 TRACK MZ 限幅必须为正数')
+    command_sign = (
+        1.0
+        if float(direction) * float(mz_to_yaw_sign) > 0.0
+        else -1.0
+    )
+    magnitude = (
+        float(positive_limit)
+        if command_sign > 0.0
+        else float(negative_limit)
+    )
+    return int(round(command_sign * magnitude))
 
 
 def rotation_is_unexpectedly_moving_away(
@@ -254,7 +360,7 @@ def _build_fit(samples):
 
 
 def fit_segmented_rotation_center(samples, outlier_sigma=3.5):
-    """稳健拟合共享 control_link -> imu 杆臂和每段 map 圆心。"""
+    """稳健拟合同一计划方向共享的杆臂和每段 map 圆心。"""
     converted = [
         CalibrationSample(
             int(sample.segment),
@@ -304,3 +410,14 @@ def fit_segmented_rotation_center(samples, outlier_sigma=3.5):
         'outlier_threshold': threshold,
     })
     return result
+
+
+def fit_planned_direction_centers(
+        positive_samples, negative_samples, outlier_sigma=3.5):
+    """分别拟合正向和负向计划旋转对应的 control_link -> imu 杆臂。"""
+    return {
+        'positive': fit_segmented_rotation_center(
+            positive_samples, outlier_sigma=outlier_sigma),
+        'negative': fit_segmented_rotation_center(
+            negative_samples, outlier_sigma=outlier_sigma),
+    }

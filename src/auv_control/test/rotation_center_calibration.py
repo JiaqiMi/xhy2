@@ -13,9 +13,12 @@
 说明：
     1. 运行时必须停止 motion_supervisor，本节点独占 /cmd/pose/ned；
     2. mode=2 仅输出 MZ，TX/TY 始终为零，避免平移控制污染旋转中心；
-    3. 默认每 90° 刹停并以当前位置 mode=4 接管，正反各三圈；
-    4. 每个旋转段允许不同 map 圆心，最终拟合共享 control_link -> imu 杆臂；
-    5. 程序结束后输出原始 CSV 和可直接写入 launch 的 YAML 结果。
+    3. 低、中、高三档依次测试；正向 MZ 默认 1000/2000/3000，
+       负向为对应档位的 1.5 倍；
+    4. 每档每 90° 刹停并回到同一个锁定位置，正反各三圈；
+    5. 每个旋转段允许不同 map 圆心，各档正向和负向分别拟合独立旋转中心；
+    6. 拟合只使用 TRACK 阶段样本，不把反号主动刹转样本混入计划方向中心；
+    7. 结果分档输出，优先推荐中速；中速质量明显异常时选择更稳定档位。
 记录：
 2026.7.18
     新增自由旋转、主动刹转、定点接管和旋转中心自动拟合程序。
@@ -26,6 +29,11 @@
 2026.7.18
     首帧有效位姿只锁定一次；全程 mode=2 和段间 mode=4 均使用同一初始
     水平位置，每段确认位置、航向、线速度和角速度稳定后才进入下一段。
+2026.7.19
+    按计划旋转方向分别拟合正向和负向旋转中心；拟合仅使用 TRACK 且达到
+    最低角速度的样本，主动刹转样本不混入计划方向中心。
+2026.7.19
+    增加低、中、高三档不对称 MZ 自动序列、分档统计拟合及推荐中心输出。
 """
 
 from __future__ import division
@@ -52,10 +60,14 @@ if TEST_DIR not in sys.path:
 
 from rotation_center_calibration_core import (  # noqa: E402
     CalibrationSample,
+    build_torque_profiles,
     direct_yaw_command,
-    fit_segmented_rotation_center,
+    fit_planned_direction_centers,
+    fit_quality_score,
+    fixed_track_command,
     locked_handover_is_stable,
     rotation_is_unexpectedly_moving_away,
+    select_recommended_profile,
     unwrap_angle,
     wrap_angle,
 )
@@ -67,11 +79,14 @@ MODE_DPROV = 4
 
 
 class RotationCenterCalibration(object):
-    """执行自由偏航并拟合 control_link 到 IMU 的水平杆臂。"""
+    """执行自由偏航并分别拟合正、负计划方向的水平旋转中心。"""
 
     LOG_FIELDS = (
         'ros_time',
         'phase',
+        'torque_profile',
+        'track_mz_positive_limit',
+        'track_mz_negative_limit',
         'segment',
         'direction',
         'turn_index',
@@ -98,6 +113,53 @@ class RotationCenterCalibration(object):
         'stopping_angle_deg',
         'reported_mode',
     )
+
+    @staticmethod
+    def _new_track_statistics():
+        """创建一个力矩档位、一个计划方向的 TRACK 统计量。"""
+        return {
+            'cycle_count': 0,
+            'yaw_rate_sum': 0.0,
+            'peak_yaw_rate': 0.0,
+            'horizontal_speed_sum': 0.0,
+            'peak_horizontal_speed': 0.0,
+            'max_drift': 0.0,
+        }
+
+    @staticmethod
+    def _finalize_track_statistics(statistics):
+        """把 TRACK 累计量转换为可写入结果文件的统计值。"""
+        count = int(statistics['cycle_count'])
+        divisor = float(max(1, count))
+        return {
+            'cycle_count': count,
+            'mean_abs_yaw_rate': (
+                statistics['yaw_rate_sum'] / divisor),
+            'peak_abs_yaw_rate': statistics['peak_yaw_rate'],
+            'mean_horizontal_speed': (
+                statistics['horizontal_speed_sum'] / divisor),
+            'peak_horizontal_speed': (
+                statistics['peak_horizontal_speed']),
+            'max_drift': statistics['max_drift'],
+        }
+
+    def _update_track_statistics(
+            self, profile_name, direction, yaw_rate,
+            horizontal_speed, drift):
+        """累计当前档位和计划方向的 TRACK 运动特征。"""
+        statistics = self.profile_statistics[
+            profile_name][int(direction)]
+        absolute_rate = abs(float(yaw_rate))
+        speed = abs(float(horizontal_speed))
+        statistics['cycle_count'] += 1
+        statistics['yaw_rate_sum'] += absolute_rate
+        statistics['peak_yaw_rate'] = max(
+            statistics['peak_yaw_rate'], absolute_rate)
+        statistics['horizontal_speed_sum'] += speed
+        statistics['peak_horizontal_speed'] = max(
+            statistics['peak_horizontal_speed'], speed)
+        statistics['max_drift'] = max(
+            statistics['max_drift'], float(drift))
 
     def __init__(self):
         self.target_z = float(rospy.get_param('~target_z', -0.9))
@@ -137,10 +199,22 @@ class RotationCenterCalibration(object):
         self.kd_yaw = float(rospy.get_param('~kd_yaw', 2000.0))
         self.brake_gain_yaw = float(
             rospy.get_param('~brake_gain_yaw', 6000.0))
-        self.max_mz_positive = float(
-            rospy.get_param('~max_mz_positive', 1000.0))
-        self.max_mz_negative = float(
-            rospy.get_param('~max_mz_negative', 1000.0))
+        self.positive_mz_levels = tuple(float(value) for value in
+                                        rospy.get_param(
+                                            '~positive_mz_levels',
+                                            [1000.0, 2000.0, 3000.0]))
+        self.negative_mz_scale = float(
+            rospy.get_param('~negative_mz_scale', 1.5))
+        self.torque_profiles = build_torque_profiles(
+            self.positive_mz_levels,
+            negative_scale=self.negative_mz_scale,
+        )
+        self.total_segments = (
+            len(self.torque_profiles)
+            * 2
+            * self.turns_each_direction
+            * 4
+        )
         self.brake_max_mz_positive = float(
             rospy.get_param('~brake_max_mz_positive', 3000.0))
         self.brake_max_mz_negative = float(
@@ -163,8 +237,12 @@ class RotationCenterCalibration(object):
             rospy.get_param('~max_yaw_rate_deg_s', 45.0)))
         self.moving_away_timeout = float(
             rospy.get_param('~moving_away_timeout', 3.0))
-        self.direction_consistency_tolerance = float(rospy.get_param(
-            '~direction_consistency_tolerance', 0.05))
+        self.preferred_profile = str(
+            rospy.get_param('~preferred_profile', 'medium')).strip()
+        self.recommendation_degradation_ratio = float(rospy.get_param(
+            '~recommendation_degradation_ratio', 1.5))
+        self.recommendation_degradation_margin = float(rospy.get_param(
+            '~recommendation_degradation_margin', 0.01))
         self.log_directory = os.path.abspath(os.path.expanduser(str(
             rospy.get_param(
                 '~log_directory',
@@ -189,8 +267,6 @@ class RotationCenterCalibration(object):
             self.kp_yaw,
             self.kd_yaw,
             self.brake_gain_yaw,
-            self.max_mz_positive,
-            self.max_mz_negative,
             self.brake_max_mz_positive,
             self.brake_max_mz_negative,
             self.brake_acceleration_positive,
@@ -202,7 +278,16 @@ class RotationCenterCalibration(object):
             self.sample_min_yaw_rate,
             self.max_yaw_rate,
             self.moving_away_timeout,
-            self.direction_consistency_tolerance,
+            self.negative_mz_scale,
+            self.recommendation_degradation_ratio,
+            self.recommendation_degradation_margin,
+        ) + tuple(
+            value
+            for profile in self.torque_profiles
+            for value in (
+                profile.positive_limit,
+                profile.negative_limit,
+            )
         )
         if not all(math.isfinite(value) for value in numeric):
             raise ValueError('旋转中心标定参数必须为有限值')
@@ -219,9 +304,12 @@ class RotationCenterCalibration(object):
                 or self.drift_abort_radius <= 0.0
                 or self.max_yaw_rate <= 0.0
                 or self.moving_away_timeout <= 0.0
-                or self.direction_consistency_tolerance <= 0.0):
+                or self.preferred_profile not in tuple(
+                    profile.name for profile in self.torque_profiles)
+                or self.recommendation_degradation_ratio < 1.0
+                or self.recommendation_degradation_margin < 0.0):
             raise ValueError(
-                '频率、角度、圈数、超时和漂移半径参数不在有效范围；'
+                '频率、角度、圈数、超时、力矩档位和推荐阈值不在有效范围；'
                 '当前 turn_step_deg 必须为 90')
 
         self.tf_listener = tf.TransformListener()
@@ -236,8 +324,17 @@ class RotationCenterCalibration(object):
         self.locked_initial_yaw = None
         self.last_tf_stamp = None
         self.unwrapped_yaw = None
-        self.samples = []
-        self.segment_directions = {}
+        self.direction_samples = {
+            profile.name: {1: [], -1: []}
+            for profile in self.torque_profiles
+        }
+        self.profile_statistics = {
+            profile.name: {
+                1: self._new_track_statistics(),
+                -1: self._new_track_statistics(),
+            }
+            for profile in self.torque_profiles
+        }
         self.latest_command = None
         self.completed = False
         self.log_file = None
@@ -446,7 +543,8 @@ class RotationCenterCalibration(object):
         self.command_pub.publish(command)
 
     def _log_cycle(
-            self, phase, segment, direction, turn_index, quarter_index,
+            self, phase, profile, segment, direction,
+            turn_index, quarter_index,
             target_unwrapped, yaw_error, command_mode, command_mz,
             controller_phase, stopping_angle):
         imu_position, unused_imu_rotation, imu_yaw = self.current_imu_pose
@@ -458,9 +556,17 @@ class RotationCenterCalibration(object):
             0.0 if self.raw_velocity is None else self.raw_velocity[2])
         yaw_rate = self.yaw_rate_feedback_sign * velocity[2]
         command_target = self.latest_command.target.pose.position
+        profile_name = '' if profile is None else profile.name
+        positive_limit = (
+            '' if profile is None else profile.positive_limit)
+        negative_limit = (
+            '' if profile is None else profile.negative_limit)
         self.log_writer.writerow({
             'ros_time': rospy.Time.now().to_sec(),
             'phase': phase,
+            'torque_profile': profile_name,
+            'track_mz_positive_limit': positive_limit,
+            'track_mz_negative_limit': negative_limit,
             'segment': segment,
             'direction': direction,
             'turn_index': turn_index,
@@ -490,8 +596,8 @@ class RotationCenterCalibration(object):
         self.log_file.flush()
 
     def _hold_locked_position(
-            self, duration, label, target_yaw, segment=0, direction=0,
-            turn_index=0, quarter_index=0):
+            self, duration, label, target_yaw, profile=None,
+            segment=0, direction=0, turn_index=0, quarter_index=0):
         if not self._update_tf() or not self._feedback_fresh():
             raise RuntimeError('{} 前反馈无效'.format(label))
         if self.locked_initial_pose is None:
@@ -536,6 +642,7 @@ class RotationCenterCalibration(object):
             stable_count = stable_count + 1 if stable else 0
             self._log_cycle(
                 label,
+                profile,
                 segment,
                 direction,
                 turn_index,
@@ -569,14 +676,14 @@ class RotationCenterCalibration(object):
             rate.sleep()
 
     def _rotate_segment(
-            self, segment, direction, turn_index, quarter_index):
+            self, profile, segment, direction,
+            turn_index, quarter_index):
         if not self._update_tf() or not self._feedback_fresh():
             raise RuntimeError('自由旋转前反馈无效')
         if self.locked_initial_pose is None:
             raise RuntimeError('自由旋转前尚未锁定初始位置')
         segment_start_position = self.locked_initial_pose[0]
         segment_start_yaw = self.unwrapped_yaw
-        self.segment_directions[segment] = int(direction)
         target_unwrapped = (
             segment_start_yaw + direction * self.turn_step)
         stable_count = 0
@@ -584,9 +691,15 @@ class RotationCenterCalibration(object):
         deadline = rospy.Time.now() + rospy.Duration(self.step_timeout)
         rate = rospy.Rate(self.control_rate_hz)
         rospy.loginfo(
-            '%s: 段 %d，%s第 %d 圈第 %d/4 段，目标增量=%+.1f deg',
+            '%s: %s档 MZ(+%.0f/-%.0f)，段 %d/%d，'
+            '%s第 %d 圈第 %d/4 段，'
+            '目标增量=%+.1f deg',
             NODE_NAME,
+            profile.name,
+            profile.positive_limit,
+            profile.negative_limit,
             segment,
+            self.total_segments,
             '正向' if direction > 0 else '负向',
             turn_index,
             quarter_index,
@@ -625,8 +738,8 @@ class RotationCenterCalibration(object):
                     self.kp_yaw,
                     self.kd_yaw,
                     self.brake_gain_yaw,
-                    self.max_mz_positive,
-                    self.max_mz_negative,
+                    profile.positive_limit,
+                    profile.negative_limit,
                     self.brake_max_mz_positive,
                     self.brake_max_mz_negative,
                     self.brake_acceleration_positive,
@@ -639,6 +752,15 @@ class RotationCenterCalibration(object):
                     self.mz_to_yaw_sign,
                 )
             )
+            if controller_phase == 'TRACK':
+                # 三档对比要求 TRACK 使用确定的固定 MZ；停车距离判定、
+                # BRAKE 反向力矩和 HOLD 条件仍由同一控制器负责。
+                command_mz = fixed_track_command(
+                    direction,
+                    self.mz_to_yaw_sign,
+                    profile.positive_limit,
+                    profile.negative_limit,
+                )
             moving_away = rotation_is_unexpectedly_moving_away(
                 yaw_error,
                 yaw_rate,
@@ -668,6 +790,7 @@ class RotationCenterCalibration(object):
             self._publish_command(command)
             self._log_cycle(
                 'ROTATE',
+                profile,
                 segment,
                 direction,
                 turn_index,
@@ -679,15 +802,29 @@ class RotationCenterCalibration(object):
                 controller_phase,
                 stopping_angle,
             )
+            horizontal_speed = math.hypot(
+                self.filtered_velocity[0],
+                self.filtered_velocity[1],
+            )
+            if controller_phase == 'TRACK':
+                self._update_track_statistics(
+                    profile.name,
+                    direction,
+                    yaw_rate,
+                    horizontal_speed,
+                    drift,
+                )
             if (
-                    controller_phase != 'HOLD'
-                    or abs(yaw_rate) >= self.sample_min_yaw_rate):
-                self.samples.append(CalibrationSample(
+                    controller_phase == 'TRACK'
+                    and abs(yaw_rate) >= self.sample_min_yaw_rate):
+                sample = CalibrationSample(
                     segment,
                     imu_position[0],
                     imu_position[1],
                     self.current_imu_pose[2],
-                ))
+                )
+                self.direction_samples[
+                    profile.name][int(direction)].append(sample)
             stable = (
                 controller_phase == 'HOLD'
                 and abs(yaw_error) <= self.yaw_tolerance
@@ -702,9 +839,10 @@ class RotationCenterCalibration(object):
                         segment, self.step_timeout))
             rospy.loginfo_throttle(
                 2.0,
-                '%s: 段 %d %s，yaw_error=%.1f deg，'
+                '%s: %s档段 %d %s，yaw_error=%.1f deg，'
                 'yaw_rate=%.1f deg/s，MZ=%d，漂移=%.2f m',
                 NODE_NAME,
+                profile.name,
                 segment,
                 controller_phase,
                 math.degrees(yaw_error),
@@ -714,65 +852,152 @@ class RotationCenterCalibration(object):
             )
             rate.sleep()
 
-    def _write_result(self, result, positive_result, negative_result):
+    def _write_direction_result(
+            self, stream, indent, result, statistics):
+        """写入单个档位、单个计划方向的拟合及运动统计。"""
+        stream.write(
+            '{}control_to_imu_x: {:.6f}\n'.format(
+                indent, result['offset_x']))
+        stream.write(
+            '{}control_to_imu_y: {:.6f}\n'.format(
+                indent, result['offset_y']))
+        stream.write(
+            '{}control_to_imu_z: {:.6f}\n'.format(
+                indent, self.control_to_imu_z))
+        stream.write(
+            '{}radius: {:.6f}\n'.format(
+                indent,
+                math.hypot(result['offset_x'], result['offset_y'])))
+        stream.write(
+            '{}quality_score: {:.6f}\n'.format(
+                indent, fit_quality_score(result)))
+        stream.write(
+            '{}rms_residual: {:.6f}\n'.format(
+                indent, result['rms_residual']))
+        stream.write(
+            '{}max_residual: {:.6f}\n'.format(
+                indent, result['max_residual']))
+        stream.write(
+            '{}sample_count: {}\n'.format(
+                indent, result['sample_count']))
+        stream.write(
+            '{}used_sample_count: {}\n'.format(
+                indent, result['used_sample_count']))
+        stream.write(
+            '{}rejected_sample_count: {}\n'.format(
+                indent, result['rejected_sample_count']))
+        stream.write(
+            '{}track_cycle_count: {}\n'.format(
+                indent, statistics['cycle_count']))
+        stream.write(
+            '{}mean_abs_yaw_rate_deg_s: {:.6f}\n'.format(
+                indent,
+                math.degrees(statistics['mean_abs_yaw_rate'])))
+        stream.write(
+            '{}peak_abs_yaw_rate_deg_s: {:.6f}\n'.format(
+                indent,
+                math.degrees(statistics['peak_abs_yaw_rate'])))
+        stream.write(
+            '{}mean_horizontal_speed: {:.6f}\n'.format(
+                indent, statistics['mean_horizontal_speed']))
+        stream.write(
+            '{}peak_horizontal_speed: {:.6f}\n'.format(
+                indent, statistics['peak_horizontal_speed']))
+        stream.write(
+            '{}max_drift_from_locked_position: {:.6f}\n'.format(
+                indent, statistics['max_drift']))
+        stream.write('{}segment_centers:\n'.format(indent))
+        for segment in result['segments']:
+            center = result['centers'][segment]
+            stream.write(
+                '{}  {}: [{:.6f}, {:.6f}]\n'.format(
+                    indent, segment, center[0], center[1]))
+
+    def _write_result(
+            self, profile_results, profile_statistics,
+            recommended_positive_profile,
+            recommended_negative_profile):
+        """写入可直接配置的推荐中心和三档完整对比结果。"""
+        positive_result = profile_results[
+            recommended_positive_profile]['positive']
+        negative_result = profile_results[
+            recommended_negative_profile]['negative']
         direction_difference = math.hypot(
             positive_result['offset_x'] - negative_result['offset_x'],
             positive_result['offset_y'] - negative_result['offset_y'],
         )
+        profile_by_name = {
+            profile.name: profile for profile in self.torque_profiles}
         with open(self.result_path, 'w', encoding='utf-8') as stream:
             stream.write(
                 '# 由 rotation_center_calibration.py 自动生成\n')
             stream.write(
-                'control_to_imu_x: {:.6f}\n'.format(result['offset_x']))
+                '# 顶层 control_to_imu_* 是推荐结果，可写入 motion_supervisor\n')
             stream.write(
-                'control_to_imu_y: {:.6f}\n'.format(result['offset_y']))
+                '# 推荐优先采用中速；中速质量明显异常时按方向选择更稳定档位\n')
             stream.write(
-                'control_to_imu_z: {:.6f}\n'.format(
-                    self.control_to_imu_z))
+                'recommended_positive_profile: {}\n'.format(
+                    recommended_positive_profile))
             stream.write(
-                'radius: {:.6f}\n'.format(math.hypot(
-                    result['offset_x'], result['offset_y'])))
+                'recommended_negative_profile: {}\n'.format(
+                    recommended_negative_profile))
             stream.write(
-                'rms_residual: {:.6f}\n'.format(result['rms_residual']))
-            stream.write(
-                'max_residual: {:.6f}\n'.format(result['max_residual']))
-            stream.write(
-                'sample_count: {}\n'.format(result['sample_count']))
-            stream.write(
-                'used_sample_count: {}\n'.format(
-                    result['used_sample_count']))
-            stream.write(
-                'rejected_sample_count: {}\n'.format(
-                    result['rejected_sample_count']))
-            stream.write('positive_direction:\n')
-            stream.write(
-                '  control_to_imu_x: {:.6f}\n'.format(
+                'control_to_imu_positive_x: {:.6f}\n'.format(
                     positive_result['offset_x']))
             stream.write(
-                '  control_to_imu_y: {:.6f}\n'.format(
+                'control_to_imu_positive_y: {:.6f}\n'.format(
                     positive_result['offset_y']))
             stream.write(
-                '  rms_residual: {:.6f}\n'.format(
-                    positive_result['rms_residual']))
-            stream.write('negative_direction:\n')
+                'control_to_imu_positive_z: {:.6f}\n'.format(
+                    self.control_to_imu_z))
             stream.write(
-                '  control_to_imu_x: {:.6f}\n'.format(
+                'control_to_imu_negative_x: {:.6f}\n'.format(
                     negative_result['offset_x']))
             stream.write(
-                '  control_to_imu_y: {:.6f}\n'.format(
+                'control_to_imu_negative_y: {:.6f}\n'.format(
                     negative_result['offset_y']))
             stream.write(
-                '  rms_residual: {:.6f}\n'.format(
-                    negative_result['rms_residual']))
+                'control_to_imu_negative_z: {:.6f}\n'.format(
+                    self.control_to_imu_z))
             stream.write(
                 'direction_offset_difference: {:.6f}\n'.format(
                     direction_difference))
-            stream.write('segment_centers:\n')
-            for segment in result['segments']:
-                center = result['centers'][segment]
+            stream.write('recommendation:\n')
+            stream.write(
+                '  preferred_profile: {}\n'.format(
+                    self.preferred_profile))
+            stream.write(
+                '  degradation_ratio: {:.6f}\n'.format(
+                    self.recommendation_degradation_ratio))
+            stream.write(
+                '  degradation_margin: {:.6f}\n'.format(
+                    self.recommendation_degradation_margin))
+            stream.write('profiles:\n')
+            for profile in self.torque_profiles:
+                name = profile.name
+                results = profile_results[name]
+                statistics = profile_statistics[name]
+                stream.write('  {}:\n'.format(name))
                 stream.write(
-                    '  {}: [{:.6f}, {:.6f}]\n'.format(
-                        segment, center[0], center[1]))
+                    '    track_mz_positive_limit: {:.1f}\n'.format(
+                        profile_by_name[name].positive_limit))
+                stream.write(
+                    '    track_mz_negative_limit: {:.1f}\n'.format(
+                        profile_by_name[name].negative_limit))
+                stream.write('    positive_direction:\n')
+                self._write_direction_result(
+                    stream,
+                    '      ',
+                    results['positive'],
+                    statistics['positive'],
+                )
+                stream.write('    negative_direction:\n')
+                self._write_direction_result(
+                    stream,
+                    '      ',
+                    results['negative'],
+                    statistics['negative'],
+                )
 
     def emergency_hold(self):
         """异常或退出时发送当前位置 mode=4、六轴力清零。"""
@@ -800,11 +1025,20 @@ class RotationCenterCalibration(object):
         self._close_log()
 
     def run(self):
+        profile_description = ', '.join(
+            '{}(+{:.0f}/-{:.0f})'.format(
+                profile.name,
+                profile.positive_limit,
+                profile.negative_limit,
+            )
+            for profile in self.torque_profiles
+        )
         rospy.logwarn(
             '%s: 本程序将独占 /cmd/pose/ned；TX=TY 始终为 0，'
-            '正反各 %d 圈，原始日志: %s',
+            '每档正反各 %d 圈；力矩档位=%s；原始日志: %s',
             NODE_NAME,
             self.turns_each_direction,
+            profile_description,
             self.log_path,
         )
         if not self._wait_for_feedback():
@@ -830,59 +1064,97 @@ class RotationCenterCalibration(object):
         )
 
         segment = 0
-        for direction in (1, -1):
-            for turn_index in range(1, self.turns_each_direction + 1):
-                for quarter_index in range(1, 5):
-                    segment += 1
-                    target_yaw = self._rotate_segment(
-                        segment,
-                        direction,
-                        turn_index,
-                        quarter_index,
-                    )
-                    self._hold_locked_position(
-                        self.handover_hold_seconds,
-                        'SEGMENT_HOLD',
-                        target_yaw,
-                        segment,
-                        direction,
-                        turn_index,
-                        quarter_index,
-                    )
+        for profile in self.torque_profiles:
+            rospy.logwarn(
+                '%s: 开始%s档标定，TRACK MZ 正向上限=%.0f，'
+                '负向上限=%.0f',
+                NODE_NAME,
+                profile.name,
+                profile.positive_limit,
+                profile.negative_limit,
+            )
+            for direction in (1, -1):
+                for turn_index in range(
+                        1, self.turns_each_direction + 1):
+                    for quarter_index in range(1, 5):
+                        segment += 1
+                        target_yaw = self._rotate_segment(
+                            profile,
+                            segment,
+                            direction,
+                            turn_index,
+                            quarter_index,
+                        )
+                        self._hold_locked_position(
+                            self.handover_hold_seconds,
+                            'SEGMENT_HOLD',
+                            target_yaw,
+                            profile,
+                            segment,
+                            direction,
+                            turn_index,
+                            quarter_index,
+                        )
 
-        result = fit_segmented_rotation_center(self.samples)
-        positive_result = fit_segmented_rotation_center([
-            sample for sample in self.samples
-            if self.segment_directions[sample.segment] > 0
-        ])
-        negative_result = fit_segmented_rotation_center([
-            sample for sample in self.samples
-            if self.segment_directions[sample.segment] < 0
-        ])
-        direction_difference = math.hypot(
-            positive_result['offset_x'] - negative_result['offset_x'],
-            positive_result['offset_y'] - negative_result['offset_y'],
+        profile_results = {}
+        finalized_statistics = {}
+        for profile in self.torque_profiles:
+            name = profile.name
+            profile_results[name] = fit_planned_direction_centers(
+                self.direction_samples[name][1],
+                self.direction_samples[name][-1],
+            )
+            finalized_statistics[name] = {
+                'positive': self._finalize_track_statistics(
+                    self.profile_statistics[name][1]),
+                'negative': self._finalize_track_statistics(
+                    self.profile_statistics[name][-1]),
+            }
+        recommended_positive_profile = select_recommended_profile(
+            {
+                name: results['positive']
+                for name, results in profile_results.items()
+            },
+            preferred=self.preferred_profile,
+            degradation_ratio=self.recommendation_degradation_ratio,
+            degradation_margin=self.recommendation_degradation_margin,
         )
-        self._write_result(result, positive_result, negative_result)
+        recommended_negative_profile = select_recommended_profile(
+            {
+                name: results['negative']
+                for name, results in profile_results.items()
+            },
+            preferred=self.preferred_profile,
+            degradation_ratio=self.recommendation_degradation_ratio,
+            degradation_margin=self.recommendation_degradation_margin,
+        )
+        self._write_result(
+            profile_results,
+            finalized_statistics,
+            recommended_positive_profile,
+            recommended_negative_profile,
+        )
         self.completed = True
         self._close_log()
+        positive_result = profile_results[
+            recommended_positive_profile]['positive']
+        negative_result = profile_results[
+            recommended_negative_profile]['negative']
         rospy.loginfo(
-            '%s: 标定完成，control_link -> imu=(%.4f, %.4f, 0.0) m，'
-            '半径=%.4f m，RMS 残差=%.4f m',
+            '%s: 三档标定完成；推荐正向=%s档，control_link -> imu='
+            '(%.4f, %.4f, %.4f) m，RMS=%.4f m；'
+            '推荐负向=%s档，中心=(%.4f, %.4f, %.4f) m，RMS=%.4f m',
             NODE_NAME,
-            result['offset_x'],
-            result['offset_y'],
-            math.hypot(result['offset_x'], result['offset_y']),
-            result['rms_residual'],
-        )
-        if direction_difference > self.direction_consistency_tolerance:
-            rospy.logwarn(
-                '%s: 正负方向杆臂差 %.4f m 超过阈值 %.4f m；'
-                '本次结果不得直接写入正式参数',
-                NODE_NAME,
-                direction_difference,
-                self.direction_consistency_tolerance,
-            )
+            recommended_positive_profile,
+            positive_result['offset_x'],
+            positive_result['offset_y'],
+            self.control_to_imu_z,
+            positive_result['rms_residual'],
+            recommended_negative_profile,
+            negative_result['offset_x'],
+            negative_result['offset_y'],
+            self.control_to_imu_z,
+            negative_result['rms_residual'])
         rospy.loginfo('%s: 结果文件: %s', NODE_NAME, self.result_path)
 
 

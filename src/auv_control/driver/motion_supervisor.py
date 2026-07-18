@@ -34,6 +34,9 @@
 2026.7.18
     base_link 恢复与 IMU/GNSS 定位点重合，默认 base_link 到 IMU 杆臂归零；
     control_link 仍作为可独立标定的水平旋转中心。
+2026.7.19
+    增加正、负计划旋转方向两套虚拟控制中心；一次转向动作按计划 yaw 方向
+    锁存中心，主动刹转 MZ 反号时不切换。
 """
 
 from __future__ import division
@@ -52,8 +55,10 @@ from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 from motion_supervisor_core import (
     AXIS_STATE_NAMES,
+    ALIGN_FINAL,
     CAPTURE,
     DEFAULT_PARAMETERS,
+    FINAL_BRAKE,
     HOVER,
     MODE_DPROV,
     MotionGoal,
@@ -62,6 +67,7 @@ from motion_supervisor_core import (
     SAFE,
     VehicleState,
     map_error_to_body,
+    select_planned_rotation_direction,
     wrap_angle,
 )
 from lever_arm import (
@@ -90,6 +96,10 @@ class MotionSupervisorNode(object):
         'startup_complete',
         'goal_active',
         'pending_goal_active',
+        'planned_rotation_direction',
+        'control_to_imu_x',
+        'control_to_imu_y',
+        'control_to_imu_z',
         'goal_sequence',
         'goal_age_s',
         'current_x',
@@ -147,15 +157,46 @@ class MotionSupervisorNode(object):
             float(rospy.get_param('~base_to_imu_y', 0.0)),
             float(rospy.get_param('~base_to_imu_z', 0.0)),
         )
-        self.control_to_imu = (
+        legacy_control_to_imu = (
             float(rospy.get_param('~control_to_imu_x', 0.0)),
             float(rospy.get_param('~control_to_imu_y', 0.0)),
             float(rospy.get_param('~control_to_imu_z', 0.0)),
         )
-        self.control_to_base = offset_between_origins(
-            self.control_to_imu,
-            self.base_to_imu,
-        )
+        self.control_to_imu_by_direction = {
+            1: (
+                float(rospy.get_param(
+                    '~control_to_imu_positive_x',
+                    legacy_control_to_imu[0])),
+                float(rospy.get_param(
+                    '~control_to_imu_positive_y',
+                    legacy_control_to_imu[1])),
+                float(rospy.get_param(
+                    '~control_to_imu_positive_z',
+                    legacy_control_to_imu[2])),
+            ),
+            -1: (
+                float(rospy.get_param(
+                    '~control_to_imu_negative_x',
+                    legacy_control_to_imu[0])),
+                float(rospy.get_param(
+                    '~control_to_imu_negative_y',
+                    legacy_control_to_imu[1])),
+                float(rospy.get_param(
+                    '~control_to_imu_negative_z',
+                    legacy_control_to_imu[2])),
+            ),
+        }
+        self.control_to_base_by_direction = {
+            direction: offset_between_origins(
+                control_to_imu,
+                self.base_to_imu,
+            )
+            for direction, control_to_imu
+            in self.control_to_imu_by_direction.items()
+        }
+        self.planned_rotation_direction = 1
+        self.control_to_imu = self.control_to_imu_by_direction[1]
+        self.control_to_base = self.control_to_base_by_direction[1]
         self.startup_hover_frames = int(
             rospy.get_param('~startup_hover_frames', 5))
         if self.control_rate_hz <= 0.0:
@@ -166,13 +207,19 @@ class MotionSupervisorNode(object):
             raise ValueError('velocity_filter_alpha 必须在 (0, 1] 内')
         if self.startup_hover_frames <= 0:
             raise ValueError('startup_hover_frames 必须大于 0')
-        if not all(math.isfinite(value) for value in (
-                self.base_to_imu + self.control_to_imu)):
-            raise ValueError('base_link、control_link 到 IMU 的杆臂必须为有限值')
+        all_lever_arms = (
+            self.base_to_imu
+            + self.control_to_imu_by_direction[1]
+            + self.control_to_imu_by_direction[-1]
+        )
+        if not all(math.isfinite(value) for value in all_lever_arms):
+            raise ValueError(
+                'base_link、正负计划方向控制中心到 IMU 的杆臂必须为有限值')
 
         self.core = MotionSupervisorCore(self._load_core_parameters())
         self.tf_listener = tf.TransformListener()
         self.last_pose = None
+        self.last_base_pose = None
         self.last_pose_stamp = None
         self.raw_velocity = None
         self.raw_imu_velocity = None
@@ -219,9 +266,11 @@ class MotionSupervisorNode(object):
         rospy.loginfo(
             'motion_supervisor: 已启动，控制频率 %.1f Hz，'
             '目标深度跟随 /cmd/motion/goal，等待首帧有效反馈；'
-            'control_link -> base_link=(%.3f, %.3f, %.3f) m',
+            '计划正向 control_link -> IMU=(%.3f, %.3f, %.3f) m，'
+            '计划负向=(%.3f, %.3f, %.3f) m',
             self.control_rate_hz,
-            *self.control_to_base)
+            *(self.control_to_imu_by_direction[1]
+              + self.control_to_imu_by_direction[-1]))
         if self.log_file is not None:
             rospy.loginfo(
                 'motion_supervisor: 完整 CSV 数据日志: %s',
@@ -293,7 +342,7 @@ class MotionSupervisorNode(object):
         return parameters
 
     def _base_goal_to_control(self, goal):
-        """把任务给出的最终 base_link 位姿换算为旋转中心目标。"""
+        """按当前锁存方向把最终 base_link 位姿换算为虚拟旋转中心目标。"""
         orientation = quaternion_from_euler(
             0.0, self.pitch_offset, goal.yaw)
         control_position = origin_from_offset_point(
@@ -309,7 +358,7 @@ class MotionSupervisorNode(object):
         )
 
     def _control_goal_to_base(self, goal):
-        """把内部旋转中心目标还原为任务和下位机使用的 base_link 目标。"""
+        """按当前锁存方向把虚拟旋转中心目标还原为 base_link 目标。"""
         orientation = quaternion_from_euler(
             0.0, self.pitch_offset, goal.yaw)
         base_position = offset_point_from_origin(
@@ -323,6 +372,80 @@ class MotionSupervisorNode(object):
             base_position[2],
             goal.yaw,
         )
+
+    def _set_planned_rotation_direction(self, direction):
+        """锁存计划旋转方向，并同步该方向对应的虚拟控制中心。"""
+        direction = 1 if int(direction) >= 0 else -1
+        if direction == self.planned_rotation_direction:
+            return
+        self.planned_rotation_direction = direction
+        self.control_to_imu = self.control_to_imu_by_direction[direction]
+        self.control_to_base = self.control_to_base_by_direction[direction]
+        self._refresh_control_pose_from_base()
+        if self.raw_imu_velocity is not None:
+            control_u, control_v = planar_origin_velocity_from_point(
+                self.raw_imu_velocity[0],
+                self.raw_imu_velocity[1],
+                self.raw_imu_velocity[2],
+                self.control_to_imu,
+            )
+            self.raw_velocity = (
+                control_u,
+                control_v,
+                self.raw_imu_velocity[2],
+            )
+            # 控制参考点发生切换时不混合上一中心的滤波速度。
+            self.filtered_velocity = list(self.raw_velocity)
+        rospy.loginfo(
+            'motion_supervisor: 计划旋转方向锁存为%s，'
+            'control_link -> IMU=(%.3f, %.3f, %.3f) m',
+            '正向' if direction > 0 else '负向',
+            *self.control_to_imu)
+
+    def _refresh_control_pose_from_base(self):
+        """由最新 base_link 位姿刷新当前计划方向的虚拟控制中心位姿。"""
+        if self.last_base_pose is None:
+            return
+        orientation = quaternion_from_euler(
+            0.0, self.pitch_offset, self.last_base_pose[3])
+        control_position = origin_from_offset_point(
+            self.last_base_pose[0:3],
+            orientation,
+            self.control_to_base,
+        )
+        self.last_pose = (
+            control_position[0],
+            control_position[1],
+            control_position[2],
+            self.last_base_pose[3],
+        )
+
+    def _direction_for_base_goal(self, base_goal):
+        """根据计划 yaw 方向选择中心；最终转向和刹转期间保持锁存。"""
+        if (
+                self.core.goal_active
+                and self.core.state in (ALIGN_FINAL, FINAL_BRAKE)):
+            return self.planned_rotation_direction
+        current_yaw = (
+            self.last_base_pose[3]
+            if self.last_base_pose is not None
+            else base_goal.yaw
+        )
+        yaw_error = wrap_angle(base_goal.yaw - current_yaw)
+        return select_planned_rotation_direction(
+            yaw_error,
+            current_direction=self.planned_rotation_direction,
+            direction_locked=(
+                self.core.goal_active
+                and self.core.state in (ALIGN_FINAL, FINAL_BRAKE)),
+            deadband=self.core.parameters['yaw_tolerance'],
+        )
+
+    def _set_base_goal(self, base_goal):
+        """选择并锁存计划方向后，把任务目标交给纯算法核心。"""
+        self._set_planned_rotation_direction(
+            self._direction_for_base_goal(base_goal))
+        self.core.set_goal(self._base_goal_to_control(base_goal))
 
     def goal_callback(self, message):
         """接收 map 坐标系最终目标。"""
@@ -353,14 +476,13 @@ class MotionSupervisorNode(object):
                 message.pose.position.z,
                 yaw,
             )
-            goal = self._base_goal_to_control(base_goal)
         except ValueError as error:
             rospy.logwarn('motion_supervisor: 拒绝无效目标: %s', error)
             return
         if self.startup_complete:
-            self.core.set_goal(goal)
+            self._set_base_goal(base_goal)
         else:
-            self.startup_pending_goal = goal
+            self.startup_pending_goal = base_goal
         self.goal_sequence += 1
         self.last_goal_stamp = rospy.Time.now()
         rospy.loginfo_throttle(
@@ -386,7 +508,7 @@ class MotionSupervisorNode(object):
         rospy.logwarn('motion_supervisor: 收到取消指令')
 
     def velocity_callback(self, message):
-        """把 IMU 点线速度换算到旋转中心后再进行低通滤波。"""
+        """把 IMU 点线速度换算到锁存计划方向的控制中心后再滤波。"""
         raw_imu = (
             message.twist.linear.x,
             message.twist.linear.y,
@@ -424,16 +546,17 @@ class MotionSupervisorNode(object):
             # Time(0) 读取最新可用变换；这里不能阻塞等待，否则 TF 异常时
             # /motion/state 无法保持控制频率发布。
             translation, rotation = self.tf_listener.lookupTransform(
-                'map', 'control_link', rospy.Time(0))
+                'map', 'base_link', rospy.Time(0))
             yaw = euler_from_quaternion(rotation)[2]
             values = (translation[0], translation[1], translation[2], yaw)
             if not all(math.isfinite(value) for value in values):
                 raise ValueError('TF 包含非有限值')
-            self.last_pose = values
+            self.last_base_pose = values
+            self._refresh_control_pose_from_base()
             # 查询仍使用 Time(0) 获取最新位姿，但反馈年龄必须使用 TF
             # 缓冲区中的真实最新时间，不能使用本次查询时刻代替。
             latest_tf_stamp = self.tf_listener.getLatestCommonTime(
-                'map', 'control_link')
+                'map', 'base_link')
             self.last_pose_stamp = (
                 latest_tf_stamp
                 if latest_tf_stamp != rospy.Time(0)
@@ -454,6 +577,26 @@ class MotionSupervisorNode(object):
         return (
             pose_age <= self.feedback_timeout
             and velocity_age <= self.feedback_timeout)
+
+    def _build_vehicle_state(self, now, feedback_fresh):
+        """按当前锁存虚拟中心构造纯算法核心使用的状态。"""
+        velocity = self.filtered_velocity or (0.0, 0.0, 0.0)
+        return VehicleState(
+            now.to_sec(),
+            self.last_pose[0],
+            self.last_pose[1],
+            self.last_pose[2],
+            self.last_pose[3],
+            velocity[0],
+            velocity[1],
+            velocity[2],
+            feedback_fresh=feedback_fresh,
+            reported_mode=self.reported_mode,
+            reported_mode_stamp=(
+                None
+                if self.last_status_stamp is None
+                else self.last_status_stamp.to_sec()),
+        )
 
     @staticmethod
     def _age_seconds(now, stamp):
@@ -504,6 +647,10 @@ class MotionSupervisorNode(object):
             'pending_goal_active': int(
                 self.core.pending_goal is not None
                 or self.startup_pending_goal is not None),
+            'planned_rotation_direction': self.planned_rotation_direction,
+            'control_to_imu_x': self.control_to_imu[0],
+            'control_to_imu_y': self.control_to_imu[1],
+            'control_to_imu_z': self.control_to_imu[2],
             'goal_sequence': self.goal_sequence,
             'goal_age_s': self._age_seconds(now, self.last_goal_stamp),
             'current_x': current_base_position[0],
@@ -654,11 +801,18 @@ class MotionSupervisorNode(object):
         target = (
             self.core.goal
             or self.core.pending_goal
-            or self.startup_pending_goal
         )
         if target is not None:
             message.goal = self._target_pose(
                 target, now, self.pitch_offset)
+        elif self.startup_pending_goal is not None:
+            # 启动前缓存的是任务侧 base_link 目标，先按当前默认计划方向
+            # 换算后再复用统一的消息构造函数。
+            message.goal = self._target_pose(
+                self._base_goal_to_control(self.startup_pending_goal),
+                now,
+                self.pitch_offset,
+            )
         else:
             message.goal.header.stamp = now
             message.goal.header.frame_id = 'map'
@@ -671,7 +825,7 @@ class MotionSupervisorNode(object):
         message.ty = 0
         message.mz = 0
         message.startup_complete = self.startup_complete
-        message.reason = '等待首帧完整有效的 control_link TF 和 IMU 点速度'
+        message.reason = '等待首帧完整有效的 base_link TF 和 IMU 点速度'
         self.state_pub.publish(message)
 
     def run(self):
@@ -687,7 +841,6 @@ class MotionSupervisorNode(object):
                 rate.sleep()
                 continue
 
-            velocity = self.filtered_velocity or (0.0, 0.0, 0.0)
             feedback_fresh = self._feedback_is_fresh(now)
             if not self.startup_latched and not feedback_fresh:
                 self._publish_waiting_state(now)
@@ -696,22 +849,7 @@ class MotionSupervisorNode(object):
                     'motion_supervisor: 等待首帧完整有效的 TF 和速度反馈')
                 rate.sleep()
                 continue
-            vehicle = VehicleState(
-                now.to_sec(),
-                self.last_pose[0],
-                self.last_pose[1],
-                self.last_pose[2],
-                self.last_pose[3],
-                velocity[0],
-                velocity[1],
-                velocity[2],
-                feedback_fresh=feedback_fresh,
-                reported_mode=self.reported_mode,
-                reported_mode_stamp=(
-                    None
-                    if self.last_status_stamp is None
-                    else self.last_status_stamp.to_sec()),
-            )
+            vehicle = self._build_vehicle_state(now, feedback_fresh)
             if not self.startup_latched:
                 self.core.set_goal(MotionGoal(
                     vehicle.x,
@@ -721,7 +859,7 @@ class MotionSupervisorNode(object):
                 ))
                 self.startup_latched = True
                 rospy.loginfo(
-                    'motion_supervisor: 已锁定首帧 control_link 位姿 '
+                    'motion_supervisor: 已锁定首帧计划方向控制中心位姿 '
                     '(%.3f, %.3f, %.3f, %.1fdeg)，开始刹停并定点',
                     vehicle.x,
                     vehicle.y,
@@ -739,7 +877,12 @@ class MotionSupervisorNode(object):
                         if self.startup_pending_goal is not None:
                             pending = self.startup_pending_goal
                             self.startup_pending_goal = None
-                            self.core.set_goal(pending)
+                            self._set_base_goal(pending)
+                            # 计划方向可能改变；立即按新虚拟中心重建本周期
+                            # VehicleState，避免首个任务周期混用旧中心。
+                            self._update_pose(now)
+                            vehicle = self._build_vehicle_state(
+                                now, self._feedback_is_fresh(now))
                             rospy.loginfo(
                                 'motion_supervisor: 启动完成，执行缓存的最新任务目标')
                             # 本周期立即推进到缓存目标，避免对外短暂发布

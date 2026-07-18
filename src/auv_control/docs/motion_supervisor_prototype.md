@@ -16,9 +16,9 @@
   启动期间只缓存最新任务目标，不会用实时位姿持续更新定点目标。
 - 连续目标始终采用最新值，X/Y 分别运行 `TRACK/BRAKE/HOLD`，允许一个轴
   主动刹车时另一个轴继续跟踪；不再执行整艇远目标预抢占。
-- `/cmd/motion/goal` 仍表示最终 `base_link` 位姿；内部使用水平旋转中心
-  `control_link`。最终转向固定 `control_link`，转向结束后 `base_link`
-  到达任务指定的最终位姿。
+- `/cmd/motion/goal` 仍表示最终 `base_link` 位姿；内部按计划 yaw 方向选用
+  正向或负向虚拟旋转中心。进入最终转向后锁存本次中心，主动刹转造成
+  `MZ` 反号时也不切换；转向结束后 `base_link` 到达任务指定的最终位姿。
 - 本原型不修改 `task1～task4`，也不包含下位机 PID 重置逻辑。
 
 ## 话题
@@ -27,7 +27,7 @@
 | ---- | ---------------------- | ------------------------------ | ------------------------ |
 | 输入 | `/cmd/motion/goal`   | `geometry_msgs/PoseStamped`  | `map` 坐标系最终目标   |
 | 输入 | `/cmd/motion/cancel` | `std_msgs/Empty`             | 刹停后悬停当前位置       |
-| 输入 | `/status/vel`        | `geometry_msgs/TwistStamped` | IMU 点速度反馈，内部换算到 control_link |
+| 输入 | `/status/vel`        | `geometry_msgs/TwistStamped` | IMU 点速度反馈，内部换算到当前锁存的虚拟旋转中心 |
 | 输入 | `/status/auv`        | `auv_control/AUVData`        | 下位机模式反馈           |
 | 输出 | `/cmd/pose/ned`      | `auv_control/PoseNEDcmd`     | 唯一运动控制输出         |
 | 输出 | `/motion/state`      | `auv_control/MotionState`    | 状态、误差、速度和输出力 |
@@ -88,7 +88,8 @@ rostopic echo /motion/state
 文件名格式为 `motion_supervisor_YYYYMMDD_HHMMSS_ffffff.csv`。记录内容包括：
 
 - 当前与目标 `x/y/z/yaw`；
-- base_link 与 control_link 的当前/目标位置及两套位置误差；
+- base_link 与当前计划方向虚拟旋转中心的当前/目标位置及两套位置误差；
+- 计划旋转方向、当前使用的旋转中心到 IMU 三轴杆臂；
 - X/Y/Yaw 单轴子状态、轴向误差、轴向速度和启动完成标志；
 - `/status/vel` IMU 点原始速度、杆臂补偿后速度及低通后的 `u/v/r`；
 - 状态编号、状态名称、切换原因和反馈新鲜度；
@@ -271,30 +272,42 @@ angular_brake_acceleration_mz_negative: 0.040
 ## 2026-07-18 旋转中心与轴解耦修正
 
 即使 `base_link` 已恢复与 IMU/GNSS 定位点重合，IMU 也不一定处于实际
-水平旋转中心，因此仍保留独立 `control_link`。当前实现为：
+水平旋转中心。两个侧推正反桨差动转向后，计划正向和负向的等效旋转中心
+可以不同，因此状态机内部保留两套虚拟旋转中心。
 
 ```text
-map -> control_link -> base_link -> imu
+真实 TF 输入：map -> base_link -> imu
+状态机内部：base_link 位姿 + 计划方向杆臂 -> 当前虚拟旋转中心
 ```
 
-- `map -> control_link` 由原始 IMU/GNSS 位置减去
-  `control_link -> imu` 杆臂得到；
-- `control_link -> base_link` 由两组杆臂相减得到；
-- 当前 `base_link -> imu=(0,0,0)`，因此
-  `control_link -> base_link=control_link -> imu`；
+- `map -> base_link` 始终是外部 TF 的真实输入，不在 TF 树中动态切换
+  正负旋转中心；
+- 当前 `base_link -> imu=(0,0,0)`，状态机根据计划方向对应的
+  `control_to_imu_positive_*` 或 `control_to_imu_negative_*`
+  在内部计算虚拟旋转中心位姿和速度；
 - 任务目标仍表示最终 `base_link` 位姿，内部按最终 yaw 换算成
-  `control_link` 目标；
-- 最终转向固定 `control_link`；若实际旋转中心与 IMU 存在杆臂，
+  当前虚拟旋转中心目标；
+- 计划方向由归一化后的最终 yaw 误差符号确定：正误差使用正向中心，
+  负误差使用负向中心；
+- `ALIGN_FINAL` 和 `FINAL_BRAKE` 内保持该方向锁存。主动刹转时即使
+  实际 `MZ` 与计划方向相反，也继续使用同一中心；
+- 最终转向固定当前虚拟旋转中心；若实际旋转中心与 IMU 存在杆臂，
   `base_link` 与 IMU 会按刚体关系沿圆弧运动；
 - `/status/vel` 视为 IMU 点速度，使用 `v_control = v_imu - ω×r`
-  换算为旋转中心速度。
+  换算为当前计划方向旋转中心速度；
+- 新目标在平移阶段允许重新计算计划方向；进入最终转向后，5 Hz 重复发布
+  同一动作目标不会改变本次锁存方向。若新目标使状态机重新进入平移，
+  后续控制周期再按新动作的最终 yaw 选择方向。
 
 旋转中心尚未标定时使用：
 
 ```yaml
-control_to_imu_x: 0.0
-control_to_imu_y: 0.0
-control_to_imu_z: 0.0
+control_to_imu_positive_x: 0.0
+control_to_imu_positive_y: 0.0
+control_to_imu_positive_z: 0.0
+control_to_imu_negative_x: 0.0
+control_to_imu_negative_y: 0.0
+control_to_imu_negative_z: 0.0
 ```
 
 原地旋转标定时记录未补偿 IMU NED 位置和 yaw，拟合：
@@ -303,9 +316,81 @@ control_to_imu_z: 0.0
 p_imu(k) = p_control + R(yaw(k)) * r_control_to_imu
 ```
 
-未知量为固定旋转中心 `p_control` 和水平杆臂
-`r_control_to_imu=(x,y)`。正、负转向各至少三次，剔除明显平移段后取稳健
-拟合中位值，再写入 `begin.launch` 参数。
+正、负计划方向各自拟合固定旋转中心 `p_control` 和水平杆臂
+`r_control_to_imu=(x,y)`。每个方向至少三圈，只使用对应方向的
+`TRACK` 样本，主动刹转样本不参与拟合。结果分别写入
+`control_to_imu_positive_*` 和 `control_to_imu_negative_*` 参数；
+两方向中心差异是物理标定结果，不再作为标定失败条件。
+
+### 低、中、高三档旋转中心自动标定
+
+标定程序按以下默认档位自动执行。`TRACK` 阶段使用表中固定 MZ，
+进入停车距离后再切换为速度反馈主动刹转：
+
+| 档位 | 正向 TRACK MZ | 负向 TRACK MZ |
+|---|---:|---:|
+| `low` | `+1000` | `-1500` |
+| `medium` | `+2000` | `-3000` |
+| `high` | `+3000` | `-4500` |
+
+负向绝对值默认为同档正向值的 `1.5` 倍。每档均按以下顺序运行：
+
+```text
+正向3圈，每90°主动刹停并回锁定初始位置
+→ 负向3圈，每90°主动刹停并回锁定初始位置
+→ 下一力矩档位
+```
+
+三档合计 `3×2×3×4=72` 个90°旋转段。每段结束必须同时满足：
+
+- 下位机反馈 `mode=4`；
+- 回到程序启动时锁定的同一个水平位置；
+- 航向到达该段目标；
+- 水平速度和角速度连续满足稳定帧数。
+
+启动命令：
+
+```bash
+roslaunch auv_control rotation_center_calibration.launch \
+  target_z:=-0.9 \
+  positive_mz_levels:="[1000.0, 2000.0, 3000.0]" \
+  negative_mz_scale:=1.5
+```
+
+运行前必须停止 `motion_supervisor` 和其他 `/cmd/pose/ned` 发布者。
+正负方向的主动刹转仍使用独立刹车限幅；某段刹车时 `MZ` 反号不会改变该段
+所属的计划方向，且 `BRAKE` 样本不参与旋转中心拟合。
+
+原始 CSV 新增以下字段：
+
+- `torque_profile`：`low/medium/high`；
+- `track_mz_positive_limit`、`track_mz_negative_limit`；
+- 每周期计划方向、实际 `command_mz`、角速度、水平速度和漂移。
+
+结果 YAML 同时包含：
+
+- 三个档位各自的正、负旋转中心；
+- 每档正负方向的平均/峰值角速度、水平速度和最大漂移；
+- RMS、最大残差和质量评分；
+- 每个方向最终推荐采用的档位；
+- 顶层可直接配置给 `motion_supervisor` 的六个
+  `control_to_imu_positive/negative_*` 参数。
+
+推荐策略分别对正、负方向执行。默认优先采用 `medium`；质量评分定义为：
+
+```text
+quality_score = rms_residual + 0.25 × max_residual
+```
+
+只有当中速评分明显差于最佳档位，即超过：
+
+```text
+best_score × recommendation_degradation_ratio + recommendation_degradation_margin
+```
+
+才自动选择评分最低的档位。默认倍率为 `1.5`、绝对余量为 `0.01m`。
+低速旋转更容易受水流和推力死区影响产生漂动，因此低速结果主要用于对比，
+不会仅因偶然取得略小残差就替代中速推荐值。
 
 连续目标控制不再使用整艇远近抢占。X/Y 每轴独立运行：
 
