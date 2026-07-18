@@ -1,0 +1,93 @@
+<launch>
+    <!--
+        Task1 LOS 固定正方形轨迹测试。
+        以节点启动时的当前位置和航向为起点，依次向前、向右、向后、回原点。
+        本测试不使用视觉识别；请先启动真实下位机、TF 和 motion_supervisor。
+        本节点不会发布 /cmd/pose/ned，motion_supervisor 必须是其唯一发布者。
+        Web 默认使用 192.168.1.117:8082，不能与其他占用 8082 的测试节点同时启动。
+    -->
+
+    <!-- 基础坐标系和主循环频率。 -->
+    <arg name="rate" default="5.0" />
+    <arg name="map_frame" default="map" />
+    <arg name="robot_frame" default="base_link" />
+
+    <!-- motion_supervisor 接口及目标回执匹配容差。 -->
+    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
+    <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
+    <arg name="motion_state_topic" default="/motion/state" />
+    <arg name="motion_state_timeout" default="0.5" />
+    <arg name="motion_goal_position_tolerance" default="0.05" />
+    <arg name="motion_goal_yaw_tolerance_deg" default="3.0" />
+
+    <!-- 任务完成和网页使用的轨迹 JSON。 -->
+    <arg name="finished_topic" default="/finished" />
+    <arg name="trajectory_topic" default="/task1/v3/los_square/trajectory" />
+
+    <!-- 正方形：单边长度和用于 LOS/Web 的轨迹采样间距，单位 m。 -->
+    <arg name="square_side_length" default="1.0" />
+    <arg name="path_sample_spacing" default="0.05" />
+    <!-- 开始 LOS 前持续提交启动位姿并保持 HOVER 的时间，单位 s。 -->
+    <arg name="startup_hold_seconds" default="10.0" />
+    <!-- 终端状态输出节流周期，单位 s。 -->
+    <arg name="log_period_seconds" default="2.0" />
+
+    <!-- LOS 前视距离，越大越平滑但拐角切角更明显，单位 m。 -->
+    <arg name="los_lookahead_distance" default="0.40" />
+    <!-- 连续 LOS 目标单周期最大位置（m）和 yaw（deg）变化，均低于监督器抢占阈值。 -->
+    <arg name="los_goal_max_step" default="0.20" />
+    <arg name="los_goal_max_yaw_step_deg" default="20.0" />
+
+    <!-- 同时满足剩余路径和距原点容差后，提交原点目标，单位 m。 -->
+    <arg name="endpoint_path_tolerance" default="0.15" />
+    <arg name="endpoint_position_tolerance" default="0.15" />
+    <!-- 原点目标进入 HOVER 后的持续保持时间，单位 s。 -->
+    <arg name="endpoint_hold_seconds" default="4.0" />
+    <!-- 实际轨迹相邻记录点的最小间距（m）和 Web 最大保存点数。 -->
+    <arg name="actual_path_min_spacing" default="0.02" />
+    <arg name="actual_path_max_points" default="2000" />
+    <!-- 轨迹 JSON/Web 数据刷新周期，单位 s。 -->
+    <arg name="trajectory_publish_period" default="0.5" />
+    <arg name="trajectory_web_enabled" default="true" />
+    <arg name="trajectory_web_host" default="192.168.1.117" />
+    <!-- 默认访问 http://192.168.1.117:8082。 -->
+    <arg name="trajectory_web_port" default="8082" />
+
+    <node pkg="auv_control"
+          type="test_task1_v3_los_square.py"
+          name="test_task1_v3_los_square"
+          output="screen">
+        <param name="rate" type="double" value="$(arg rate)" />
+        <param name="map_frame" type="string" value="$(arg map_frame)" />
+        <param name="robot_frame" type="string" value="$(arg robot_frame)" />
+
+        <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
+        <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
+        <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />
+        <param name="motion_state_timeout" type="double" value="$(arg motion_state_timeout)" />
+        <param name="motion_goal_position_tolerance" type="double" value="$(arg motion_goal_position_tolerance)" />
+        <param name="motion_goal_yaw_tolerance_deg" type="double" value="$(arg motion_goal_yaw_tolerance_deg)" />
+        <param name="finished_topic" type="string" value="$(arg finished_topic)" />
+        <param name="trajectory_topic" type="string" value="$(arg trajectory_topic)" />
+
+        <param name="square_side_length" type="double" value="$(arg square_side_length)" />
+        <param name="path_sample_spacing" type="double" value="$(arg path_sample_spacing)" />
+        <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
+        <param name="log_period_seconds" type="double" value="$(arg log_period_seconds)" />
+
+        <param name="los_lookahead_distance" type="double" value="$(arg los_lookahead_distance)" />
+        <param name="los_goal_max_step" type="double" value="$(arg los_goal_max_step)" />
+        <param name="los_goal_max_yaw_step_deg" type="double" value="$(arg los_goal_max_yaw_step_deg)" />
+
+        <param name="endpoint_path_tolerance" type="double" value="$(arg endpoint_path_tolerance)" />
+        <param name="endpoint_position_tolerance" type="double" value="$(arg endpoint_position_tolerance)" />
+        <param name="endpoint_hold_seconds" type="double" value="$(arg endpoint_hold_seconds)" />
+
+        <param name="actual_path_min_spacing" type="double" value="$(arg actual_path_min_spacing)" />
+        <param name="actual_path_max_points" type="int" value="$(arg actual_path_max_points)" />
+        <param name="trajectory_publish_period" type="double" value="$(arg trajectory_publish_period)" />
+        <param name="trajectory_web_enabled" type="bool" value="$(arg trajectory_web_enabled)" />
+        <param name="trajectory_web_host" type="string" value="$(arg trajectory_web_host)" />
+        <param name="trajectory_web_port" type="int" value="$(arg trajectory_web_port)" />
+    </node>
+</launch>

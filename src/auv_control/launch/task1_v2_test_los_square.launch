@@ -1,0 +1,105 @@
+<launch>
+    <!--
+        Task1 LOS 固定正方形轨迹测试。
+        以节点启动时的当前位置和航向为起点，依次向前、向右、向后、回原点。
+        本测试不启动或使用视觉识别；启动真实下位机、TF 和速度反馈后单独运行。
+        Web 默认使用 192.168.1.117:8082，不能与其他占用 8082 的测试节点同时启动。
+    -->
+
+    <!-- 基础坐标系和主循环频率。 -->
+    <arg name="rate" default="5.0" />
+    <arg name="map_frame" default="map" />
+    <arg name="robot_frame" default="base_link" />
+
+    <!-- 话题：运动控制、速度反馈、任务完成和网页使用的轨迹 JSON。 -->
+    <arg name="cmd_topic" default="/cmd/pose/ned" />
+    <arg name="velocity_topic" default="/status/vel" />
+    <arg name="finished_topic" default="/finished" />
+    <arg name="trajectory_topic" default="/task1/los_square/trajectory" />
+
+    <!-- 正方形：单边长度和用于 LOS/Web 的轨迹采样间距，单位 m。 -->
+    <arg name="square_side_length" default="1.0" />
+    <arg name="path_sample_spacing" default="0.05" />
+    <!-- 开始 LOS 前在启动位姿使用 mode=4 定点悬停的时间，单位 s。 -->
+    <arg name="startup_hold_seconds" default="10.0" />
+    <!-- 终端状态输出节流周期，单位 s。 -->
+    <arg name="log_period_seconds" default="2.0" />
+
+    <!-- LOS 前视距离，越大越平滑但拐角切角更明显，单位 m。 -->
+    <arg name="los_lookahead_distance" default="0.40" />
+    <!-- LOS 正常前进和慢速前进 TX；按实机推进器效果修改。 -->
+    <arg name="los_forward_force" default="1000.0" />
+    <arg name="los_slow_forward_force" default="300.0" />
+    <!-- 单个控制周期允许的 TX 变化量，只平滑指令，不在切入 mode=4 前人工刹车。 -->
+    <arg name="los_force_step" default="200.0" />
+    <!-- 前右下坐标系 TX 符号；实机前进方向相反时设置为 -1。 -->
+    <arg name="los_tx_sign" default="1.0" />
+    <!-- 航向误差超过停止角时 TX 目标为 0；超过慢速角时使用慢速 TX，单位 deg。 -->
+    <arg name="los_stop_yaw_error_deg" default="25.0" />
+    <arg name="los_slow_yaw_error_deg" default="12.0" />
+    <!-- 剩余轨迹小于该值时使用慢速 TX，单位 m。 -->
+    <arg name="los_slow_distance" default="0.40" />
+
+    <!-- 同时满足剩余路径和距原点容差后，切入 mode=4 原点定点，单位 m。 -->
+    <arg name="endpoint_path_tolerance" default="0.15" />
+    <arg name="endpoint_position_tolerance" default="0.15" />
+    <!-- 原点定点结束时允许的航向误差，单位 deg；稳定保持时间单位 s。 -->
+    <arg name="endpoint_yaw_tolerance_deg" default="5.0" />
+    <arg name="endpoint_hold_seconds" default="4.0" />
+    <!-- 速度消息超时后使用 TF 差分判断静止，单位 s。 -->
+    <arg name="velocity_message_timeout" default="1.0" />
+    <!-- 判断定点稳定的最大水平速度（m/s）和最大航向角速度（deg/s）。 -->
+    <arg name="stable_linear_speed" default="0.05" />
+    <arg name="stable_angular_speed_deg" default="3.0" />
+
+    <!-- 实际轨迹相邻记录点的最小间距，单位 m。 -->
+    <arg name="actual_path_min_spacing" default="0.02" />
+    <!-- 轨迹 JSON/Web 数据刷新周期，单位 s。 -->
+    <arg name="trajectory_publish_period" default="0.5" />
+    <arg name="trajectory_web_enabled" default="true" />
+    <arg name="trajectory_web_host" default="192.168.1.117" />
+    <!-- 默认访问 http://192.168.1.117:8082。 -->
+    <arg name="trajectory_web_port" default="8082" />
+
+    <node pkg="auv_control"
+          type="test_task1_v2_los_square.py"
+          name="test_task1_v2_los_square"
+          output="screen">
+        <param name="rate" type="double" value="$(arg rate)" />
+        <param name="map_frame" type="string" value="$(arg map_frame)" />
+        <param name="robot_frame" type="string" value="$(arg robot_frame)" />
+
+        <param name="cmd_topic" type="string" value="$(arg cmd_topic)" />
+        <param name="velocity_topic" type="string" value="$(arg velocity_topic)" />
+        <param name="finished_topic" type="string" value="$(arg finished_topic)" />
+        <param name="trajectory_topic" type="string" value="$(arg trajectory_topic)" />
+
+        <param name="square_side_length" type="double" value="$(arg square_side_length)" />
+        <param name="path_sample_spacing" type="double" value="$(arg path_sample_spacing)" />
+        <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
+        <param name="log_period_seconds" type="double" value="$(arg log_period_seconds)" />
+
+        <param name="los_lookahead_distance" type="double" value="$(arg los_lookahead_distance)" />
+        <param name="los_forward_force" type="double" value="$(arg los_forward_force)" />
+        <param name="los_slow_forward_force" type="double" value="$(arg los_slow_forward_force)" />
+        <param name="los_force_step" type="double" value="$(arg los_force_step)" />
+        <param name="los_tx_sign" type="double" value="$(arg los_tx_sign)" />
+        <param name="los_stop_yaw_error_deg" type="double" value="$(arg los_stop_yaw_error_deg)" />
+        <param name="los_slow_yaw_error_deg" type="double" value="$(arg los_slow_yaw_error_deg)" />
+        <param name="los_slow_distance" type="double" value="$(arg los_slow_distance)" />
+
+        <param name="endpoint_path_tolerance" type="double" value="$(arg endpoint_path_tolerance)" />
+        <param name="endpoint_position_tolerance" type="double" value="$(arg endpoint_position_tolerance)" />
+        <param name="endpoint_yaw_tolerance_deg" type="double" value="$(arg endpoint_yaw_tolerance_deg)" />
+        <param name="endpoint_hold_seconds" type="double" value="$(arg endpoint_hold_seconds)" />
+        <param name="velocity_message_timeout" type="double" value="$(arg velocity_message_timeout)" />
+        <param name="stable_linear_speed" type="double" value="$(arg stable_linear_speed)" />
+        <param name="stable_angular_speed_deg" type="double" value="$(arg stable_angular_speed_deg)" />
+
+        <param name="actual_path_min_spacing" type="double" value="$(arg actual_path_min_spacing)" />
+        <param name="trajectory_publish_period" type="double" value="$(arg trajectory_publish_period)" />
+        <param name="trajectory_web_enabled" type="bool" value="$(arg trajectory_web_enabled)" />
+        <param name="trajectory_web_host" type="string" value="$(arg trajectory_web_host)" />
+        <param name="trajectory_web_port" type="int" value="$(arg trajectory_web_port)" />
+    </node>
+</launch>

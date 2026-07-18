@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-名称：test_task1_v2_yellow_marker.py
-功能：Task1 黄色图形单项测试。
+名称：test_task1_v3_yellow_marker.py
+功能：Task1 黄色图形单项测试，运动接口迁移到 motion_supervisor。
 
 流程：
     1. 定点保持启动位姿一段可调时间，等待相机和识别模块启动；
     2. 未识别到黄色图形时，依次定点左转、右转、回正，再向前移动后重复；
-    3. 最近多条识别消息中达到可调有效帧数后，使用动力定位模式前往图形中心；
+    3. 最近多条识别消息中达到可调有效帧数后，发布 map 绝对目标前往图形中心；
     4. 前往图形时只判断水平位置误差，不规划或校正目标航向；
     5. 到达黄色图形上方后亮红灯，动作完成后发布完成消息。
 
-监听：/obj/target_message，/left/image_raw，/status/vel（可选），/tf
-发布：/cmd/pose/ned，/cmd/actuator，/finished
+监听：/obj/target_message，/left/image_raw，/motion/state，/tf
+发布：/cmd/motion/goal，/cmd/motion/cancel，/cmd/actuator，/finished
 
 记录：
 2026.7.14
@@ -27,6 +27,8 @@
     启动阶段改为定点悬停可调时间，避免识别模块尚未就绪时提前运动。
     图形确认改为最近 N 条识别输出中至少 K 条有效，窗口、有效数和置信度均可配置。
     搜索改为 mode=4 左右转、回到启动航向并稳定后定点前进，循环执行。
+    新增 v3：任务不再发布 PoseNEDcmd，不直接控制 mode 或六轴力；所有运动
+    改为向 motion_supervisor 发布 map 绝对目标，并只用新鲜 HOVER 判定到达。
 """
 
 import copy
@@ -34,17 +36,10 @@ import math
 
 import rospy
 import tf
-from auv_control.msg import ActuatorControl, PoseNEDcmd, TargetDetection
-from geometry_msgs.msg import Point, PoseStamped, Quaternion, TwistStamped
-from std_msgs.msg import String
+from auv_control.msg import ActuatorControl, MotionState, TargetDetection
+from geometry_msgs.msg import Point, PoseStamped, Quaternion
+from std_msgs.msg import Empty, String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
-
-
-MODE_DPROV = 4
-
-
-def clamp(value, lower, upper):
-    return max(lower, min(upper, value))
 
 
 def wrap_angle(angle):
@@ -95,17 +90,34 @@ class YellowMarkerTest:
     }
 
     def __init__(self):
-        self.node_name = "test_task1_v2_yellow_marker"
+        self.node_name = "test_task1_v3_yellow_marker"
         self.marker_display_name = "黄色图形"
         self.rate = rospy.Rate(float(rospy.get_param("~rate", 5.0)))
         self.tf_listener = tf.TransformListener()
 
-        self.cmd_topic = rospy.get_param("~cmd_topic", "/cmd/pose/ned")
+        self.motion_goal_topic = rospy.get_param(
+            "~motion_goal_topic", "/cmd/motion/goal"
+        )
+        self.motion_cancel_topic = rospy.get_param(
+            "~motion_cancel_topic", "/cmd/motion/cancel"
+        )
+        self.motion_state_topic = rospy.get_param(
+            "~motion_state_topic", "/motion/state"
+        )
+        self.motion_state_timeout = max(0.1, float(rospy.get_param(
+            "~motion_state_timeout", 0.5
+        )))
+        self.motion_goal_position_tolerance = max(0.001, float(rospy.get_param(
+            "~motion_goal_position_tolerance", 0.05
+        )))
+        self.motion_goal_yaw_tolerance = math.radians(max(
+            0.1,
+            float(rospy.get_param("~motion_goal_yaw_tolerance_deg", 3.0)),
+        ))
         self.target_topic = rospy.get_param("~target_topic", "/obj/target_message")
         self.actuator_topic = rospy.get_param("~actuator_topic", "/cmd/actuator")
         self.finished_topic = rospy.get_param("~finished_topic", "/finished")
         self.camera_topic = rospy.get_param("~camera_topic", "/left/image_raw")
-        self.velocity_topic = rospy.get_param("~velocity_topic", "/status/vel")
 
         self.search_forward_distance = float(rospy.get_param(
             "~search_forward_distance", 0.5
@@ -138,16 +150,6 @@ class YellowMarkerTest:
         self.startup_hold_seconds = max(0.0, float(rospy.get_param(
             "~startup_hold_seconds", 10.0
         )))
-        self.velocity_message_timeout = float(rospy.get_param(
-            "~velocity_message_timeout", 1.0
-        ))
-        self.stable_linear_speed = float(rospy.get_param(
-            "~stable_linear_speed", 0.05
-        ))
-        self.stable_angular_speed = math.radians(float(rospy.get_param(
-            "~stable_angular_speed_deg", 3.0
-        )))
-
         self.yellow_classes = class_names(
             "~yellow_classes", ["triangle", "circle"]
         )
@@ -185,8 +187,11 @@ class YellowMarkerTest:
         self.drive_cmd = int(rospy.get_param("~drive_cmd", 0))
         self.drive_speed = int(rospy.get_param("~drive_speed", 0))
 
-        self.cmd_pub = rospy.Publisher(
-            self.cmd_topic, PoseNEDcmd, queue_size=10
+        self.motion_goal_pub = rospy.Publisher(
+            self.motion_goal_topic, PoseStamped, queue_size=1
+        )
+        self.motion_cancel_pub = rospy.Publisher(
+            self.motion_cancel_topic, Empty, queue_size=1
         )
         self.actuator_pub = rospy.Publisher(
             self.actuator_topic, ActuatorControl, queue_size=10
@@ -200,14 +205,16 @@ class YellowMarkerTest:
         self.search_base_yaw = None
         self.startup_hold_started = None
         self.last_camera_time = None
-        self.latest_velocity = None
-        self.latest_velocity_time = None
-        self.pose_speed_sample = None
+        self.latest_motion_state = None
+        self.last_motion_goal = None
+        self.cancel_sent = False
+        rospy.on_shutdown(self.cancel_motion)
 
         self.marker_observation_window = []
         self.last_marker_sample_time = None
         self.detected_marker = None
         self.move_target = None
+        self.move_goal = None
 
         self.search_target = None
         self.search_cycle_anchor = None
@@ -223,15 +230,17 @@ class YellowMarkerTest:
             self.camera_topic, rospy.AnyMsg, self.camera_callback, queue_size=1
         )
         rospy.Subscriber(
-            self.velocity_topic, TwistStamped, self.velocity_callback, queue_size=5
+            self.motion_state_topic,
+            MotionState,
+            self.motion_state_callback,
+            queue_size=1,
         )
 
     def camera_callback(self, _message):
         self.last_camera_time = rospy.Time.now()
 
-    def velocity_callback(self, message):
-        self.latest_velocity = copy.deepcopy(message.twist)
-        self.latest_velocity_time = rospy.Time.now()
+    def motion_state_callback(self, message):
+        self.latest_motion_state = copy.deepcopy(message)
 
     def camera_ready(self):
         return (
@@ -284,29 +293,74 @@ class YellowMarkerTest:
         pose.pose.orientation = Quaternion(*quaternion_from_euler(0.0, 0.0, yaw))
         return pose
 
-    def publish_pose_command(self, mode, target, mz=0.0):
-        command = PoseNEDcmd()
-        command.mode = int(mode)
-        command.target = copy.deepcopy(target)
-        command.target.header.frame_id = "map"
-        command.target.header.stamp = rospy.Time.now()
-        command.force.MZ = int(round(clamp(mz, -10000.0, 10000.0)))
-        self.cmd_pub.publish(command)
+    def publish_motion_goal(self, target):
+        goal = copy.deepcopy(target)
+        goal.header.frame_id = "map"
+        goal.header.stamp = rospy.Time.now()
+        self.last_motion_goal = copy.deepcopy(goal)
+        self.motion_goal_pub.publish(goal)
 
     def publish_dprov(self, target):
-        self.publish_pose_command(MODE_DPROV, target)
+        """兼容原状态机函数名；v3 实际发布 motion_supervisor 目标。"""
+        self.publish_motion_goal(target)
+
+    def motion_state_fresh(self):
+        return (
+            self.latest_motion_state is not None
+            and (rospy.Time.now() - self.latest_motion_state.header.stamp).to_sec()
+            <= self.motion_state_timeout
+        )
+
+    def motion_goal_matches(self, target):
+        if not self.motion_state_fresh() or target is None:
+            return False
+        actual = self.latest_motion_state.goal
+        position_error = math.sqrt(
+            (actual.pose.position.x - target.pose.position.x) ** 2
+            + (actual.pose.position.y - target.pose.position.y) ** 2
+            + (actual.pose.position.z - target.pose.position.z) ** 2
+        )
+        yaw_error = abs(wrap_angle(
+            yaw_from_quaternion(actual.pose.orientation)
+            - yaw_from_quaternion(target.pose.orientation)
+        ))
+        return (
+            position_error <= self.motion_goal_position_tolerance
+            and yaw_error <= self.motion_goal_yaw_tolerance
+        )
+
+    def motion_arrived(self, target=None):
+        target = self.last_motion_goal if target is None else target
+        return (
+            self.motion_state_fresh()
+            and self.latest_motion_state.state == MotionState.HOVER
+            and self.motion_goal_matches(target)
+        )
+
+    def motion_failed(self):
+        return (
+            self.motion_state_fresh()
+            and self.latest_motion_state.state == MotionState.SAFE
+        )
+
+    def cancel_motion(self):
+        if not self.cancel_sent:
+            self.motion_cancel_pub.publish(Empty())
+            self.cancel_sent = True
 
     def publish_position_target(self, point):
         """发布定点目标，但把当前航向原样带入，不主动规划航向。"""
-        current = self.get_current_pose()
-        if current is None:
-            return False
-        target = PoseStamped()
-        target.header.frame_id = "map"
-        target.header.stamp = rospy.Time.now()
-        target.pose.position = Point(point.x, point.y, self.hold_z)
-        target.pose.orientation = copy.deepcopy(current.pose.orientation)
-        self.publish_dprov(target)
+        if self.move_goal is None:
+            current = self.get_current_pose()
+            if current is None:
+                return False
+            self.move_goal = self.make_pose(
+                point.x,
+                point.y,
+                self.hold_z,
+                yaw_from_quaternion(current.pose.orientation),
+            )
+        self.publish_motion_goal(self.move_goal)
         return True
 
     def transform_pose_to_map(self, pose):
@@ -393,6 +447,7 @@ class YellowMarkerTest:
         """锁定确认后的图形位置并切换到定点靠近。"""
         self.detected_marker = copy.deepcopy(marker)
         self.move_target = copy.deepcopy(marker.pose.position)
+        self.move_goal = None
         self.search_target = None
         self.search_cycle_anchor = None
         self.search_stable_since = None
@@ -405,6 +460,12 @@ class YellowMarkerTest:
             return
 
         distance = xy_distance(current.pose.position, self.move_target)
+        self.move_goal = self.make_pose(
+            self.move_target.x,
+            self.move_target.y,
+            self.hold_z,
+            yaw_from_quaternion(current.pose.orientation),
+        )
         rospy.loginfo(
             "%s: 识别状态=已识别；当前位置=(%.2f, %.2f, %.2f)，"
             "目标位置=(%.2f, %.2f, %.2f)，水平距离=%.2f m",
@@ -455,50 +516,15 @@ class YellowMarkerTest:
         if confirmed is not None:
             self.lock_confirmed_marker(confirmed)
 
-    def motion_is_stable(self, current):
-        now = rospy.Time.now()
-        if (
-            self.latest_velocity is not None
-            and self.latest_velocity_time is not None
-            and (now - self.latest_velocity_time).to_sec()
-            <= self.velocity_message_timeout
-        ):
-            linear_speed = math.hypot(
-                self.latest_velocity.linear.x,
-                self.latest_velocity.linear.y,
-            )
-            angular_speed = abs(self.latest_velocity.angular.z)
-        else:
-            yaw = yaw_from_quaternion(current.pose.orientation)
-            sample = (
-                now,
-                current.pose.position.x,
-                current.pose.position.y,
-                yaw,
-            )
-            previous = self.pose_speed_sample
-            self.pose_speed_sample = sample
-            if previous is None:
-                return False
-            elapsed = (now - previous[0]).to_sec()
-            if elapsed <= 0.05:
-                return False
-            linear_speed = math.hypot(
-                sample[1] - previous[1], sample[2] - previous[2]
-            ) / elapsed
-            angular_speed = abs(wrap_angle(sample[3] - previous[3])) / elapsed
-
-        return (
-            linear_speed <= self.stable_linear_speed
-            and angular_speed <= self.stable_angular_speed
-        )
+    def motion_is_stable(self, _current):
+        """HOVER 已包含位置、航向、速度和下位机 mode=4 接管确认。"""
+        return self.motion_arrived()
 
     def set_search_step(self, step):
         self.step = step
         self.search_target = None
         self.search_stable_since = None
         self.search_arrival_logged = False
-        self.pose_speed_sample = None
 
     def wait_until_search_target_stable(
         self, current, position_reached, yaw_reached, hold_seconds
@@ -519,7 +545,7 @@ class YellowMarkerTest:
         ).to_sec() >= hold_seconds
 
     def run_search_rotation(self, current, yaw_offset, next_step, label, hold_seconds):
-        """用 mode 4 保持搜索锚点，只改变期望航向。"""
+        """保持搜索锚点，只向运动监督器提交绝对航向目标。"""
         if self.search_cycle_anchor is None:
             self.search_cycle_anchor = copy.deepcopy(current.pose.position)
         target_yaw = wrap_angle(self.search_base_yaw + yaw_offset)
@@ -531,7 +557,7 @@ class YellowMarkerTest:
                 target_yaw,
             )
             rospy.loginfo(
-                "%s: 识别状态=未识别；SEARCH %s %.1f 度，mode=4",
+                "%s: 识别状态=未识别；SEARCH %s %.1f 度",
                 self.node_name,
                 label,
                 math.degrees(abs(yaw_offset)),
@@ -647,10 +673,10 @@ class YellowMarkerTest:
             distance,
         )
 
-        # 直接把黄色图形中心作为动力定位目标。目标姿态使用机器人当前姿态，
-        # 不根据位置差计算航向，也不把航向误差作为到达条件。
+        # 图形中心和锁定时航向组成固定的 map 绝对目标；只用匹配该目标的
+        # 新鲜 HOVER 进入动作阶段，不在任务节点自行判断刹车或模式。
         self.publish_position_target(self.move_target)
-        if distance <= self.position_tolerance:
+        if self.motion_arrived(self.move_goal):
             rospy.loginfo(
                 "%s: 已到达%s位置，开始执行亮灯动作",
                 self.node_name,
@@ -692,8 +718,7 @@ class YellowMarkerTest:
 
     def finish(self):
         self.publish_lights(0)
-        if self.move_target is not None:
-            self.publish_position_target(self.move_target)
+        self.cancel_motion()
         self.finished_pub.publish(String(data="yellow marker finished"))
         rospy.loginfo("%s: FINISH 黄色图形动作完成", self.node_name)
         rospy.signal_shutdown("yellow marker test complete")
@@ -706,6 +731,15 @@ class YellowMarkerTest:
 
             current = self.get_current_pose()
             if current is None:
+                self.rate.sleep()
+                continue
+            if self.motion_failed():
+                rospy.logerr_throttle(
+                    2.0,
+                    "%s: motion_supervisor=SAFE，暂停任务推进，原因=%s",
+                    self.node_name,
+                    self.latest_motion_state.reason,
+                )
                 self.rate.sleep()
                 continue
 
@@ -732,6 +766,7 @@ class YellowMarkerTest:
                 if (
                     self.camera_ready()
                     and hold_elapsed >= self.startup_hold_seconds
+                    and self.motion_arrived(self.start_pose)
                 ):
                     rospy.loginfo(
                         "%s: 启动定点完成，进入%s识别和左右转搜索阶段",
@@ -752,7 +787,7 @@ class YellowMarkerTest:
 
 
 def main():
-    rospy.init_node("test_task1_v2_yellow_marker")
+    rospy.init_node("test_task1_v3_yellow_marker")
     YellowMarkerTest().run()
 
 

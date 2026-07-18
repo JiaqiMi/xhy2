@@ -5,9 +5,9 @@
 功能：Task1 黑色方形单项测试。
 
 流程：
-    1. 定点保持启动位姿，等待相机节点持续发布图像；
-    2. 未识别到黑色方形时，定点向启动航向前进，静止后使用 TY 左右横移搜索；
-    3. 同一 rectangle 连续 3 帧且每帧置信度不低于 0.30 后确认位置；
+    1. 定点保持启动位姿一段可调时间，等待相机和识别模块启动；
+    2. 未识别到黑色方形时，依次定点左转、右转、回正，再向前移动后重复；
+    3. 最近多条识别消息中达到可调有效帧数和置信度后确认位置；
     4. 使用动力定位模式直接前往黑色方形中心，只以 XY 距离判断到达；
     5. 到达后亮绿灯，并以 MZ 和 TF 航向累计完成默认两圈旋转；
     6. 动作完成后发布完成消息。
@@ -23,6 +23,8 @@
     保留黑色方形连续 3 帧且置信度至少 30% 的确认条件。
     保留黑色方形独立的绿灯次数、旋转角度、MZ、减速和反馈过滤参数。
     旋转前记录起始航向，支持提前撤力/可选反向制动；超过目标角后定点返回起始航向。
+2026.7.18
+    同步启动定点等待、N 取 K 滑动识别窗口和左右转后前进的搜索流程。
 """
 
 import copy
@@ -55,11 +57,6 @@ class BlackMarkerTest(YellowMarkerTest):
         super().__init__()
         self.node_name = "test_task1_v2_black_marker"
         self.marker_display_name = "黑色方形"
-
-        # 黑色方形默认只要求连续 3 帧；launch 可以继续覆盖该值。
-        self.marker_sample_count = max(1, int(rospy.get_param(
-            "~marker_sample_count", 3
-        )))
 
         self.black_light_count = max(1, int(rospy.get_param(
             "~black_light_count", 2
@@ -103,98 +100,41 @@ class BlackMarkerTest(YellowMarkerTest):
         self.black_action_phase = "LIGHT"
         self.rotation_state = None
 
-    def reset_marker_samples(self):
-        self.marker_samples = []
-        self.last_marker_sample_time = None
-
     def target_callback(self, message):
-        """只接收满足连续帧和置信度要求的黑色 rectangle。"""
+        """最近 N 条识别输出中有 K 条有效结果时确认黑色 rectangle。"""
         if self.hold_z is None and not self.initialize_start_pose():
             return
-        if self.detected_marker is not None or not self.camera_ready():
-            return
-        if message.type and message.type != "center":
-            self.reset_marker_samples()
-            return
-        if message.class_name not in self.black_classes:
-            self.reset_marker_samples()
-            return
-        if message.conf < self.black_min_confidence:
-            self.reset_marker_samples()
-            return
-
-        camera_point = message.pose.pose.position
-        if math.sqrt(
-            camera_point.x ** 2 + camera_point.y ** 2 + camera_point.z ** 2
-        ) > self.max_camera_distance:
-            self.reset_marker_samples()
-            return
-
-        marker = self.transform_pose_to_map(message.pose)
-        if marker is None:
-            self.reset_marker_samples()
-            return
-
-        now = rospy.Time.now()
         if (
-            self.last_marker_sample_time is None
-            or (now - self.last_marker_sample_time).to_sec()
-            > self.marker_sample_timeout
+            self.step == self.STEP_WAIT_CAMERA
+            or self.detected_marker is not None
+            or not self.camera_ready()
         ):
-            self.marker_samples = []
-        self.last_marker_sample_time = now
-
-        if self.marker_samples:
-            center_x = sum(
-                item.pose.position.x for item in self.marker_samples
-            ) / len(self.marker_samples)
-            center_y = sum(
-                item.pose.position.y for item in self.marker_samples
-            ) / len(self.marker_samples)
-            if math.hypot(
-                marker.pose.position.x - center_x,
-                marker.pose.position.y - center_y,
-            ) > self.marker_cluster_distance:
-                self.marker_samples = []
-
-        self.marker_samples.append(copy.deepcopy(marker))
-        if len(self.marker_samples) < self.marker_sample_count:
             return
 
-        marker.pose.position.x = sum(
-            item.pose.position.x for item in self.marker_samples
-        ) / len(self.marker_samples)
-        marker.pose.position.y = sum(
-            item.pose.position.y for item in self.marker_samples
-        ) / len(self.marker_samples)
-        marker.pose.position.z = self.hold_z
-        self.detected_marker = copy.deepcopy(marker)
-        self.move_target = copy.deepcopy(marker.pose.position)
-        self.search_target = None
-        self.search_stable_since = None
-        self.last_search_ty = 0.0
-
-        current = self.get_current_pose()
-        if current is None:
-            self.detected_marker = None
-            self.move_target = None
-            self.reset_marker_samples()
-            return
-
-        distance = xy_distance(current.pose.position, self.move_target)
-        rospy.loginfo(
-            "%s: 识别状态=已识别；当前位置=(%.2f, %.2f, %.2f)，"
-            "目标位置=(%.2f, %.2f, %.2f)，水平距离=%.2f m",
-            self.node_name,
-            current.pose.position.x,
-            current.pose.position.y,
-            current.pose.position.z,
-            self.move_target.x,
-            self.move_target.y,
-            self.move_target.z,
-            distance,
+        marker = None
+        valid_message = (
+            (not message.type or message.type == "center")
+            and message.class_name in self.black_classes
+            and float(message.conf) >= self.black_min_confidence
         )
-        self.step = self.STEP_MOVE
+        if valid_message:
+            camera_point = message.pose.pose.position
+            valid_message = (
+                math.isfinite(camera_point.x)
+                and math.isfinite(camera_point.y)
+                and math.isfinite(camera_point.z)
+                and math.sqrt(
+                    camera_point.x ** 2
+                    + camera_point.y ** 2
+                    + camera_point.z ** 2
+                ) <= self.max_camera_distance
+            )
+        if valid_message:
+            marker = self.transform_pose_to_map(message.pose)
+
+        confirmed = self.add_marker_observation(marker)
+        if confirmed is not None:
+            self.lock_confirmed_marker(confirmed)
 
     def run_move_to_marker(self):
         current = self.get_current_pose()

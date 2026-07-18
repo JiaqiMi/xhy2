@@ -1,7 +1,8 @@
 <launch>
     <!--
         Task1 巡线单项测试。
-        启动前需要先运行真实下位机、TF、相机和红线识别节点。
+        启动前需要先运行真实下位机、TF、motion_supervisor、相机和红线识别节点。
+        本节点不会发布 /cmd/pose/ned，motion_supervisor 必须是其唯一发布者。
         节点不再接收人工初始航向；启动瞬间 base_link 的实际航向就是搜索航向。
         轨迹一旦锁定，状态机只执行“到起点 -> 定点 -> 对向 -> LOS 巡线 -> 终点确认”，
         不会因为暂时丢失识别消息而退回 SEARCH。识别点先更新实时拟合曲线；
@@ -11,15 +12,21 @@
     <!-- 基础：主循环频率，单位 Hz。 -->
     <arg name="rate" default="5.0" />
 
-    <!-- 话题：运动控制、红线识别、任务完成、相机、速度反馈和轨迹 JSON。 -->
-    <arg name="cmd_topic" default="/cmd/pose/ned" />
+    <!-- motion_supervisor 接口：绝对目标、取消、状态反馈及目标匹配容差。 -->
+    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
+    <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
+    <arg name="motion_state_topic" default="/motion/state" />
+    <arg name="motion_state_timeout" default="0.5" />
+    <arg name="motion_goal_position_tolerance" default="0.05" />
+    <arg name="motion_goal_yaw_tolerance_deg" default="3.0" />
+
+    <!-- 红线识别、任务完成、相机和轨迹 JSON。 -->
     <arg name="line_topic" default="/obj/line_message" />
     <arg name="finished_topic" default="/finished" />
     <arg name="camera_topic" default="/left/image_raw" />
-    <arg name="velocity_topic" default="/status/vel" />
-    <arg name="trajectory_topic" default="/task1/trajectory" />
+    <arg name="trajectory_topic" default="/task1/v3/trajectory" />
 
-    <!-- 未识别红线：左右转搜索并回到启动航向后，以 mode=4 定点前进的距离，单位 m。 -->
+    <!-- 未识别红线：左右转并回到启动航向后，提交前方绝对目标的距离，单位 m。 -->
     <arg name="search_forward_distance" default="0.5" />
     <!-- 搜索旋转：相对启动航向左右旋转角度、航向容差（deg）。
          NED 中默认正航向向右，search_yaw_sign=1；实机方向相反时改为 -1。 -->
@@ -30,21 +37,15 @@
     <arg name="search_yaw_hold_seconds" default="2.0" />
     <arg name="search_return_hold_seconds" default="2.0" />
     <arg name="search_forward_hold_seconds" default="4.0" />
-    <!-- 动力定位认为到达搜索目标/定点目标的水平距离容差，单位 m。 -->
+    <!-- 搜索和定点阶段用于附加几何检查的水平距离容差，单位 m。 -->
     <arg name="position_tolerance" default="0.15" />
 
-    <!-- 节点启动后先用 mode=4 锁定初始位姿，等待识别模块启动的时间，单位 s。 -->
+    <!-- 节点启动后提交初始位姿并等待 HOVER/识别模块的时间，单位 s。 -->
     <arg name="startup_hold_seconds" default="10.0" />
     <!-- 相机消息超过该时间未更新则认为相机未就绪，单位 s。 -->
     <arg name="camera_message_timeout" default="2.0" />
-    <!-- 速度消息超过该时间未更新时，改用 TF 差分估算速度，单位 s。 -->
-    <arg name="velocity_message_timeout" default="1.0" />
-    <!-- 终点定点后要求持续静止的时间，单位 s。 -->
+    <!-- 终点 HOVER 后要求持续保持的时间，单位 s。 -->
     <arg name="transition_hold_seconds" default="4.0" />
-    <!-- 判断静止的最大水平速度，单位 m/s。 -->
-    <arg name="stable_linear_speed" default="0.05" />
-    <!-- 判断静止的最大航向角速度，单位 deg/s。 -->
-    <arg name="stable_angular_speed_deg" default="3.0" />
 
     <!-- 可接受的红线类别名，多个名称使用英文逗号分隔。 -->
     <arg name="line_classes" default="line" />
@@ -77,6 +78,8 @@
 
     <!-- 新点与已有点距离小于该值时做平滑融合，不重复增加点，单位 m。 -->
     <arg name="line_point_merge_distance" default="0.12" />
+    <!-- 合并重复点时新识别值的权重，范围 0~1；越小越平滑，越大越跟随新观测。 -->
+    <arg name="line_point_update_alpha" default="0.20" />
     <!-- 当前活动拟合窗口的原始点安全上限；正常冻结由后续帧确认触发，超限只裁剪旧活动点。 -->
     <arg name="line_curve_max_points" default="200" />
     <!-- 活动点超限裁剪后保留在远端的点数，用于固定曲线与新曲线平滑衔接。 -->
@@ -105,27 +108,12 @@
 
     <!-- LOS 曲线前视距离，单位 m。 -->
     <arg name="los_lookahead_distance" default="0.6" />
-    <!-- LOS 正常前进 TX，按实机测试结果调整。 -->
-    <arg name="los_forward_force" default="1000.0" />
-    <!-- 接近起终点或航向误差偏大时使用的减速 TX。 -->
-    <arg name="los_slow_forward_force" default="300.0" />
-    <!-- LOS 每个周期允许的 TX 变化量，只做指令平滑；切入 mode=4 时不再人工刹车。 -->
-    <arg name="los_force_step" default="200.0" />
-    <!-- 前右下坐标系 TX 符号；实机前进方向相反时改为 -1。 -->
-    <arg name="los_tx_sign" default="1.0" />
-    <!-- 航向误差超过该值时 LOS 将目标 TX 降为 0，先调整航向，单位 deg。 -->
-    <arg name="los_stop_yaw_error_deg" default="20.0" />
-    <!-- 航向误差超过该值但未达到停止值时使用慢速 TX，单位 deg。 -->
-    <arg name="los_slow_yaw_error_deg" default="10.0" />
-    <!-- 距离起点或剩余曲线长度小于该值时使用慢速 TX，单位 m。 -->
-    <arg name="los_slow_distance" default="0.40" />
+    <!-- 连续 LOS 目标单周期最大位置（m）和 yaw（deg）变化，均低于监督器抢占阈值。 -->
+    <arg name="los_goal_max_step" default="0.20" />
+    <arg name="los_goal_max_yaw_step_deg" default="20.0" />
 
-    <!-- LOS 前往起点时认为到达的水平距离容差，单位 m。 -->
-    <arg name="line_start_tolerance" default="0.15" />
-    <!-- 到达起点后以动力定位模式持续稳定的时间，单位 s。 -->
+    <!-- 到达起点并进入 HOVER 后持续确认的时间，单位 s。 -->
     <arg name="line_start_hold_seconds" default="4.0" />
-    <!-- 起点处目标航向与曲线前向方向的允许误差，单位 deg。 -->
-    <arg name="line_start_yaw_tolerance_deg" default="5.0" />
     <!-- 起点对向满足航向和静止条件后持续确认的时间，单位 s。 -->
     <arg name="line_alignment_hold_seconds" default="2.0" />
 
@@ -144,6 +132,9 @@
 
     <!-- 轨迹 JSON 和网页数据刷新周期，单位 s。 -->
     <arg name="trajectory_publish_period" default="0.5" />
+    <!-- Web 实际运动轨迹相邻记录点最小间距（m）和最大保存点数。 -->
+    <arg name="actual_path_min_spacing" default="0.03" />
+    <arg name="actual_path_max_points" default="2000" />
     <!-- 是否启动巡线轨迹网页。 -->
     <arg name="trajectory_web_enabled" default="true" />
     <!-- 网页绑定的机器人本机网卡地址。 -->
@@ -153,16 +144,20 @@
 
 
     <node pkg="auv_control"
-          type="test_task1_v2_line_follow.py"
-          name="test_task1_v2_line_follow"
+          type="test_task1_v3_line_follow.py"
+          name="test_task1_v3_line_follow"
           output="screen">
         <param name="rate" type="double" value="$(arg rate)" />
 
-        <param name="cmd_topic" type="string" value="$(arg cmd_topic)" />
+        <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
+        <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
+        <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />
+        <param name="motion_state_timeout" type="double" value="$(arg motion_state_timeout)" />
+        <param name="motion_goal_position_tolerance" type="double" value="$(arg motion_goal_position_tolerance)" />
+        <param name="motion_goal_yaw_tolerance_deg" type="double" value="$(arg motion_goal_yaw_tolerance_deg)" />
         <param name="line_topic" type="string" value="$(arg line_topic)" />
         <param name="finished_topic" type="string" value="$(arg finished_topic)" />
         <param name="camera_topic" type="string" value="$(arg camera_topic)" />
-        <param name="velocity_topic" type="string" value="$(arg velocity_topic)" />
         <param name="trajectory_topic" type="string" value="$(arg trajectory_topic)" />
 
         <param name="search_forward_distance" type="double" value="$(arg search_forward_distance)" />
@@ -176,10 +171,7 @@
 
         <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
         <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
-        <param name="velocity_message_timeout" type="double" value="$(arg velocity_message_timeout)" />
         <param name="transition_hold_seconds" type="double" value="$(arg transition_hold_seconds)" />
-        <param name="stable_linear_speed" type="double" value="$(arg stable_linear_speed)" />
-        <param name="stable_angular_speed_deg" type="double" value="$(arg stable_angular_speed_deg)" />
 
         <param name="line_classes" type="string" value="$(arg line_classes)" />
         <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
@@ -196,6 +188,7 @@
         <param name="line_extension_max_gap" type="double" value="$(arg line_extension_max_gap)" />
 
         <param name="line_point_merge_distance" type="double" value="$(arg line_point_merge_distance)" />
+        <param name="line_point_update_alpha" type="double" value="$(arg line_point_update_alpha)" />
         <param name="line_curve_max_points" type="int" value="$(arg line_curve_max_points)" />
         <param name="line_curve_overlap_points" type="int" value="$(arg line_curve_overlap_points)" />
         <param name="line_window_backtrack_distance" type="double" value="$(arg line_window_backtrack_distance)" />
@@ -211,16 +204,9 @@
         <param name="endpoint_growth_tolerance" type="double" value="$(arg endpoint_growth_tolerance)" />
 
         <param name="los_lookahead_distance" type="double" value="$(arg los_lookahead_distance)" />
-        <param name="los_forward_force" type="double" value="$(arg los_forward_force)" />
-        <param name="los_slow_forward_force" type="double" value="$(arg los_slow_forward_force)" />
-        <param name="los_force_step" type="double" value="$(arg los_force_step)" />
-        <param name="los_tx_sign" type="double" value="$(arg los_tx_sign)" />
-        <param name="los_stop_yaw_error_deg" type="double" value="$(arg los_stop_yaw_error_deg)" />
-        <param name="los_slow_yaw_error_deg" type="double" value="$(arg los_slow_yaw_error_deg)" />
-        <param name="los_slow_distance" type="double" value="$(arg los_slow_distance)" />
-        <param name="line_start_tolerance" type="double" value="$(arg line_start_tolerance)" />
+        <param name="los_goal_max_step" type="double" value="$(arg los_goal_max_step)" />
+        <param name="los_goal_max_yaw_step_deg" type="double" value="$(arg los_goal_max_yaw_step_deg)" />
         <param name="line_start_hold_seconds" type="double" value="$(arg line_start_hold_seconds)" />
-        <param name="line_start_yaw_tolerance_deg" type="double" value="$(arg line_start_yaw_tolerance_deg)" />
         <param name="line_alignment_hold_seconds" type="double" value="$(arg line_alignment_hold_seconds)" />
         <param name="endpoint_arrival_tolerance" type="double" value="$(arg endpoint_arrival_tolerance)" />
         <param name="endpoint_path_tolerance" type="double" value="$(arg endpoint_path_tolerance)" />
@@ -230,6 +216,8 @@
         <param name="endpoint_evidence_robot_distance" type="double" value="$(arg endpoint_evidence_robot_distance)" />
 
         <param name="trajectory_publish_period" type="double" value="$(arg trajectory_publish_period)" />
+        <param name="actual_path_min_spacing" type="double" value="$(arg actual_path_min_spacing)" />
+        <param name="actual_path_max_points" type="int" value="$(arg actual_path_max_points)" />
         <param name="trajectory_web_enabled" type="bool" value="$(arg trajectory_web_enabled)" />
         <param name="trajectory_web_host" type="string" value="$(arg trajectory_web_host)" />
         <param name="trajectory_web_port" type="int" value="$(arg trajectory_web_port)" />

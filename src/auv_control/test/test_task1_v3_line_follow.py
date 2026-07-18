@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-名称：test_task1_v2_line_follow.py
-功能：Task1 巡线单项测试，只验证红线搜索、轨迹拟合与 LOS 巡线。
+名称：test_task1_v3_line_follow.py
+功能：Task1 巡线单项测试，运动接口迁移到 motion_supervisor。
 
 流程：
     1. 记录节点启动时的当前位置、高度和航向，定点等待相机和识别模块；
     2. 未识别红线时，依次定点左转、右转、回正，再向前移动后重复；
     3. 在短时间窗内选择置信度最高的第一条红线并锁定；
     4. 仅接收能与已锁轨迹合理关联的新点，后续合理帧确认后立即冻结曲线段；
-    5. LOS 手控输出 TX 和目标航向，先前往曲线起点；
+    5. LOS 选择 map 前视目标，经 motion_supervisor 前往曲线起点并巡线；
     6. 起点定点稳定后先对准曲线方向，再只沿已固定曲线巡线；
     7. 到达当前最远点后定点等待；同一最远点被连续多次观测且轨迹不再
        增长时，才将其确认为真实终点并结束测试。
@@ -19,8 +19,8 @@
     最近的点记为红线起点，最远的点记为红线终点。参考点不会随机器人
     运动而改变，因此起终点不会在巡线过程中反转。
 
-监听：/obj/line_message，/left/image_raw，/status/vel（可选），/tf
-发布：/cmd/pose/ned，/task1/trajectory，/finished
+监听：/obj/line_message，/left/image_raw，/motion/state，/tf
+发布：/cmd/motion/goal，/cmd/motion/cancel，/task1/v3/trajectory，/finished
 网页：默认 http://192.168.1.117:8082
 
 记录：
@@ -47,6 +47,10 @@
     适当放宽首次红线锁定的默认几何门槛，所有门槛仍由 launch 参数配置。
     曲线改为后续帧确认后立即分段冻结；固定段上的重复识别点不再参与拟合。
     LOS 只跟踪已固定曲线，走完当前固定快照后才接入新固定段。
+    新增 v3：搜索、起点、对向、巡线和终点全部改发 map 绝对目标；LOS
+    不再直接输出 TX/MZ，相邻目标经位置和 yaw 步长限制后交由运动监督器。
+    将曲线点融合权重、实际轨迹记录间距和最大保存点数开放为 launch 参数，
+    便于实测时调整拟合平滑程度和 Web 轨迹数据量。
 """
 
 import copy
@@ -59,15 +63,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import numpy as np
 import rospy
 import tf
-from auv_control.msg import PoseNEDcmd, TargetDetection3
-from geometry_msgs.msg import Point, PoseStamped, Quaternion, TwistStamped
-from std_msgs.msg import String
+from auv_control.msg import MotionState, TargetDetection3
+from geometry_msgs.msg import Point, PoseStamped, Quaternion
+from std_msgs.msg import Empty, String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
-NODE_NAME = "test_task1_v2_line_follow"
-MODE_DEPTH_HDG = 3
-MODE_DPROV = 4
+NODE_NAME = "test_task1_v3_line_follow"
 
 
 def clamp(value, lower, upper):
@@ -127,7 +129,7 @@ mx=Math.min(...xs)-.2;my=Math.min(...ys)-.2;k=Math.min((c.width-2*p)/Math.max(.5
 dot(d.line_start,'#21a366',7);dot(d.line_end,'#f39c12',7);dot(d.endpoint_candidate,'#8e44ad',5);dot(d.tracking_point,'#9b2cff',7);tag(d.tracking_point,'跟踪点','#6f13ba');
 ['#ff2d91','#ff8c1a','#ffd000'].forEach((col,i)=>{if(latest[i]){dot(latest[i],col,6);tag(latest[i],`P${i+1}`,col)}});
 dot(d.robot,'#00cfe8',8);arrow(d.robot,d.robot_yaw_deg||0);
-document.getElementById('s').textContent=`状态 ${d.state}　航向 ${(d.robot_yaw_deg||0).toFixed(1)}°　锁线 ${d.line_locked?'是':'否'}　固定/拟合 ${d.fixed_length||0}/${d.fitted_length||0} m　执行/固定版本 ${d.tracking_curve_version||0}/${d.fixed_curve_version||0}　确认 ${d.freeze_confirmations||0}/${d.freeze_required||0}　已完成 ${d.completed_length||0} m　终点证据 ${d.endpoint_stable_count||0}/${d.endpoint_stable_required||0}`}
+document.getElementById('s').textContent=`任务 ${d.state}　监督器 ${d.motion_state??'-'}　航向 ${(d.robot_yaw_deg||0).toFixed(1)}°　锁线 ${d.line_locked?'是':'否'}　固定/拟合 ${d.fixed_length||0}/${d.fitted_length||0} m　执行/固定版本 ${d.tracking_curve_version||0}/${d.fixed_curve_version||0}　确认 ${d.freeze_confirmations||0}/${d.freeze_required||0}　已完成 ${d.completed_length||0} m　终点证据 ${d.endpoint_stable_count||0}/${d.endpoint_stable_required||0}`}
 async function t(){try{draw(await(await fetch('/data',{cache:'no-store'})).json())}catch(e){}setTimeout(t,500)}t();
 </script></body></html>"""
 
@@ -193,12 +195,31 @@ class Task1LineFollowTest:
         self.rate = rospy.Rate(float(rospy.get_param("~rate", 5.0)))
         self.tf_listener = tf.TransformListener()
 
-        self.cmd_topic = rospy.get_param("~cmd_topic", "/cmd/pose/ned")
+        self.motion_goal_topic = rospy.get_param(
+            "~motion_goal_topic", "/cmd/motion/goal"
+        )
+        self.motion_cancel_topic = rospy.get_param(
+            "~motion_cancel_topic", "/cmd/motion/cancel"
+        )
+        self.motion_state_topic = rospy.get_param(
+            "~motion_state_topic", "/motion/state"
+        )
+        self.motion_state_timeout = max(0.1, float(rospy.get_param(
+            "~motion_state_timeout", 0.5
+        )))
+        self.motion_goal_position_tolerance = max(0.001, float(rospy.get_param(
+            "~motion_goal_position_tolerance", 0.05
+        )))
+        self.motion_goal_yaw_tolerance = math.radians(max(
+            0.1,
+            float(rospy.get_param("~motion_goal_yaw_tolerance_deg", 3.0)),
+        ))
         self.line_topic = rospy.get_param("~line_topic", "/obj/line_message")
         self.finished_topic = rospy.get_param("~finished_topic", "/finished")
         self.camera_topic = rospy.get_param("~camera_topic", "/left/image_raw")
-        self.velocity_topic = rospy.get_param("~velocity_topic", "/status/vel")
-        self.trajectory_topic = rospy.get_param("~trajectory_topic", "/task1/trajectory")
+        self.trajectory_topic = rospy.get_param(
+            "~trajectory_topic", "/task1/v3/trajectory"
+        )
 
         # 未识别红线时先定点左右转，再回正并定点向前移动。
         self.search_forward_distance = float(rospy.get_param(
@@ -226,25 +247,16 @@ class Task1LineFollowTest:
             "~position_tolerance", 0.15
         ))
 
-        # 相机和静止判据。
+        # 相机和任务阶段等待时间；静止与接管统一由 MotionState.HOVER 确认。
         self.camera_message_timeout = float(rospy.get_param(
             "~camera_message_timeout", 2.0
         ))
         self.startup_hold_seconds = max(0.0, float(rospy.get_param(
             "~startup_hold_seconds", 10.0
         )))
-        self.velocity_message_timeout = float(rospy.get_param(
-            "~velocity_message_timeout", 1.0
-        ))
         self.transition_hold_seconds = float(rospy.get_param(
             "~transition_hold_seconds", 4.0
         ))
-        self.stable_linear_speed = float(rospy.get_param(
-            "~stable_linear_speed", 0.05
-        ))
-        self.stable_angular_speed = math.radians(float(rospy.get_param(
-            "~stable_angular_speed_deg", 3.0
-        )))
 
         # 红线首帧选择、局部三点验证和误识别隔离参数。
         self.line_classes = class_names("~line_classes", ["line"])
@@ -289,6 +301,9 @@ class Task1LineFollowTest:
         self.line_point_merge_distance = float(rospy.get_param(
             "~line_point_merge_distance", 0.12
         ))
+        self.line_point_update_alpha = clamp(float(rospy.get_param(
+            "~line_point_update_alpha", 0.20
+        )), 0.0, 1.0)
         self.line_curve_max_points = max(3, int(rospy.get_param(
             "~line_curve_max_points", 200
         )))
@@ -332,40 +347,20 @@ class Task1LineFollowTest:
             "~endpoint_growth_tolerance", 0.08
         ))
 
-        # LOS 只使用 TX 和目标航向，不输出巡线 TY。
+        # LOS 只产生连续的 map 绝对目标；相邻变化小于监督器抢占阈值。
         self.los_lookahead_distance = float(rospy.get_param(
             "~los_lookahead_distance", 0.6
         ))
-        self.los_forward_force = abs(float(rospy.get_param(
-            "~los_forward_force", 1000.0
+        self.los_goal_max_step = max(0.01, float(rospy.get_param(
+            "~los_goal_max_step", 0.20
         )))
-        self.los_slow_forward_force = abs(float(rospy.get_param(
-            "~los_slow_forward_force", 300.0
-        )))
-        self.los_force_step = abs(float(rospy.get_param(
-            "~los_force_step", 200.0
-        )))
-        self.los_tx_sign = 1.0 if float(rospy.get_param(
-            "~los_tx_sign", 1.0
-        )) >= 0.0 else -1.0
-        self.los_stop_yaw_error = math.radians(float(rospy.get_param(
-            "~los_stop_yaw_error_deg", 20.0
-        )))
-        self.los_slow_yaw_error = math.radians(float(rospy.get_param(
-            "~los_slow_yaw_error_deg", 10.0
-        )))
-        self.los_slow_distance = float(rospy.get_param(
-            "~los_slow_distance", 0.40
-        ))
-        self.line_start_tolerance = float(rospy.get_param(
-            "~line_start_tolerance", 0.15
+        self.los_goal_max_yaw_step = math.radians(max(
+            0.1,
+            float(rospy.get_param("~los_goal_max_yaw_step_deg", 20.0)),
         ))
         self.line_start_hold_seconds = float(rospy.get_param(
             "~line_start_hold_seconds", 4.0
         ))
-        self.line_start_yaw_tolerance = math.radians(float(rospy.get_param(
-            "~line_start_yaw_tolerance_deg", 5.0
-        )))
         self.line_alignment_hold_seconds = float(rospy.get_param(
             "~line_alignment_hold_seconds", 2.0
         ))
@@ -391,6 +386,12 @@ class Task1LineFollowTest:
         self.trajectory_publish_period = float(rospy.get_param(
             "~trajectory_publish_period", 0.5
         ))
+        self.actual_path_min_spacing = max(0.001, float(rospy.get_param(
+            "~actual_path_min_spacing", 0.03
+        )))
+        self.actual_path_max_points = max(10, int(rospy.get_param(
+            "~actual_path_max_points", 2000
+        )))
         self.trajectory_web_enabled = bool(rospy.get_param(
             "~trajectory_web_enabled", True
         ))
@@ -401,7 +402,12 @@ class Task1LineFollowTest:
             "~trajectory_web_port", 8082
         ))
 
-        self.cmd_pub = rospy.Publisher(self.cmd_topic, PoseNEDcmd, queue_size=10)
+        self.motion_goal_pub = rospy.Publisher(
+            self.motion_goal_topic, PoseStamped, queue_size=1
+        )
+        self.motion_cancel_pub = rospy.Publisher(
+            self.motion_cancel_topic, Empty, queue_size=1
+        )
         self.finished_pub = rospy.Publisher(self.finished_topic, String, queue_size=10)
         self.trajectory_pub = rospy.Publisher(
             self.trajectory_topic, String, queue_size=2
@@ -428,9 +434,11 @@ class Task1LineFollowTest:
         self.search_base_yaw = None
         self.startup_hold_started = None
         self.last_camera_time = None
-        self.latest_velocity = None
-        self.latest_velocity_time = None
-        self.pose_speed_sample = None
+        self.latest_motion_state = None
+        self.last_motion_goal = None
+        self.last_los_goal = None
+        self.cancel_sent = False
+        rospy.on_shutdown(self.cancel_motion)
 
         self.search_target = None
         self.search_cycle_anchor = None
@@ -460,7 +468,6 @@ class Task1LineFollowTest:
         self.line_version = 0
         self.initial_line_hold_pose = None
 
-        self.last_los_tx = 0.0
         self.hold_target = None
         self.stable_since = None
         self.current_path_s = 0.0
@@ -482,7 +489,10 @@ class Task1LineFollowTest:
             self.camera_topic, rospy.AnyMsg, self.camera_callback, queue_size=1
         )
         rospy.Subscriber(
-            self.velocity_topic, TwistStamped, self.velocity_callback, queue_size=5
+            self.motion_state_topic,
+            MotionState,
+            self.motion_state_callback,
+            queue_size=1,
         )
 
     def set_state(self, state):
@@ -490,14 +500,12 @@ class Task1LineFollowTest:
             rospy.loginfo("%s: 阶段 %s -> %s", NODE_NAME, self.state, state)
         self.state = state
         self.stable_since = None
-        self.pose_speed_sample = None
 
     def camera_callback(self, _message):
         self.last_camera_time = rospy.Time.now()
 
-    def velocity_callback(self, message):
-        self.latest_velocity = copy.deepcopy(message.twist)
-        self.latest_velocity_time = rospy.Time.now()
+    def motion_state_callback(self, message):
+        self.latest_motion_state = copy.deepcopy(message)
 
     def camera_ready(self):
         return (
@@ -555,62 +563,92 @@ class Task1LineFollowTest:
         pose.pose.orientation = Quaternion(*quaternion_from_euler(0.0, 0.0, yaw))
         return pose
 
-    @staticmethod
-    def force_value(value):
-        return int(round(clamp(value, -10000.0, 10000.0)))
-
-    def publish_pose_command(self, mode, target, tx=0.0):
-        command = PoseNEDcmd()
-        command.mode = int(mode)
-        command.target = copy.deepcopy(target)
-        command.target.header.frame_id = "map"
-        command.target.header.stamp = rospy.Time.now()
-        command.force.TX = self.force_value(tx)
-        self.cmd_pub.publish(command)
+    def publish_motion_goal(self, target):
+        goal = copy.deepcopy(target)
+        goal.header.frame_id = "map"
+        goal.header.stamp = rospy.Time.now()
+        self.last_motion_goal = copy.deepcopy(goal)
+        self.motion_goal_pub.publish(goal)
 
     def publish_dprov(self, target):
-        self.publish_pose_command(MODE_DPROV, target)
+        """兼容原状态机函数名；v3 实际发布 motion_supervisor 目标。"""
+        self.publish_motion_goal(target)
 
-    def publish_manual(self, current, yaw, tx=0.0):
-        target = self.make_pose(
-            current.pose.position.x, current.pose.position.y, yaw
-        )
-        self.publish_pose_command(MODE_DEPTH_HDG, target, tx=tx)
+    def publish_los_goal(self, point, desired_yaw):
+        """平滑连续前视目标，避免触发监督器的大目标抢占刹停。"""
+        target_x = point.x
+        target_y = point.y
+        target_yaw = desired_yaw
+        if self.last_los_goal is not None:
+            previous = self.last_los_goal
+            dx = point.x - previous.pose.position.x
+            dy = point.y - previous.pose.position.y
+            distance = math.hypot(dx, dy)
+            if distance > self.los_goal_max_step:
+                ratio = self.los_goal_max_step / distance
+                target_x = previous.pose.position.x + ratio * dx
+                target_y = previous.pose.position.y + ratio * dy
+            previous_yaw = yaw_from_quaternion(previous.pose.orientation)
+            yaw_step = clamp(
+                wrap_angle(desired_yaw - previous_yaw),
+                -self.los_goal_max_yaw_step,
+                self.los_goal_max_yaw_step,
+            )
+            target_yaw = wrap_angle(previous_yaw + yaw_step)
+        goal = self.make_pose(target_x, target_y, target_yaw)
+        self.last_los_goal = copy.deepcopy(goal)
+        self.publish_motion_goal(goal)
+        return goal
 
     def publish_position_target(self, point, yaw):
         self.publish_dprov(self.make_pose(point.x, point.y, yaw))
 
-    def motion_is_stable(self, current):
-        now = rospy.Time.now()
-        if (
-            self.latest_velocity is not None
-            and self.latest_velocity_time is not None
-            and (now - self.latest_velocity_time).to_sec()
-            <= self.velocity_message_timeout
-        ):
-            linear_speed = math.hypot(
-                self.latest_velocity.linear.x,
-                self.latest_velocity.linear.y,
-            )
-            angular_speed = abs(self.latest_velocity.angular.z)
-        else:
-            yaw = yaw_from_quaternion(current.pose.orientation)
-            sample = (now, current.pose.position.x, current.pose.position.y, yaw)
-            previous = self.pose_speed_sample
-            self.pose_speed_sample = sample
-            if previous is None:
-                return False
-            elapsed = (now - previous[0]).to_sec()
-            if elapsed <= 0.05:
-                return False
-            linear_speed = math.hypot(
-                sample[1] - previous[1], sample[2] - previous[2]
-            ) / elapsed
-            angular_speed = abs(wrap_angle(sample[3] - previous[3])) / elapsed
+    def motion_state_fresh(self):
         return (
-            linear_speed <= self.stable_linear_speed
-            and angular_speed <= self.stable_angular_speed
+            self.latest_motion_state is not None
+            and (rospy.Time.now() - self.latest_motion_state.header.stamp).to_sec()
+            <= self.motion_state_timeout
         )
+
+    def motion_goal_matches(self, target):
+        if not self.motion_state_fresh() or target is None:
+            return False
+        actual = self.latest_motion_state.goal
+        position_error = math.sqrt(
+            (actual.pose.position.x - target.pose.position.x) ** 2
+            + (actual.pose.position.y - target.pose.position.y) ** 2
+            + (actual.pose.position.z - target.pose.position.z) ** 2
+        )
+        yaw_error = abs(wrap_angle(
+            yaw_from_quaternion(actual.pose.orientation)
+            - yaw_from_quaternion(target.pose.orientation)
+        ))
+        return (
+            position_error <= self.motion_goal_position_tolerance
+            and yaw_error <= self.motion_goal_yaw_tolerance
+        )
+
+    def motion_arrived(self, target=None):
+        target = self.last_motion_goal if target is None else target
+        return (
+            self.motion_state_fresh()
+            and self.latest_motion_state.state == MotionState.HOVER
+            and self.motion_goal_matches(target)
+        )
+
+    def motion_failed(self):
+        return (
+            self.motion_state_fresh()
+            and self.latest_motion_state.state == MotionState.SAFE
+        )
+
+    def cancel_motion(self):
+        if not self.cancel_sent:
+            self.motion_cancel_pub.publish(Empty())
+            self.cancel_sent = True
+
+    def motion_is_stable(self, _current):
+        return self.motion_arrived()
 
     def transform_pose_to_map(self, pose):
         try:
@@ -1009,8 +1047,15 @@ class Task1LineFollowTest:
                 self.line_raw_points, key=lambda old: xy_distance(old, point)
             )
             if xy_distance(nearest, point) <= self.line_point_merge_distance:
-                nearest.x = 0.8 * nearest.x + 0.2 * point.x
-                nearest.y = 0.8 * nearest.y + 0.2 * point.y
+                old_weight = 1.0 - self.line_point_update_alpha
+                nearest.x = (
+                    old_weight * nearest.x
+                    + self.line_point_update_alpha * point.x
+                )
+                nearest.y = (
+                    old_weight * nearest.y
+                    + self.line_point_update_alpha * point.y
+                )
             else:
                 self.line_raw_points.append(point)
         self.roll_line_fit_window()
@@ -1398,7 +1443,7 @@ class Task1LineFollowTest:
         return (rospy.Time.now() - self.stable_since).to_sec() >= hold_seconds
 
     def run_search_rotation(self, current, yaw_offset, next_state, label, hold_seconds):
-        """用 mode 4 保持搜索锚点，只改变期望航向。"""
+        """保持搜索锚点，只向监督器提交绝对航向目标。"""
         if self.search_cycle_anchor is None:
             self.search_cycle_anchor = copy.deepcopy(current.pose.position)
         target_yaw = wrap_angle(self.search_base_yaw + yaw_offset)
@@ -1409,7 +1454,7 @@ class Task1LineFollowTest:
                 target_yaw,
             )
             rospy.loginfo(
-                "%s: 识别状态=未识别；SEARCH %s %.1f deg，mode=4",
+                "%s: 识别状态=未识别；SEARCH %s %.1f deg",
                 NODE_NAME,
                 label,
                 math.degrees(abs(yaw_offset)),
@@ -1497,34 +1542,13 @@ class Task1LineFollowTest:
         elif self.state == self.SEARCH_FORWARD:
             self.run_search_forward(current)
 
-    def ramp_los_force(self, desired):
-        # 仅限制手控 TX 的单周期突变；切入定点时不再由任务代码提前刹车。
-        self.last_los_tx = clamp(
-            desired,
-            self.last_los_tx - self.los_force_step,
-            self.last_los_tx + self.los_force_step,
-        )
-        return self.last_los_tx
-
-    def desired_los_force(self, yaw_error, remaining_distance):
-        if abs(yaw_error) > self.los_stop_yaw_error:
-            return 0.0
-        force = self.los_forward_force
-        if (
-            abs(yaw_error) > self.los_slow_yaw_error
-            or remaining_distance <= self.los_slow_distance
-        ):
-            force = self.los_slow_forward_force
-        return self.los_tx_sign * force
-
     def enter_hold_start(self, current):
-        self.last_los_tx = 0.0
-        self.hold_target = self.make_pose(
-            self.line_start_point.x,
-            self.line_start_point.y,
-            yaw_from_quaternion(current.pose.orientation),
-        )
-        # 新版 mode=4 控制器自行完成减速和刹车，立即切入定点目标。
+        if self.hold_target is None:
+            self.hold_target = self.make_pose(
+                self.line_start_point.x,
+                self.line_start_point.y,
+                yaw_from_quaternion(current.pose.orientation),
+            )
         self.publish_dprov(self.hold_target)
         rospy.loginfo(
             "%s: 已到红线起点，进入定点稳定，起点=(%.2f, %.2f)",
@@ -1541,32 +1565,26 @@ class Task1LineFollowTest:
         self.current_tracking_point = copy.deepcopy(self.line_start_point)
 
         distance = xy_distance(current.pose.position, self.line_start_point)
-        desired_yaw = math.atan2(
-            self.line_start_point.y - current.pose.position.y,
-            self.line_start_point.x - current.pose.position.x,
-        )
-        yaw_error = wrap_angle(
-            desired_yaw - yaw_from_quaternion(current.pose.orientation)
-        )
-        if distance <= self.line_start_tolerance:
+        if self.hold_target is None:
+            self.hold_target = self.make_pose(
+                self.line_start_point.x,
+                self.line_start_point.y,
+                yaw_from_quaternion(current.pose.orientation),
+            )
+        self.publish_motion_goal(self.hold_target)
+        if self.motion_arrived(self.hold_target):
             self.enter_hold_start(current)
             return
-
-        desired_tx = self.desired_los_force(yaw_error, distance)
-        tx = self.ramp_los_force(desired_tx)
-        self.publish_manual(current, desired_yaw, tx=tx)
         rospy.loginfo_throttle(
             2.0,
-            "%s: LOS 前往起点；当前位置=(%.2f, %.2f)，起点=(%.2f, %.2f)，"
-            "距离=%.2f m，航向误差=%.1f deg，TX=%d",
+            "%s: 监督器前往起点；当前位置=(%.2f, %.2f)，起点=(%.2f, %.2f)，"
+            "距离=%.2f m，等待 HOVER",
             NODE_NAME,
             current.pose.position.x,
             current.pose.position.y,
             self.line_start_point.x,
             self.line_start_point.y,
             distance,
-            math.degrees(yaw_error),
-            self.force_value(tx),
         )
 
     def run_hold_start(self):
@@ -1591,6 +1609,7 @@ class Task1LineFollowTest:
             "是" if stable else "否",
         )
         if stable:
+            self.hold_target = None
             self.set_state(self.ALIGN_LINE)
 
     def line_start_yaw(self):
@@ -1612,11 +1631,14 @@ class Task1LineFollowTest:
         )
         current_yaw = yaw_from_quaternion(current.pose.orientation)
         yaw_error = wrap_angle(desired_yaw - current_yaw)
-        self.publish_manual(current, desired_yaw)
-        aligned = (
-            abs(yaw_error) <= self.line_start_yaw_tolerance
-            and self.motion_is_stable(current)
-        )
+        if self.hold_target is None:
+            self.hold_target = self.make_pose(
+                self.line_start_point.x,
+                self.line_start_point.y,
+                desired_yaw,
+            )
+        self.publish_motion_goal(self.hold_target)
+        aligned = self.motion_arrived(self.hold_target)
         if aligned:
             if self.stable_since is None:
                 self.stable_since = rospy.Time.now()
@@ -1637,11 +1659,11 @@ class Task1LineFollowTest:
         )
         if held:
             self.current_path_s = 0.0
-            self.last_los_tx = 0.0
+            self.last_los_goal = copy.deepcopy(self.hold_target)
             self.set_state(self.FOLLOW_LINE)
 
     def enter_hold_end(self, current):
-        self.last_los_tx = 0.0
+        self.last_los_goal = None
         active_end = self.tracking_curve_points[-1]
         self.hold_target = self.make_pose(
             active_end.x,
@@ -1706,22 +1728,23 @@ class Task1LineFollowTest:
             los_target.y - current.pose.position.y,
             los_target.x - current.pose.position.x,
         )
-        yaw_error = wrap_angle(
-            desired_yaw - yaw_from_quaternion(current.pose.orientation)
+        commanded_goal = self.publish_los_goal(los_target, desired_yaw)
+        state_name = (
+            str(self.latest_motion_state.state)
+            if self.motion_state_fresh()
+            else "无新鲜反馈"
         )
-        desired_tx = self.desired_los_force(yaw_error, remaining_path)
-        tx = self.ramp_los_force(desired_tx)
-        self.publish_manual(current, desired_yaw, tx=tx)
         rospy.loginfo_throttle(
             2.0,
             "%s: LOS 巡线；已完成=%.2f m，已知轨迹=%.2f m，距终点=%.2f m，"
-            "航向误差=%.1f deg，TX=%d",
+            "下发目标=(%.2f, %.2f)，motion_state=%s",
             NODE_NAME,
             self.completed_path_length,
             self.tracking_curve_s[-1],
             endpoint_distance,
-            math.degrees(yaw_error),
-            self.force_value(tx),
+            commanded_goal.pose.position.x,
+            commanded_goal.pose.position.y,
+            state_name,
         )
 
     def run_hold_end(self):
@@ -1739,6 +1762,7 @@ class Task1LineFollowTest:
                     old_version,
                     self.tracking_curve_version,
                 )
+                self.last_los_goal = copy.deepcopy(self.hold_target)
                 self.set_state(self.FOLLOW_LINE)
                 return
 
@@ -1796,11 +1820,14 @@ class Task1LineFollowTest:
         current = self.get_current_pose()
         if current is not None and (
             not self.actual_trajectory
-            or xy_distance(current.pose.position, self.actual_trajectory[-1]) >= 0.03
+            or xy_distance(current.pose.position, self.actual_trajectory[-1])
+            >= self.actual_path_min_spacing
         ):
             self.actual_trajectory.append(copy.deepcopy(current.pose.position))
-            if len(self.actual_trajectory) > 2000:
-                self.actual_trajectory = self.actual_trajectory[-2000:]
+            if len(self.actual_trajectory) > self.actual_path_max_points:
+                self.actual_trajectory = self.actual_trajectory[
+                    -self.actual_path_max_points:
+                ]
 
         def point_data(point):
             return [round(point.x, 3), round(point.y, 3)] if point else None
@@ -1808,6 +1835,17 @@ class Task1LineFollowTest:
         payload = {
             "stamp": round(now.to_sec(), 3),
             "state": self.state,
+            "motion_state": (
+                self.latest_motion_state.state
+                if self.motion_state_fresh() else None
+            ),
+            "motion_reason": (
+                self.latest_motion_state.reason
+                if self.motion_state_fresh() else ""
+            ),
+            "tx": self.latest_motion_state.tx if self.motion_state_fresh() else 0,
+            "ty": self.latest_motion_state.ty if self.motion_state_fresh() else 0,
+            "mz": self.latest_motion_state.mz if self.motion_state_fresh() else 0,
             "line_locked": self.line_locked,
             "lock_confidence": round(self.line_lock_confidence, 3),
             "fit_residual": round(self.line_fit_residual, 3),
@@ -1857,14 +1895,7 @@ class Task1LineFollowTest:
         self.last_trajectory_publish_time = now
 
     def finish(self):
-        current = self.get_current_pose()
-        if current is not None:
-            target = self.hold_target or self.make_pose(
-                current.pose.position.x,
-                current.pose.position.y,
-                yaw_from_quaternion(current.pose.orientation),
-            )
-            self.publish_dprov(target)
+        self.cancel_motion()
         self.finished_pub.publish(String(data="%s finished" % NODE_NAME))
         rospy.loginfo(
             "%s: FINISH；红线起点=(%.2f, %.2f)，终点=(%.2f, %.2f)，"
@@ -1881,6 +1912,16 @@ class Task1LineFollowTest:
     def run(self):
         while not rospy.is_shutdown():
             if not self.initialize_start_pose():
+                self.rate.sleep()
+                continue
+            if self.motion_failed():
+                self.publish_trajectory_status()
+                rospy.logerr_throttle(
+                    2.0,
+                    "%s: motion_supervisor=SAFE，暂停任务推进，原因=%s",
+                    NODE_NAME,
+                    self.latest_motion_state.reason,
+                )
                 self.rate.sleep()
                 continue
 
@@ -1923,6 +1964,7 @@ class Task1LineFollowTest:
                 if (
                     self.camera_ready()
                     and hold_elapsed >= self.startup_hold_seconds
+                    and self.motion_arrived(self.start_pose)
                 ):
                     rospy.loginfo(
                         "%s: 启动定点完成，进入红线识别和左右转搜索阶段",

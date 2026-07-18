@@ -1,24 +1,32 @@
 <launch>
     <!--
         Task1 黄色图形单项测试。
-        使用前请先启动真实下位机链路、TF 链路和图形识别节点。
+        使用前请先启动真实下位机、TF、motion_supervisor 和图形识别节点。
+        本节点不会发布 /cmd/pose/ned，motion_supervisor 必须是其唯一发布者。
 
         用法示例：
-        roslaunch auv_control task1_v2_test_yellow_marker.launch
+        roslaunch auv_control task1_v3_test_yellow_marker.launch
     -->
 
     <!-- 基础：控制循环频率（Hz）。搜索方向直接采用节点启动时读取的机器人当前航向。 -->
     <arg name="rate" default="5.0" />
 
-    <!-- 话题：运动指令、图形识别、外设控制、完成消息、相机就绪和可选速度反馈。 -->
-    <arg name="cmd_topic" default="/cmd/pose/ned" />
+    <!-- motion_supervisor 接口：绝对目标、取消、状态反馈及状态新鲜度。 -->
+    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
+    <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
+    <arg name="motion_state_topic" default="/motion/state" />
+    <arg name="motion_state_timeout" default="0.5" />
+    <!-- 校验 /motion/state.goal 与本节点最近目标是否一致的位置（m）和 yaw（deg）容差。 -->
+    <arg name="motion_goal_position_tolerance" default="0.05" />
+    <arg name="motion_goal_yaw_tolerance_deg" default="3.0" />
+
+    <!-- 图形识别、外设控制、完成消息和相机就绪话题。 -->
     <arg name="target_topic" default="/obj/target_message" />
     <arg name="actuator_topic" default="/cmd/actuator" />
     <arg name="finished_topic" default="/finished" />
     <arg name="camera_topic" default="/left/image_raw" />
-    <arg name="velocity_topic" default="/status/vel" />
 
-    <!-- 搜索前进：左右转搜索并回到启动航向后，以 mode=4 定点前进的距离（m）。 -->
+    <!-- 搜索前进：左右转并回到启动航向后，提交前方绝对目标的距离（m）。 -->
     <arg name="search_forward_distance" default="0.5" />
 
     <!-- 搜索旋转：相对启动航向左右旋转角度、航向容差（deg）。
@@ -46,14 +54,9 @@
     <arg name="marker_sample_timeout" default="1.0" />
     <arg name="marker_cluster_distance" default="0.25" />
 
-    <!-- 启动与消息有效期：启动后先锁定初始位姿悬停；相机/速度反馈超时单位均为 s。 -->
+    <!-- 启动与消息有效期：启动后先锁定初始位姿悬停；相机超时单位为 s。 -->
     <arg name="startup_hold_seconds" default="10.0" />
     <arg name="camera_message_timeout" default="2.0" />
-    <arg name="velocity_message_timeout" default="1.0" />
-
-    <!-- 静止判据：最大水平线速度（m/s）和航向角速度（deg/s）。 -->
-    <arg name="stable_linear_speed" default="0.05" />
-    <arg name="stable_angular_speed_deg" default="3.0" />
 
     <!-- 黄色动作：单次亮红灯时间、间隔（s）和亮灯次数。 -->
     <arg name="light_seconds" default="3.0" />
@@ -71,16 +74,20 @@
     <include file="$(find stereo_depth)/launch/test_shapes_detection.launch" />
 
     <node pkg="auv_control"
-          type="test_task1_v2_yellow_marker.py"
-          name="test_task1_v2_yellow_marker"
+          type="test_task1_v3_yellow_marker.py"
+          name="test_task1_v3_yellow_marker"
           output="screen">
         <param name="rate" type="double" value="$(arg rate)" />
-        <param name="cmd_topic" type="string" value="$(arg cmd_topic)" />
+        <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
+        <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
+        <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />
+        <param name="motion_state_timeout" type="double" value="$(arg motion_state_timeout)" />
+        <param name="motion_goal_position_tolerance" type="double" value="$(arg motion_goal_position_tolerance)" />
+        <param name="motion_goal_yaw_tolerance_deg" type="double" value="$(arg motion_goal_yaw_tolerance_deg)" />
         <param name="target_topic" type="string" value="$(arg target_topic)" />
         <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
         <param name="finished_topic" type="string" value="$(arg finished_topic)" />
         <param name="camera_topic" type="string" value="$(arg camera_topic)" />
-        <param name="velocity_topic" type="string" value="$(arg velocity_topic)" />
         <param name="search_forward_distance" type="double" value="$(arg search_forward_distance)" />
         <param name="search_yaw_angle_deg" type="double" value="$(arg search_yaw_angle_deg)" />
         <param name="search_yaw_sign" type="double" value="$(arg search_yaw_sign)" />
@@ -98,9 +105,6 @@
         <param name="marker_cluster_distance" type="double" value="$(arg marker_cluster_distance)" />
         <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
         <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
-        <param name="velocity_message_timeout" type="double" value="$(arg velocity_message_timeout)" />
-        <param name="stable_linear_speed" type="double" value="$(arg stable_linear_speed)" />
-        <param name="stable_angular_speed_deg" type="double" value="$(arg stable_angular_speed_deg)" />
         <param name="light_seconds" type="double" value="$(arg light_seconds)" />
         <param name="gap_seconds" type="double" value="$(arg gap_seconds)" />
         <param name="yellow_light_count" type="int" value="$(arg yellow_light_count)" />
