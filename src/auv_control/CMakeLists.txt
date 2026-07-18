@@ -205,6 +205,11 @@ catkin_install_python(PROGRAMS
   test/test_task1_v2_line_follow.py
   test/test_task1_v2_los_square.py
   test/test_task1_v2_yellow_marker.py
+  test/test_task1_v3_black_marker.py
+  test/test_task1_v3_line_fitting.py
+  test/test_task1_v3_line_follow.py
+  test/test_task1_v3_los_square.py
+  test/test_task1_v3_yellow_marker.py
   test/test_task3_1_acquire_area.py
   test/test_task3_2_get_task.py
   test/test_task3_3_inspect_and_drop.py

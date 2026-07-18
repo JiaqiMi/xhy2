@@ -1,0 +1,118 @@
+<launch>
+    <!--
+        Task1 黄色图形单项测试。
+        使用前请先启动真实下位机、TF、motion_supervisor 和图形识别节点。
+        本节点不会发布 /cmd/pose/ned，motion_supervisor 必须是其唯一发布者。
+
+        用法示例：
+        roslaunch auv_control task1_v3_test_yellow_marker.launch
+    -->
+
+    <!-- 基础：控制循环频率（Hz）。搜索方向直接采用节点启动时读取的机器人当前航向。 -->
+    <arg name="rate" default="5.0" />
+
+    <!-- motion_supervisor 接口：绝对目标、取消、状态反馈及状态新鲜度。 -->
+    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
+    <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
+    <arg name="motion_state_topic" default="/motion/state" />
+    <arg name="motion_state_timeout" default="0.5" />
+    <!-- 校验 /motion/state.goal 与本节点最近目标是否一致的位置（m）和 yaw（deg）容差。 -->
+    <arg name="motion_goal_position_tolerance" default="0.05" />
+    <arg name="motion_goal_yaw_tolerance_deg" default="3.0" />
+
+    <!-- 图形识别、外设控制、完成消息和相机就绪话题。 -->
+    <arg name="target_topic" default="/obj/target_message" />
+    <arg name="actuator_topic" default="/cmd/actuator" />
+    <arg name="finished_topic" default="/finished" />
+    <arg name="camera_topic" default="/left/image_raw" />
+
+    <!-- 搜索前进：左右转并回到启动航向后，提交前方绝对目标的距离（m）。 -->
+    <arg name="search_forward_distance" default="0.5" />
+
+    <!-- 搜索旋转：相对启动航向左右旋转角度、航向容差（deg）。
+         NED 中默认正航向向右，search_yaw_sign=1；实机方向相反时改为 -1。 -->
+    <arg name="search_yaw_angle_deg" default="30.0" />
+    <arg name="search_yaw_sign" default="1.0" />
+    <arg name="search_yaw_tolerance_deg" default="5.0" />
+
+    <!-- 搜索停留：到达左/右观察航向、返回启动航向、前进目标后持续静止的时间（s）。 -->
+    <arg name="search_yaw_hold_seconds" default="2.0" />
+    <arg name="search_return_hold_seconds" default="2.0" />
+    <arg name="search_forward_hold_seconds" default="4.0" />
+
+    <!-- 到达判断：定点前进和前往黄色图形共用的水平位置容差（m）。 -->
+    <arg name="position_tolerance" default="0.15" />
+
+    <!-- 黄色图形过滤：最近 marker_window_size 条目标识别输出中，至少
+         marker_required_valid 条同类消息达到置信度和位置聚类要求。
+         当前 TargetDetection 不发布逐图像帧的“未检出”消息，因此窗口按识别输出计数。 -->
+    <arg name="yellow_classes" default="triangle,circle" />
+    <arg name="yellow_min_confidence" default="0.30" />
+    <arg name="max_camera_distance" default="5.0" />
+    <arg name="marker_window_size" default="10" />
+    <arg name="marker_required_valid" default="3" />
+    <arg name="marker_sample_timeout" default="1.0" />
+    <arg name="marker_cluster_distance" default="0.25" />
+
+    <!-- 启动与消息有效期：启动后先锁定初始位姿悬停；相机超时单位为 s。 -->
+    <arg name="startup_hold_seconds" default="10.0" />
+    <arg name="camera_message_timeout" default="2.0" />
+
+    <!-- 黄色动作：单次亮红灯时间、间隔（s）和亮灯次数。 -->
+    <arg name="light_seconds" default="3.0" />
+    <arg name="gap_seconds" default="0.5" />
+    <arg name="yellow_light_count" default="1" />
+
+    <!-- 外设默认值：照明灯、航向/夹爪舵机以及推拉杆命令/速度。 -->
+    <arg name="light1" default="0" />
+    <arg name="light2" default="0" />
+    <arg name="heading_servo" default="128" />
+    <arg name="clamp_servo" default="0" />
+    <arg name="drive_cmd" default="0" />
+    <arg name="drive_speed" default="0" />
+
+    <include file="$(find stereo_depth)/launch/test_shapes_detection.launch" />
+
+    <node pkg="auv_control"
+          type="test_task1_v3_yellow_marker.py"
+          name="test_task1_v3_yellow_marker"
+          output="screen">
+        <param name="rate" type="double" value="$(arg rate)" />
+        <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
+        <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
+        <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />
+        <param name="motion_state_timeout" type="double" value="$(arg motion_state_timeout)" />
+        <param name="motion_goal_position_tolerance" type="double" value="$(arg motion_goal_position_tolerance)" />
+        <param name="motion_goal_yaw_tolerance_deg" type="double" value="$(arg motion_goal_yaw_tolerance_deg)" />
+        <param name="target_topic" type="string" value="$(arg target_topic)" />
+        <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
+        <param name="finished_topic" type="string" value="$(arg finished_topic)" />
+        <param name="camera_topic" type="string" value="$(arg camera_topic)" />
+        <param name="search_forward_distance" type="double" value="$(arg search_forward_distance)" />
+        <param name="search_yaw_angle_deg" type="double" value="$(arg search_yaw_angle_deg)" />
+        <param name="search_yaw_sign" type="double" value="$(arg search_yaw_sign)" />
+        <param name="search_yaw_tolerance_deg" type="double" value="$(arg search_yaw_tolerance_deg)" />
+        <param name="search_yaw_hold_seconds" type="double" value="$(arg search_yaw_hold_seconds)" />
+        <param name="search_return_hold_seconds" type="double" value="$(arg search_return_hold_seconds)" />
+        <param name="search_forward_hold_seconds" type="double" value="$(arg search_forward_hold_seconds)" />
+        <param name="position_tolerance" type="double" value="$(arg position_tolerance)" />
+        <param name="yellow_classes" type="string" value="$(arg yellow_classes)" />
+        <param name="yellow_min_confidence" type="double" value="$(arg yellow_min_confidence)" />
+        <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
+        <param name="marker_window_size" type="int" value="$(arg marker_window_size)" />
+        <param name="marker_required_valid" type="int" value="$(arg marker_required_valid)" />
+        <param name="marker_sample_timeout" type="double" value="$(arg marker_sample_timeout)" />
+        <param name="marker_cluster_distance" type="double" value="$(arg marker_cluster_distance)" />
+        <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
+        <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
+        <param name="light_seconds" type="double" value="$(arg light_seconds)" />
+        <param name="gap_seconds" type="double" value="$(arg gap_seconds)" />
+        <param name="yellow_light_count" type="int" value="$(arg yellow_light_count)" />
+        <param name="light1" type="int" value="$(arg light1)" />
+        <param name="light2" type="int" value="$(arg light2)" />
+        <param name="heading_servo" type="int" value="$(arg heading_servo)" />
+        <param name="clamp_servo" type="int" value="$(arg clamp_servo)" />
+        <param name="drive_cmd" type="int" value="$(arg drive_cmd)" />
+        <param name="drive_speed" type="int" value="$(arg drive_speed)" />
+    </node>
+</launch>

@@ -90,4 +90,5 @@
     <include if="$(arg start_motion_supervisor)"
              file="$(find auv_control)/launch/motion_supervisor_prototype.launch">
         <arg name="start_goal_test" value="false" />
+    </include>
 </launch>
