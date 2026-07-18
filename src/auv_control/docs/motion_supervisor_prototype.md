@@ -12,12 +12,13 @@
   `target_z` 仅用于 `motion_goal_test` 生成测试目标。
 - 平移阶段保持开始运动时的当前航向，通过 `TX/TY` 接近并刹停到目标位置，
   不再先朝向目标点；进入位置范围后才调整最终 yaw。
-- 任务以 5 Hz 连续更新目标时，新旧目标变化不超过 `0.5 m/30°` 直接跟踪，
-  超过阈值则先刹停，再切换到最新目标。
-  - 运动过程中小幅更新直接替换当前目标，不改变当前运动状态；
-  - 定点过程中小幅位置更新不刹停，直接退回 `TRANSLATE`；
-  - 定点过程中仅航向小幅更新不刹停，直接进入 `ALIGN_FINAL`；
-  - 大幅更新保存为待切换目标，`TRANSLATE_BRAKE` 停稳后执行最新值。
+- 启动后锁定第一帧完整有效位姿，先在该处刹停并完成 mode=4 接管；
+  启动期间只缓存最新任务目标，不会用实时位姿持续更新定点目标。
+- 连续目标始终采用最新值，X/Y 分别运行 `TRACK/BRAKE/HOLD`，允许一个轴
+  主动刹车时另一个轴继续跟踪；不再执行整艇远目标预抢占。
+- `/cmd/motion/goal` 仍表示最终 `base_link` 位姿；内部使用水平旋转中心
+  `control_link`。最终转向固定 `control_link`，转向结束后 `base_link`
+  到达任务指定的最终位姿。
 - 本原型不修改 `task1～task4`，也不包含下位机 PID 重置逻辑。
 
 ## 话题
@@ -26,7 +27,7 @@
 | ---- | ---------------------- | ------------------------------ | ------------------------ |
 | 输入 | `/cmd/motion/goal`   | `geometry_msgs/PoseStamped`  | `map` 坐标系最终目标   |
 | 输入 | `/cmd/motion/cancel` | `std_msgs/Empty`             | 刹停后悬停当前位置       |
-| 输入 | `/status/vel`        | `geometry_msgs/TwistStamped` | `base_link` 速度反馈   |
+| 输入 | `/status/vel`        | `geometry_msgs/TwistStamped` | IMU 点速度反馈，内部换算到 control_link |
 | 输入 | `/status/auv`        | `auv_control/AUVData`        | 下位机模式反馈           |
 | 输出 | `/cmd/pose/ned`      | `auv_control/PoseNEDcmd`     | 唯一运动控制输出         |
 | 输出 | `/motion/state`      | `auv_control/MotionState`    | 状态、误差、速度和输出力 |
@@ -87,8 +88,9 @@ rostopic echo /motion/state
 文件名格式为 `motion_supervisor_YYYYMMDD_HHMMSS_ffffff.csv`。记录内容包括：
 
 - 当前与目标 `x/y/z/yaw`；
-- map/NED 水平误差、base_link 前/右误差和深度误差；
-- `/status/vel` 原始及低通后的 `u/v/r`；
+- base_link 与 control_link 的当前/目标位置及两套位置误差；
+- X/Y/Yaw 单轴子状态、轴向误差、轴向速度和启动完成标志；
+- `/status/vel` IMU 点原始速度、杆臂补偿后速度及低通后的 `u/v/r`；
 - 状态编号、状态名称、切换原因和反馈新鲜度；
 - TF、速度和模式反馈年龄；
 - 下位机反馈模式、当前命令模式、目标序号及待切换目标标志；
@@ -116,6 +118,9 @@ rostopic pub -1 /cmd/motion/cancel std_msgs/Empty '{}'
 ```
 
 ## 历史数据参考
+
+以下各节保留试验演进记录；其中未带 `positive/negative` 后缀的旧参数名
+已经停用，当前运行值以 `config/motion_supervisor.yaml` 为准。
 
 对 `C:\Users\sixuh\Documents\B_matlab_ws\AUV\research\data\segments_0616` 中约 8.3 Hz 的历史数据进行离线统计，结果如下：
 
@@ -236,8 +241,11 @@ angular_brake_acceleration_mz_positive: 0.025
 angular_brake_acceleration_mz_negative: 0.040
 ```
 
-本批纯旋转数据还出现了大量 `TRANSLATE` 和 `TRANSLATE_BRAKE`。原因是
-`base_link` 前移 0.35 m 后，静态 TF 虽已设置
+> 以下 0.35 m 杆臂分析属于历史试验配置；当前 `base_link` 已恢复与
+> IMU/GNSS 定位点重合，不再使用该前移量。
+
+本批历史纯旋转数据还出现了大量 `TRANSLATE` 和 `TRANSLATE_BRAKE`。原因是
+当时 `base_link` 前移 0.35 m 后，静态 TF 虽已设置
 `base_link -> imu=(-0.35,0,0)`，但原 `auv_tf_handler` 仍把 IMU/GNSS
 经纬度直接发布成 `map -> base_link` 位置。
 
@@ -257,4 +265,55 @@ angular_brake_acceleration_mz_negative: 0.040
   杆臂，得到真实 `map -> base_link`；
 - 指令链路：由目标 base_link 位姿加上旋转后的杆臂，得到下位机定点闭环
   所需的 IMU/GNSS 目标 LLA；
-- 静态 TF 和动态换算共用同一组杆臂参数，默认 `(-0.35, 0, 0) m`。
+- 静态 TF 和动态换算共用同一组杆臂参数；当前默认 `(0, 0, 0) m`，
+  即 `base_link` 与 IMU/GNSS 定位点重合。
+
+## 2026-07-18 旋转中心与轴解耦修正
+
+即使 `base_link` 已恢复与 IMU/GNSS 定位点重合，IMU 也不一定处于实际
+水平旋转中心，因此仍保留独立 `control_link`。当前实现为：
+
+```text
+map -> control_link -> base_link -> imu
+```
+
+- `map -> control_link` 由原始 IMU/GNSS 位置减去
+  `control_link -> imu` 杆臂得到；
+- `control_link -> base_link` 由两组杆臂相减得到；
+- 当前 `base_link -> imu=(0,0,0)`，因此
+  `control_link -> base_link=control_link -> imu`；
+- 任务目标仍表示最终 `base_link` 位姿，内部按最终 yaw 换算成
+  `control_link` 目标；
+- 最终转向固定 `control_link`；若实际旋转中心与 IMU 存在杆臂，
+  `base_link` 与 IMU 会按刚体关系沿圆弧运动；
+- `/status/vel` 视为 IMU 点速度，使用 `v_control = v_imu - ω×r`
+  换算为旋转中心速度。
+
+旋转中心尚未标定时使用：
+
+```yaml
+control_to_imu_x: 0.0
+control_to_imu_y: 0.0
+control_to_imu_z: 0.0
+```
+
+原地旋转标定时记录未补偿 IMU NED 位置和 yaw，拟合：
+
+```text
+p_imu(k) = p_control + R(yaw(k)) * r_control_to_imu
+```
+
+未知量为固定旋转中心 `p_control` 和水平杆臂
+`r_control_to_imu=(x,y)`。正、负转向各至少三次，剔除明显平移段后取稳健
+拟合中位值，再写入 `begin.launch` 参数。
+
+连续目标控制不再使用整艇远近抢占。X/Y 每轴独立运行：
+
+```text
+TRACK：位置 PD
+BRAKE：按该轴速度主动反向刹车
+HOLD：轴向误差和速度均在阈值内
+```
+
+因此矩形拐角允许 `X=BRAKE、Y=TRACK`。正常增益、阻尼、运动限幅、
+刹车增益、刹车限幅、有效减速度和停车余量均按实际输出正负号分别配置。

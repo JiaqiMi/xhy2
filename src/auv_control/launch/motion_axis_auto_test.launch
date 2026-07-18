@@ -1,0 +1,57 @@
+<launch>
+    <!-- 测试轴：x=前后，y=左右，yaw=原地转向。 -->
+    <arg name="axis" default="x" />
+    <!-- 下位机定深和最终定点采用的 NED 绝对目标深度，单位 m。 -->
+    <arg name="target_z" default="-0.9" />
+    <!-- 每个幅值执行“正向、原点、负向、原点”的重复次数。 -->
+    <arg name="repetitions" default="3" />
+    <!-- X/Y 测试幅值，单位 m，必须是 YAML 正数列表。 -->
+    <arg name="translation_magnitudes" default="[0.5, 1.0, 1.5]" />
+    <!-- Yaw 测试幅值，单位 deg，必须是 YAML 正数列表。 -->
+    <arg name="yaw_magnitudes_deg" default="[30.0, 60.0, 90.0]" />
+    <!-- 目标重复发布频率，单位 Hz，应与 motion_supervisor 控制频率一致。 -->
+    <arg name="publish_rate_hz" default="5.0" />
+    <!-- 等待 motion_supervisor 首次 startup_complete+HOVER 的超时，单位 s。 -->
+    <arg name="startup_timeout" default="60.0" />
+    <!-- 单个目标从发布到稳定 HOVER 的最长时间，单位 s。 -->
+    <arg name="action_timeout" default="120.0" />
+    <!-- HOVER 且目标匹配后继续稳定保持的时间，单位 s。 -->
+    <arg name="hover_hold_seconds" default="2.0" />
+    <!-- 锁定初始 base_link 位姿后、执行第一步前的等待时间，单位 s。 -->
+    <arg name="start_delay" default="2.0" />
+    <!-- /motion/state 反馈最大允许年龄，单位 s。 -->
+    <arg name="feedback_timeout" default="0.5" />
+    <!-- 状态反馈 goal 与本动作目标的水平匹配容差，单位 m。 -->
+    <arg name="goal_position_tolerance" default="0.05" />
+    <!-- 状态反馈 goal 与本动作目标的深度匹配容差，单位 m。 -->
+    <arg name="goal_depth_tolerance" default="0.05" />
+    <!-- 状态反馈 goal 与本动作目标的航向匹配容差，单位 deg。 -->
+    <arg name="goal_yaw_tolerance_deg" default="2.0" />
+    <!-- 自动测试摘要 CSV 目录；motion_supervisor 完整日志仍使用其独立目录。 -->
+    <arg name="log_directory"
+         default="$(env HOME)/.ros/auv_logs/motion_auto_test" />
+
+    <node pkg="auv_control" type="motion_axis_auto_test.py"
+          name="motion_$(arg axis)_auto_test" output="screen">
+        <param name="axis" value="$(arg axis)" />
+        <param name="target_z" value="$(arg target_z)" />
+        <param name="repetitions" value="$(arg repetitions)" />
+        <rosparam subst_value="true"
+                  param="translation_magnitudes">$(arg translation_magnitudes)</rosparam>
+        <rosparam subst_value="true"
+                  param="yaw_magnitudes_deg">$(arg yaw_magnitudes_deg)</rosparam>
+        <param name="publish_rate_hz" value="$(arg publish_rate_hz)" />
+        <param name="startup_timeout" value="$(arg startup_timeout)" />
+        <param name="action_timeout" value="$(arg action_timeout)" />
+        <param name="hover_hold_seconds" value="$(arg hover_hold_seconds)" />
+        <param name="start_delay" value="$(arg start_delay)" />
+        <param name="feedback_timeout" value="$(arg feedback_timeout)" />
+        <param name="goal_position_tolerance"
+               value="$(arg goal_position_tolerance)" />
+        <param name="goal_depth_tolerance"
+               value="$(arg goal_depth_tolerance)" />
+        <param name="goal_yaw_tolerance_deg"
+               value="$(arg goal_yaw_tolerance_deg)" />
+        <param name="log_directory" value="$(arg log_directory)" />
+    </node>
+</launch>
