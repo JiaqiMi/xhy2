@@ -20,6 +20,8 @@
 2026.7.16
     新增 /status/vel 速度话题，使用 TwistStamped 发布 base_link 坐标系下的三轴线速度和角速度。
     线速度单位为 m/s，角速度由 deg/s 转换为 rad/s。
+2026.7.18
+    明确下位机线速度参考点为 IMU/惯导点，frame_id 改为 imu。
 """
 
 import json
@@ -278,10 +280,10 @@ class DebugDriverV2:
         msg.time.second = parsed.utc_time[5]
         self.data_pub.publish(msg)
 
-        # TwistStamped 使用 m/s 和 rad/s，并明确速度所属的 AUV 本体坐标系。
+        # TwistStamped 使用 m/s 和 rad/s；线速度参考点为 IMU/惯导原点。
         velocity_msg = TwistStamped()
         velocity_msg.header.stamp = msg.header.stamp
-        velocity_msg.header.frame_id = "base_link"
+        velocity_msg.header.frame_id = "imu"
         velocity_msg.twist.linear.x = parsed.linear_velocity[0]
         velocity_msg.twist.linear.y = parsed.linear_velocity[1]
         velocity_msg.twist.linear.z = parsed.linear_velocity[2]

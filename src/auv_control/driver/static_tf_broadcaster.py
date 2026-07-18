@@ -6,6 +6,7 @@
 监听：None
 发布：/tf(from scan to base_link)
       /tf(from imu to base_link)
+      /tf(from base_link to control_link)
 记录：
 2025.7.19 11:15
     第一版完成
@@ -16,12 +17,19 @@
     改为 10s的心跳包
 2026.7.18
     base_link 前移 0.35 m，并将 base_link 到 IMU 的杆臂改为 ROS 参数。
+2026.7.18
+    新增 control_link 旋转中心，并由两组 IMU 杆臂计算 control_link 到
+    base_link 的静态变换。
+2026.7.18
+    base_link 恢复与 IMU 重合，默认 base_link 到 IMU 的平移归零；
+    control_link 到 IMU 的杆臂仍可独立标定。
 """
 
 import rospy
 import tf
 from geometry_msgs.msg import TransformStamped, Quaternion
 import numpy as np
+from lever_arm import offset_between_origins
 
 NODE_NAME = "static_tf_broadcaster"
 
@@ -34,30 +42,41 @@ class Static_tf_broadcaster:
         self.tf_broadcaster = tf.TransformBroadcaster()
         # base_link 到 imu的变换参数
         self.imu_trans = (
-            float(rospy.get_param('~base_to_imu_x', -0.35)),
+            float(rospy.get_param('~base_to_imu_x', 0.0)),
             float(rospy.get_param('~base_to_imu_y', 0.0)),
             float(rospy.get_param('~base_to_imu_z', 0.0)),
         )
         self.imu_rot = tf.transformations.quaternion_from_euler(0, 0, 0)
+        self.control_to_imu = (
+            float(rospy.get_param('~control_to_imu_x', 0.0)),
+            float(rospy.get_param('~control_to_imu_y', 0.0)),
+            float(rospy.get_param('~control_to_imu_z', 0.0)),
+        )
+        self.control_to_base = offset_between_origins(
+            self.control_to_imu,
+            self.imu_trans,
+        )
+        self.base_rot = tf.transformations.quaternion_from_euler(0, 0, 0)
         
         # base_link 到 hand的变换参数
-        self.hand_trans = (0.282, 0, 0.068) # 夹爪中心位置
+        self.hand_trans = (0.632, 0, 0.068) # 夹爪中心位置
         self.hand_rot = tf.transformations.quaternion_from_euler(0, 0, 0)
 
         # base_link 到 down camera的变换参数
-        self.camera_trans = (0.308, -0.030, -0.210) # 左眼坐标位置
+        self.camera_trans = (0.658, -0.030, -0.210) # 左眼坐标位置
         self.camera_rot = tf.transformations.quaternion_from_euler(0, 0, np.radians(90))
 
         # base_link 到 front camera的变换参数
-        self.camera2_trans = (0.363, 0 ,-0.360)
+        self.camera2_trans = (0.703, 0 ,-0.360)
         self.camera2_rot = tf.transformations.quaternion_from_euler(0, 0, 0)
         
         # 发布频率 10Hz
         self.rate = rospy.Rate(10)
         rospy.loginfo(
-            "%s: 已启动，base_link -> imu=(%.3f, %.3f, %.3f) m",
+            "%s: 已启动，control_link -> base_link=(%.3f, %.3f, %.3f) m，"
+            "base_link -> imu=(%.3f, %.3f, %.3f) m",
             NODE_NAME,
-            *self.imu_trans
+            *(self.control_to_base + self.imu_trans)
         )
 
     def run(self):
@@ -65,6 +84,9 @@ class Static_tf_broadcaster:
         while not rospy.is_shutdown():
             current_time = rospy.Time.now()
             # 发布所有静态变换
+            self.tf_broadcaster.sendTransform(
+                self.control_to_base, self.base_rot, current_time,
+                "base_link", "control_link")
             self.tf_broadcaster.sendTransform(self.imu_trans, self.imu_rot, current_time, "imu", "base_link")
             self.tf_broadcaster.sendTransform(self.hand_trans, self.hand_rot, current_time, "hand", "base_link")
             self.tf_broadcaster.sendTransform(self.camera_trans, self.camera_rot, current_time, "camera", "base_link")

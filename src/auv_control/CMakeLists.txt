@@ -200,7 +200,11 @@ catkin_install_python(PROGRAMS
   scripts/task3_v2.py
   scripts/task4_v2.py
   scripts/vo_nav_fusion.py
+  test/motion_auto_sequence_core.py
+  test/motion_axis_auto_test.py
   test/motion_goal_test.py
+  test/rotation_center_calibration.py
+  test/rotation_center_calibration_core.py
   test/test_task1_v2_black_marker.py
   test/test_task1_v2_line_fitting.py
   test/test_task1_v2_line_follow.py
@@ -256,5 +260,7 @@ install(DIRECTORY launch config docs
 
 ## Add folders to be run by python nosetests
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_motion_auto_sequence_core.py)
   catkin_add_nosetests(test/test_motion_supervisor_core.py)
+  catkin_add_nosetests(test/test_rotation_center_calibration_core.py)
 endif()

@@ -234,6 +234,8 @@ class StateWebNode:
 
         self.world_frame = rospy.get_param("~world_frame", "map")
         self.base_frame = rospy.get_param("~base_frame", "base_link")
+        self.imu_frame = rospy.get_param("~imu_frame", "imu")
+        self.camera_frame = rospy.get_param("~camera_frame", "camera")
 
         self.stream_fps = float(rospy.get_param("~stream_fps", 8.0))
         self.jpeg_quality = int(rospy.get_param("~jpeg_quality", 75))
@@ -293,8 +295,8 @@ class StateWebNode:
         self.state_lock = threading.RLock()
         self.values = {}
         self.origin_revision = OriginRevision()
-        # 使用哨兵值，确保时间戳为 0 的首帧 TF 也能被记录。
-        self.last_tf_stamp = object()
+        # 使用哨兵值，确保时间戳为 0 的首组 TF 也能被记录。
+        self.last_tf_signature = object()
 
         self.cameras = {
             name: CameraStream(
@@ -327,11 +329,13 @@ class StateWebNode:
         logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
         rospy.loginfo(
-            "state_web: 已启动，Web=http://%s:%d，TF=%s -> %s",
+            "state_web: 已启动，Web=http://%s:%d，TF=%s -> [%s, %s, %s]",
             self.host,
             self.port,
             self.world_frame,
+            self.imu_frame,
             self.base_frame,
+            self.camera_frame,
         )
         for key in (
                 "left", "right", "fisheye", "feedback", "velocity",
@@ -579,17 +583,16 @@ class StateWebNode:
                 revision,
             )
 
-    def _update_tf(self, unused_event):
-        """轮询 map 到 base_link 的最新动态 TF。"""
-        del unused_event
+    def _lookup_tf_pose(self, child_frame):
+        """查询世界坐标系到指定机体坐标系的最新位姿。"""
         try:
             stamp = self.tf_listener.getLatestCommonTime(
                 self.world_frame,
-                self.base_frame,
+                child_frame,
             )
             translation, quaternion = self.tf_listener.lookupTransform(
                 self.world_frame,
-                self.base_frame,
+                child_frame,
                 stamp,
             )
         except (
@@ -598,18 +601,14 @@ class StateWebNode:
                 tf.ConnectivityException,
                 tf.ExtrapolationException,
         ):
-            return
+            return None
 
         stamp_sec = stamp.to_sec() if stamp != rospy.Time(0) else None
-        stamp_key = stamp_sec
-        if stamp_key == self.last_tf_stamp:
-            return
-        self.last_tf_stamp = stamp_key
-
         orientation = quaternion_to_euler_deg(*quaternion)
-        data = {
+        return {
             "frame_id": self.world_frame,
-            "child_frame_id": self.base_frame,
+            "child_frame_id": child_frame,
+            "stamp_sec": stamp_sec,
             "position_m": {
                 "x": float(translation[0]),
                 "y": float(translation[1]),
@@ -623,7 +622,38 @@ class StateWebNode:
             },
             "orientation_deg": orientation,
         }
-        self._store("tf", data, ros_stamp=stamp_sec)
+
+    def _update_tf(self, unused_event):
+        """轮询世界坐标系到 IMU、机体和相机的最新动态 TF。"""
+        del unused_event
+        frame_poses = {
+            "imu": self._lookup_tf_pose(self.imu_frame),
+            "base": self._lookup_tf_pose(self.base_frame),
+            "camera": self._lookup_tf_pose(self.camera_frame),
+        }
+        base_pose = frame_poses["base"]
+        if base_pose is None:
+            return
+
+        # 任意坐标系的新时间戳都会触发页面快照更新。
+        signature = tuple(
+            (
+                key,
+                None if pose is None else pose.get("stamp_sec"),
+            )
+            for key, pose in sorted(frame_poses.items())
+        )
+        if signature == self.last_tf_signature:
+            return
+        self.last_tf_signature = signature
+
+        data = copy.deepcopy(base_pose)
+        data["frame_poses"] = frame_poses
+        self._store(
+            "tf",
+            data,
+            ros_stamp=base_pose.get("stamp_sec"),
+        )
 
     @staticmethod
     def _attitude_candidate(snapshot, source):
@@ -766,6 +796,8 @@ class StateWebNode:
             "frames": {
                 "world": self.world_frame,
                 "base": self.base_frame,
+                "imu": self.imu_frame,
+                "camera": self.camera_frame,
             },
             "streams": streams,
             "tf": tf_pose,
