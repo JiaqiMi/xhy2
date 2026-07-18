@@ -212,6 +212,7 @@ catkin_install_python(PROGRAMS
   test/test_task1_v3_los_square.py
   test/test_task1_v3_yellow_marker.py
   test/test_task3_1_acquire_area.py
+  test/test_task3_1_acquire_area_motion.py
   test/test_task3_2_get_task.py
   test/test_task3_3_inspect_and_drop.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

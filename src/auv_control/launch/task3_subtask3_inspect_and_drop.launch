@@ -6,7 +6,8 @@
          本文件默认启动彩色方框识别模型；坐标变换节点、运动指令转换节点和
          下位机驱动仍需要单独启动。 -->
 
-    <!-- 任务运行方式和主循环频率。默认使用人工操作模式。 -->
+    <!-- 任务运行方式和主循环频率。当前默认使用自动寻找模式；
+         只测试识别、灯光和夹爪时，将 operation_mode 改为 manual。 -->
     <arg name="operation_mode" default="auto" />
     <arg name="rate" default="5.0" />
 
@@ -14,7 +15,9 @@
          相机、网页、置信度和推理频率默认参数。如果外部已经启动方框模型，设为 false。 -->
     <arg name="start_rectangle_model" default="true" />
 
-    <!-- 模型识别参数：读取模型发布的全部候选结果，并连续多帧确认目标。 -->
+    <!-- 模型识别参数：读取模型发布的全部候选结果，并连续多帧确认目标。
+         首轮先确认 target_color 与模型标签一致，再调 min_confidence；
+         误检多时提高置信度，漏检多时小幅降低置信度。 -->
     <arg name="model_detection_topic" default="/web/detections" />
     <arg name="target_color" default="red" />
     <arg name="min_confidence" default="0.35" />
@@ -49,7 +52,8 @@
          以下参数直接设置 TX/TY 原始推力值，数值越大通常移动越快。
          auto_search_forward_force：前进搜索时使用的 TX 绝对值；
          auto_search_lateral_force：向左、向右搜索时共同使用的 TY 绝对值。
-         建议先用较小值下水测试，再逐步增加。 -->
+         建议先用较小值下水测试，再逐步增加；如果越过目标，先增大对应
+         braking_distance，再增加对应 velocity_damping。 -->
     <arg name="auto_search_forward_force" default="500.0" />
     <arg name="auto_search_lateral_force" default="1500.0" />
     <arg name="auto_search_first_forward_distance" default="0.30" />
@@ -67,7 +71,8 @@
          图像水平方向误差用于计算左右推力 TY；
          默认假设图像上方对应机器人前方，图像右方对应机器人右方。
          如果现场前后方向相反，将 auto_tx_sign 改为 -1；
-         如果现场左右方向相反，将 auto_ty_sign 改为 -1。 -->
+         如果现场左右方向相反，将 auto_ty_sign 改为 -1。
+         方向确认后，再依次调 gain、max_force、min_correction_force 和 force_step。 -->
     <arg name="auto_forward_gain" default="250.0" />
     <arg name="auto_lateral_gain" default="250.0" />
     <!-- 视觉对齐阶段的最大前后、左右推力，与上面的分段搜索推力相互独立。 -->
@@ -79,14 +84,17 @@
     <!-- 速度阻尼：单位速度产生的反向推力，用于搜索刹停和视觉对齐防振荡。 -->
     <arg name="auto_forward_velocity_damping" default="300.0" />
     <arg name="auto_lateral_velocity_damping" default="300.0" />
-    <!-- 搜索步骤切换和执行夹爪动作前的实际停稳阈值。 -->
+    <!-- 搜索步骤切换和执行夹爪动作前的实际停稳阈值。
+         程序会在日志中逐项打印当前值、阈值和“通过/未通过”。 -->
     <arg name="auto_search_stop_speed" default="0.05" />
     <arg name="auto_action_max_horizontal_speed" default="0.03" />
     <arg name="auto_action_max_vertical_speed" default="0.03" />
     <arg name="auto_action_max_yaw_rate" default="0.05" />
     <arg name="auto_action_max_depth_error" default="0.08" />
     <arg name="auto_action_max_yaw_error_deg" default="5.0" />
-    <!-- 最终动作期间的map位置外环：位置误差修正力叠加速度阻尼。 -->
+    <!-- 最终动作期间的map位置外环：位置误差修正力叠加速度阻尼。
+         定点偏软时增加 position_gain 或 max_force；来回摆动时先降低
+         position_gain，再检查 velocity_damping 是否合适。 -->
     <arg name="auto_hold_forward_position_gain" default="600.0" />
     <arg name="auto_hold_lateral_position_gain" default="600.0" />
     <arg name="auto_hold_max_force" default="120.0" />
@@ -106,7 +114,7 @@
 
     <!-- 人工模式识别成功后的确认时间。自动模式居中5帧后不使用该等待时间。 -->
     <arg name="hold_seconds" default="1.0" />
-    <!-- 开灯并打开夹爪后，机器人保持零水平推力悬停的时间。 -->
+    <!-- 开灯并打开夹爪后，机器人使用位置误差和速度阻尼最终定点保持的时间。 -->
     <arg name="open_seconds" default="3.0" />
     <!-- 关闭夹爪并熄灯后的额外确认时间；默认立即结束任务。 -->
     <arg name="close_seconds" default="0.0" />

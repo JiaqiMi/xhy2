@@ -1,0 +1,161 @@
+<launch>
+    <!--
+      任务3子任务1的新运动状态机版本。
+
+      本任务节点只发布 /cmd/motion/goal 和 /cmd/motion/cancel，不发布
+      /cmd/pose/ned。运行前必须单独启动已实现本文档接口的motion_supervisor，
+      并确保它是 /cmd/pose/ned 的唯一发布者。
+
+      当前仓库中的motion_supervisor仍可能是旧原型；在队友的新版本合并前，
+      不要用旧原型进行本任务实船测试。旧版子任务1文件和launch均保留不变。
+    -->
+
+    <!-- 任务节点和motion_supervisor建议都以5Hz运行。 -->
+    <arg name="rate" default="5.0" />
+
+    <!-- 高频状态使用节流日志；调试时可缩短周期，正常运行时可适当增大。 -->
+    <arg name="log_interval" default="1.0" />
+    <arg name="warning_log_interval" default="2.0" />
+
+    <!-- 默认启动箭头识别模型；模型已在其他终端启动时设为false。 -->
+    <arg name="start_arrow_model" default="true" />
+    <arg name="arrow_topic" default="/arrow/direction" />
+    <arg name="min_confidence" default="0.35" />
+    <arg name="detection_timeout" default="1.0" />
+    <!-- 居中或转向仍在运动时，视觉丢失达到该时间就先cancel刹停。 -->
+    <arg name="visual_loss_cancel_seconds" default="0.5" />
+    <arg name="stable_detection_count" default="3" />
+    <arg name="stable_center_tolerance_px" default="40.0" />
+    <arg name="stable_angle_tolerance_deg" default="12.0" />
+    <arg name="center_stable_detection_count" default="5" />
+    <arg name="heading_stable_detection_count" default="3" />
+
+    <!-- motion_supervisor任务接口。任务不再接收或设置TX/TY/MZ。 -->
+    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
+    <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
+    <arg name="motion_state_topic" default="/motion/state" />
+    <arg name="motion_state_timeout" default="0.5" />
+    <arg name="motion_startup_timeout" default="10.0" />
+    <arg name="cancel_timeout" default="15.0" />
+
+    <!--
+      HOVER必须对应任务最近发布的目标，避免误用上一阶段遗留HOVER。
+      三项参数只用于任务侧比较MotionState.goal，不改变状态机控制精度。
+    -->
+    <arg name="goal_match_position_tolerance" default="0.03" />
+    <arg name="goal_match_depth_tolerance" default="0.03" />
+    <arg name="goal_match_yaw_tolerance_deg" default="2.0" />
+
+    <!-- 启动后先稳定HOVER 10秒，再一次性生成前方1.2米搜索终点。 -->
+    <arg name="initial_hover_seconds" default="10.0" />
+    <arg name="search_forward_distance" default="1.20" />
+    <arg name="max_wait_seconds" default="300.0" />
+
+    <!-- 图像中心和视觉小步目标参数。 -->
+    <arg name="image_width" default="640.0" />
+    <arg name="image_height" default="480.0" />
+    <arg name="target_center_u_ratio" default="0.5" />
+    <arg name="target_center_v_ratio" default="0.5" />
+    <arg name="center_tolerance_u_px" default="35.0" />
+    <arg name="center_tolerance_v_px" default="35.0" />
+
+    <!--
+      像素归一化误差转换为下一次map绝对目标的本体前/右小步位移。
+      每个新模型帧最多生成一次目标，不会在主循环里重复累加同一偏置。
+      移动方向相反时只修改对应sign；方向正确后再调gain和步长范围。
+    -->
+    <arg name="visual_forward_gain_m" default="0.20" />
+    <arg name="visual_lateral_gain_m" default="0.20" />
+    <arg name="visual_max_step_m" default="0.08" />
+    <arg name="visual_min_step_m" default="0.01" />
+    <arg name="visual_forward_sign" default="1.0" />
+    <arg name="visual_lateral_sign" default="1.0" />
+
+    <!-- 箭头角度协议和航向方向标定。 -->
+    <arg name="camera_forward_angle_deg" default="90.0" />
+    <arg name="yaw_correction_sign" default="1.0" />
+    <arg name="yaw_tolerance_deg" default="10.0" />
+
+    <!--
+      航向和相机中心稳定后，在阶段开始时读取一次base_link实际位姿，
+      沿机器人当前前方计算0.35米的map绝对目标。该位置使目标与前垂推
+      基本对齐；目标不会随机器人当前位置重复向前移动。
+    -->
+    <arg name="front_thruster_forward_offset" default="0.35" />
+
+    <!-- 深度与最低对地距离仍由任务独立检查；HOVER本身不保证深度误差。 -->
+    <arg name="status_topic" default="/status/auv" />
+    <arg name="status_timeout" default="0.5" />
+    <arg name="max_depth_error" default="0.08" />
+    <arg name="min_ground_clearance" default="0.40" />
+    <!-- 候选安全z与当前目标z相差达到该值才改写目标，避免传感器噪声频繁抢占。 -->
+    <arg name="ground_clearance_goal_update_threshold" default="0.01" />
+    <arg name="final_hold_seconds" default="10.0" />
+    <arg name="final_hold_timeout" default="30.0" />
+
+    <include if="$(arg start_arrow_model)"
+             file="$(find stereo_depth)/launch/test_arrow_detection.launch" />
+
+    <!--
+      required=true保证任务成功或失败退出后关闭本launch内的箭头模型。
+      motion_supervisor由外部单独启动，因此任务退出前会先发布cancel。
+    -->
+    <node pkg="auv_control"
+          type="test_task3_1_acquire_area_motion.py"
+          name="test_task3_1_acquire_area_motion"
+          output="screen"
+          required="true">
+        <param name="rate" type="double" value="$(arg rate)" />
+        <param name="log_interval" type="double" value="$(arg log_interval)" />
+        <param name="warning_log_interval" type="double" value="$(arg warning_log_interval)" />
+        <param name="arrow_topic" type="string" value="$(arg arrow_topic)" />
+        <param name="min_confidence" type="double" value="$(arg min_confidence)" />
+        <param name="detection_timeout" type="double" value="$(arg detection_timeout)" />
+        <param name="visual_loss_cancel_seconds" type="double" value="$(arg visual_loss_cancel_seconds)" />
+        <param name="stable_detection_count" type="int" value="$(arg stable_detection_count)" />
+        <param name="stable_center_tolerance_px" type="double" value="$(arg stable_center_tolerance_px)" />
+        <param name="stable_angle_tolerance_deg" type="double" value="$(arg stable_angle_tolerance_deg)" />
+        <param name="center_stable_detection_count" type="int" value="$(arg center_stable_detection_count)" />
+        <param name="heading_stable_detection_count" type="int" value="$(arg heading_stable_detection_count)" />
+
+        <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
+        <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
+        <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />
+        <param name="motion_state_timeout" type="double" value="$(arg motion_state_timeout)" />
+        <param name="motion_startup_timeout" type="double" value="$(arg motion_startup_timeout)" />
+        <param name="cancel_timeout" type="double" value="$(arg cancel_timeout)" />
+        <param name="goal_match_position_tolerance" type="double" value="$(arg goal_match_position_tolerance)" />
+        <param name="goal_match_depth_tolerance" type="double" value="$(arg goal_match_depth_tolerance)" />
+        <param name="goal_match_yaw_tolerance_deg" type="double" value="$(arg goal_match_yaw_tolerance_deg)" />
+
+        <param name="initial_hover_seconds" type="double" value="$(arg initial_hover_seconds)" />
+        <param name="search_forward_distance" type="double" value="$(arg search_forward_distance)" />
+        <param name="max_wait_seconds" type="double" value="$(arg max_wait_seconds)" />
+
+        <param name="image_width" type="double" value="$(arg image_width)" />
+        <param name="image_height" type="double" value="$(arg image_height)" />
+        <param name="target_center_u_ratio" type="double" value="$(arg target_center_u_ratio)" />
+        <param name="target_center_v_ratio" type="double" value="$(arg target_center_v_ratio)" />
+        <param name="center_tolerance_u_px" type="double" value="$(arg center_tolerance_u_px)" />
+        <param name="center_tolerance_v_px" type="double" value="$(arg center_tolerance_v_px)" />
+        <param name="visual_forward_gain_m" type="double" value="$(arg visual_forward_gain_m)" />
+        <param name="visual_lateral_gain_m" type="double" value="$(arg visual_lateral_gain_m)" />
+        <param name="visual_max_step_m" type="double" value="$(arg visual_max_step_m)" />
+        <param name="visual_min_step_m" type="double" value="$(arg visual_min_step_m)" />
+        <param name="visual_forward_sign" type="double" value="$(arg visual_forward_sign)" />
+        <param name="visual_lateral_sign" type="double" value="$(arg visual_lateral_sign)" />
+
+        <param name="camera_forward_angle_deg" type="double" value="$(arg camera_forward_angle_deg)" />
+        <param name="yaw_correction_sign" type="double" value="$(arg yaw_correction_sign)" />
+        <param name="yaw_tolerance_deg" type="double" value="$(arg yaw_tolerance_deg)" />
+        <param name="front_thruster_forward_offset" type="double" value="$(arg front_thruster_forward_offset)" />
+
+        <param name="status_topic" type="string" value="$(arg status_topic)" />
+        <param name="status_timeout" type="double" value="$(arg status_timeout)" />
+        <param name="max_depth_error" type="double" value="$(arg max_depth_error)" />
+        <param name="min_ground_clearance" type="double" value="$(arg min_ground_clearance)" />
+        <param name="ground_clearance_goal_update_threshold" type="double" value="$(arg ground_clearance_goal_update_threshold)" />
+        <param name="final_hold_seconds" type="double" value="$(arg final_hold_seconds)" />
+        <param name="final_hold_timeout" type="double" value="$(arg final_hold_timeout)" />
+    </node>
+</launch>

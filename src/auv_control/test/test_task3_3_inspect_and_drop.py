@@ -142,7 +142,10 @@ class Task3InspectAndDropTest:
     }
 
     def __init__(self):
-        self.rate = rospy.Rate(float(rospy.get_param("~rate", DEFAULT_RATE)))
+        self.rate_hz = float(rospy.get_param("~rate", DEFAULT_RATE))
+        if self.rate_hz <= 0.0:
+            raise ValueError("rate 必须大于 0")
+        self.rate = rospy.Rate(self.rate_hz)
         self.operation_mode = str(
             rospy.get_param("~operation_mode", DEFAULT_OPERATION_MODE)
         ).strip().lower()
@@ -417,6 +420,7 @@ class Task3InspectAndDropTest:
         self.status_hold_depth = None
         self.status_hold_yaw_deg = None
         self.auto_action_hold_position = None
+        self.last_actuator_command = None
         self.finished = False
 
         self.detection_sub = rospy.Subscriber(
@@ -450,6 +454,12 @@ class Task3InspectAndDropTest:
                 "%s：启动人工操作模式，只识别和执行动作，不发布机器人运动指令",
                 NODE_NAME,
             )
+        rospy.loginfo(
+            "%s：主循环频率=%.1fHz，总任务超时=%.1fs",
+            NODE_NAME,
+            self.rate_hz,
+            self.max_wait_seconds,
+        )
         rospy.loginfo(
             (
                 "%s：模型话题=%s，目标颜色=%s，最低置信度=%.2f"
@@ -580,6 +590,18 @@ class Task3InspectAndDropTest:
             self.actuator_mode,
             self.clamp_open,
             self.clamp_closed,
+        )
+        rospy.loginfo(
+            (
+                "%s：执行器固定字段：补光灯=(%d,%d)，航向舵机=%d，"
+                "推进电机=(动作%d,转速%d)；颜色灯随目标颜色自动选择"
+            ),
+            NODE_NAME,
+            self.light1,
+            self.light2,
+            self.heading_servo,
+            self.drive_cmd,
+            self.drive_speed,
         )
         if not self.actuator_mode_supported:
             rospy.logerr(
@@ -1475,24 +1497,49 @@ class Task3InspectAndDropTest:
                 self.auto_center_stable_detection_count,
             )
         elif not horizontal_command_stopped or not physical_motion_stopped:
+            horizontal_speed = self.horizontal_speed(status)
+            mode_ok = status["control_mode"] == MODE_DEPTH_HDG
+            horizontal_speed_ok = (
+                horizontal_speed <= self.auto_action_max_horizontal_speed
+            )
+            vertical_speed_ok = (
+                abs(status["vz"]) <= self.auto_action_max_vertical_speed
+            )
+            yaw_rate_ok = abs(status["wz"]) <= self.auto_action_max_yaw_rate
+            depth_ok = abs(depth_error) <= self.auto_action_max_depth_error
+            yaw_ok = abs(yaw_error_deg) <= self.auto_action_max_yaw_error_deg
             rospy.loginfo_throttle(
                 1.0,
                 (
-                    "%s：方框已连续居中 %d 帧，等待实际停稳："
-                    "速度=(水平%.3f,下%+.3f)m/s，航向角速度=%+.3frad/s，"
-                    "mode=%d，深度误差=%+.3fm，航向误差=%+.2fdeg，"
-                    "当前指令=(TX=%d,TY=%d)"
+                    "%s：动作放行门槛：居中=%d/%d帧；"
+                    "mode=%d/3[%s]；水平速度=%.3f<=%.3f[%s]；"
+                    "下向速度=%.3f<=%.3f[%s]；航向角速度=%.3f<=%.3f[%s]；"
+                    "深度误差=%.3f<=%.3f[%s]；航向误差=%.2f<=%.2f[%s]；"
+                    "水平指令=(TX=%d,TY=%d)[%s]"
                 ),
                 NODE_NAME,
                 self.auto_centered_frame_count,
-                self.horizontal_speed(status),
-                status["vz"],
-                status["wz"],
+                self.auto_center_stable_detection_count,
                 status["control_mode"],
-                depth_error,
-                yaw_error_deg,
+                "通过" if mode_ok else "未通过",
+                horizontal_speed,
+                self.auto_action_max_horizontal_speed,
+                "通过" if horizontal_speed_ok else "未通过",
+                abs(status["vz"]),
+                self.auto_action_max_vertical_speed,
+                "通过" if vertical_speed_ok else "未通过",
+                abs(status["wz"]),
+                self.auto_action_max_yaw_rate,
+                "通过" if yaw_rate_ok else "未通过",
+                abs(depth_error),
+                self.auto_action_max_depth_error,
+                "通过" if depth_ok else "未通过",
+                abs(yaw_error_deg),
+                self.auto_action_max_yaw_error_deg,
+                "通过" if yaw_ok else "未通过",
                 self.last_auto_tx,
                 self.last_auto_ty,
+                "通过" if horizontal_command_stopped else "未通过",
             )
         else:
             if not self.capture_action_hold_position():
@@ -1993,6 +2040,39 @@ class Task3InspectAndDropTest:
         message.yellow_light = yellow
         message.green_light = green
         self.actuator_pub.publish(message)
+
+        command = (
+            message.mode,
+            message.light1,
+            message.light2,
+            message.heading_servo,
+            message.clamp_servo,
+            message.drive_cmd,
+            message.drive_speed,
+            message.red_light,
+            message.yellow_light,
+            message.green_light,
+        )
+        if command != getattr(self, "last_actuator_command", None):
+            rospy.loginfo(
+                (
+                    "%s：执行器指令已发布：mode=%d，夹爪=%d，"
+                    "颜色灯=(红%d,黄%d,绿%d)，补光灯=(%d,%d)，"
+                    "航向舵机=%d，推进电机=(动作%d,转速%d)"
+                ),
+                NODE_NAME,
+                message.mode,
+                message.clamp_servo,
+                message.red_light,
+                message.yellow_light,
+                message.green_light,
+                message.light1,
+                message.light2,
+                message.heading_servo,
+                message.drive_cmd,
+                message.drive_speed,
+            )
+            self.last_actuator_command = command
         return True
 
     def finish_task(self, success, reason):
@@ -2106,7 +2186,7 @@ class Task3InspectAndDropTest:
                 open_elapsed = self.state_elapsed()
                 rospy.loginfo_throttle(
                     1.0,
-                    "%s：已开%s灯并打开夹爪，零水平推力悬停 %.1f/%.1fs",
+                    "%s：已开%s灯并打开夹爪，最终定点保持 %.1f/%.1fs",
                     NODE_NAME,
                     self.target_color,
                     min(open_elapsed, self.open_seconds),
@@ -2114,7 +2194,7 @@ class Task3InspectAndDropTest:
                 )
                 if open_elapsed >= self.open_seconds:
                     rospy.loginfo(
-                        "%s：开灯并打开夹爪后已悬停 %.1fs，关闭夹爪并熄灯",
+                        "%s：开灯并打开夹爪后已定点保持 %.1fs，关闭夹爪并熄灯",
                         NODE_NAME,
                         self.open_seconds,
                     )
