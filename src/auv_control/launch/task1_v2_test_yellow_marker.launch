@@ -18,32 +18,36 @@
     <arg name="camera_topic" default="/left/image_raw" />
     <arg name="velocity_topic" default="/status/vel" />
 
-    <!-- 搜索距离：每轮定点前进距离，以及左右两侧相对搜索中心的横移幅度（m）。 -->
+    <!-- 搜索前进：左右转搜索并回到启动航向后，以 mode=4 定点前进的距离（m）。 -->
     <arg name="search_forward_distance" default="0.5" />
-    <arg name="search_lateral_distance" default="0.5" />
 
-    <!-- 横移控制：mode=3 保持启动航向，仅输出 TY。
-         search_ty_sign=1 表示正 TY 向右；如果实机方向相反改为 -1。 -->
-    <arg name="search_lateral_force" default="1500.0" />
-    <arg name="search_force_step" default="300.0" />
-    <arg name="search_brake_step" default="500.0" />
-    <arg name="search_ty_sign" default="1.0" />
+    <!-- 搜索旋转：相对启动航向左右旋转角度、航向容差（deg）。
+         NED 中默认正航向向右，search_yaw_sign=1；实机方向相反时改为 -1。 -->
+    <arg name="search_yaw_angle_deg" default="30.0" />
+    <arg name="search_yaw_sign" default="1.0" />
+    <arg name="search_yaw_tolerance_deg" default="5.0" />
+
+    <!-- 搜索停留：到达左/右观察航向、返回启动航向、前进目标后持续静止的时间（s）。 -->
+    <arg name="search_yaw_hold_seconds" default="2.0" />
+    <arg name="search_return_hold_seconds" default="2.0" />
+    <arg name="search_forward_hold_seconds" default="4.0" />
 
     <!-- 到达判断：定点前进和前往黄色图形共用的水平位置容差（m）。 -->
     <arg name="position_tolerance" default="0.15" />
 
-    <!-- 黄色图形过滤：类别名、最大相机距离（m）、稳定识别帧数、
-         相邻采样最大间隔（s）和位置聚类距离（m）。 -->
+    <!-- 黄色图形过滤：最近 marker_window_size 条目标识别输出中，至少
+         marker_required_valid 条同类消息达到置信度和位置聚类要求。
+         当前 TargetDetection 不发布逐图像帧的“未检出”消息，因此窗口按识别输出计数。 -->
     <arg name="yellow_classes" default="triangle,circle" />
+    <arg name="yellow_min_confidence" default="0.30" />
     <arg name="max_camera_distance" default="5.0" />
-    <arg name="marker_sample_count" default="3" />
+    <arg name="marker_window_size" default="10" />
+    <arg name="marker_required_valid" default="3" />
     <arg name="marker_sample_timeout" default="1.0" />
     <arg name="marker_cluster_distance" default="0.25" />
 
-    <!-- 搜索过渡：前进或横移结束后，保持速度稳定的时间（s）。 -->
-    <arg name="transition_hold_seconds" default="4.0" />
-
-    <!-- 消息有效期：相机/速度反馈超时（s），速度超时后改用 TF 差分。 -->
+    <!-- 启动与消息有效期：启动后先锁定初始位姿悬停；相机/速度反馈超时单位均为 s。 -->
+    <arg name="startup_hold_seconds" default="10.0" />
     <arg name="camera_message_timeout" default="2.0" />
     <arg name="velocity_message_timeout" default="1.0" />
 
@@ -78,18 +82,21 @@
         <param name="camera_topic" type="string" value="$(arg camera_topic)" />
         <param name="velocity_topic" type="string" value="$(arg velocity_topic)" />
         <param name="search_forward_distance" type="double" value="$(arg search_forward_distance)" />
-        <param name="search_lateral_distance" type="double" value="$(arg search_lateral_distance)" />
-        <param name="search_lateral_force" type="double" value="$(arg search_lateral_force)" />
-        <param name="search_force_step" type="double" value="$(arg search_force_step)" />
-        <param name="search_brake_step" type="double" value="$(arg search_brake_step)" />
-        <param name="search_ty_sign" type="double" value="$(arg search_ty_sign)" />
+        <param name="search_yaw_angle_deg" type="double" value="$(arg search_yaw_angle_deg)" />
+        <param name="search_yaw_sign" type="double" value="$(arg search_yaw_sign)" />
+        <param name="search_yaw_tolerance_deg" type="double" value="$(arg search_yaw_tolerance_deg)" />
+        <param name="search_yaw_hold_seconds" type="double" value="$(arg search_yaw_hold_seconds)" />
+        <param name="search_return_hold_seconds" type="double" value="$(arg search_return_hold_seconds)" />
+        <param name="search_forward_hold_seconds" type="double" value="$(arg search_forward_hold_seconds)" />
         <param name="position_tolerance" type="double" value="$(arg position_tolerance)" />
         <param name="yellow_classes" type="string" value="$(arg yellow_classes)" />
+        <param name="yellow_min_confidence" type="double" value="$(arg yellow_min_confidence)" />
         <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
-        <param name="marker_sample_count" type="int" value="$(arg marker_sample_count)" />
+        <param name="marker_window_size" type="int" value="$(arg marker_window_size)" />
+        <param name="marker_required_valid" type="int" value="$(arg marker_required_valid)" />
         <param name="marker_sample_timeout" type="double" value="$(arg marker_sample_timeout)" />
         <param name="marker_cluster_distance" type="double" value="$(arg marker_cluster_distance)" />
-        <param name="transition_hold_seconds" type="double" value="$(arg transition_hold_seconds)" />
+        <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
         <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
         <param name="velocity_message_timeout" type="double" value="$(arg velocity_message_timeout)" />
         <param name="stable_linear_speed" type="double" value="$(arg stable_linear_speed)" />

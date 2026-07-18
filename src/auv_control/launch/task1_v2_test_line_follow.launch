@@ -4,7 +4,8 @@
         启动前需要先运行真实下位机、TF、相机和红线识别节点。
         节点不再接收人工初始航向；启动瞬间 base_link 的实际航向就是搜索航向。
         轨迹一旦锁定，状态机只执行“到起点 -> 定点 -> 对向 -> LOS 巡线 -> 终点确认”，
-        不会因为暂时丢失识别消息而退回 SEARCH。
+        不会因为暂时丢失识别消息而退回 SEARCH。识别点先更新实时拟合曲线；
+        经后续合理帧确认后才形成固定曲线，LOS 走完当前固定段后才接入新固定段。
     -->
 
     <!-- 基础：主循环频率，单位 Hz。 -->
@@ -18,26 +19,27 @@
     <arg name="velocity_topic" default="/status/vel" />
     <arg name="trajectory_topic" default="/task1/trajectory" />
 
-    <!-- 未识别红线：每轮先以动力定位模式沿启动航向前进的距离，单位 m。 -->
-    <arg name="search_forward_distance" default="0.2" />
-    <!-- 未识别红线：前进后向左、回中、向右、回中的单段横移距离，单位 m。 -->
-    <arg name="search_lateral_distance" default="0.0" />
-    <!-- 未识别红线：定深定向横移所用 TY 绝对值。 -->
-    <arg name="search_lateral_force" default="1500.0" />
-    <!-- 搜索横移：每个控制周期允许增加的 TY，减小突变。 -->
-    <arg name="search_force_step" default="300.0" />
-    <!-- 搜索横移：到达横移距离后每周期卸载的 TY，减小惯性过冲。 -->
-    <arg name="search_brake_step" default="500.0" />
-    <!-- 前右下坐标系 TY 符号；实机左右方向相反时改为 -1。 -->
-    <arg name="search_ty_sign" default="1.0" />
+    <!-- 未识别红线：左右转搜索并回到启动航向后，以 mode=4 定点前进的距离，单位 m。 -->
+    <arg name="search_forward_distance" default="0.5" />
+    <!-- 搜索旋转：相对启动航向左右旋转角度、航向容差（deg）。
+         NED 中默认正航向向右，search_yaw_sign=1；实机方向相反时改为 -1。 -->
+    <arg name="search_yaw_angle_deg" default="30.0" />
+    <arg name="search_yaw_sign" default="1.0" />
+    <arg name="search_yaw_tolerance_deg" default="5.0" />
+    <!-- 到达左/右观察航向、返回启动航向、前进目标后持续静止的时间，单位 s。 -->
+    <arg name="search_yaw_hold_seconds" default="2.0" />
+    <arg name="search_return_hold_seconds" default="2.0" />
+    <arg name="search_forward_hold_seconds" default="4.0" />
     <!-- 动力定位认为到达搜索目标/定点目标的水平距离容差，单位 m。 -->
     <arg name="position_tolerance" default="0.15" />
 
+    <!-- 节点启动后先用 mode=4 锁定初始位姿，等待识别模块启动的时间，单位 s。 -->
+    <arg name="startup_hold_seconds" default="10.0" />
     <!-- 相机消息超过该时间未更新则认为相机未就绪，单位 s。 -->
     <arg name="camera_message_timeout" default="2.0" />
     <!-- 速度消息超过该时间未更新时，改用 TF 差分估算速度，单位 s。 -->
     <arg name="velocity_message_timeout" default="1.0" />
-    <!-- 搜索横移结束及终点定点后，要求持续静止的时间，单位 s。 -->
+    <!-- 终点定点后要求持续静止的时间，单位 s。 -->
     <arg name="transition_hold_seconds" default="4.0" />
     <!-- 判断静止的最大水平速度，单位 m/s。 -->
     <arg name="stable_linear_speed" default="0.05" />
@@ -47,20 +49,20 @@
     <!-- 可接受的红线类别名，多个名称使用英文逗号分隔。 -->
     <arg name="line_classes" default="line" />
     <!-- 相机坐标中任一红线点允许的最大三维距离，单位 m。 -->
-    <arg name="max_camera_distance" default="5.0" />
+    <arg name="max_camera_distance" default="6.0" />
     <!-- 首次见线后的候选窗口，窗口内选择置信度最高的红线并永久锁定，单位 s。 -->
-    <arg name="line_lock_window_seconds" default="0.5" />
+    <arg name="line_lock_window_seconds" default="0.3" />
     <!-- 低置信阈值；低于该值的新点使用更严格的拟合关联条件。 -->
     <arg name="line_low_confidence_threshold" default="0.50" />
 
     <!-- 局部三点中相邻点允许的最小间距，单位 m。 -->
-    <arg name="line_min_point_spacing" default="0.01" />
+    <arg name="line_min_point_spacing" default="0.005" />
     <!-- 局部三点中相邻点允许的最大间距，单位 m。 -->
-    <arg name="line_max_point_spacing" default="3.0" />
+    <arg name="line_max_point_spacing" default="4.0" />
     <!-- 局部三点中间点偏离首尾弦线的最大距离，单位 m。 -->
-    <arg name="line_triplet_max_residual" default="0.25" />
+    <arg name="line_triplet_max_residual" default="0.35" />
     <!-- 局部三点两段方向允许的最大夹角，单位 deg。 -->
-    <arg name="line_triplet_max_bend_deg" default="45.0" />
+    <arg name="line_triplet_max_bend_deg" default="60.0" />
 
     <!-- 低置信新线段到已锁曲线的最大关联距离，单位 m。 -->
     <arg name="line_association_distance" default="0.35" />
@@ -75,18 +77,29 @@
 
     <!-- 新点与已有点距离小于该值时做平滑融合，不重复增加点，单位 m。 -->
     <arg name="line_point_merge_distance" default="0.12" />
-    <!-- 当前活动拟合窗口的原始点上限；超出后冻结已有曲线并删除前段原始点。 -->
+    <!-- 当前活动拟合窗口的原始点安全上限；正常冻结由后续帧确认触发，超限只裁剪旧活动点。 -->
     <arg name="line_curve_max_points" default="200" />
-    <!-- 窗口滚动后保留在远端的原始重叠点数，用于新旧曲线平滑衔接。 -->
+    <!-- 活动点超限裁剪后保留在远端的点数，用于固定曲线与新曲线平滑衔接。 -->
     <arg name="line_curve_overlap_points" default="40" />
     <!-- 历史曲线末端之后允许新活动点向后重叠的最大路径距离，单位 m。 -->
     <arg name="line_window_backtrack_distance" default="1.0" />
-    <!-- 网页显示和 LOS 使用的拟合曲线采样点数。 -->
+    <!-- 实时拟合曲线及 LOS 执行曲线快照的采样点数。 -->
     <arg name="line_curve_sample_count" default="100" />
     <!-- 平滑曲线的多项式拟合阶数。 -->
     <arg name="line_curve_degree" default="3" />
     <!-- 允许锁定并使用的最短拟合曲线长度，单位 m。 -->
-    <arg name="line_curve_min_length" default="0.30" />
+    <arg name="line_curve_min_length" default="0.15" />
+    <!-- 在线冻结：连续多少个合理拟合帧后，把当前曲线立即固定。默认 2 帧以降低等待。 -->
+    <arg name="curve_freeze_required_frames" default="2" />
+    <!-- 首段固定所需最短长度、后续每次固定所需最小增长，单位 m。 -->
+    <arg name="curve_freeze_min_length" default="0.15" />
+    <arg name="curve_freeze_min_advance" default="0.10" />
+    <!-- 新点距固定曲线小于该值时视为重复点并忽略，单位 m。 -->
+    <arg name="curve_freeze_ignore_distance" default="0.12" />
+    <!-- 固定末端向前超过该距离才视为新延伸点，单位 m。 -->
+    <arg name="curve_freeze_endpoint_guard" default="0.05" />
+    <!-- 每次固定后保留在固定末端附近的原始衔接点范围，单位 m。 -->
+    <arg name="curve_freeze_overlap_distance" default="0.25" />
     <!-- 最远点相对固定参考点至少增加该距离，才记为一次有效轨迹增长，单位 m。 -->
     <arg name="endpoint_growth_tolerance" default="0.08" />
 
@@ -96,10 +109,8 @@
     <arg name="los_forward_force" default="1000.0" />
     <!-- 接近起终点或航向误差偏大时使用的减速 TX。 -->
     <arg name="los_slow_forward_force" default="300.0" />
-    <!-- LOS 每个周期允许增加的 TX，减小突变。 -->
+    <!-- LOS 每个周期允许的 TX 变化量，只做指令平滑；切入 mode=4 时不再人工刹车。 -->
     <arg name="los_force_step" default="200.0" />
-    <!-- LOS 到点或航向误差过大时每周期卸载的 TX，减小惯性过冲。 -->
-    <arg name="los_brake_step" default="500.0" />
     <!-- 前右下坐标系 TX 符号；实机前进方向相反时改为 -1。 -->
     <arg name="los_tx_sign" default="1.0" />
     <!-- 航向误差超过该值时 LOS 将目标 TX 降为 0，先调整航向，单位 deg。 -->
@@ -138,7 +149,7 @@
     <!-- 网页绑定的机器人本机网卡地址。 -->
     <arg name="trajectory_web_host" default="192.168.1.117" />
     <!-- 网页端口；默认访问 http://192.168.1.117:8082。 -->
-    <arg name="trajectory_web_port" default="8081" />
+    <arg name="trajectory_web_port" default="8082" />
 
 
     <node pkg="auv_control"
@@ -155,13 +166,15 @@
         <param name="trajectory_topic" type="string" value="$(arg trajectory_topic)" />
 
         <param name="search_forward_distance" type="double" value="$(arg search_forward_distance)" />
-        <param name="search_lateral_distance" type="double" value="$(arg search_lateral_distance)" />
-        <param name="search_lateral_force" type="double" value="$(arg search_lateral_force)" />
-        <param name="search_force_step" type="double" value="$(arg search_force_step)" />
-        <param name="search_brake_step" type="double" value="$(arg search_brake_step)" />
-        <param name="search_ty_sign" type="double" value="$(arg search_ty_sign)" />
+        <param name="search_yaw_angle_deg" type="double" value="$(arg search_yaw_angle_deg)" />
+        <param name="search_yaw_sign" type="double" value="$(arg search_yaw_sign)" />
+        <param name="search_yaw_tolerance_deg" type="double" value="$(arg search_yaw_tolerance_deg)" />
+        <param name="search_yaw_hold_seconds" type="double" value="$(arg search_yaw_hold_seconds)" />
+        <param name="search_return_hold_seconds" type="double" value="$(arg search_return_hold_seconds)" />
+        <param name="search_forward_hold_seconds" type="double" value="$(arg search_forward_hold_seconds)" />
         <param name="position_tolerance" type="double" value="$(arg position_tolerance)" />
 
+        <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
         <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
         <param name="velocity_message_timeout" type="double" value="$(arg velocity_message_timeout)" />
         <param name="transition_hold_seconds" type="double" value="$(arg transition_hold_seconds)" />
@@ -189,13 +202,18 @@
         <param name="line_curve_sample_count" type="int" value="$(arg line_curve_sample_count)" />
         <param name="line_curve_degree" type="int" value="$(arg line_curve_degree)" />
         <param name="line_curve_min_length" type="double" value="$(arg line_curve_min_length)" />
+        <param name="curve_freeze_required_frames" type="int" value="$(arg curve_freeze_required_frames)" />
+        <param name="curve_freeze_min_length" type="double" value="$(arg curve_freeze_min_length)" />
+        <param name="curve_freeze_min_advance" type="double" value="$(arg curve_freeze_min_advance)" />
+        <param name="curve_freeze_ignore_distance" type="double" value="$(arg curve_freeze_ignore_distance)" />
+        <param name="curve_freeze_endpoint_guard" type="double" value="$(arg curve_freeze_endpoint_guard)" />
+        <param name="curve_freeze_overlap_distance" type="double" value="$(arg curve_freeze_overlap_distance)" />
         <param name="endpoint_growth_tolerance" type="double" value="$(arg endpoint_growth_tolerance)" />
 
         <param name="los_lookahead_distance" type="double" value="$(arg los_lookahead_distance)" />
         <param name="los_forward_force" type="double" value="$(arg los_forward_force)" />
         <param name="los_slow_forward_force" type="double" value="$(arg los_slow_forward_force)" />
         <param name="los_force_step" type="double" value="$(arg los_force_step)" />
-        <param name="los_brake_step" type="double" value="$(arg los_brake_step)" />
         <param name="los_tx_sign" type="double" value="$(arg los_tx_sign)" />
         <param name="los_stop_yaw_error_deg" type="double" value="$(arg los_stop_yaw_error_deg)" />
         <param name="los_slow_yaw_error_deg" type="double" value="$(arg los_slow_yaw_error_deg)" />
