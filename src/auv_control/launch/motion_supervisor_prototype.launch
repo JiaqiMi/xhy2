@@ -33,7 +33,7 @@
       false：只启动 motion_supervisor，目标由其他节点发布；
       true：启动 motion_goal_test，并自动发布下方参数定义的测试目标。
     -->
-    <arg name="start_goal_test" default="true" />
+    <arg name="start_goal_test" default="false" />
 
     <!--
       NED/map 坐标系下的绝对目标深度，单位 m。

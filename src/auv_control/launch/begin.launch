@@ -8,12 +8,14 @@
     <arg name="vehicle_ip" default="192.168.1.115" />
     <arg name="start_camera" default="true" />
     <arg name="start_splitter" default="true" />
-    <arg name="enable_state_web" default="true" />
+    <arg name="start_state_web" default="true" />
+    <arg name="start_fisheye" default="true" />
+    <arg name="start_motion_supervisor" default="true" />
+    <!-- web 参数 -->    
     <arg name="state_web_host" default="0.0.0.0" />
     <arg name="state_web_port" default="8088" />
 
     <!-- 鱼眼相机驱动 -->
-    <arg name="start_driver" default="true" />
     <arg name="camera_host" default="192.168.1.122" />
     <arg name="camera_port" default="554" />
     <arg name="username" default="admin" />
@@ -60,7 +62,7 @@
     <node pkg="auv_control" type="auv_tf_handler.py" name="auv_tf_handler" output="screen"/>
 
     <!-- 运行状态 Web：声明在坐标系节点之后，自行等待 /world_origin 和 map -> base_link TF 就绪 -->
-    <group if="$(arg enable_state_web)">
+    <group if="$(arg start_state_web)">
         <include file="$(find state_web)/launch/state_web.launch">
             <arg name="host" value="$(arg state_web_host)" />
             <arg name="port" value="$(arg state_web_port)" />
@@ -75,7 +77,7 @@
     <node if="$(arg start_splitter)" pkg="stereo_splitter" type="split_stereo_image.py" name="split_stereo_image" output="screen" />
 
     <!-- 启动鱼眼相机 -->
-    <include if="$(arg start_driver)"
+    <include if="$(arg start_fisheye)"
              file="$(find fisheye_camera_driver)/launch/driver.launch">
         <arg name="host" value="$(arg camera_host)" />
         <arg name="port" value="$(arg camera_port)" />
@@ -85,4 +87,7 @@
         <arg name="subtype" value="$(arg subtype)" />
         <arg name="image_topic" value="$(arg image_topic)" />
     </include>
+    <include if="$(arg start_motion_supervisor)"
+             file="$(find auv_control)/launch/motion_supervisor_prototype.launch">
+        <arg name="start_goal_test" value="false" />
 </launch>

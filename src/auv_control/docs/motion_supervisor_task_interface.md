@@ -1,4 +1,4 @@
-# 运动管理器任务节点接口
+# 运动状态机任务节点接口
 
 ## 1. 用途与边界
 
@@ -26,12 +26,10 @@
 
 | 方向 | Topic | 消息类型 | 频率 | 用途 |
 |---|---|---|---:|---|
-| 任务 → 管理器 | `/cmd/motion/goal` | `geometry_msgs/PoseStamped` | 建议 5 Hz | 发布最终目标位姿 |
-| 任务 → 管理器 | `/cmd/motion/cancel` | `std_msgs/Empty` | 单次 | 刹停后悬停当前位置 |
-| 管理器 → 任务 | `/motion/state` | `auv_control/MotionState` | 5 Hz | 状态、误差、速度和力矩反馈 |
+| 任务 → 状态机 | `/cmd/motion/goal` | `geometry_msgs/PoseStamped` | 建议 5 Hz | 发布最终目标位姿 |
+| 任务 → 状态机 | `/cmd/motion/cancel` | `std_msgs/Empty` | 单次 | 刹停后悬停当前位置 |
+| 状态机 → 任务 | `/motion/state` | `auv_control/MotionState` | 5 Hz | 状态、误差、速度和力矩反馈 |
 
-`motion_supervisor` 还会使用 `/status/vel`、`/status/auv` 和
-`map → base_link` TF，但任务节点不需要转发这些反馈。
 
 ## 3. 目标输入 `/cmd/motion/goal`
 
@@ -51,8 +49,8 @@ pose.orientation = 最终 yaw 对应的有效单位四元数
 - `x、y、z、yaw` 必须为有限值；
 - 四元数模长不能接近零；
 - 当前只使用 yaw，任务节点通常令 roll、pitch 为 0；
-- 深度来自每条 goal 的 `position.z`，不能省略或依赖管理器写死；
-- 当前系统约定水下深度为负值，例如水下 0.6 m 使用 `z=-0.6`。
+- 深度来自每条 goal 的 `position.z`；
+- 当前系统原点为水池底部，向下为正，例如高 0.6 m 使用 `z=-0.6`。
 
 Python 发布示例：
 
@@ -85,9 +83,9 @@ def build_goal(x, y, z, yaw):
 
 ### 3.2 发布频率
 
-建议任务节点以 5 Hz 持续发布当前最终目标，与运动管理器控制频率一致。
+建议任务节点以 5 Hz 持续发布当前最终目标，与运动状态机控制频率一致。
 
-- 停止发布不会取消运动，管理器会继续执行最后一个有效目标；
+- 停止发布不会取消运动，状态机会继续执行最后一个有效目标；
 - 需要终止任务时，必须发布 `/cmd/motion/cancel`；
 - 发布频率短时抖动不会清空目标；
 - 任务节点应自行设置任务级超时，不能只依赖目标发布是否正常。
@@ -98,7 +96,7 @@ def build_goal(x, y, z, yaw):
 
 TF 尚未产生第一帧时也会发布 `SAFE`，`reason` 为“等待首帧 TF”，此时不会
 下发运动指令。获得首帧 TF 后，正常反馈中的误差和速度字段才具有控制意义。
-TF 后续短时失败不会阻塞状态话题；管理器使用最后有效位姿，并在真实 TF
+TF 后续短时失败不会阻塞状态话题；状态机使用最后有效位姿，并在真实 TF
 年龄超过 `feedback_timeout` 后进入 `SAFE`。
 
 ### 4.1 字段
@@ -153,7 +151,7 @@ TRANSLATE_BRAKE → CAPTURE → HOVER
 
 ## 5. 任务如何判断到达
 
-不新增 `target_reached` 标志。到达条件为：
+到达条件为：
 
 ```text
 /motion/state.state == MotionState.HOVER
@@ -162,7 +160,7 @@ TRANSLATE_BRAKE → CAPTURE → HOVER
 `HOVER` 同时保证：
 
 1. 水平位置误差、yaw 误差、水平速度和角速度已连续满足捕获条件；
-2. 管理器已发送最终目标的 `mode=4` 且六轴外部力为零；
+2. 状态机已发送最终目标的 `mode=4` 且六轴外部力为零；
 3. 本次接管开始后收到新的 `/status/auv.control_mode==4` 反馈；
 4. 下位机模式反馈仍在 `mode_ack_timeout` 允许的新鲜度范围内。
 
@@ -193,7 +191,7 @@ def motion_arrived(message):
 3. 对任务阶段切换要求较严时，再确认 `message.goal` 与最近目标一致；
 4. 发布明显不同的新目标后，清除任务节点内部的上一阶段完成状态。
 
-`message.goal` 是管理器当前实际采用的目标，可用于避免把上一目标遗留的
+`message.goal` 是状态机当前实际采用的目标，可用于避免把上一目标遗留的
 `HOVER` 当作新目标到达。比较 yaw 时必须进行 `±π` 归一化。
 
 ## 6. 不同运动类型的下发方式
@@ -223,6 +221,8 @@ TRANSLATE → TRANSLATE_BRAKE → ALIGN_FINAL/FINAL_BRAKE
 注意：不要每周期用“当前 AUV 位置 + 相对偏置”重新计算目标，否则目标会随
 AUV 一起移动，造成无法到达。相对偏置必须在阶段开始时计算一次。
 
+连续平移时，需要任务节点把控步长，如果只是移动到目标位置，可无视步长。
+
 ### 6.2 纯旋转
 
 在旋转开始时锁定当前 `x、y`，只改变最终 yaw：
@@ -234,7 +234,7 @@ goal.z = 任务目标深度
 goal.yaw = 目标绝对 yaw
 ```
 
-当前位置已在捕获半径内时，管理器直接进入：
+当前位置已在捕获半径内时，状态机直接进入：
 
 ```text
 ALIGN_FINAL → FINAL_BRAKE → CAPTURE → HOVER
@@ -242,6 +242,8 @@ ALIGN_FINAL → FINAL_BRAKE → CAPTURE → HOVER
 
 旋转期间仍会使用 `TX/TY` 消除漂移。若漂出 `capture_exit_radius`，状态机会
 先重新平移到目标位置，再继续最终转向。
+
+连续旋转时，旋转步长仍需要任务节点来把控，如果只是旋转到目标角度，可无视步长。
 
 ### 6.3 既有平移又有旋转
 
@@ -253,7 +255,7 @@ goal.z = 最终绝对深度
 goal.yaw = 最终绝对航向
 ```
 
-管理器固定采用“先平移、后转向”：
+状态机固定采用“先平移、后转向”：
 
 ```text
 保持平移开始时航向，以 TX/TY 到达并刹停
@@ -261,7 +263,8 @@ goal.yaw = 最终绝对航向
 → mode=4 定点接管
 ```
 
-任务节点不需要拆成两个目标，也不要先发布指向目标点的中间 yaw。
+如果只需到目标位置，则不考虑步长。
+如果需要先指向目标位置，再到达目标位置和航向，则应该分两阶段发布指令，先原地旋转，再移动
 
 ### 6.4 base_link 相对偏置转换
 
@@ -282,7 +285,7 @@ goal_y = current_y + sin(yaw) × dx + cos(yaw) × dy
 
 ## 7. 连续目标更新
 
-任务以 5 Hz 更新目标时，管理器比较“新目标与当前目标”的变化量：
+任务以 5 Hz 更新目标时，状态机比较“新目标与当前目标”的变化量：
 
 ```yaml
 goal_preempt_distance: 0.50
@@ -319,7 +322,7 @@ goal_preempt_yaw_deg: 30.0
 cancel_pub.publish(Empty())
 ```
 
-管理器会：
+状态机会：
 
 ```text
 主动刹停
@@ -347,7 +350,7 @@ cancel_pub.publish(Empty())
 3. 记录 `reason`；
 4. 根据任务安全策略选择等待恢复、取消或人工接管。
 
-反馈恢复后，管理器会先刹停确认，不会直接恢复大力运动。
+反馈恢复后，状态机会先刹停确认，不会直接恢复大力运动。
 
 ## 9. 任务节点最小订阅示例
 
@@ -387,7 +390,7 @@ class TaskMotionMonitor(object):
         )
 
     def failed(self):
-        """判断运动管理器是否进入安全状态。"""
+        """判断运动状态机是否进入安全状态。"""
         return (
             self.latest_state is not None
             and self.latest_state.state == MotionState.SAFE
@@ -414,3 +417,9 @@ class TaskMotionMonitor(object):
 - [ ] 新任务阶段会清除本地旧完成状态；
 - [ ] 任务配置了超时、取消和 `SAFE` 处理；
 - [ ] 对深度到达有要求时单独检查实际深度。
+
+## 11. 文件说明
+
+`motion_supervisor_core.py` 核心算法
+
+`motion_supervisor.py` 状态机实现
