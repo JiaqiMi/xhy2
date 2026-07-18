@@ -1,4 +1,4 @@
-#!/home/xhy/xhy_env/bin/python
+#!/home/xhy/xhy_env/bin/python3.8
 
 import rospy
 from sensor_msgs.msg import Image

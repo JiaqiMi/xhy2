@@ -1,5 +1,5 @@
 <launch>
-    <!-- 箭头识别：YOLO bbox -> 二维方向估计 -> 连续话题 -> Web -->
+    <!-- 箭头识别：YOLO bbox -> 鲁棒二维方向估计 -> 连续话题 -> Web -->
 
     <arg name="start_camera" default="false" />
     <arg name="start_splitter" default="true" />
@@ -13,12 +13,26 @@
     <arg name="visualization" default="0" />
     <arg name="web_port" default="8080" />
 
+    <!--
+        1 Hz rosbag回放建议 1.5~2.0 s；
+        5 Hz实时输入可设置 0.8~1.0 s。
+    -->
+    <arg name="bbox_timeout" default="1.5" />
+    <arg name="max_sync_dt" default="1.2" />
+
     <!-- 相机 -->
     <node if="$(arg start_camera)"
-        name="usb_cam"
-        pkg="usb_cam"
-        type="usb_cam_node"
-        launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
+          name="usb_cam"
+          pkg="usb_cam"
+          type="usb_cam_node"
+          output="screen"
+          launch-prefix="bash -c 'exec &quot;$0&quot; &quot;$@&quot; 2>/dev/null'">
+        <param name="video_device" value="/dev/video0" />
+        <param name="pixel_format" value="mjpeg" />
+        <param name="image_width" value="1280" />
+        <param name="image_height" value="480" />
+        <param name="framerate" value="30" />
+    </node>
 
     <node if="$(arg start_splitter)"
           pkg="stereo_splitter"
@@ -26,7 +40,7 @@
           name="split_stereo_image"
           output="screen" />
 
-    <!-- YOLO箭头检测：必须发布bbox -->
+    <!-- YOLO箭头检测：发布bbox -->
     <node pkg="yolo_bridge"
           type="yolo_wrapper.sh"
           name="yolo_unified_detector"
@@ -36,7 +50,7 @@
         <env name="NODE_NAME" value="/yolo_unified_detector" />
 
         <param name="task_mode" value="detect" />
-        <param name="detect_mode" value="1" />
+        <param name="detect_mode" value="4" />
         <param name="model_path" value="$(arg model_path)" />
         <param name="top_k" value="$(arg top_k)" />
         <param name="visualization" value="$(arg visualization)" />
@@ -58,9 +72,9 @@
                value="/yolo_unified/line_bbox" />
     </node>
 
-    <!-- 二维箭头方向节点：有箭头和无箭头时都固定频率发布 -->
+    <!-- 改进版二维箭头方向节点 -->
     <node pkg="stereo_depth"
-          type="arrow_direction_node.py"
+          type="arrow_direction_node_v2.py"
           name="arrow_direction_node"
           output="screen">
 
@@ -85,26 +99,37 @@
         <param name="publish_rate"
                value="$(arg rate)" />
         <param name="bbox_timeout"
-               value="1.5" />
+               value="$(arg bbox_timeout)" />
         <param name="max_sync_dt"
-               value="1.2" />
+               value="$(arg max_sync_dt)" />
+
         <param name="bbox_margin_ratio"
-               value="0.10" />
+               value="0.08" />
         <param name="min_bbox_size"
                value="20" />
         <param name="min_contour_area"
-               value="80.0" />
+               value="30.0" />
         <param name="min_contour_fill_ratio"
-               value="0.015" />
+               value="0.1" />
         <param name="max_contour_fill_ratio"
-               value="0.85" />
+               value="0.90" />
+
+        <!-- 自动在otsu/adaptive/combined/dark中选择最佳轮廓 -->
         <param name="threshold_mode"
                value="combined" />
+        <param name="dark_threshold_offset"
+               value="12.0" />
+
+        <!-- 仅在方向证据较弱时抑制随机180度翻转 -->
+        <param name="direction_flip_confidence"
+               value="0.18" />
+        <param name="direction_memory_sec"
+               value="5.0" />
+
         <param name="visualization"
                value="$(arg visualization)" />
     </node>
 
-    <!-- Web使用方向节点的连续标注图，并新增箭头方向JSON订阅 -->
     <include if="$(arg start_web)"
              file="$(find vision_web)/launch/vision_web_v2.launch">
 

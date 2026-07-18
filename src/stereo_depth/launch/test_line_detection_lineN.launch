@@ -1,24 +1,34 @@
 <launch>
-    <!-- Shapes识别：检测框中心 -> 单点三维坐标 -> Web -->
+    <!-- 线分割 -> 骨架主路径 -> N个等弧长像素点 -> N个三维点 -->
 
-    <arg name="start_camera" default="true" />
+    <arg name="start_camera" default="false" />
     <arg name="start_splitter" default="true" />
     <arg name="start_web" default="true" />
 
     <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/red_circle0713.pt" />
+         default="/home/xhy/catkin_ws/models/line0709.pt" />
+
+    <!-- 10或20均可 -->
+    <arg name="line_sample_count" default="20" />
+
     <arg name="exp_env" default="water" />
     <arg name="conf_thre" default="0.2" />
-    <arg name="top_k" default="3" />
+    <arg name="top_k" default="1" />
     <arg name="rate" default="5.0" />
     <arg name="visualization" default="0" />
     <arg name="web_port" default="8080" />
 
     <node if="$(arg start_camera)"
-        name="usb_cam"
-        pkg="usb_cam"
-        type="usb_cam_node"
-        launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
+          pkg="usb_cam"
+          type="usb_cam_node"
+          name="usb_cam"
+          output="log">
+        <param name="video_device" value="/dev/video0" />
+        <param name="pixel_format" value="mjpeg" />
+        <param name="image_width" value="1280" />
+        <param name="image_height" value="480" />
+        <param name="framerate" value="30" />
+    </node>
 
     <node if="$(arg start_splitter)"
           pkg="stereo_splitter"
@@ -27,22 +37,27 @@
           output="screen" />
 
     <node pkg="yolo_bridge"
-          type="yolo_wrapper.sh"
+          type="yolo_wrapper_lineN.sh"
           name="yolo_unified_detector"
           output="screen"
           launch-prefix="bash">
+
         <env name="NODE_NAME" value="/yolo_unified_detector" />
 
-        <param name="task_mode" value="detect" />
-        <param name="detect_mode" value="1" />
+        <param name="task_mode" value="segment_line" />
+        <param name="detect_mode" value="4" />
         <param name="model_path" value="$(arg model_path)" />
         <param name="top_k" value="$(arg top_k)" />
         <param name="visualization" value="$(arg visualization)" />
         <param name="conf_thre" value="$(arg conf_thre)" />
         <param name="detc_type" value="center" />
-        <param name="output_type" value="quartiles" />
-        <param name="infer_rate" value="$(arg rate)" />
 
+        <!-- 沿骨架主路径等弧长采样 -->
+        <param name="output_type" value="uniform_path" />
+        <param name="line_sample_count"
+               value="$(arg line_sample_count)" />
+
+        <param name="infer_rate" value="$(arg rate)" />
         <param name="input_topic" value="/left/image_raw" />
         <param name="annotated_topic"
                value="/yolo_unified/annotated_image" />
@@ -52,14 +67,15 @@
         <param name="bbox_topic"
                value="/yolo_unified/target_bbox" />
         <param name="line_topic"
-               value="/yolo_unified/line_bbox" />
+               value="/yolo_unified/line_points" />
     </node>
 
     <node pkg="stereo_depth"
-          type="stereo_depth_node.py"
+          type="stereo_depth_node_lineN.py"
           name="stereo_depth_unified"
           output="screen">
-        <param name="task_mode" value="center" />
+
+        <param name="task_mode" value="line" />
         <param name="exp_env" value="$(arg exp_env)" />
         <param name="visualization" value="$(arg visualization)" />
         <param name="conf_thre" value="$(arg conf_thre)" />
@@ -67,22 +83,27 @@
 
         <param name="left_topic" value="/left/image_raw" />
         <param name="right_topic" value="/right/image_raw" />
-        <param name="center_topic"
-               value="/yolo_unified/target_center" />
-        <param name="bbox_topic"
-               value="/yolo_unified/target_bbox" />
         <param name="line_topic"
-               value="/yolo_unified/line_bbox" />
+               value="/yolo_unified/line_points" />
 
-        <param name="target_output_topic"
-               value="/obj/target_message" />
         <param name="line_output_topic"
                value="/obj/line_message" />
-        <param name="web_pose_topic" value="/web/pose" />
+        <param name="web_pose_topic"
+               value="/web/pose" />
 
         <param name="max_sync_dt" value="0.15" />
         <param name="frame_buffer_size" value="20" />
-        <param name="depth_statistic" value="mean" />
+
+        <!-- 多点深度不建议使用min，median更稳健 -->
+        <param name="depth_statistic" value="median" />
+        <param name="window_size" value="15" />
+
+        <!-- 20点中至少10点有效即可认为整条线有效 -->
+        <param name="min_valid_line_points" value="5" />
+        <param name="min_valid_line_ratio" value="0.5" />
+        <param name="require_all_line_points" value="false" />
+        <param name="require_line_depth_order" value="false" />
+        <param name="reverse_line_points" value="false" />
     </node>
 
     <include if="$(arg start_web)"
@@ -92,7 +113,8 @@
              value="/yolo_unified/annotated_image" />
         <arg name="detection_topic"
              value="/web/detections" />
-        <arg name="pose_topic" value="/web/pose" />
+        <arg name="pose_topic"
+             value="/web/pose" />
         <arg name="stream_fps" value="$(arg rate)" />
         <arg name="jpeg_quality" value="75" />
         <arg name="web_width" value="960" />
