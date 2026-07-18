@@ -4,12 +4,22 @@
 
 人工先把机器人放在箭头后方约0.5米。节点启动后使用模式3悬停10秒，
 再保持深度和启动航向低速向前搜索。``/arrow/direction`` 连续稳定3帧后，
-先对齐箭头航向，再通过 TX/TY 缓慢视觉靠近。摄像头居中后使用现有TF
-取得箭头map坐标，并将机器人本体移动到该点，最终稳定悬停10秒。
+先保持原航向通过 TX/TY 把箭头移到图像中心并悬停，稳定确认箭头方向后
+再小步对齐航向。中心与航向均稳定后取得箭头map坐标，并将机器人本体
+移动到该点，最终稳定悬停10秒。
 """
 
 import json
 import math
+import os
+import sys
+
+# 兼容直接运行源码脚本和catkin安装后的运行方式。
+DRIVER_DIR = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "driver"
+))
+if DRIVER_DIR not in sys.path:
+    sys.path.insert(0, DRIVER_DIR)
 
 import rospy
 import tf
@@ -80,7 +90,7 @@ DEFAULT_CAMERA_FORWARD_ANGLE_DEG = 90.0
 DEFAULT_YAW_CORRECTION_SIGN = 1.0
 DEFAULT_YAW_TOLERANCE_DEG = 10.0
 DEFAULT_YAW_TARGET_FILTER_ALPHA = 0.35
-DEFAULT_YAW_TARGET_MAX_STEP_DEG = 10.0
+DEFAULT_YAW_TARGET_MAX_STEP_DEG = 3.0
 
 # 视觉细对准推力与速度阻尼。
 DEFAULT_FORWARD_GAIN = 160.0
@@ -122,6 +132,7 @@ class Task3AcquireAreaTest:
     INITIAL_HOVER = "启动悬停"
     FORWARD_SEARCH = "直行搜索箭头"
     WAIT_FOR_ARROW = "丢失后定点重识别"
+    CONFIRM_DIRECTION = "中心悬停确认箭头方向"
     ALIGN_HEADING = "箭头航向对准"
     APPROACH_CAMERA = "摄像头视觉居中"
     BODY_CENTERING = "机器人本体移到箭头上方"
@@ -129,6 +140,8 @@ class Task3AcquireAreaTest:
 
     def __init__(self):
         self.rate_hz = float(rospy.get_param("~rate", DEFAULT_RATE))
+        if self.rate_hz <= 0.0:
+            raise ValueError("rate 必须大于0")
         self.rate = rospy.Rate(self.rate_hz)
 
         self.arrow_topic = str(
@@ -171,7 +184,6 @@ class Task3AcquireAreaTest:
         self.stable_angle_tolerance_deg = float(rospy.get_param(
             "~stable_angle_tolerance_deg", DEFAULT_STABLE_ANGLE_TOLERANCE_DEG
         ))
-
         self.image_width = float(rospy.get_param(
             "~image_width", DEFAULT_IMAGE_WIDTH
         ))
@@ -310,6 +322,7 @@ class Task3AcquireAreaTest:
         self.state_started = self.task_started
         self.current_status = None
         self.last_status_time = None
+        self.last_base_pose = None
         self.control_initialized = False
         self.hold_z = None
         self.hold_depth = None
@@ -319,9 +332,9 @@ class Task3AcquireAreaTest:
         self.search_origin = None
         self.search_yaw = None
         self.target_yaw = None
-        self.heading_hold_position = None
-        self.heading_aligned_frame_count = 0
-        self.last_heading_frame_index = 0
+        self.center_hold_position = None
+        self.center_hold_yaw = None
+        self.direction_samples = []
         self.arrow_map_position = None
         self.final_hold_position = None
         self.final_hold_stable_started = None
@@ -337,9 +350,12 @@ class Task3AcquireAreaTest:
         self.last_alignment_frame_index = 0
         self.last_target_yaw_frame_index = 0
         self.alignment_loss_hold_position = None
+        self.alignment_loss_hold_yaw = None
 
         self.last_tx = 0
         self.last_ty = 0
+        self.last_zero_force_position = None
+        self.last_zero_force_yaw = None
         self.task_finished = False
 
         self.status_sub = rospy.Subscriber(
@@ -447,11 +463,13 @@ class Task3AcquireAreaTest:
     def log_startup_config(self):
         rospy.loginfo(
             (
-                "%s：启动子任务1；流程=mode3悬停%.1fs -> 低速直行搜索 -> "
-                "稳定识别%d帧 -> 先对齐航向 -> 缓慢视觉居中 -> "
+                "%s：启动子任务1；主循环=%.1fHz；流程=mode3悬停%.1fs -> 低速直行搜索 -> "
+                "稳定识别%d帧 -> 保持原航向视觉居中 -> 中心悬停确认方向 -> "
+                "小步对齐航向并保持居中 -> "
                 "相机/本体TF补偿 -> 最终定点%.1fs"
             ),
             NODE_NAME,
+            self.rate_hz,
             self.initial_hover_seconds,
             self.stable_detection_count,
             self.final_hold_seconds,
@@ -514,6 +532,51 @@ class Task3AcquireAreaTest:
             self.tx_sign,
             self.ty_sign,
             self.min_ground_clearance,
+        )
+        rospy.loginfo(
+            (
+                "%s：识别确认参数：首次锁定=%d帧（中心抖动<=%.1fpx，"
+                "此时不判断方向稳定），居中后方向确认=%d帧（角度抖动<=%.1fdeg），"
+                "首次居中及最终中心和航向确认=%d帧"
+            ),
+            NODE_NAME,
+            self.stable_detection_count,
+            self.stable_center_tolerance_px,
+            self.heading_stable_detection_count,
+            self.stable_angle_tolerance_deg,
+            self.center_stable_detection_count,
+        )
+        rospy.loginfo(
+            (
+                "%s：停稳判定：mode=%d，水平速度<=%.3fm/s，垂直速度<=%.3fm/s，"
+                "航向角速度<=%.3frad/s，深度误差<=%.3fm，最终位置误差<=%.3fm；"
+                "速度死区=%.3fm/s，定点位置死区=%.3fm；"
+                "定点增益=(%.1f,%.1f)，定点最大力=%.1f，最终保持=%.1f/%.1fs"
+            ),
+            NODE_NAME,
+            MODE_DEPTH_HEADING,
+            self.max_horizontal_speed,
+            self.max_vertical_speed,
+            self.max_yaw_rate,
+            self.max_depth_error,
+            self.final_position_tolerance,
+            self.speed_deadband,
+            self.hold_position_tolerance,
+            self.hold_forward_position_gain,
+            self.hold_lateral_position_gain,
+            self.hold_max_force,
+            self.final_hold_seconds,
+            self.final_hold_timeout,
+        )
+        rospy.loginfo(
+            (
+                "%s：状态反馈配置：超时=%.2fs，线速度缩放=%.6f，"
+                "角速度缩放=%.9f"
+            ),
+            NODE_NAME,
+            self.status_timeout,
+            self.status_linear_velocity_scale,
+            self.status_angular_velocity_scale,
         )
 
     @staticmethod
@@ -597,9 +660,10 @@ class Task3AcquireAreaTest:
         self.locked_detection = None
         if self.state in (self.FORWARD_SEARCH, self.WAIT_FOR_ARROW):
             self.detection_samples = []
+        if self.state == self.CONFIRM_DIRECTION:
+            self.direction_samples = []
         if self.state in (self.ALIGN_HEADING, self.APPROACH_CAMERA):
             self.reset_center_confirmation(reason)
-            self.heading_aligned_frame_count = 0
         rospy.loginfo(
             "%s：[箭头识别第%d帧] 无效，原因=%s",
             NODE_NAME,
@@ -683,6 +747,25 @@ class Task3AcquireAreaTest:
 
         if self.state in (self.FORWARD_SEARCH, self.WAIT_FOR_ARROW):
             self.add_detection_sample(detection)
+        elif self.state == self.CONFIRM_DIRECTION:
+            error_u, error_v, _, _ = self.detection_center_errors(detection)
+            if (
+                abs(error_u) > self.center_tolerance_u_px
+                or abs(error_v) > self.center_tolerance_v_px
+            ):
+                self.direction_samples = []
+                rospy.loginfo(
+                    (
+                        "%s：[箭头识别第%d帧] 有效，但方向确认时偏离中心："
+                        "u=%+.1fpx，v=%+.1fpx；方向计数清零并准备重新居中"
+                    ),
+                    NODE_NAME,
+                    frame_index,
+                    error_u,
+                    error_v,
+                )
+                return
+            self.add_direction_sample(detection)
         else:
             error_u, error_v, _, _ = self.detection_center_errors(detection)
             rospy.loginfo(
@@ -744,7 +827,7 @@ class Task3AcquireAreaTest:
             (
                 "%s：[箭头识别第%d帧] 第%d/%d帧有效：置信度=%.3f，"
                 "中心=(%.1f,%.1f)，箭头角度=%.1fdeg；"
-                "中心抖动=%.1f/%.1fpx，角度抖动=%.1f/%.1fdeg"
+                "中心抖动=%.1f/%.1fpx，角度抖动=%.1fdeg（首次锁定仅记录）"
             ),
             NODE_NAME,
             detection["frame_index"],
@@ -757,15 +840,11 @@ class Task3AcquireAreaTest:
             center_jitter,
             self.stable_center_tolerance_px,
             angle_jitter,
-            self.stable_angle_tolerance_deg,
         )
 
         if progress < self.stable_detection_count:
             return
-        if (
-            center_jitter > self.stable_center_tolerance_px
-            or angle_jitter > self.stable_angle_tolerance_deg
-        ):
+        if center_jitter > self.stable_center_tolerance_px:
             rospy.logwarn(
                 (
                     "%s：[箭头识别第%d帧] 已收到%d帧，但稳定性未通过；"
@@ -792,7 +871,8 @@ class Task3AcquireAreaTest:
         rospy.loginfo(
             (
                 "%s：箭头连续%d帧稳定识别成功：平均置信度=%.3f，"
-                "平均中心=(%.1f,%.1f)，平均角度=%.1fdeg"
+                "平均中心=(%.1f,%.1f)；平均角度=%.1fdeg仅记录，"
+                "方向将在居中悬停后重新确认"
             ),
             NODE_NAME,
             self.stable_detection_count,
@@ -800,6 +880,67 @@ class Task3AcquireAreaTest:
             locked["center_u"],
             locked["center_v"],
             locked["angle_deg"],
+        )
+
+    def add_direction_sample(self, detection):
+        self.direction_samples.append(detection)
+        self.direction_samples = self.direction_samples[
+            -self.heading_stable_detection_count :
+        ]
+        mean_angle = self.mean_angle_deg([
+            item["angle_deg"] for item in self.direction_samples
+        ])
+        angle_jitter = max(
+            abs(angle_difference_deg(item["angle_deg"], mean_angle))
+            for item in self.direction_samples
+        )
+        progress = len(self.direction_samples)
+        rospy.loginfo(
+            (
+                "%s：[箭头识别第%d帧] 中心悬停方向确认第%d/%d帧："
+                "角度=%.1fdeg，平均角度=%.1fdeg，角度抖动=%.1f/%.1fdeg"
+            ),
+            NODE_NAME,
+            detection["frame_index"],
+            progress,
+            self.heading_stable_detection_count,
+            detection["angle_deg"],
+            mean_angle,
+            angle_jitter,
+            self.stable_angle_tolerance_deg,
+        )
+        if progress < self.heading_stable_detection_count:
+            return
+        if angle_jitter > self.stable_angle_tolerance_deg:
+            rospy.logwarn(
+                (
+                    "%s：中心悬停时方向已累计%d帧，但角度仍不稳定；"
+                    "保留当前帧作为新的第1/%d帧"
+                ),
+                NODE_NAME,
+                progress,
+                self.heading_stable_detection_count,
+            )
+            self.direction_samples = [detection]
+            return
+
+        locked = dict(detection)
+        locked["angle_deg"] = mean_angle
+        locked["confidence"] = sum(
+            item["confidence"] for item in self.direction_samples
+        ) / len(self.direction_samples)
+        self.locked_detection = locked
+        self.latest_detection = locked
+        self.arrow_locked = True
+        rospy.loginfo(
+            (
+                "%s：箭头位于图像中心时，方向连续%d帧稳定："
+                "平均角度=%.1fdeg，平均置信度=%.3f；现在才允许调整航向"
+            ),
+            NODE_NAME,
+            self.heading_stable_detection_count,
+            locked["angle_deg"],
+            locked["confidence"],
         )
 
     def get_recent_status(self, context):
@@ -852,7 +993,10 @@ class Task3AcquireAreaTest:
         return pose
 
     def get_current_pose(self):
-        return self.get_frame_pose("base_link", "机器人本体控制")
+        current = self.get_frame_pose("base_link", "机器人本体控制")
+        if current is not None:
+            self.last_base_pose = current
+        return current
 
     def get_camera_pose(self):
         return self.get_frame_pose(self.camera_frame, "相机与本体坐标补偿")
@@ -993,6 +1137,9 @@ class Task3AcquireAreaTest:
         status = self.get_recent_status(reason)
         current = self.get_current_pose()
         if status is None or current is None:
+            self.publish_zero_force_command(
+                "{}；状态或TF反馈不可用".format(reason)
+            )
             return False
         self.update_ground_clearance_target(status, current)
 
@@ -1043,8 +1190,8 @@ class Task3AcquireAreaTest:
         current = self.get_current_pose()
         if status is None or current is None or position is None:
             if self.control_initialized:
-                self.publish_motion(
-                    0.0, 0.0, target_yaw, "{}，反馈不可用".format(reason), False
+                self.publish_zero_force_command(
+                    "{}；定点反馈不可用".format(reason)
                 )
             return None
 
@@ -1154,27 +1301,45 @@ class Task3AcquireAreaTest:
     def start_alignment(self):
         current = self.get_current_pose()
         status = self.get_recent_status("进入箭头细对准")
-        if current is None or status is None or self.locked_detection is None:
+        alignment_detection = self.latest_detection or self.locked_detection
+        if current is None or status is None or alignment_detection is None:
+            if self.control_initialized:
+                self.publish_zero_force_command("进入航向对准时反馈不可用")
             return False
 
-        self.target_yaw = None
+        # 从当前航向逐帧逼近箭头航向，禁止首次识别时目标角度瞬间跳变。
+        self.target_yaw = yaw_from_quaternion(current.pose.orientation)
         self.last_target_yaw_frame_index = 0
-        self.update_target_yaw(self.locked_detection, current)
-        self.latest_detection = self.locked_detection
-        self.heading_hold_position = (
-            current.pose.position.x,
-            current.pose.position.y,
-        )
-        self.heading_aligned_frame_count = 0
-        self.last_heading_frame_index = 0
+        self.update_target_yaw(alignment_detection, current)
+        self.latest_detection = alignment_detection
         self.centered_frame_count = 0
         self.last_alignment_frame_index = 0
         self.alignment_loss_hold_position = None
+        self.alignment_loss_hold_yaw = None
         self.set_state(
             self.ALIGN_HEADING,
-            "箭头已连续{}帧稳定识别，停止直行并优先对齐航向".format(
-                self.stable_detection_count
-            ),
+            "箭头已在图像中心悬停且方向稳定，从当前航向开始小步对齐",
+        )
+        return True
+
+    def start_camera_approach(self):
+        current = self.get_current_pose()
+        status = self.get_recent_status("进入箭头中心视觉靠近")
+        if current is None or status is None or self.locked_detection is None:
+            if self.control_initialized:
+                self.publish_zero_force_command("进入视觉居中时反馈不可用")
+            return False
+
+        # 第一阶段只调整前后和左右，航向保持发现箭头时的当前值。
+        self.target_yaw = yaw_from_quaternion(current.pose.orientation)
+        self.latest_detection = self.locked_detection
+        self.centered_frame_count = 0
+        self.last_alignment_frame_index = 0
+        self.alignment_loss_hold_position = None
+        self.alignment_loss_hold_yaw = None
+        self.set_state(
+            self.APPROACH_CAMERA,
+            "箭头已稳定锁定，保持当前航向，先把箭头移到图像正中心",
         )
         return True
 
@@ -1191,13 +1356,18 @@ class Task3AcquireAreaTest:
 
     def set_state(self, state, reason):
         previous = self.state
+        now = rospy.Time.now()
+        previous_elapsed = (now - self.state_started).to_sec()
+        task_elapsed = (now - self.task_started).to_sec()
         self.state = state
-        self.state_started = rospy.Time.now()
+        self.state_started = now
         rospy.loginfo(
-            "%s：状态切换：%s -> %s，原因=%s",
+            "%s：状态切换：%s -> %s，上一阶段持续%.1fs，任务累计%.1fs，原因=%s",
             NODE_NAME,
             previous,
             state,
+            previous_elapsed,
+            task_elapsed,
             reason,
         )
 
@@ -1252,11 +1422,12 @@ class Task3AcquireAreaTest:
 
     def control_forward_search(self):
         if self.arrow_locked:
-            self.start_alignment()
+            self.start_camera_approach()
             return
         status = self.get_recent_status("低速直行搜索箭头")
         current = self.get_current_pose()
         if status is None or current is None:
+            self.publish_zero_force_command("直行搜索时状态或TF反馈不可用")
             return
         if self.search_origin is None or self.search_yaw is None:
             self.search_origin = (
@@ -1288,12 +1459,13 @@ class Task3AcquireAreaTest:
             self.search_forward_force,
             self.max_lateral_force,
         )
-        self.publish_motion(
+        if not self.publish_motion(
             desired_tx,
             desired_ty,
             self.search_yaw,
             "mode3保持启动航向并低速直行搜索箭头",
-        )
+        ):
+            return
         rospy.loginfo_throttle(
             1.0,
             (
@@ -1319,6 +1491,19 @@ class Task3AcquireAreaTest:
                 NODE_NAME,
                 self.arrow_topic,
             )
+        else:
+            model_age = (
+                rospy.Time.now() - self.last_model_message_time
+            ).to_sec()
+            if model_age > self.detection_timeout:
+                rospy.logwarn_throttle(
+                    2.0,
+                    "%s：箭头模型话题%s已%.2fs没有新消息（限制%.2fs）",
+                    NODE_NAME,
+                    self.arrow_topic,
+                    model_age,
+                    self.detection_timeout,
+                )
 
     def return_to_wait_for_arrow(self, reason):
         current = self.get_current_pose()
@@ -1327,17 +1512,14 @@ class Task3AcquireAreaTest:
                 current.pose.position.x,
                 current.pose.position.y,
             )
-            self.wait_hold_yaw = (
-                self.target_yaw
-                if self.target_yaw is not None
-                else yaw_from_quaternion(current.pose.orientation)
-            )
+            self.wait_hold_yaw = yaw_from_quaternion(current.pose.orientation)
         self.detection_samples = []
         self.arrow_locked = False
         self.locked_detection = None
         self.latest_detection = None
-        self.heading_aligned_frame_count = 0
-        self.last_heading_frame_index = 0
+        self.direction_samples = []
+        self.alignment_loss_hold_position = None
+        self.alignment_loss_hold_yaw = None
         self.reset_center_confirmation(reason)
         self.set_state(self.WAIT_FOR_ARROW, reason)
 
@@ -1350,7 +1532,7 @@ class Task3AcquireAreaTest:
             "箭头丢失后保持当前位置，重新等待连续稳定识别",
         )
         if self.arrow_locked:
-            self.start_alignment()
+            self.start_camera_approach()
             return
 
         if self.last_model_message_time is None:
@@ -1374,6 +1556,85 @@ class Task3AcquireAreaTest:
                 self.stable_detection_count,
             )
 
+    def control_confirm_direction(self):
+        hold_result = self.publish_position_hold(
+            self.center_hold_position,
+            self.center_hold_yaw,
+            "箭头已居中，保持位置和原航向并稳定确认箭头方向",
+        )
+        if hold_result is None:
+            return
+
+        now = rospy.Time.now()
+        if not self.detection_is_fresh(now):
+            if (
+                self.last_valid_detection_time is None
+                or (now - self.last_valid_detection_time).to_sec()
+                > self.detection_timeout
+            ):
+                self.return_to_wait_for_arrow(
+                    "中心悬停确认方向时箭头丢失超过{:.1f}s".format(
+                        self.detection_timeout
+                    )
+                )
+            return
+
+        error_u, error_v, _, _ = self.detection_center_errors(
+            self.latest_detection
+        )
+        if (
+            abs(error_u) > self.center_tolerance_u_px
+            or abs(error_v) > self.center_tolerance_v_px
+        ):
+            self.arrow_locked = False
+            self.locked_detection = None
+            self.direction_samples = []
+            self.centered_frame_count = 0
+            self.last_alignment_frame_index = 0
+            self.set_state(
+                self.APPROACH_CAMERA,
+                "方向确认时箭头偏离中心，保持原航向重新视觉居中",
+            )
+            return
+
+        rospy.loginfo_throttle(
+            1.0,
+            (
+                "%s：中心悬停确认方向：中心误差=(u=%+.1f,v=%+.1f)px，"
+                "方向稳定进度=%d/%d帧，速度=(前%+.3f,右%+.3f)m/s，"
+                "指令=(TX=%d,TY=%d)"
+            ),
+            NODE_NAME,
+            error_u,
+            error_v,
+            len(self.direction_samples),
+            self.heading_stable_detection_count,
+            hold_result["status"]["vx"],
+            hold_result["status"]["vy"],
+            self.last_tx,
+            self.last_ty,
+        )
+        if self.arrow_locked:
+            current_yaw_deg = math.degrees(yaw_from_quaternion(
+                hold_result["current"].pose.orientation
+            ))
+            hold_yaw_error_deg = angle_difference_deg(
+                current_yaw_deg,
+                math.degrees(self.center_hold_yaw),
+            )
+            if self.alignment_physical_stable(
+                hold_result["status"],
+                hold_result["current"],
+                hold_yaw_error_deg,
+            ):
+                self.start_alignment()
+            else:
+                self.log_alignment_stability_gate(
+                    "方向已稳定，等待进入航向对准",
+                    hold_result["status"],
+                    hold_yaw_error_deg,
+                )
+
     def detection_is_fresh(self, now):
         if self.latest_detection is None or self.last_valid_detection_time is None:
             return False
@@ -1381,13 +1642,53 @@ class Task3AcquireAreaTest:
             now - self.last_valid_detection_time
         ).to_sec() <= self.detection_timeout
 
+    def visual_center_command(self, detection, status):
+        error_u, error_v, normalized_u, normalized_v = (
+            self.detection_center_errors(detection)
+        )
+        visual_forward_force = 0.0
+        if abs(error_v) > self.center_tolerance_v_px:
+            visual_forward_force = self.apply_minimum_force(
+                -self.forward_gain * normalized_v,
+                self.min_correction_force,
+                self.max_forward_force,
+            )
+        visual_right_force = 0.0
+        if abs(error_u) > self.center_tolerance_u_px:
+            visual_right_force = self.apply_minimum_force(
+                self.lateral_gain * normalized_u,
+                self.min_correction_force,
+                self.max_lateral_force,
+            )
+        desired_tx, desired_ty = self.velocity_feedback_command(
+            visual_forward_force,
+            visual_right_force,
+            status,
+            self.max_forward_force,
+            self.max_lateral_force,
+        )
+        return error_u, error_v, desired_tx, desired_ty
+
     def control_heading_alignment(self):
         now = rospy.Time.now()
         if not self.detection_is_fresh(now):
+            current = self.get_current_pose()
+            if current is not None and self.alignment_loss_hold_position is None:
+                self.alignment_loss_hold_position = (
+                    current.pose.position.x,
+                    current.pose.position.y,
+                )
+                self.alignment_loss_hold_yaw = yaw_from_quaternion(
+                    current.pose.orientation
+                )
             self.publish_position_hold(
-                self.heading_hold_position,
-                self.target_yaw,
-                "航向对准时箭头暂时丢失，保持当前位置",
+                self.alignment_loss_hold_position,
+                (
+                    self.alignment_loss_hold_yaw
+                    if self.alignment_loss_hold_yaw is not None
+                    else self.target_yaw
+                ),
+                "航向对准时箭头暂时丢失，停止转向并保持丢失位置",
             )
             if (
                 self.last_valid_detection_time is None
@@ -1395,25 +1696,33 @@ class Task3AcquireAreaTest:
                 > self.detection_timeout
             ):
                 self.return_to_wait_for_arrow(
-                    "航向对准时箭头丢失超过{:.1f}s，定点重新识别3帧".format(
-                        self.detection_timeout
+                    "航向对准时箭头丢失超过{:.1f}s，定点重新识别{}帧".format(
+                        self.detection_timeout,
+                        self.stable_detection_count,
                     )
                 )
             return
 
         detection = self.latest_detection
-        status = self.get_recent_status("优先对齐箭头航向")
+        status = self.get_recent_status("保持箭头居中并小步对齐航向")
         current = self.get_current_pose()
         if status is None or current is None:
+            self.publish_zero_force_command("航向对准时状态或TF反馈不可用")
             return
+        self.alignment_loss_hold_position = None
+        self.alignment_loss_hold_yaw = None
         self.update_target_yaw(detection, current)
-        hold_result = self.publish_position_hold(
-            self.heading_hold_position,
-            self.target_yaw,
-            "先保持当前位置，仅对齐机器人和箭头航向",
+        error_u, error_v, desired_tx, desired_ty = self.visual_center_command(
+            detection,
+            status,
         )
-        if hold_result is None:
-            self.heading_aligned_frame_count = 0
+        if not self.publish_motion(
+            desired_tx,
+            desired_ty,
+            self.target_yaw,
+            "小步调整箭头航向，同时用视觉修正保持箭头位于中心",
+        ):
+            self.reset_center_confirmation("航向对准运动指令发布失败")
             return
 
         current_yaw_deg = math.degrees(yaw_from_quaternion(
@@ -1422,74 +1731,58 @@ class Task3AcquireAreaTest:
         yaw_error_deg = angle_difference_deg(
             current_yaw_deg, math.degrees(self.target_yaw)
         )
-        if detection["frame_index"] != self.last_heading_frame_index:
-            self.last_heading_frame_index = detection["frame_index"]
-            if abs(yaw_error_deg) <= self.yaw_tolerance_deg:
-                self.heading_aligned_frame_count = min(
-                    self.heading_aligned_frame_count + 1,
-                    self.heading_stable_detection_count,
-                )
-                rospy.loginfo(
-                    (
-                        "%s：[箭头识别第%d帧] 航向对准第%d/%d帧有效："
-                        "当前航向=%.1fdeg，目标航向=%.1fdeg，误差=%+.1fdeg"
-                    ),
-                    NODE_NAME,
-                    detection["frame_index"],
-                    self.heading_aligned_frame_count,
-                    self.heading_stable_detection_count,
-                    current_yaw_deg,
-                    math.degrees(self.target_yaw),
-                    yaw_error_deg,
-                )
-            else:
-                if self.heading_aligned_frame_count > 0:
-                    rospy.loginfo(
-                        "%s：航向连续确认%d -> 0，当前误差=%+.1fdeg",
-                        NODE_NAME,
-                        self.heading_aligned_frame_count,
-                        yaw_error_deg,
-                    )
-                self.heading_aligned_frame_count = 0
+        arrow_heading_error_deg = self.yaw_correction_sign * normalize_angle_deg(
+            self.camera_forward_angle_deg - detection["angle_deg"]
+        )
+        self.update_alignment_confirmation(
+            detection,
+            error_u,
+            error_v,
+            yaw_error_deg,
+            arrow_heading_error_deg,
+            current_yaw_deg,
+        )
 
         rospy.loginfo_throttle(
             1.0,
             (
-                "%s：优先航向对准：箭头角度=%.1fdeg，当前/目标航向="
-                "(%.1f/%.1f)deg，误差=%+.1f/%.1fdeg，wz=%+.3f/%.3frad/s，"
-                "水平速度=%.3f/%.3fm/s，确认=%d/%d帧"
+                "%s：中心保持下小步对齐航向：箭头角度=%.1fdeg，"
+                "中心误差=(u=%+.1f,v=%+.1f)px，当前/目标航向="
+                "(%.1f/%.1f)deg，目标跟踪误差=%+.1fdeg，"
+                "箭头方向剩余误差=%+.1f/%.1fdeg，"
+                "速度=(前%+.3f,右%+.3f)m/s，wz=%+.3frad/s，"
+                "指令=(TX=%d,TY=%d)，最终确认=%d/%d帧"
             ),
             NODE_NAME,
             detection["angle_deg"],
+            error_u,
+            error_v,
             current_yaw_deg,
             math.degrees(self.target_yaw),
             yaw_error_deg,
+            arrow_heading_error_deg,
             self.yaw_tolerance_deg,
+            status["vx"],
+            status["vy"],
             status["wz"],
-            self.max_yaw_rate,
-            math.hypot(status["vx"], status["vy"]),
-            self.max_horizontal_speed,
-            self.heading_aligned_frame_count,
-            self.heading_stable_detection_count,
+            self.last_tx,
+            self.last_ty,
+            self.centered_frame_count,
+            self.center_stable_detection_count,
         )
 
-        if self.heading_aligned_frame_count < self.heading_stable_detection_count:
+        if self.centered_frame_count < self.center_stable_detection_count:
             return
         if not self.alignment_physical_stable(status, current, yaw_error_deg):
-            rospy.loginfo_throttle(
-                1.0,
-                "%s：航向已稳定%d帧，等待机器人停稳后开始缓慢靠近",
-                NODE_NAME,
-                self.heading_aligned_frame_count,
+            self.log_alignment_stability_gate(
+                "中心和航向已稳定{}帧，等待记录箭头位置".format(
+                    self.centered_frame_count
+                ),
+                status,
+                yaw_error_deg,
             )
             return
-
-        self.centered_frame_count = 0
-        self.last_alignment_frame_index = 0
-        self.set_state(
-            self.APPROACH_CAMERA,
-            "机器人航向已与箭头一致，开始保持航向并缓慢视觉靠近",
-        )
+        self.capture_arrow_position(current)
 
     def alignment_physical_stable(self, status, current, yaw_error_deg):
         depth_error = status["depth"] - self.hold_depth
@@ -1505,12 +1798,55 @@ class Task3AcquireAreaTest:
             and self.last_ty == 0
         )
 
+    def log_alignment_stability_gate(self, context, status, yaw_error_deg):
+        horizontal_speed = math.hypot(status["vx"], status["vy"])
+        depth_error = status["depth"] - self.hold_depth
+        mode_ok = status["control_mode"] == MODE_DEPTH_HEADING
+        horizontal_ok = horizontal_speed <= self.max_horizontal_speed
+        vertical_ok = abs(status["vz"]) <= self.max_vertical_speed
+        yaw_rate_ok = abs(status["wz"]) <= self.max_yaw_rate
+        depth_ok = abs(depth_error) <= self.max_depth_error
+        yaw_ok = abs(yaw_error_deg) <= self.yaw_tolerance_deg
+        command_ok = self.last_tx == 0 and self.last_ty == 0
+        rospy.loginfo_throttle(
+            1.0,
+            (
+                "%s：%s，停稳门槛：mode=%d/3[%s]；"
+                "水平速度=%.3f<=%.3f[%s]；下向速度=%.3f<=%.3f[%s]；"
+                "航向角速度=%.3f<=%.3f[%s]；深度误差=%.3f<=%.3f[%s]；"
+                "航向误差=%.2f<=%.2f[%s]；指令=(TX=%d,TY=%d)[%s]"
+            ),
+            NODE_NAME,
+            context,
+            status["control_mode"],
+            "通过" if mode_ok else "未通过",
+            horizontal_speed,
+            self.max_horizontal_speed,
+            "通过" if horizontal_ok else "未通过",
+            abs(status["vz"]),
+            self.max_vertical_speed,
+            "通过" if vertical_ok else "未通过",
+            abs(status["wz"]),
+            self.max_yaw_rate,
+            "通过" if yaw_rate_ok else "未通过",
+            abs(depth_error),
+            self.max_depth_error,
+            "通过" if depth_ok else "未通过",
+            abs(yaw_error_deg),
+            self.yaw_tolerance_deg,
+            "通过" if yaw_ok else "未通过",
+            self.last_tx,
+            self.last_ty,
+            "通过" if command_ok else "未通过",
+        )
+
     def update_alignment_confirmation(
         self,
         detection,
         error_u,
         error_v,
-        yaw_error_deg,
+        target_yaw_error_deg,
+        arrow_heading_error_deg,
         current_yaw_deg,
     ):
         if detection["frame_index"] == self.last_alignment_frame_index:
@@ -1521,7 +1857,10 @@ class Task3AcquireAreaTest:
             abs(error_u) <= self.center_tolerance_u_px
             and abs(error_v) <= self.center_tolerance_v_px
         )
-        yaw_aligned = abs(yaw_error_deg) <= self.yaw_tolerance_deg
+        yaw_aligned = (
+            abs(target_yaw_error_deg) <= self.yaw_tolerance_deg
+            and abs(arrow_heading_error_deg) <= self.yaw_tolerance_deg
+        )
         if centered and yaw_aligned:
             self.centered_frame_count = min(
                 self.centered_frame_count + 1,
@@ -1531,7 +1870,8 @@ class Task3AcquireAreaTest:
                 (
                     "%s：[箭头识别第%d帧] 对准确认第%d/%d帧有效："
                     "中心误差=(u=%+.1f,v=%+.1f)px，箭头角度=%.1fdeg，"
-                    "当前/目标航向=(%.1f/%.1f)deg，航向误差=%+.1fdeg"
+                    "当前/目标航向=(%.1f/%.1f)deg，目标跟踪误差=%+.1fdeg，"
+                    "箭头方向剩余误差=%+.1fdeg"
                 ),
                 NODE_NAME,
                 detection["frame_index"],
@@ -1542,7 +1882,8 @@ class Task3AcquireAreaTest:
                 detection["angle_deg"],
                 current_yaw_deg,
                 math.degrees(self.target_yaw),
-                yaw_error_deg,
+                target_yaw_error_deg,
+                arrow_heading_error_deg,
             )
         else:
             self.reset_center_confirmation(
@@ -1552,7 +1893,7 @@ class Task3AcquireAreaTest:
                 (
                     "%s：[箭头识别第%d帧] 本帧有效但尚未完成对准："
                     "中心误差=(u=%+.1f/%+.1f,v=%+.1f/%+.1f)px，"
-                    "航向误差=%+.1f/%.1fdeg"
+                    "目标跟踪误差=%+.1fdeg，箭头方向剩余误差=%+.1f/%.1fdeg"
                 ),
                 NODE_NAME,
                 detection["frame_index"],
@@ -1560,9 +1901,38 @@ class Task3AcquireAreaTest:
                 self.center_tolerance_u_px,
                 error_v,
                 self.center_tolerance_v_px,
-                yaw_error_deg,
+                target_yaw_error_deg,
+                arrow_heading_error_deg,
                 self.yaw_tolerance_deg,
             )
+
+    def update_center_confirmation(self, detection, error_u, error_v):
+        if detection["frame_index"] == self.last_alignment_frame_index:
+            return
+        self.last_alignment_frame_index = detection["frame_index"]
+        centered = (
+            abs(error_u) <= self.center_tolerance_u_px
+            and abs(error_v) <= self.center_tolerance_v_px
+        )
+        if centered:
+            self.centered_frame_count = min(
+                self.centered_frame_count + 1,
+                self.center_stable_detection_count,
+            )
+            rospy.loginfo(
+                (
+                    "%s：[箭头识别第%d帧] 图像居中第%d/%d帧有效："
+                    "中心误差=(u=%+.1f,v=%+.1f)px；本阶段不调整航向"
+                ),
+                NODE_NAME,
+                detection["frame_index"],
+                self.centered_frame_count,
+                self.center_stable_detection_count,
+                error_u,
+                error_v,
+            )
+        else:
+            self.reset_center_confirmation("箭头尚未进入图像中心容差")
 
     def control_camera_approach(self):
         now = rospy.Time.now()
@@ -1584,14 +1954,15 @@ class Task3AcquireAreaTest:
                 > self.detection_timeout
             ):
                 self.return_to_wait_for_arrow(
-                    "视觉靠近时箭头超过{:.1f}s未恢复，定点重新识别3帧".format(
-                        self.detection_timeout
+                    "视觉靠近时箭头超过{:.1f}s未恢复，定点重新识别{}帧".format(
+                        self.detection_timeout,
+                        self.stable_detection_count,
                     )
                 )
             return
 
         detection = self.latest_detection
-        status = self.get_recent_status("保持箭头航向并缓慢视觉靠近")
+        status = self.get_recent_status("保持发现箭头时的航向并缓慢视觉居中")
         current = self.get_current_pose()
         if status is None or current is None:
             self.publish_motion(
@@ -1600,41 +1971,15 @@ class Task3AcquireAreaTest:
             self.reset_center_confirmation("状态或TF反馈不可用")
             return
         self.alignment_loss_hold_position = None
-        self.update_target_yaw(detection, current)
-
-        error_u, error_v, normalized_u, normalized_v = (
-            self.detection_center_errors(detection)
-        )
-        centered_u = abs(error_u) <= self.center_tolerance_u_px
-        centered_v = abs(error_v) <= self.center_tolerance_v_px
-
-        visual_forward_force = 0.0
-        if not centered_v:
-            visual_forward_force = self.apply_minimum_force(
-                -self.forward_gain * normalized_v,
-                self.min_correction_force,
-                self.max_forward_force,
-            )
-        visual_right_force = 0.0
-        if not centered_u:
-            visual_right_force = self.apply_minimum_force(
-                self.lateral_gain * normalized_u,
-                self.min_correction_force,
-                self.max_lateral_force,
-            )
-
-        desired_tx, desired_ty = self.velocity_feedback_command(
-            visual_forward_force,
-            visual_right_force,
+        error_u, error_v, desired_tx, desired_ty = self.visual_center_command(
+            detection,
             status,
-            self.max_forward_force,
-            self.max_lateral_force,
         )
         if not self.publish_motion(
             desired_tx,
             desired_ty,
             self.target_yaw,
-            "保持箭头航向并依据中心像素缓慢靠近",
+            "保持发现箭头时的航向，仅依据中心像素缓慢靠近",
         ):
             self.reset_center_confirmation("运动指令发布失败")
             return
@@ -1646,19 +1991,14 @@ class Task3AcquireAreaTest:
             current_yaw_deg, math.degrees(self.target_yaw)
         )
         depth_error = status["depth"] - self.hold_depth
-        self.update_alignment_confirmation(
-            detection,
-            error_u,
-            error_v,
-            yaw_error_deg,
-            current_yaw_deg,
-        )
+        self.update_center_confirmation(detection, error_u, error_v)
 
         rospy.loginfo_throttle(
             1.0,
             (
-                "%s：缓慢视觉靠近：中心=(%.1f,%.1f)，误差=(u=%+.1f,v=%+.1f)px，"
-                "箭头角度=%.1fdeg，目标航向=%.1fdeg，航向误差=%+.1fdeg，"
+                "%s：保持原航向缓慢视觉居中：中心=(%.1f,%.1f)，"
+                "误差=(u=%+.1f,v=%+.1f)px，箭头角度=%.1fdeg（暂不用于转向），"
+                "保持航向=%.1fdeg，航向保持误差=%+.1fdeg，"
                 "速度=(前%+.3f,右%+.3f,下%+.3f)m/s，wz=%+.3frad/s，"
                 "mode=%d，深度误差=%+.3fm，指令=(TX=%d,TY=%d)"
             ),
@@ -1683,41 +2023,39 @@ class Task3AcquireAreaTest:
         if self.centered_frame_count < self.center_stable_detection_count:
             return
         if not self.alignment_physical_stable(status, current, yaw_error_deg):
-            rospy.loginfo_throttle(
-                1.0,
-                (
-                    "%s：中心和航向已连续满足%d帧，等待机器人实际停稳："
-                    "水平速度=%.3f/%.3f，垂直速度=%+.3f/%.3f，"
-                    "wz=%+.3f/%.3f，mode=%d，深度误差=%+.3f/%.3f，"
-                    "航向误差=%+.1f/%.1f，指令=(%d,%d)"
+            self.log_alignment_stability_gate(
+                "箭头中心已连续满足{}帧，等待进入方向确认".format(
+                    self.centered_frame_count
                 ),
-                NODE_NAME,
-                self.centered_frame_count,
-                math.hypot(status["vx"], status["vy"]),
-                self.max_horizontal_speed,
-                status["vz"],
-                self.max_vertical_speed,
-                status["wz"],
-                self.max_yaw_rate,
-                status["control_mode"],
-                depth_error,
-                self.max_depth_error,
+                status,
                 yaw_error_deg,
-                self.yaw_tolerance_deg,
-                self.last_tx,
-                self.last_ty,
             )
             return
 
+        self.center_hold_position = (
+            current.pose.position.x,
+            current.pose.position.y,
+        )
+        self.center_hold_yaw = self.target_yaw
+        self.direction_samples = []
+        self.detection_samples = []
+        self.arrow_locked = False
+        self.locked_detection = None
+        self.set_state(
+            self.CONFIRM_DIRECTION,
+            "箭头已在图像中心且机器人停稳，开始悬停并重新确认箭头方向",
+        )
+
+    def capture_arrow_position(self, current):
         camera_pose = self.get_camera_pose()
         if camera_pose is None:
             rospy.logwarn_throttle(
                 1.0,
-                "%s：摄像头已居中，但暂时无法读取map -> %s，保持当前点等待TF",
+                "%s：中心和航向已对准，但无法读取map -> %s，继续保持等待TF",
                 NODE_NAME,
                 self.camera_frame,
             )
-            return
+            return False
 
         self.arrow_map_position = (
             camera_pose.pose.position.x,
@@ -1731,7 +2069,7 @@ class Task3AcquireAreaTest:
         )
         rospy.loginfo(
             (
-                "%s：摄像头已位于箭头正上方，使用现有TF捕获箭头map坐标："
+                "%s：箭头中心和航向均已稳定，使用TF记录箭头map坐标："
                 "base_link=(%.3f,%.3f)，%s=(%.3f,%.3f)，"
                 "相机相对本体=(前%+.3f,右%+.3f)m；"
                 "下一阶段将base_link移动到箭头map坐标"
@@ -1747,8 +2085,9 @@ class Task3AcquireAreaTest:
         )
         self.set_state(
             self.BODY_CENTERING,
-            "视觉中心已稳定，开始补偿相机与机器人本体坐标偏移",
+            "中心与箭头航向均已稳定，开始补偿相机与机器人本体偏移",
         )
+        return True
 
     def control_body_centering(self):
         hold_result = self.publish_position_hold(
@@ -1777,12 +2116,18 @@ class Task3AcquireAreaTest:
             self.last_ty,
         )
         if not self.final_hold_is_stable(hold_result):
+            self.log_final_stability_gate(
+                "本体坐标补偿尚未满足最终定点条件",
+                hold_result,
+            )
             return
 
         self.final_hold_stable_started = None
         self.set_state(
             self.FINAL_HOLD,
-            "base_link已移动到箭头map坐标，开始最终稳定悬停10秒",
+            "base_link已移动到箭头map坐标，开始最终稳定悬停{:.1f}秒".format(
+                self.final_hold_seconds
+            ),
         )
 
     def final_hold_is_stable(self, hold_result):
@@ -1809,6 +2154,71 @@ class Task3AcquireAreaTest:
             and abs(yaw_error_deg) <= self.yaw_tolerance_deg
             and self.last_tx == 0
             and self.last_ty == 0
+        )
+
+    def log_final_stability_gate(self, context, hold_result):
+        status = hold_result["status"]
+        current = hold_result["current"]
+        horizontal_speed = math.hypot(status["vx"], status["vy"])
+        current_yaw_deg = math.degrees(yaw_from_quaternion(
+            current.pose.orientation
+        ))
+        yaw_error_deg = angle_difference_deg(
+            current_yaw_deg, math.degrees(self.target_yaw)
+        )
+        depth_error = status["depth"] - self.hold_depth
+        forward_ok = (
+            abs(hold_result["forward_error"])
+            <= self.final_position_tolerance
+        )
+        right_ok = (
+            abs(hold_result["right_error"])
+            <= self.final_position_tolerance
+        )
+        mode_ok = status["control_mode"] == MODE_DEPTH_HEADING
+        horizontal_ok = horizontal_speed <= self.max_horizontal_speed
+        vertical_ok = abs(status["vz"]) <= self.max_vertical_speed
+        yaw_rate_ok = abs(status["wz"]) <= self.max_yaw_rate
+        depth_ok = abs(depth_error) <= self.max_depth_error
+        yaw_ok = abs(yaw_error_deg) <= self.yaw_tolerance_deg
+        command_ok = self.last_tx == 0 and self.last_ty == 0
+        rospy.loginfo_throttle(
+            1.0,
+            (
+                "%s：%s，最终定点门槛：前误差=%.3f<=%.3f[%s]；"
+                "右误差=%.3f<=%.3f[%s]；mode=%d/3[%s]；"
+                "水平速度=%.3f<=%.3f[%s]；下向速度=%.3f<=%.3f[%s]；"
+                "航向角速度=%.3f<=%.3f[%s]；深度误差=%.3f<=%.3f[%s]；"
+                "航向误差=%.2f<=%.2f[%s]；指令=(TX=%d,TY=%d)[%s]"
+            ),
+            NODE_NAME,
+            context,
+            abs(hold_result["forward_error"]),
+            self.final_position_tolerance,
+            "通过" if forward_ok else "未通过",
+            abs(hold_result["right_error"]),
+            self.final_position_tolerance,
+            "通过" if right_ok else "未通过",
+            status["control_mode"],
+            "通过" if mode_ok else "未通过",
+            horizontal_speed,
+            self.max_horizontal_speed,
+            "通过" if horizontal_ok else "未通过",
+            abs(status["vz"]),
+            self.max_vertical_speed,
+            "通过" if vertical_ok else "未通过",
+            abs(status["wz"]),
+            self.max_yaw_rate,
+            "通过" if yaw_rate_ok else "未通过",
+            abs(depth_error),
+            self.max_depth_error,
+            "通过" if depth_ok else "未通过",
+            abs(yaw_error_deg),
+            self.yaw_tolerance_deg,
+            "通过" if yaw_ok else "未通过",
+            self.last_tx,
+            self.last_ty,
+            "通过" if command_ok else "未通过",
         )
 
     def control_final_hold(self):
@@ -1848,6 +2258,10 @@ class Task3AcquireAreaTest:
                 )
                 return
         else:
+            self.log_final_stability_gate(
+                "最终稳定保持计时尚未满足",
+                hold_result,
+            )
             if self.final_hold_stable_started is not None:
                 rospy.loginfo(
                     "%s：最终定点稳定条件被打断，稳定保持计时重新开始",
@@ -1865,29 +2279,78 @@ class Task3AcquireAreaTest:
                 ),
             )
 
-    def finish_task(self, success, detail):
-        if self.task_finished:
-            return
-        self.task_finished = True
-        if self.control_initialized:
-            hold_position = self.final_hold_position or self.wait_hold_position
-            if self.final_hold_position is None:
-                current = self.get_current_pose()
-                if current is not None:
-                    hold_position = (
-                        current.pose.position.x,
-                        current.pose.position.y,
-                    )
-            hold_yaw = (
+    def publish_zero_force_command(self, reason):
+        if not self.control_initialized or self.hold_z is None:
+            return False
+
+        # 安全清零不能因等待TF而延迟，优先使用主循环最近缓存的实际位姿。
+        current = self.last_base_pose
+        if current is None and not rospy.is_shutdown():
+            current = self.get_current_pose()
+        fallback_position = self.final_hold_position or self.wait_hold_position
+        if current is not None:
+            position_x = current.pose.position.x
+            position_y = current.pose.position.y
+            exit_yaw = yaw_from_quaternion(current.pose.orientation)
+            self.last_zero_force_position = (position_x, position_y)
+            self.last_zero_force_yaw = exit_yaw
+        elif (
+            self.last_zero_force_position is not None
+            and self.last_zero_force_yaw is not None
+        ):
+            position_x, position_y = self.last_zero_force_position
+            exit_yaw = self.last_zero_force_yaw
+        else:
+            if fallback_position is None:
+                return False
+            position_x, position_y = fallback_position
+            exit_yaw = (
                 self.target_yaw
                 if self.target_yaw is not None
                 else self.wait_hold_yaw
             )
-            self.publish_position_hold(
-                hold_position,
-                hold_yaw,
-                "任务结束前保持最后定点",
-            )
+            if exit_yaw is None:
+                return False
+
+        command = PoseNEDcmd()
+        command.mode = MODE_DEPTH_HEADING
+        command.target.header.frame_id = "map"
+        command.target.header.stamp = rospy.Time.now()
+        command.target.pose.position.x = position_x
+        command.target.pose.position.y = position_y
+        command.target.pose.position.z = self.hold_z
+        command.target.pose.orientation = Quaternion(*quaternion_from_euler(
+            0.0,
+            0.0,
+            exit_yaw,
+        ))
+        command.force.TX = 0
+        command.force.TY = 0
+        command.force.TZ = 0
+        command.force.MX = 0
+        command.force.MY = 0
+        command.force.MZ = 0
+        self.last_tx = 0
+        self.last_ty = 0
+        self.pose_cmd_pub.publish(command)
+        rospy.logwarn_throttle(
+            1.0,
+            (
+                "%s：安全零推力指令：mode=3，保持深度z=%.3f、当前航向=%.2fdeg，"
+                "TX/TY/TZ/MX/MY/MZ全部清零，原因=%s"
+            ),
+            NODE_NAME,
+            self.hold_z,
+            math.degrees(exit_yaw),
+            reason,
+        )
+        return True
+
+    def finish_task(self, success, detail):
+        if self.task_finished:
+            return
+        self.task_finished = True
+        self.publish_zero_force_command("任务结束前清除水平运动指令")
         state = "finished" if success else "failed"
         self.finished_pub.publish(String(
             data="{} {}: {}".format(NODE_NAME, state, detail)
@@ -1899,34 +2362,17 @@ class Task3AcquireAreaTest:
         rospy.signal_shutdown("{} {}".format(NODE_NAME, state))
 
     def on_shutdown(self):
-        if not self.control_initialized:
-            return
-        hold_position = self.final_hold_position or self.wait_hold_position
-        if self.final_hold_position is None:
-            current = self.get_current_pose()
-            if current is not None:
-                hold_position = (
-                    current.pose.position.x,
-                    current.pose.position.y,
-                )
-        hold_yaw = (
-            self.target_yaw
-            if self.target_yaw is not None
-            else self.wait_hold_yaw
-        )
-        self.publish_position_hold(
-            hold_position,
-            hold_yaw,
-            "节点退出，保持最后目标并清除额外运动意图",
-        )
+        self.publish_zero_force_command("节点退出，再次确认水平推力清零")
 
     def run(self):
         rospy.loginfo(
             (
-                "%s：等待/status/auv和TF；随后执行mode3悬停10秒、低速直行搜索、"
-                "航向优先对准、缓慢视觉靠近、本体坐标补偿和最终悬停"
+                "%s：等待/status/auv和TF；随后执行mode3悬停%.1f秒、低速直行搜索、"
+                "保持原航向视觉居中、中心悬停确认方向、小步航向对准、"
+                "本体坐标补偿和最终悬停"
             ),
             NODE_NAME,
+            self.initial_hover_seconds,
         )
         while not rospy.is_shutdown():
             if not self.task_finished:
@@ -1949,6 +2395,8 @@ class Task3AcquireAreaTest:
                     self.control_forward_search()
                 elif self.state == self.WAIT_FOR_ARROW:
                     self.control_wait_for_arrow()
+                elif self.state == self.CONFIRM_DIRECTION:
+                    self.control_confirm_direction()
                 elif self.state == self.ALIGN_HEADING:
                     self.control_heading_alignment()
                 elif self.state == self.APPROACH_CAMERA:
