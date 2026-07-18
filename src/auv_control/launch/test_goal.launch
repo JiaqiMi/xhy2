@@ -18,14 +18,14 @@
       offset_frame=base_link：正值向前，负值向后；
       offset_frame=map：正值向北，负值向南。
     -->
-    <arg name="offset_x" default="-0.5" />
+    <arg name="offset_x" default="0" />
 
     <!--
       相对目标 y 偏置，单位 m，可输入正负值。
       offset_frame=base_link：正值向右，负值向左；
       offset_frame=map：正值向东，负值向西。
     -->
-    <arg name="offset_y" default="0" />
+    <arg name="offset_y" default="1" />
 
     <!--
       相对于初始航向的偏差，单位 deg，可输入正负值。

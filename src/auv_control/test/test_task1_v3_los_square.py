@@ -152,7 +152,7 @@ class LosSquareTest:
             "~motion_state_topic", "/motion/state"
         )
         self.motion_state_timeout = max(0.1, float(rospy.get_param(
-            "~motion_state_timeout", 0.5
+            "~motion_state_timeout", 5
         )))
         self.motion_goal_position_tolerance = max(0.001, float(rospy.get_param(
             "~motion_goal_position_tolerance", 0.05

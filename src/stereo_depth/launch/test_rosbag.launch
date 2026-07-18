@@ -18,7 +18,7 @@
 
     <!-- 录制参数 -->
     <arg name="bag_dir" default="/home/xhy/xhy_records" />
-    <arg name="bag_name" default="stereo_input" />
+    <arg name="bag_name" default="stereo_input0718" />
     <arg name="split_size_mb" default="2048" />
     <arg name="record_delay" default="3.0" />
     <arg name="record_rate" default="1.0" />

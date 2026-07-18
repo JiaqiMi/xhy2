@@ -28,7 +28,7 @@
     <arg name="camera_frame" default="camera" />
 
     <!-- 第一次看到箭头后，连续3帧的中心和角度稳定才进入细对准。 -->
-    <arg name="stable_detection_count" default="2" />
+    <arg name="stable_detection_count" default="3" />
     <arg name="stable_center_tolerance_px" default="30.0" />
     <arg name="stable_angle_tolerance_deg" default="10.0" />
 
@@ -43,7 +43,7 @@
     <!-- 中心和航向同时进入容差后，需要连续5帧有效。 -->
     <arg name="center_stable_detection_count" default="3" />
     <!-- 直行停止后先单独确认航向连续3帧，再开始视觉靠近。 -->
-    <arg name="heading_stable_detection_count" default="2" />
+    <arg name="heading_stable_detection_count" default="3" />
 
     <!-- 箭头角度协议：图像右方=0度、上方=90度。默认相机图像上方对应
          机器人前方，因此 camera_forward_angle_deg=90。
@@ -103,8 +103,8 @@
     <!-- base_link到达箭头map坐标后连续稳定悬停10秒；30秒内无法稳定则失败。 -->
     <arg name="final_hold_seconds" default="10.0" />
     <arg name="final_hold_timeout" default="30.0" />
-<!-- 
-    <include if="$(arg start_arrow_model)"
+
+    <!-- <include if="$(arg start_arrow_model)"
              file="$(find stereo_depth)/launch/test_arrow_detection.launch" /> -->
 
     <!-- required=true使任务节点成功或失败退出后，同一launch启动的相机、

@@ -16,7 +16,7 @@
     <arg name="motion_goal_topic" default="/cmd/motion/goal" />
     <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
     <arg name="motion_state_topic" default="/motion/state" />
-    <arg name="motion_state_timeout" default="0.5" />
+    <arg name="motion_state_timeout" default="5" />
     <arg name="motion_goal_position_tolerance" default="0.05" />
     <arg name="motion_goal_yaw_tolerance_deg" default="3.0" />
 
@@ -139,8 +139,8 @@
     <arg name="trajectory_web_enabled" default="true" />
     <!-- 网页绑定的机器人本机网卡地址。 -->
     <arg name="trajectory_web_host" default="192.168.1.117" />
-    <!-- 网页端口；默认访问 http://192.168.1.117:8082。 -->
-    <arg name="trajectory_web_port" default="8082" />
+    <!-- 网页端口；默认访问 http://192.168.1.117:8083。 -->
+    <arg name="trajectory_web_port" default="8083" />
 
 
     <node pkg="auv_control"
