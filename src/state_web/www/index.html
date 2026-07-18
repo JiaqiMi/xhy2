@@ -77,16 +77,17 @@
         <section class="panel navigation-panel">
             <div class="panel-title navigation-title">
                 <div>
-                    <h2>NED 位置与姿态</h2>
+                    <h2>NED 实际与目标位姿</h2>
                     <span class="subtitle">X/North 向上，Y/East 向右，Z/Down 向下</span>
                 </div>
                 <div class="map-controls">
-                    <label class="switch-control">
-                        <input id="trajectory-enabled" type="checkbox">
-                        <span>绘制轨迹</span>
-                    </label>
-                    <button id="clear-trajectory" type="button">清空轨迹</button>
-                    <button id="reset-map" type="button">回到原点</button>
+                    <span class="map-legend actual">实际 TF</span>
+                    <span class="map-legend target">目标 cmdned</span>
+                    <button id="reset-map"
+                            type="button"
+                            title="重置 2D 位置图和深度图">
+                        回到原点
+                    </button>
                 </div>
             </div>
 
@@ -100,6 +101,9 @@
 
                 <div class="canvas-card z-card">
                     <canvas id="z-canvas"></canvas>
+                    <div class="canvas-hint z-canvas-hint">
+                        滚轮缩放 · 上下拖动
+                    </div>
                 </div>
 
                 <div class="attitude-stack">
@@ -107,7 +111,7 @@
                         <div class="instrument-title">航向图</div>
                         <canvas id="heading-canvas"></canvas>
                         <div id="heading-readout" class="instrument-readout">
-                            实际 -- · 目标 -- · 误差 --
+                            TF Heading --
                         </div>
                     </div>
 
@@ -125,26 +129,16 @@
         <section class="panel status-panel">
             <div class="panel-title">
                 <div>
-                    <h2>反馈、控制与设备状态</h2>
-                    <span class="subtitle">所有年龄均按 Web 节点接收时间计算</span>
+                    <h2>运行、控制与设备状态</h2>
+                    <span class="subtitle">实际位姿取 TF，目标位姿取 cmdned；状态年龄按 Web 接收时间计算</span>
                 </div>
                 <span id="status-ready" class="ready-label offline">坐标系未就绪</span>
             </div>
 
             <div class="status-scroll">
-                <details open>
-                    <summary>位姿与姿态反馈</summary>
-                    <div id="pose-status" class="data-grid"></div>
-                </details>
-
-                <details open>
-                    <summary>速度反馈</summary>
-                    <div id="velocity-status" class="data-grid"></div>
-                </details>
-
-                <details open>
-                    <summary>运动控制指令</summary>
-                    <div id="pose-command-status" class="data-grid"></div>
+                <details class="core-status-panel" open>
+                    <summary>核心运行状态</summary>
+                    <div id="core-status" class="axis-status"></div>
                 </details>
 
                 <details>
