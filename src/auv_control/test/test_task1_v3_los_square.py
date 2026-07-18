@@ -15,7 +15,7 @@
 
 监听：/motion/state，/tf
 发布：/cmd/motion/goal，/cmd/motion/cancel，/task1/v3/los_square/trajectory，/finished
-网页：默认 http://192.168.1.117:8082
+网页：默认 http://192.168.1.117:8083
 
 记录：
 2026.7.18
@@ -215,7 +215,7 @@ class LosSquareTest:
             "~trajectory_web_host", "192.168.1.117"
         )
         self.trajectory_web_port = int(rospy.get_param(
-            "~trajectory_web_port", 8082
+            "~trajectory_web_port", 8083
         ))
 
         self.motion_goal_pub = rospy.Publisher(

@@ -4,7 +4,7 @@
         本节点只接收识别和 TF、显示拟合结果，不创建 /cmd/pose/ned 发布器。
         测试人员手动控制机器人沿红线运动，观察实时拟合曲线是否被后续帧及时确认固定，
         以及固定段重复点是否被忽略、新延伸是否能连续衔接。
-        Web 默认使用 192.168.1.117:8082，不能与其他占用 8082 的测试节点同时启动。
+        Web 默认使用 192.168.1.117:8083，不能与其他占用 8083 的测试节点同时启动。
     -->
 
     <!-- 基础坐标系和主循环频率。 -->
@@ -81,8 +81,8 @@
     <arg name="trajectory_publish_period" default="0.5" />
     <arg name="trajectory_web_enabled" default="true" />
     <arg name="trajectory_web_host" default="192.168.1.117" />
-    <!-- 默认访问 http://192.168.1.117:8081。 -->
-    <arg name="trajectory_web_port" default="8081" />
+    <!-- 默认访问 http://192.168.1.117:8083。 -->
+    <arg name="trajectory_web_port" default="8083" />
 
     <node pkg="auv_control"
           type="test_task1_v3_line_fitting.py"
