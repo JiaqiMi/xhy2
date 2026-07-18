@@ -322,6 +322,76 @@ p_imu(k) = p_control + R(yaw(k)) * r_control_to_imu
 `control_to_imu_positive_*` 和 `control_to_imu_negative_*` 参数；
 两方向中心差异是物理标定结果，不再作为标定失败条件。
 
+### 低、中、高三档旋转中心自动标定
+
+标定程序按以下默认档位自动执行。`TRACK` 阶段使用表中固定 MZ，
+进入停车距离后再切换为速度反馈主动刹转：
+
+| 档位 | 正向 TRACK MZ | 负向 TRACK MZ |
+|---|---:|---:|
+| `low` | `+1000` | `-1500` |
+| `medium` | `+2000` | `-3000` |
+| `high` | `+3000` | `-4500` |
+
+负向绝对值默认为同档正向值的 `1.5` 倍。每档均按以下顺序运行：
+
+```text
+正向3圈，每90°主动刹停并回锁定初始位置
+→ 负向3圈，每90°主动刹停并回锁定初始位置
+→ 下一力矩档位
+```
+
+三档合计 `3×2×3×4=72` 个90°旋转段。每段结束必须同时满足：
+
+- 下位机反馈 `mode=4`；
+- 回到程序启动时锁定的同一个水平位置；
+- 航向到达该段目标；
+- 水平速度和角速度连续满足稳定帧数。
+
+启动命令：
+
+```bash
+roslaunch auv_control rotation_center_calibration.launch \
+  target_z:=-0.9 \
+  positive_mz_levels:="[1000.0, 2000.0, 3000.0]" \
+  negative_mz_scale:=1.5
+```
+
+运行前必须停止 `motion_supervisor` 和其他 `/cmd/pose/ned` 发布者。
+正负方向的主动刹转仍使用独立刹车限幅；某段刹车时 `MZ` 反号不会改变该段
+所属的计划方向，且 `BRAKE` 样本不参与旋转中心拟合。
+
+原始 CSV 新增以下字段：
+
+- `torque_profile`：`low/medium/high`；
+- `track_mz_positive_limit`、`track_mz_negative_limit`；
+- 每周期计划方向、实际 `command_mz`、角速度、水平速度和漂移。
+
+结果 YAML 同时包含：
+
+- 三个档位各自的正、负旋转中心；
+- 每档正负方向的平均/峰值角速度、水平速度和最大漂移；
+- RMS、最大残差和质量评分；
+- 每个方向最终推荐采用的档位；
+- 顶层可直接配置给 `motion_supervisor` 的六个
+  `control_to_imu_positive/negative_*` 参数。
+
+推荐策略分别对正、负方向执行。默认优先采用 `medium`；质量评分定义为：
+
+```text
+quality_score = rms_residual + 0.25 × max_residual
+```
+
+只有当中速评分明显差于最佳档位，即超过：
+
+```text
+best_score × recommendation_degradation_ratio + recommendation_degradation_margin
+```
+
+才自动选择评分最低的档位。默认倍率为 `1.5`、绝对余量为 `0.01m`。
+低速旋转更容易受水流和推力死区影响产生漂动，因此低速结果主要用于对比，
+不会仅因偶然取得略小残差就替代中速推荐值。
+
 连续目标控制不再使用整艇远近抢占。X/Y 每轴独立运行：
 
 ```text

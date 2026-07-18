@@ -15,6 +15,8 @@
     增加固定初始位置 mode=4 接管稳定条件测试。
 2026.7.19
     验证正负计划方向可拟合不同旋转中心。
+2026.7.19
+    验证低、中、高不对称力矩档位和优先中速的推荐策略。
 """
 
 import math
@@ -29,16 +31,71 @@ if TEST_DIR not in sys.path:
 
 from rotation_center_calibration_core import (  # noqa: E402
     CalibrationSample,
+    build_torque_profiles,
     direct_yaw_command,
+    fixed_track_command,
     fit_planned_direction_centers,
     fit_segmented_rotation_center,
+    fit_quality_score,
     locked_handover_is_stable,
     rotation_is_unexpectedly_moving_away,
+    select_recommended_profile,
     unwrap_angle,
 )
 
 
 class RotationCenterCalibrationCoreTest(unittest.TestCase):
+
+    def test_builds_three_asymmetric_torque_profiles(self):
+        profiles = build_torque_profiles(
+            (1000.0, 2000.0, 3000.0), negative_scale=1.5)
+        self.assertEqual(
+            [(profile.name,
+              profile.positive_limit,
+              profile.negative_limit)
+             for profile in profiles],
+            [
+                ('low', 1000.0, 1500.0),
+                ('medium', 2000.0, 3000.0),
+                ('high', 3000.0, 4500.0),
+            ],
+        )
+
+    def test_torque_profiles_require_three_increasing_safe_levels(self):
+        for levels, scale in (
+                ((1000.0, 2000.0), 1.5),
+                ((1000.0, 1000.0, 3000.0), 1.5),
+                ((1000.0, 2000.0, 8000.0), 1.5)):
+            with self.assertRaises(ValueError):
+                build_torque_profiles(levels, negative_scale=scale)
+
+    def test_fixed_track_command_uses_planned_direction_and_asymmetry(self):
+        self.assertEqual(
+            fixed_track_command(1, 1.0, 1000.0, 1500.0), 1000)
+        self.assertEqual(
+            fixed_track_command(-1, 1.0, 1000.0, 1500.0), -1500)
+        self.assertEqual(
+            fixed_track_command(1, -1.0, 1000.0, 1500.0), -1500)
+
+    def test_recommendation_prefers_medium_when_quality_is_close(self):
+        results = {
+            'low': {'rms_residual': 0.020, 'max_residual': 0.060},
+            'medium': {'rms_residual': 0.024, 'max_residual': 0.065},
+            'high': {'rms_residual': 0.018, 'max_residual': 0.055},
+        }
+        self.assertAlmostEqual(
+            fit_quality_score(results['medium']), 0.04025)
+        self.assertEqual(
+            select_recommended_profile(results), 'medium')
+
+    def test_recommendation_rejects_clearly_unstable_medium(self):
+        results = {
+            'low': {'rms_residual': 0.020, 'max_residual': 0.040},
+            'medium': {'rms_residual': 0.090, 'max_residual': 0.200},
+            'high': {'rms_residual': 0.015, 'max_residual': 0.030},
+        }
+        self.assertEqual(
+            select_recommended_profile(results), 'high')
 
     def command(self, error, rate):
         return direct_yaw_command(
