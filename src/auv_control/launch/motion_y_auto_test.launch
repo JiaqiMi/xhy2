@@ -1,0 +1,18 @@
+<launch>
+    <!--
+      Y 轴左右自动测试：±0.5、±1.0、±1.5 m，每个幅值重复三次。
+      运行前必须单独启动 motion_supervisor，并保证左右方向均不会碰壁。
+    -->
+    <arg name="target_z" default="-0.9" />
+    <arg name="repetitions" default="3" />
+    <arg name="action_timeout" default="120.0" />
+    <arg name="hover_hold_seconds" default="2.0" />
+
+    <include file="$(find auv_control)/launch/motion_axis_auto_test.launch">
+        <arg name="axis" value="y" />
+        <arg name="target_z" value="$(arg target_z)" />
+        <arg name="repetitions" value="$(arg repetitions)" />
+        <arg name="action_timeout" value="$(arg action_timeout)" />
+        <arg name="hover_hold_seconds" value="$(arg hover_hold_seconds)" />
+    </include>
+</launch>

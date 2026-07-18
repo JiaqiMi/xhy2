@@ -1,0 +1,132 @@
+<launch>
+    <!--
+      旋转中心自动标定。运行前必须停止 motion_supervisor 及所有其他
+      /cmd/pose/ned 发布者。本节点以 mode=2 保持深度，TX=TY=0，仅输出 MZ。
+    -->
+
+    <!-- 自由旋转和段间 mode=4 接管使用的 NED 绝对目标深度，单位 m。 -->
+    <arg name="target_z" default="-0.9" />
+    <!-- 水平旋转无法标定 Z；结果文件原样保留的 control_link -> imu Z，单位 m。 -->
+    <arg name="control_to_imu_z" default="0.0" />
+    <!-- 指令、采样和控制频率，单位 Hz，与底层 5 Hz 指令链路一致。 -->
+    <arg name="control_rate_hz" default="5.0" />
+    <!-- 每个自由旋转段的角度；当前程序固定要求为 90°。 -->
+    <arg name="turn_step_deg" default="90.0" />
+    <!-- 正向和负向分别执行的完整圈数。 -->
+    <arg name="turns_each_direction" default="3" />
+    <!-- 开始旋转前当前位置 mode=4 稳定接管时间，单位 s。 -->
+    <arg name="initial_hold_seconds" default="3.0" />
+    <!-- 每个 90° 段结束后当前位置 mode=4 稳定接管时间，单位 s。 -->
+    <arg name="handover_hold_seconds" default="2.0" />
+    <!-- 单个自由旋转段的最大允许时间，单位 s。 -->
+    <arg name="step_timeout" default="90.0" />
+    <!-- TF、速度或模式反馈最大允许年龄，单位 s。 -->
+    <arg name="feedback_timeout" default="0.5" />
+    <!-- 航向和角速度同时满足条件所需的连续帧数。 -->
+    <arg name="stable_frames" default="5" />
+    <!-- 自由旋转段的停止航向误差，单位 deg。 -->
+    <arg name="yaw_tolerance_deg" default="3.0" />
+    <!-- 自由旋转段的停止角速度阈值，单位 deg/s。 -->
+    <arg name="yaw_rate_threshold_deg_s" default="0.5" />
+    <!-- mode=4 接管时允许的 IMU 点水平速度，单位 m/s。 -->
+    <arg name="handover_speed_threshold" default="0.05" />
+    <!-- /status/vel 一阶低通中新样本权重，范围 (0,1]。 -->
+    <arg name="velocity_filter_alpha" default="0.35" />
+    <!-- 原始 r 到 TF yaw 角速度的符号；当前系统 r 与 TF yaw 相反。 -->
+    <arg name="yaw_rate_feedback_sign" default="-1.0" />
+    <!-- 正 MZ 对 TF yaw 加速度的符号；当前系统正 MZ 对应正 yaw。 -->
+    <arg name="mz_to_yaw_sign" default="1.0" />
+
+    <!-- 自由转向航向比例增益，输出单位/rad。 -->
+    <arg name="kp_yaw" default="6000.0" />
+    <!-- 使用 TF yaw 角速度后的正值阻尼增益，输出单位/(rad/s)。 -->
+    <arg name="kd_yaw" default="2000.0" />
+    <!-- 主动刹转增益，输出单位/(rad/s)。 -->
+    <arg name="brake_gain_yaw" default="6000.0" />
+    <!-- TRACK 阶段正 MZ 限幅。 -->
+    <arg name="max_mz_positive" default="1000.0" />
+    <!-- TRACK 阶段负 MZ 绝对值限幅。 -->
+    <arg name="max_mz_negative" default="1000.0" />
+    <!-- BRAKE 阶段正 MZ 限幅。 -->
+    <arg name="brake_max_mz_positive" default="3000.0" />
+    <!-- BRAKE 阶段负 MZ 绝对值限幅。 -->
+    <arg name="brake_max_mz_negative" default="3000.0" />
+    <!-- 实际输出正 MZ 刹转时的有效角减速度，单位 rad/s²。 -->
+    <arg name="angular_brake_acceleration_mz_positive" default="0.025" />
+    <!-- 实际输出负 MZ 刹转时的有效角减速度，单位 rad/s²。 -->
+    <arg name="angular_brake_acceleration_mz_negative" default="0.040" />
+    <!-- 反馈、计算、通信和执行综合延迟，单位 s。 -->
+    <arg name="control_delay" default="0.35" />
+    <!-- 航向停车角附加余量，单位 deg。 -->
+    <arg name="yaw_brake_margin_deg" default="3.0" />
+    <!-- 超过角速度阈值时的最小有效刹转 MZ。 -->
+    <arg name="minimum_brake_mz" default="100.0" />
+    <!-- 单个自由旋转段 IMU 点最大允许平面漂移，单位 m，超限立即接管。 -->
+    <arg name="drift_abort_radius" default="0.75" />
+    <!-- 进入拟合样本的最低角速度，单位 deg/s。 -->
+    <arg name="sample_min_yaw_rate_deg_s" default="1.0" />
+    <!-- 自由旋转允许的最大角速度，单位 deg/s，超限立即 mode=4 接管。 -->
+    <arg name="max_yaw_rate_deg_s" default="45.0" />
+    <!-- 航向连续远离目标的最长允许时间，单位 s，用于发现符号错误。 -->
+    <arg name="moving_away_timeout" default="3.0" />
+    <!-- 正、负方向拟合杆臂允许的最大平面差，单位 m，超限时结果仅供排查。 -->
+    <arg name="direction_consistency_tolerance" default="0.05" />
+    <!-- 原始 CSV 和拟合 YAML 的保存目录。 -->
+    <arg name="log_directory"
+         default="$(env HOME)/.ros/auv_logs/rotation_center_calibration" />
+
+    <node pkg="auv_control" type="rotation_center_calibration.py"
+          name="rotation_center_calibration" output="screen">
+        <param name="target_z" value="$(arg target_z)" />
+        <param name="control_to_imu_z" value="$(arg control_to_imu_z)" />
+        <param name="control_rate_hz" value="$(arg control_rate_hz)" />
+        <param name="turn_step_deg" value="$(arg turn_step_deg)" />
+        <param name="turns_each_direction"
+               value="$(arg turns_each_direction)" />
+        <param name="initial_hold_seconds"
+               value="$(arg initial_hold_seconds)" />
+        <param name="handover_hold_seconds"
+               value="$(arg handover_hold_seconds)" />
+        <param name="step_timeout" value="$(arg step_timeout)" />
+        <param name="feedback_timeout" value="$(arg feedback_timeout)" />
+        <param name="stable_frames" value="$(arg stable_frames)" />
+        <param name="yaw_tolerance_deg" value="$(arg yaw_tolerance_deg)" />
+        <param name="yaw_rate_threshold_deg_s"
+               value="$(arg yaw_rate_threshold_deg_s)" />
+        <param name="handover_speed_threshold"
+               value="$(arg handover_speed_threshold)" />
+        <param name="velocity_filter_alpha"
+               value="$(arg velocity_filter_alpha)" />
+        <param name="yaw_rate_feedback_sign"
+               value="$(arg yaw_rate_feedback_sign)" />
+        <param name="mz_to_yaw_sign" value="$(arg mz_to_yaw_sign)" />
+        <param name="kp_yaw" value="$(arg kp_yaw)" />
+        <param name="kd_yaw" value="$(arg kd_yaw)" />
+        <param name="brake_gain_yaw" value="$(arg brake_gain_yaw)" />
+        <param name="max_mz_positive" value="$(arg max_mz_positive)" />
+        <param name="max_mz_negative" value="$(arg max_mz_negative)" />
+        <param name="brake_max_mz_positive"
+               value="$(arg brake_max_mz_positive)" />
+        <param name="brake_max_mz_negative"
+               value="$(arg brake_max_mz_negative)" />
+        <param name="angular_brake_acceleration_mz_positive"
+               value="$(arg angular_brake_acceleration_mz_positive)" />
+        <param name="angular_brake_acceleration_mz_negative"
+               value="$(arg angular_brake_acceleration_mz_negative)" />
+        <param name="control_delay" value="$(arg control_delay)" />
+        <param name="yaw_brake_margin_deg"
+               value="$(arg yaw_brake_margin_deg)" />
+        <param name="minimum_brake_mz" value="$(arg minimum_brake_mz)" />
+        <param name="drift_abort_radius"
+               value="$(arg drift_abort_radius)" />
+        <param name="sample_min_yaw_rate_deg_s"
+               value="$(arg sample_min_yaw_rate_deg_s)" />
+        <param name="max_yaw_rate_deg_s"
+               value="$(arg max_yaw_rate_deg_s)" />
+        <param name="moving_away_timeout"
+               value="$(arg moving_away_timeout)" />
+        <param name="direction_consistency_tolerance"
+               value="$(arg direction_consistency_tolerance)" />
+        <param name="log_directory" value="$(arg log_directory)" />
+    </node>
+</launch>
