@@ -11,6 +11,10 @@
     <arg name="start_state_web" default="true" />
     <arg name="start_fisheye" default="true" />
     <arg name="start_motion_supervisor" default="true" />
+    <!-- base_link 原点指向 IMU/GNSS 定位点的前、右、下偏置，单位 m。 -->
+    <arg name="base_to_imu_x" default="-0.35" />
+    <arg name="base_to_imu_y" default="0.0" />
+    <arg name="base_to_imu_z" default="0.0" />
     <!-- web 参数 -->    
     <arg name="state_web_host" default="0.0.0.0" />
     <arg name="state_web_port" default="8088" />
@@ -56,10 +60,20 @@
     <node pkg="auv_control" type="map_initer.py" name="map_initer" output="screen"/>
 
     <!-- 静态 TF 广播 (base_link → imu/hand/camera) -->
-    <node pkg="auv_control" type="static_tf_broadcaster.py" name="static_tf_broadcaster" output="screen"/>
+    <node pkg="auv_control" type="static_tf_broadcaster.py" name="static_tf_broadcaster" output="screen">
+        <!-- 静态 base_link -> imu 与导航杆臂补偿必须使用同一组参数。 -->
+        <param name="base_to_imu_x" value="$(arg base_to_imu_x)" />
+        <param name="base_to_imu_y" value="$(arg base_to_imu_y)" />
+        <param name="base_to_imu_z" value="$(arg base_to_imu_z)" />
+    </node>
 
     <!-- TF 坐标变换（/cmd/pose/ned NED 整包消息转换为 /cmd/pose/lla LLA 整包消息） -->
-    <node pkg="auv_control" type="auv_tf_handler.py" name="auv_tf_handler" output="screen"/>
+    <node pkg="auv_control" type="auv_tf_handler.py" name="auv_tf_handler" output="screen">
+        <!-- 经纬深输入位于 IMU/GNSS 点，换算 map -> base_link 时应用同一杆臂。 -->
+        <param name="base_to_imu_x" value="$(arg base_to_imu_x)" />
+        <param name="base_to_imu_y" value="$(arg base_to_imu_y)" />
+        <param name="base_to_imu_z" value="$(arg base_to_imu_z)" />
+    </node>
 
     <!-- 运行状态 Web：声明在坐标系节点之后，自行等待 /world_origin 和 map -> base_link TF 就绪 -->
     <group if="$(arg start_state_web)">
@@ -90,4 +104,5 @@
     <include if="$(arg start_motion_supervisor)"
              file="$(find auv_control)/launch/motion_supervisor_prototype.launch">
         <arg name="start_goal_test" value="false" />
+    </include>
 </launch>
