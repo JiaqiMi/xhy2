@@ -3,20 +3,20 @@
 const dashboardState = {
     status: null,
     connected: false,
-    trajectory: [],
-    originRevision: null,
-    lastTrackStamp: null,
     mapScale: 20,
     mapPanX: 0,
     mapPanY: 0,
+    zScale: 20,
+    zPanY: 0,
     dragging: false,
     dragStartX: 0,
     dragStartY: 0,
     dragPanX: 0,
     dragPanY: 0,
+    zDragging: false,
+    zDragStartY: 0,
+    zDragPanY: 0,
 };
-
-const MAX_TRAJECTORY_POINTS = 12000;
 
 
 function finiteNumber(value) {
@@ -68,8 +68,8 @@ function snapshotText(snapshot) {
 
 
 function snapshotClass(snapshot) {
-    if (!snapshot || !snapshot.data || !snapshot.online) return "bad";
-    return "good";
+    if (!snapshot || !snapshot.data) return "bad";
+    return snapshot.online ? "good" : "stale";
 }
 
 
@@ -93,6 +93,46 @@ function setRows(containerId, rows) {
         if (row.title) value.title = row.title;
 
         item.append(label, value);
+        fragment.appendChild(item);
+    });
+
+    container.replaceChildren(fragment);
+}
+
+
+function setAxisRows(containerId, rows) {
+    const container = document.getElementById(containerId);
+    const fragment = document.createDocumentFragment();
+
+    rows.forEach((row) => {
+        const item = document.createElement("div");
+        item.className = "axis-row";
+
+        const label = document.createElement("div");
+        label.className = "axis-row-label";
+        label.textContent = row.label;
+        if (row.title) label.title = row.title;
+        item.appendChild(label);
+
+        row.cells.forEach((cell) => {
+            const valueCell = document.createElement("div");
+            valueCell.className = `axis-cell ${cell.className || ""}`.trim();
+            if (cell.title) valueCell.title = cell.title;
+
+            const axis = document.createElement("span");
+            axis.className = "axis-name";
+            axis.textContent = cell.axis;
+
+            const value = document.createElement("span");
+            value.className = "axis-value";
+            value.textContent = cell.value === undefined || cell.value === null
+                ? "--"
+                : String(cell.value);
+
+            valueCell.append(axis, value);
+            item.appendChild(valueCell);
+        });
+
         fragment.appendChild(item);
     });
 
@@ -177,117 +217,128 @@ function renderCamera(name, stream) {
 }
 
 
-function renderPoseStatus(data) {
+function renderCoreStatus(data) {
     const tfPose = data.tf?.data || {};
     const tfPosition = tfPose.position_m || {};
     const tfOrientation = tfPose.orientation_deg || {};
     const feedback = data.feedback?.data || {};
-    const feedbackPose = feedback.pose || {};
-    const attitude = data.attitude?.actual || {};
-
-    setRows("pose-status", [
-        {
-            label: "TF 状态",
-            value: snapshotText(data.tf),
-            className: snapshotClass(data.tf),
-        },
-        {label: "X / North", value: numberText(tfPosition.x, 3, " m")},
-        {label: "Y / East", value: numberText(tfPosition.y, 3, " m")},
-        {label: "Z / Down", value: numberText(tfPosition.z, 3, " m")},
-        {label: "TF Roll", value: numberText(tfOrientation.roll_deg, 2, "°")},
-        {label: "TF Pitch", value: numberText(tfOrientation.pitch_deg, 2, "°")},
-        {label: "TF Heading", value: numberText(tfOrientation.heading_deg, 2, "°")},
-        {
-            label: "姿态来源",
-            value: attitude.source || "--",
-            className: data.attitude?.valid ? "good" : "bad",
-        },
-        {
-            label: "AUV 反馈",
-            value: snapshotText(data.feedback),
-            className: snapshotClass(data.feedback),
-        },
-        {label: "纬度", value: numberText(feedbackPose.latitude_deg, 7, "°")},
-        {label: "经度", value: numberText(feedbackPose.longitude_deg, 7, "°")},
-        {label: "反馈深度", value: numberText(feedbackPose.depth_m, 3, " m")},
-        {label: "反馈 Roll", value: numberText(feedbackPose.roll_deg, 2, "°")},
-        {label: "反馈 Pitch", value: numberText(feedbackPose.pitch_deg, 2, "°")},
-        {label: "反馈 Heading", value: numberText(feedbackPose.heading_deg, 2, "°")},
-        {
-            label: "控制模式",
-            value: feedback.control_mode_name
-                ? `${feedback.control_mode_name} (${feedback.control_mode})`
-                : "--",
-        },
-    ]);
-}
-
-
-function renderVelocityStatus(data) {
+    const actualForce = feedback.motor_force || {};
     const velocity = data.velocity?.data || {};
     const linear = velocity.linear_mps || {};
     const angular = velocity.angular_radps || {};
-
-    setRows("velocity-status", [
-        {
-            label: "速度话题",
-            value: snapshotText(data.velocity),
-            className: snapshotClass(data.velocity),
-        },
-        {label: "坐标系", value: velocity.frame_id || "--"},
-        {label: "线速度 X", value: numberText(linear.x, 3, " m/s")},
-        {label: "线速度 Y", value: numberText(linear.y, 3, " m/s")},
-        {label: "线速度 Z", value: numberText(linear.z, 3, " m/s")},
-        {label: "角速度 X", value: numberText(angular.x, 3, " rad/s")},
-        {label: "角速度 Y", value: numberText(angular.y, 3, " rad/s")},
-        {label: "角速度 Z", value: numberText(angular.z, 3, " rad/s")},
-        {label: "角速度 X", value: numberText(radToDeg(angular.x), 2, "°/s")},
-        {label: "角速度 Y", value: numberText(radToDeg(angular.y), 2, "°/s")},
-        {label: "角速度 Z", value: numberText(radToDeg(angular.z), 2, "°/s")},
-    ]);
-}
-
-
-function renderPoseCommand(data) {
     const command = data.pose_command?.data || {};
     const target = command.target || {};
-    const position = target.position_m || {};
-    const orientation = target.orientation_deg || {};
-    const force = command.force || {};
+    const targetPosition = target.position_m || {};
+    const targetOrientation = target.orientation_deg || {};
+    const targetForce = command.force || {};
+    const tfClass = snapshotClass(data.tf);
+    const commandClass = snapshotClass(data.pose_command);
+    const feedbackClass = snapshotClass(data.feedback);
+    const velocityClass = snapshotClass(data.velocity);
 
-    setRows("pose-command-status", [
+    setAxisRows("core-status", [
         {
-            label: "指令状态",
-            value: snapshotText(data.pose_command),
-            className: snapshotClass(data.pose_command),
+            label: "消息状态",
+            cells: [
+                {
+                    axis: "TF",
+                    value: snapshotText(data.tf),
+                    className: tfClass,
+                },
+                {
+                    axis: "cmdned",
+                    value: snapshotText(data.pose_command),
+                    className: commandClass,
+                },
+                {
+                    axis: "反馈 / 速度",
+                    value: `${snapshotText(data.feedback)} / ${snapshotText(data.velocity)}`,
+                    className: (
+                        data.feedback?.online && data.velocity?.online
+                            ? "good"
+                            : (
+                                data.feedback?.data || data.velocity?.data
+                                    ? "stale"
+                                    : "bad"
+                            )
+                    ),
+                    title: `/status/auv：${snapshotText(data.feedback)}；`
+                        + `/status/vel：${snapshotText(data.velocity)}`,
+                },
+            ],
         },
         {
-            label: "模式",
-            value: command.mode_name
-                ? `${command.mode_name} (${command.mode})`
-                : "--",
+            label: "实际位置",
+            cells: [
+                {axis: "X / North", value: numberText(tfPosition.x, 3, " m"), className: tfClass},
+                {axis: "Y / East", value: numberText(tfPosition.y, 3, " m"), className: tfClass},
+                {axis: "Z / Down", value: numberText(tfPosition.z, 3, " m"), className: tfClass},
+            ],
         },
-        {label: "目标 X", value: numberText(position.x, 3, " m")},
-        {label: "目标 Y", value: numberText(position.y, 3, " m")},
-        {label: "目标 Z", value: numberText(position.z, 3, " m")},
-        {label: "目标 Roll", value: numberText(orientation.roll_deg, 2, "°")},
-        {label: "目标 Pitch", value: numberText(orientation.pitch_deg, 2, "°")},
-        {label: "目标 Heading", value: numberText(orientation.heading_deg, 2, "°")},
-        {label: "TX", value: integerText(force.tx)},
-        {label: "TY", value: integerText(force.ty)},
-        {label: "TZ", value: integerText(force.tz)},
-        {label: "MX", value: integerText(force.mx)},
-        {label: "MY", value: integerText(force.my)},
-        {label: "MZ", value: integerText(force.mz)},
+        {
+            label: "目标位置",
+            cells: [
+                {axis: "X / North", value: numberText(targetPosition.x, 3, " m"), className: commandClass},
+                {axis: "Y / East", value: numberText(targetPosition.y, 3, " m"), className: commandClass},
+                {axis: "Z / Down", value: numberText(targetPosition.z, 3, " m"), className: commandClass},
+            ],
+        },
+        {
+            label: "实际姿态",
+            cells: [
+                {axis: "Roll", value: numberText(tfOrientation.roll_deg, 2, "°"), className: tfClass},
+                {axis: "Pitch", value: numberText(tfOrientation.pitch_deg, 2, "°"), className: tfClass},
+                {axis: "Heading", value: numberText(tfOrientation.heading_deg, 2, "°"), className: tfClass},
+            ],
+        },
+        {
+            label: "目标姿态",
+            cells: [
+                {axis: "Roll", value: numberText(targetOrientation.roll_deg, 2, "°"), className: commandClass},
+                {axis: "Pitch", value: numberText(targetOrientation.pitch_deg, 2, "°"), className: commandClass},
+                {axis: "Heading", value: numberText(targetOrientation.heading_deg, 2, "°"), className: commandClass},
+            ],
+        },
+        {
+            label: "实际力 / 力矩",
+            title: "每列依次显示平移力 T 与旋转力矩 M",
+            cells: [
+                {axis: "TX / MX", value: `${integerText(actualForce.tx)} / ${integerText(actualForce.mx)}`, className: feedbackClass},
+                {axis: "TY / MY", value: `${integerText(actualForce.ty)} / ${integerText(actualForce.my)}`, className: feedbackClass},
+                {axis: "TZ / MZ", value: `${integerText(actualForce.tz)} / ${integerText(actualForce.mz)}`, className: feedbackClass},
+            ],
+        },
+        {
+            label: "目标力 / 力矩",
+            title: "cmdned 指令；每列依次显示平移力 T 与旋转力矩 M",
+            cells: [
+                {axis: "TX / MX", value: `${integerText(targetForce.tx)} / ${integerText(targetForce.mx)}`, className: commandClass},
+                {axis: "TY / MY", value: `${integerText(targetForce.ty)} / ${integerText(targetForce.my)}`, className: commandClass},
+                {axis: "TZ / MZ", value: `${integerText(targetForce.tz)} / ${integerText(targetForce.mz)}`, className: commandClass},
+            ],
+        },
+        {
+            label: "线速度",
+            cells: [
+                {axis: "X", value: numberText(linear.x, 3, " m/s"), className: velocityClass},
+                {axis: "Y", value: numberText(linear.y, 3, " m/s"), className: velocityClass},
+                {axis: "Z", value: numberText(linear.z, 3, " m/s"), className: velocityClass},
+            ],
+        },
+        {
+            label: "角速度",
+            cells: [
+                {axis: "X", value: numberText(radToDeg(angular.x), 2, "°/s"), className: velocityClass},
+                {axis: "Y", value: numberText(radToDeg(angular.y), 2, "°/s"), className: velocityClass},
+                {axis: "Z", value: numberText(radToDeg(angular.z), 2, "°/s"), className: velocityClass},
+            ],
+        },
     ]);
 }
 
 
 function renderMotionState(data) {
     const motion = data.motion_state?.data || {};
-    const goal = motion.goal || {};
-    const goalPosition = goal.position_m || {};
-    const goalOrientation = goal.orientation_deg || {};
     const force = motion.force || {};
 
     setRows("motion-status", [
@@ -312,13 +363,10 @@ function renderMotionState(data) {
         {label: "航向误差", value: numberText(radToDeg(motion.yaw_error_rad), 2, "°")},
         {label: "水平速度", value: numberText(motion.horizontal_speed_mps, 3, " m/s")},
         {label: "航向角速度", value: numberText(radToDeg(motion.yaw_rate_radps), 2, "°/s")},
-        {label: "目标 X", value: numberText(goalPosition.x, 3, " m")},
-        {label: "目标 Y", value: numberText(goalPosition.y, 3, " m")},
-        {label: "目标 Z", value: numberText(goalPosition.z, 3, " m")},
-        {label: "目标航向", value: numberText(goalOrientation.heading_deg, 2, "°")},
-        {label: "输出 TX", value: integerText(force.tx)},
-        {label: "输出 TY", value: integerText(force.ty)},
-        {label: "输出 MZ", value: integerText(force.mz)},
+        {
+            label: "监督输出",
+            value: `TX ${integerText(force.tx)} · TY ${integerText(force.ty)} · MZ ${integerText(force.mz)}`,
+        },
         {
             label: "状态原因",
             value: motion.reason || "--",
@@ -444,47 +492,6 @@ function renderSystemStatus(data) {
 }
 
 
-function updateTrajectory(data) {
-    const revision = finiteNumber(data.origin?.data?.revision);
-    if (
-        revision !== null
-        && dashboardState.originRevision !== null
-        && revision !== dashboardState.originRevision
-    ) {
-        dashboardState.trajectory = [];
-        dashboardState.lastTrackStamp = null;
-    }
-    if (revision !== null) dashboardState.originRevision = revision;
-
-    const enabled = document.getElementById("trajectory-enabled").checked;
-    const tfPose = data.tf?.data;
-    const position = tfPose?.position_m;
-    if (!enabled || !data.tf?.online || !position) return;
-
-    const stamp = data.tf.ros_stamp ?? data.tf.received_at;
-    if (stamp === null || stamp === undefined || stamp === dashboardState.lastTrackStamp) {
-        return;
-    }
-
-    const point = {
-        x: finiteNumber(position.x),
-        y: finiteNumber(position.y),
-        z: finiteNumber(position.z),
-        stamp,
-    };
-    if ([point.x, point.y, point.z].some((value) => value === null)) return;
-
-    dashboardState.trajectory.push(point);
-    dashboardState.lastTrackStamp = stamp;
-    if (dashboardState.trajectory.length > MAX_TRAJECTORY_POINTS) {
-        dashboardState.trajectory.splice(
-            0,
-            dashboardState.trajectory.length - MAX_TRAJECTORY_POINTS,
-        );
-    }
-}
-
-
 function resizeCanvas(canvas) {
     const ratio = Math.max(1, window.devicePixelRatio || 1);
     const rect = canvas.getBoundingClientRect();
@@ -513,6 +520,81 @@ function niceDistance(rawDistance) {
     else if (fraction > 2) niceFraction = 5;
     else if (fraction > 1) niceFraction = 2;
     return niceFraction * base;
+}
+
+
+function snapshotAnnotation(snapshot) {
+    if (!snapshot || !snapshot.data) return "无数据";
+    return snapshot.online ? "" : `已超时 ${ageText(snapshot.age_sec)}`;
+}
+
+
+function drawDirectionalPose(ctx, screen, heading, options) {
+    const {
+        color,
+        label,
+        marker = "circle",
+        labelOffsetY = 8,
+    } = options;
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 2.4;
+
+    if (marker === "diamond") {
+        ctx.beginPath();
+        ctx.moveTo(screen.x, screen.y - 7);
+        ctx.lineTo(screen.x + 7, screen.y);
+        ctx.lineTo(screen.x, screen.y + 7);
+        ctx.lineTo(screen.x - 7, screen.y);
+        ctx.closePath();
+        ctx.globalAlpha = 0.34;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.stroke();
+    } else {
+        ctx.beginPath();
+        ctx.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#031018";
+        ctx.stroke();
+        ctx.strokeStyle = color;
+    }
+
+    if (heading !== null) {
+        const radians = heading * Math.PI / 180;
+        const arrowLength = 28;
+        const tipX = screen.x + Math.sin(radians) * arrowLength;
+        const tipY = screen.y - Math.cos(radians) * arrowLength;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(screen.x, screen.y);
+        ctx.lineTo(tipX, tipY);
+        ctx.stroke();
+
+        const headAngle = Math.PI / 7;
+        const headLength = 7;
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(
+            tipX - Math.sin(radians - headAngle) * headLength,
+            tipY + Math.cos(radians - headAngle) * headLength,
+        );
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(
+            tipX - Math.sin(radians + headAngle) * headLength,
+            tipY + Math.cos(radians + headAngle) * headLength,
+        );
+        ctx.stroke();
+    }
+
+    ctx.fillStyle = color;
+    ctx.font = "bold 11px Microsoft YaHei, Consolas, monospace";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(label, screen.x + 10, screen.y + labelOffsetY);
+    ctx.restore();
 }
 
 
@@ -573,59 +655,61 @@ function drawXYMap(data) {
         y: originY - north * scale,
     });
 
-    if (dashboardState.trajectory.length > 1) {
-        ctx.strokeStyle = "#23c6f4";
-        ctx.lineWidth = 2;
-        ctx.globalAlpha = 0.82;
+    const position = data.tf?.data?.position_m;
+    const north = finiteNumber(position?.x);
+    const east = finiteNumber(position?.y);
+    const actualScreen = north !== null && east !== null
+        ? worldToScreen(north, east)
+        : null;
+    const actualHeading = finiteNumber(
+        data.tf?.data?.orientation_deg?.heading_deg,
+    );
+
+    const targetPose = data.pose_command?.data?.target;
+    const targetNorth = finiteNumber(targetPose?.position_m?.x);
+    const targetEast = finiteNumber(targetPose?.position_m?.y);
+    const targetScreen = targetNorth !== null && targetEast !== null
+        ? worldToScreen(targetNorth, targetEast)
+        : null;
+    const targetHeading = finiteNumber(
+        targetPose?.orientation_deg?.heading_deg,
+    );
+
+    if (actualScreen && targetScreen) {
+        ctx.save();
+        ctx.strokeStyle = data.pose_command?.online ? "#b94ea8" : "#66727e";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([5, 5]);
+        ctx.globalAlpha = 0.75;
         ctx.beginPath();
-        dashboardState.trajectory.forEach((point, index) => {
-            const screen = worldToScreen(point.x, point.y);
-            if (index === 0) ctx.moveTo(screen.x, screen.y);
-            else ctx.lineTo(screen.x, screen.y);
-        });
+        ctx.moveTo(actualScreen.x, actualScreen.y);
+        ctx.lineTo(targetScreen.x, targetScreen.y);
         ctx.stroke();
-        ctx.globalAlpha = 1;
+        ctx.restore();
     }
 
-    const position = data.tf?.data?.position_m;
-    if (position) {
-        const north = finiteNumber(position.x);
-        const east = finiteNumber(position.y);
-        if (north !== null && east !== null) {
-            const screen = worldToScreen(north, east);
-            const actual = data.attitude?.actual;
-            const heading = finiteNumber(actual?.heading_deg);
-            const online = Boolean(data.tf?.online);
+    if (targetScreen) {
+        const annotation = snapshotAnnotation(data.pose_command);
+        drawDirectionalPose(ctx, targetScreen, targetHeading, {
+            color: data.pose_command?.online ? "#ff62cf" : "#7f8994",
+            label: [
+                `目标 N ${numberText(targetNorth, 2)}  E ${numberText(targetEast, 2)}`,
+                annotation,
+            ].filter(Boolean).join(" · "),
+            marker: "diamond",
+            labelOffsetY: -22,
+        });
+    }
 
-            ctx.fillStyle = online ? "#42e7a8" : "#8a97a6";
-            ctx.strokeStyle = "#031018";
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-
-            if (heading !== null) {
-                const radians = heading * Math.PI / 180;
-                const arrowLength = 28;
-                const tipX = screen.x + Math.sin(radians) * arrowLength;
-                const tipY = screen.y - Math.cos(radians) * arrowLength;
-                ctx.strokeStyle = online ? "#42e7a8" : "#8a97a6";
-                ctx.lineWidth = 3;
-                ctx.beginPath();
-                ctx.moveTo(screen.x, screen.y);
-                ctx.lineTo(tipX, tipY);
-                ctx.stroke();
-            }
-
-            ctx.fillStyle = "#d9ecfa";
-            ctx.font = "11px Consolas, monospace";
-            ctx.fillText(
-                `N ${numberText(north, 2)}  E ${numberText(east, 2)}`,
-                screen.x + 10,
-                screen.y + 8,
-            );
-        }
+    if (actualScreen) {
+        const annotation = snapshotAnnotation(data.tf);
+        drawDirectionalPose(ctx, actualScreen, actualHeading, {
+            color: data.tf?.online ? "#42e7a8" : "#8a97a6",
+            label: [
+                `实际 N ${numberText(north, 2)}  E ${numberText(east, 2)}`,
+                annotation,
+            ].filter(Boolean).join(" · "),
+        });
     }
 
     const scaleDistance = niceDistance(110 / scale);
@@ -657,13 +741,20 @@ function drawXYMap(data) {
     ctx.fillText("X / North →", 0, 0);
     ctx.restore();
 
+    const notices = [];
     if (!data.tf?.online) {
-        ctx.fillStyle = "rgba(7, 12, 19, 0.45)";
-        ctx.fillRect(0, 0, width, height);
-        ctx.fillStyle = "#ff9aa6";
-        ctx.font = "bold 13px Microsoft YaHei, sans-serif";
+        notices.push(`实际位姿：${snapshotAnnotation(data.tf)}`);
+    }
+    if (!data.pose_command?.online) {
+        notices.push(`目标位姿：${snapshotAnnotation(data.pose_command)}`);
+    }
+    if (notices.length) {
+        ctx.fillStyle = "rgba(7, 17, 29, 0.82)";
+        ctx.fillRect(0, 0, width, 25);
+        ctx.fillStyle = "#aeb9c5";
+        ctx.font = "bold 11px Microsoft YaHei, sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText("TF 位姿无效或已超时", width / 2, 18);
+        ctx.fillText(notices.join("；"), width / 2, 7);
         ctx.textAlign = "left";
     }
 }
@@ -676,8 +767,8 @@ function drawZAxis(data) {
     ctx.fillStyle = "#07111d";
     ctx.fillRect(0, 0, width, height);
 
-    const scale = dashboardState.mapScale;
-    const centerY = height / 2;
+    const scale = dashboardState.zScale;
+    const centerY = height / 2 + dashboardState.zPanY;
     const axisX = width * 0.48;
     const step = niceDistance(55 / scale);
     const minZ = -centerY / scale;
@@ -713,41 +804,84 @@ function drawZAxis(data) {
         );
     }
 
-    ctx.globalAlpha = 0.25;
-    ctx.strokeStyle = "#23c6f4";
-    ctx.lineWidth = 1;
-    dashboardState.trajectory.forEach((point) => {
-        const screenY = centerY + point.z * scale;
-        if (screenY >= 0 && screenY <= height) {
-            ctx.beginPath();
-            ctx.moveTo(axisX - 15, screenY);
-            ctx.lineTo(axisX + 15, screenY);
-            ctx.stroke();
-        }
-    });
-    ctx.globalAlpha = 1;
+    const drawDepthMarker = (
+        z,
+        label,
+        color,
+        annotation,
+        dashed = false,
+        labelBelow = false,
+    ) => {
+        if (z === null) return;
 
-    const z = finiteNumber(data.tf?.data?.position_m?.z);
-    if (z !== null) {
         const screenY = centerY + z * scale;
         const clampedY = Math.max(12, Math.min(height - 12, screenY));
-        ctx.strokeStyle = data.tf?.online ? "#42e7a8" : "#8a97a6";
+        ctx.save();
+        ctx.strokeStyle = color;
         ctx.fillStyle = ctx.strokeStyle;
-        ctx.lineWidth = 3;
+        ctx.lineWidth = dashed ? 2.4 : 3;
+        if (dashed) ctx.setLineDash([6, 4]);
         ctx.beginPath();
-        ctx.moveTo(8, clampedY);
-        ctx.lineTo(width - 6, clampedY);
+        if (dashed) {
+            ctx.moveTo(axisX + 2, clampedY);
+            ctx.lineTo(width - 7, clampedY);
+        } else {
+            ctx.moveTo(7, clampedY);
+            ctx.lineTo(axisX - 2, clampedY);
+        }
         ctx.stroke();
+        ctx.setLineDash([]);
         ctx.beginPath();
-        ctx.moveTo(8, clampedY);
-        ctx.lineTo(17, clampedY - 6);
-        ctx.lineTo(17, clampedY + 6);
+        if (dashed) {
+            ctx.moveTo(width - 7, clampedY);
+            ctx.lineTo(width - 16, clampedY - 6);
+            ctx.lineTo(width - 16, clampedY + 6);
+        } else {
+            ctx.moveTo(7, clampedY);
+            ctx.lineTo(16, clampedY - 6);
+            ctx.lineTo(16, clampedY + 6);
+        }
         ctx.closePath();
         ctx.fill();
-        ctx.fillStyle = "#e4f1fb";
-        ctx.font = "bold 10px Consolas, monospace";
-        ctx.fillText(`Z ${numberText(z, 2)}`, 4, Math.max(2, clampedY - 19));
-    }
+        ctx.fillStyle = color;
+        ctx.font = "bold 10px Microsoft YaHei, Consolas, monospace";
+        const text = `${label} ${numberText(z, 2, " m")}`;
+        const labelY = labelBelow
+            ? Math.min(height - 15, clampedY + 7)
+            : Math.max(2, clampedY - 19);
+        ctx.fillText(text, 4, labelY);
+        if (annotation) {
+            ctx.font = "9px Microsoft YaHei, Consolas, monospace";
+            ctx.fillText(
+                annotation,
+                4,
+                labelBelow
+                    ? Math.min(height - 12, labelY + 12)
+                    : Math.max(2, labelY - 11),
+            );
+        }
+        ctx.restore();
+    };
+
+    const targetZ = finiteNumber(
+        data.pose_command?.data?.target?.position_m?.z,
+    );
+    drawDepthMarker(
+        targetZ,
+        "目标",
+        data.pose_command?.online ? "#ff62cf" : "#7f8994",
+        snapshotAnnotation(data.pose_command),
+        true,
+        true,
+    );
+
+    const actualZ = finiteNumber(data.tf?.data?.position_m?.z);
+    drawDepthMarker(
+        actualZ,
+        "实际",
+        data.tf?.online ? "#42e7a8" : "#8a97a6",
+        snapshotAnnotation(data.tf),
+    );
 
     ctx.fillStyle = "#8fb4ce";
     ctx.font = "bold 10px Microsoft YaHei, sans-serif";
@@ -767,9 +901,8 @@ function drawHeading(data) {
     const centerX = width / 2;
     const centerY = height / 2;
     const radius = Math.max(25, Math.min(width, height) * 0.39);
-    const actual = data.attitude?.actual;
-    const target = data.attitude?.target;
-    const heading = finiteNumber(actual?.heading_deg);
+    const tfOrientation = data.tf?.data?.orientation_deg || {};
+    const heading = finiteNumber(tfOrientation.heading_deg);
 
     ctx.strokeStyle = "#42617b";
     ctx.lineWidth = 2;
@@ -816,7 +949,7 @@ function drawHeading(data) {
         const radians = heading * Math.PI / 180;
         const tipX = centerX + Math.sin(radians) * (radius - 13);
         const tipY = centerY - Math.cos(radians) * (radius - 13);
-        ctx.strokeStyle = data.attitude?.valid ? "#42e7a8" : "#8795a3";
+        ctx.strokeStyle = data.tf?.online ? "#42e7a8" : "#8795a3";
         ctx.lineWidth = 4;
         ctx.beginPath();
         ctx.moveTo(centerX, centerY);
@@ -828,29 +961,11 @@ function drawHeading(data) {
         ctx.fill();
     }
 
-    if (target?.valid && finiteNumber(target.heading_deg) !== null) {
-        const radians = Number(target.heading_deg) * Math.PI / 180;
-        const markerRadius = radius + 1;
-        const markerX = centerX + Math.sin(radians) * markerRadius;
-        const markerY = centerY - Math.cos(radians) * markerRadius;
-        ctx.save();
-        ctx.translate(markerX, markerY);
-        ctx.rotate(-radians);
-        ctx.fillStyle = "#ff62cf";
-        ctx.beginPath();
-        ctx.moveTo(0, 8);
-        ctx.lineTo(-6, -5);
-        ctx.lineTo(6, -5);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-    }
-
     ctx.fillStyle = "#eaf5fc";
     ctx.font = "bold 15px Consolas, monospace";
     ctx.fillText(numberText(heading, 1, "°"), centerX, centerY + radius * 0.48);
 
-    if (!data.attitude?.valid) {
+    if (!data.tf?.online) {
         ctx.fillStyle = "rgba(42, 48, 55, 0.68)";
         ctx.fillRect(0, 0, width, height);
         ctx.fillStyle = "#d6dce2";
@@ -859,10 +974,9 @@ function drawHeading(data) {
     }
 
     document.getElementById("heading-readout").textContent = [
-        `实际 ${numberText(heading, 1, "°")}`,
-        `目标 ${target?.valid ? numberText(target.heading_deg, 1, "°") : "--"}`,
-        `误差 ${numberText(data.attitude?.heading_error_deg, 1, "°")}`,
-    ].join(" · ");
+        `TF Heading ${numberText(heading, 1, "°")}`,
+        snapshotAnnotation(data.tf),
+    ].filter(Boolean).join(" · ");
 }
 
 
@@ -876,9 +990,9 @@ function drawHorizon(data) {
     const centerX = width / 2;
     const centerY = height / 2;
     const radius = Math.max(24, Math.min(width, height) * 0.41);
-    const actual = data.attitude?.actual || {};
-    const roll = finiteNumber(actual.roll_deg);
-    const pitch = finiteNumber(actual.pitch_deg);
+    const tfOrientation = data.tf?.data?.orientation_deg || {};
+    const roll = finiteNumber(tfOrientation.roll_deg);
+    const pitch = finiteNumber(tfOrientation.pitch_deg);
     const drawRoll = roll ?? 0;
     const drawPitch = Math.max(-45, Math.min(45, pitch ?? 0));
     const pixelsPerDegree = radius / 30;
@@ -946,7 +1060,7 @@ function drawHorizon(data) {
     ctx.fillStyle = "#ffe07a";
     ctx.fill();
 
-    if (!data.attitude?.valid) {
+    if (!data.tf?.online) {
         ctx.fillStyle = "rgba(42, 48, 55, 0.70)";
         ctx.beginPath();
         ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
@@ -987,15 +1101,12 @@ function renderDashboard(data) {
     ready.textContent = data.ready ? "坐标系已就绪" : "坐标系未就绪";
     ready.className = `ready-label ${data.ready ? "online" : "offline"}`;
 
-    renderPoseStatus(data);
-    renderVelocityStatus(data);
-    renderPoseCommand(data);
+    renderCoreStatus(data);
     renderMotionState(data);
     renderActuatorStatus(data);
     renderPowerStatus(data);
     renderSystemStatus(data);
 
-    updateTrajectory(data);
     drawNavigation(data);
 }
 
@@ -1019,6 +1130,7 @@ async function refreshStatus() {
 
 function configureMapInteraction() {
     const canvas = document.getElementById("xy-canvas");
+    const zCanvas = document.getElementById("z-canvas");
 
     canvas.addEventListener("wheel", (event) => {
         event.preventDefault();
@@ -1036,6 +1148,7 @@ function configureMapInteraction() {
         dashboardState.dragStartY = event.clientY;
         dashboardState.dragPanX = dashboardState.mapPanX;
         dashboardState.dragPanY = dashboardState.mapPanY;
+        canvas.classList.add("is-dragging");
         canvas.setPointerCapture(event.pointerId);
     });
 
@@ -1056,6 +1169,7 @@ function configureMapInteraction() {
 
     const stopDragging = (event) => {
         dashboardState.dragging = false;
+        canvas.classList.remove("is-dragging");
         if (canvas.hasPointerCapture(event.pointerId)) {
             canvas.releasePointerCapture(event.pointerId);
         }
@@ -1063,16 +1177,65 @@ function configureMapInteraction() {
     canvas.addEventListener("pointerup", stopDragging);
     canvas.addEventListener("pointercancel", stopDragging);
 
-    document.getElementById("clear-trajectory").addEventListener("click", () => {
-        dashboardState.trajectory = [];
-        dashboardState.lastTrackStamp = null;
-        if (dashboardState.status) drawNavigation(dashboardState.status);
+    zCanvas.addEventListener("wheel", (event) => {
+        event.preventDefault();
+        const factor = Math.exp(-event.deltaY * 0.0012);
+        const previousScale = dashboardState.zScale;
+        const nextScale = Math.max(
+            4,
+            Math.min(420, previousScale * factor),
+        );
+        const rect = zCanvas.getBoundingClientRect();
+        const pointerY = event.clientY - rect.top;
+        const previousCenterY = rect.height / 2 + dashboardState.zPanY;
+        const pointerDepth = (
+            (pointerY - previousCenterY)
+            / previousScale
+        );
+
+        dashboardState.zScale = nextScale;
+        dashboardState.zPanY = (
+            pointerY
+            - pointerDepth * nextScale
+            - rect.height / 2
+        );
+        if (dashboardState.status) drawZAxis(dashboardState.status);
+    }, {passive: false});
+
+    zCanvas.addEventListener("pointerdown", (event) => {
+        dashboardState.zDragging = true;
+        dashboardState.zDragStartY = event.clientY;
+        dashboardState.zDragPanY = dashboardState.zPanY;
+        zCanvas.classList.add("is-dragging");
+        zCanvas.setPointerCapture(event.pointerId);
     });
+
+    zCanvas.addEventListener("pointermove", (event) => {
+        if (!dashboardState.zDragging) return;
+        dashboardState.zPanY = (
+            dashboardState.zDragPanY
+            + event.clientY
+            - dashboardState.zDragStartY
+        );
+        if (dashboardState.status) drawZAxis(dashboardState.status);
+    });
+
+    const stopZDragging = (event) => {
+        dashboardState.zDragging = false;
+        zCanvas.classList.remove("is-dragging");
+        if (zCanvas.hasPointerCapture(event.pointerId)) {
+            zCanvas.releasePointerCapture(event.pointerId);
+        }
+    };
+    zCanvas.addEventListener("pointerup", stopZDragging);
+    zCanvas.addEventListener("pointercancel", stopZDragging);
 
     document.getElementById("reset-map").addEventListener("click", () => {
         dashboardState.mapScale = 20;
         dashboardState.mapPanX = 0;
         dashboardState.mapPanY = 0;
+        dashboardState.zScale = 20;
+        dashboardState.zPanY = 0;
         if (dashboardState.status) drawNavigation(dashboardState.status);
     });
 }

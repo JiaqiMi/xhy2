@@ -4,9 +4,20 @@
 
 - `motion_supervisor` 是原型运行时 `/cmd/pose/ned` 的唯一发布者。
 - 运动和刹停使用 `mode=2`：下位机保持目标深度，上位机仅输出 `TX、TY、MZ`。
-- 到达目标位置后先调整最终航向；最终刹停连续稳定后立即使用 `mode=4`，
-  六轴外部力清零并将完整 target 位姿交给下位机定点。
-- 输出目标深度始终使用 launch 的 `target_z`，默认值为 `-0.6 m`；该参数是 NED/map 下的绝对 z。
+- 到达目标位置后先调整最终航向；最终刹停连续稳定后进入 `CAPTURE`，
+  使用 `mode=4`、六轴外部力清零并等待下位机定点接管反馈。
+- 只有 `/status/auv.control_mode==4` 后才进入 `HOVER`。因此任务节点可以
+  将 5 Hz `/motion/state.state==HOVER` 作为“目标到达且定点接管完成”。
+- 运动管理器的目标深度使用每条 `/cmd/motion/goal` 中的 z；launch 的
+  `target_z` 仅用于 `motion_goal_test` 生成测试目标。
+- 平移阶段保持开始运动时的当前航向，通过 `TX/TY` 接近并刹停到目标位置，
+  不再先朝向目标点；进入位置范围后才调整最终 yaw。
+- 任务以 5 Hz 连续更新目标时，新旧目标变化不超过 `0.5 m/30°` 直接跟踪，
+  超过阈值则先刹停，再切换到最新目标。
+  - 运动过程中小幅更新直接替换当前目标，不改变当前运动状态；
+  - 定点过程中小幅位置更新不刹停，直接退回 `TRANSLATE`；
+  - 定点过程中仅航向小幅更新不刹停，直接进入 `ALIGN_FINAL`；
+  - 大幅更新保存为待切换目标，`TRANSLATE_BRAKE` 停稳后执行最新值。
 - 本原型不修改 `task1～task4`，也不包含下位机 PID 重置逻辑。
 
 ## 话题
@@ -19,6 +30,10 @@
 | 输入 | `/status/auv`        | `auv_control/AUVData`        | 下位机模式反馈           |
 | 输出 | `/cmd/pose/ned`      | `auv_control/PoseNEDcmd`     | 唯一运动控制输出         |
 | 输出 | `/motion/state`      | `auv_control/MotionState`    | 状态、误差、速度和输出力 |
+
+面向任务节点的完整调用约定、状态含义和指令示例见：
+
+- [运动管理器任务节点接口](motion_supervisor_task_interface.md)
 
 ## 启动
 
@@ -46,12 +61,52 @@ roslaunch auv_control motion_supervisor_prototype.launch \
 测试节点启动后读取初始 `map -> base_link` 位姿。`offset_frame=base_link`
 时，`offset_x/offset_y` 分别表示初始艇体坐标系下的前/右偏置；
 设置为 `map` 时表示北/东偏置。目标航向为初始航向加
-`yaw_offset_deg`，目标 z 使用 `target_z` 指定的绝对值。
+`yaw_offset_deg`，测试目标 z 使用 `target_z` 指定的绝对值。
 
 观察状态：
 
 ```bash
 rostopic echo /motion/state
+```
+
+## 完整数据日志
+
+`motion_supervisor` 默认以控制频率每周期记录一行 CSV。启动终端会打印
+本次文件的绝对路径，默认目录为：
+
+```text
+~/.ros/auv_logs/motion_supervisor/
+```
+
+在当前车载机用户 `xhy` 下通常对应：
+
+```text
+/home/xhy/.ros/auv_logs/motion_supervisor/
+```
+
+文件名格式为 `motion_supervisor_YYYYMMDD_HHMMSS_ffffff.csv`。记录内容包括：
+
+- 当前与目标 `x/y/z/yaw`；
+- map/NED 水平误差、base_link 前/右误差和深度误差；
+- `/status/vel` 原始及低通后的 `u/v/r`；
+- 状态编号、状态名称、切换原因和反馈新鲜度；
+- TF、速度和模式反馈年龄；
+- 下位机反馈模式、当前命令模式、目标序号及待切换目标标志；
+- 每周期实际下发的 `TX/TY/MZ`。
+
+相关参数：
+
+```yaml
+log_enabled: true
+log_directory: ~/.ros/auv_logs/motion_supervisor
+log_flush_every: 5
+```
+
+CSV 用于快速复盘控制过程，正式水池试验仍建议同时录制 rosbag：
+
+```bash
+rosbag record -O brake_YYYYMMDD_HHMMSS \
+  /status/vel /status/auv /cmd/pose/ned /motion/state /tf /tf_static
 ```
 
 取消运动并在停稳位置悬停：
@@ -129,3 +184,32 @@ brake_force_slew_per_cycle: 10000.0
 ```
 
 当前 TX 正向刹车尚无完整的反向运动—停稳样本，暂时使用 `2000` 和 `0.05 m/s²`。后续补测后只需更新 `brake_max_tx_positive` 与 `brake_acceleration_tx_positive`。
+
+## 2026-07-17 入水日志修正
+
+1.5 m 前进测试中，`TX=2000` 对应最高约 `0.20 m/s`，主动刹车实测
+纵向减速度约 `0.10 m/s²`。90° 转向测试表明，`MZ=2000` 会产生约
+`16 deg/s` 的角速度，按实际刹转过程估算的有效角减速度约为
+`0.10 rad/s²`。当前首轮安全参数为：
+
+```yaml
+max_tx: 2000.0
+max_ty: 2000.0
+max_mz: 1000.0
+brake_acceleration_tx_positive: 0.10
+brake_acceleration_tx_negative: 0.10
+brake_acceleration_ty_positive: 0.05
+brake_acceleration_ty_negative: 0.05
+angular_brake_acceleration_mz_positive: 0.10
+angular_brake_acceleration_mz_negative: 0.10
+brake_min_mz: 100.0
+```
+
+停车距离只在某轴的误差或速度达到主轴的 20% 时才纳入该轴，避免微小
+横向分量使纯前进测试错误采用较小的 TY 减速度。切换和保持 `mode=4`
+时增加以下保护：
+
+- 进入定点前必须位于 `capture_radius` 内；
+- 定点后位置误差超过 `capture_exit_radius` 时退回刹停；
+- 定点后航向误差超过 `10°` 或角速度超过 `2 deg/s` 时退回刹停；
+- 角速度超过停稳阈值时，航向刹车力矩绝对值不低于 `100`。
