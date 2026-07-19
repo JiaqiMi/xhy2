@@ -80,8 +80,13 @@
     <arg name="yaw_brake_margin_deg" default="3.0" />
     <!-- 超过角速度阈值时的最小有效刹转 MZ。 -->
     <arg name="minimum_brake_mz" default="100.0" />
-    <!-- 单个自由旋转段 IMU 点最大允许平面漂移，单位 m，超限立即接管。 -->
+    <!--
+      单个自由旋转段 IMU 点平面漂移告警半径，单位 m。超限只告警，不中止旋转；
+      每段完成 90° 后仍切入 mode=4，返回全程锁定的初始位置。
+      drift_abort_radius 仅保留为旧启动命令的兼容别名。
+    -->
     <arg name="drift_abort_radius" default="0.75" />
+    <arg name="drift_warning_radius" default="$(arg drift_abort_radius)" />
     <!--
       TRACK 阶段进入拟合样本的最低角速度，单位 deg/s。
       BRAKE 阶段即使 MZ 反号也不参与另一计划方向中心的拟合。
@@ -156,8 +161,8 @@
         <param name="yaw_brake_margin_deg"
                value="$(arg yaw_brake_margin_deg)" />
         <param name="minimum_brake_mz" value="$(arg minimum_brake_mz)" />
-        <param name="drift_abort_radius"
-               value="$(arg drift_abort_radius)" />
+        <param name="drift_warning_radius"
+               value="$(arg drift_warning_radius)" />
         <param name="sample_min_yaw_rate_deg_s"
                value="$(arg sample_min_yaw_rate_deg_s)" />
         <param name="max_yaw_rate_deg_s"

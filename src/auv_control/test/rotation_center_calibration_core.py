@@ -22,6 +22,10 @@
     正负计划旋转方向分别拟合独立旋转中心，不再强制共享同一杆臂。
 2026.7.19
     增加低、中、高三档不对称 MZ 配置和分档结果推荐算法。
+2026.7.19
+    将旋转漂移半径改为告警判定，不再因平移漂移中止 90° 旋转。
+2026.7.19
+    固定档位 MZ 仅用于首次接近目标；越过目标后锁存 RECOVER，使用闭环指令刹停。
 """
 
 from __future__ import division
@@ -159,6 +163,50 @@ def fixed_track_command(
     return int(round(command_sign * magnitude))
 
 
+def apply_fixed_track_policy(
+        command_mz,
+        controller_phase,
+        yaw_error,
+        direction,
+        target_crossed,
+        mz_to_yaw_sign,
+        positive_limit,
+        negative_limit):
+    """首次接近目标时使用固定 MZ，越过目标后保留闭环恢复指令。"""
+    values = (
+        command_mz,
+        yaw_error,
+        direction,
+        mz_to_yaw_sign,
+        positive_limit,
+        negative_limit,
+    )
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError('固定 TRACK 策略参数必须为有限值')
+    if abs(float(direction)) < 1e-9:
+        raise ValueError('计划旋转方向不能为 0')
+
+    crossed = (
+        bool(target_crossed)
+        or float(direction) * float(yaw_error) <= 0.0
+    )
+    phase = str(controller_phase)
+    if phase != 'TRACK':
+        return int(round(float(command_mz))), phase, crossed
+    if crossed:
+        return int(round(float(command_mz))), 'RECOVER', True
+    return (
+        fixed_track_command(
+            direction,
+            mz_to_yaw_sign,
+            positive_limit,
+            negative_limit,
+        ),
+        'TRACK',
+        False,
+    )
+
+
 def rotation_is_unexpectedly_moving_away(
         yaw_error, yaw_rate, direction, yaw_rate_threshold):
     """判断目标尚未越过时是否持续向目标反方向旋转。"""
@@ -172,6 +220,16 @@ def rotation_is_unexpectedly_moving_away(
         and float(yaw_error) * float(yaw_rate) < 0.0
         and abs(float(yaw_rate)) > float(yaw_rate_threshold)
     )
+
+
+def drift_exceeds_warning_threshold(drift, warning_radius):
+    """判断自由旋转漂移是否超过只用于记录的告警半径。"""
+    values = (drift, warning_radius)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError('旋转漂移告警参数必须为有限值')
+    if float(drift) < 0.0 or float(warning_radius) <= 0.0:
+        raise ValueError('旋转漂移必须非负，告警半径必须为正数')
+    return float(drift) > float(warning_radius)
 
 
 def locked_handover_is_stable(

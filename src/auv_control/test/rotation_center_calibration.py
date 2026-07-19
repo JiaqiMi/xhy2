@@ -34,6 +34,10 @@
     最低角速度的样本，主动刹转样本不混入计划方向中心。
 2026.7.19
     增加低、中、高三档不对称 MZ 自动序列、分档统计拟合及推荐中心输出。
+2026.7.19
+    取消自由旋转漂移超限中止；漂移只记录告警，完成 90° 后仍返回全程锁定的初始位置。
+2026.7.19
+    修复越过目标后低速阶段重新输出原方向固定 MZ 的问题；改为闭环恢复并正确刹停。
 """
 
 from __future__ import division
@@ -60,11 +64,12 @@ if TEST_DIR not in sys.path:
 
 from rotation_center_calibration_core import (  # noqa: E402
     CalibrationSample,
+    apply_fixed_track_policy,
     build_torque_profiles,
     direct_yaw_command,
+    drift_exceeds_warning_threshold,
     fit_planned_direction_centers,
     fit_quality_score,
-    fixed_track_command,
     locked_handover_is_stable,
     rotation_is_unexpectedly_moving_away,
     select_recommended_profile,
@@ -229,8 +234,10 @@ class RotationCenterCalibration(object):
             rospy.get_param('~yaw_brake_margin_deg', 3.0)))
         self.minimum_brake_mz = float(
             rospy.get_param('~minimum_brake_mz', 100.0))
-        self.drift_abort_radius = float(
-            rospy.get_param('~drift_abort_radius', 0.75))
+        legacy_drift_radius = rospy.get_param(
+            '~drift_abort_radius', 0.75)
+        self.drift_warning_radius = float(rospy.get_param(
+            '~drift_warning_radius', legacy_drift_radius))
         self.sample_min_yaw_rate = math.radians(float(
             rospy.get_param('~sample_min_yaw_rate_deg_s', 1.0)))
         self.max_yaw_rate = math.radians(float(
@@ -274,7 +281,7 @@ class RotationCenterCalibration(object):
             self.control_delay,
             self.brake_margin,
             self.minimum_brake_mz,
-            self.drift_abort_radius,
+            self.drift_warning_radius,
             self.sample_min_yaw_rate,
             self.max_yaw_rate,
             self.moving_away_timeout,
@@ -301,7 +308,7 @@ class RotationCenterCalibration(object):
                 or self.stable_frames <= 0
                 or self.handover_position_tolerance <= 0.0
                 or not 0.0 < self.velocity_filter_alpha <= 1.0
-                or self.drift_abort_radius <= 0.0
+                or self.drift_warning_radius <= 0.0
                 or self.max_yaw_rate <= 0.0
                 or self.moving_away_timeout <= 0.0
                 or self.preferred_profile not in tuple(
@@ -687,6 +694,7 @@ class RotationCenterCalibration(object):
         target_unwrapped = (
             segment_start_yaw + direction * self.turn_step)
         stable_count = 0
+        target_crossed = False
         moving_away_started_at = None
         deadline = rospy.Time.now() + rospy.Duration(self.step_timeout)
         rate = rospy.Rate(self.control_rate_hz)
@@ -716,10 +724,19 @@ class RotationCenterCalibration(object):
                 imu_position[0] - segment_start_position[0],
                 imu_position[1] - segment_start_position[1],
             )
-            if drift > self.drift_abort_radius:
-                raise RuntimeError(
-                    '自由旋转段 {} IMU 漂移 {:.2f} m，超过安全阈值 {:.2f} m'.format(
-                        segment, drift, self.drift_abort_radius))
+            if drift_exceeds_warning_threshold(
+                    drift, self.drift_warning_radius):
+                # 漂移不再中止旋转，否则异常接管会锁定漂移后的当前位置。
+                # 继续完成本段 90°，随后由 SEGMENT_HOLD 返回全程初始位置。
+                rospy.logwarn_throttle(
+                    2.0,
+                    '%s: 自由旋转段 %d IMU 漂移 %.2f m，超过告警半径 '
+                    '%.2f m；继续完成 90°，随后返回锁定初始位置',
+                    NODE_NAME,
+                    segment,
+                    drift,
+                    self.drift_warning_radius,
+                )
             yaw_rate = (
                 self.yaw_rate_feedback_sign * self.filtered_velocity[2])
             yaw_error = target_unwrapped - self.unwrapped_yaw
@@ -752,15 +769,18 @@ class RotationCenterCalibration(object):
                     self.mz_to_yaw_sign,
                 )
             )
-            if controller_phase == 'TRACK':
-                # 三档对比要求 TRACK 使用确定的固定 MZ；停车距离判定、
-                # BRAKE 反向力矩和 HOLD 条件仍由同一控制器负责。
-                command_mz = fixed_track_command(
+            command_mz, controller_phase, target_crossed = (
+                apply_fixed_track_policy(
+                    command_mz,
+                    controller_phase,
+                    yaw_error,
                     direction,
+                    target_crossed,
                     self.mz_to_yaw_sign,
                     profile.positive_limit,
                     profile.negative_limit,
                 )
+            )
             moving_away = rotation_is_unexpectedly_moving_away(
                 yaw_error,
                 yaw_rate,

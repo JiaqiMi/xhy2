@@ -17,6 +17,10 @@
     验证正负计划方向可拟合不同旋转中心。
 2026.7.19
     验证低、中、高不对称力矩档位和优先中速的推荐策略。
+2026.7.19
+    验证旋转漂移超过半径时只产生告警判定，不中止后续定点接管流程。
+2026.7.19
+    回归验证越过 90° 目标后不再恢复原方向固定 MZ，而是使用闭环指令刹停。
 """
 
 import math
@@ -31,8 +35,10 @@ if TEST_DIR not in sys.path:
 
 from rotation_center_calibration_core import (  # noqa: E402
     CalibrationSample,
+    apply_fixed_track_policy,
     build_torque_profiles,
     direct_yaw_command,
+    drift_exceeds_warning_threshold,
     fixed_track_command,
     fit_planned_direction_centers,
     fit_segmented_rotation_center,
@@ -76,6 +82,51 @@ class RotationCenterCalibrationCoreTest(unittest.TestCase):
             fixed_track_command(-1, 1.0, 1000.0, 1500.0), -1500)
         self.assertEqual(
             fixed_track_command(1, -1.0, 1000.0, 1500.0), -1500)
+
+    def test_fixed_track_is_latched_off_after_crossing_target(self):
+        command, phase, crossed = apply_fixed_track_policy(
+            command_mz=600,
+            controller_phase='TRACK',
+            yaw_error=math.radians(30.0),
+            direction=1,
+            target_crossed=False,
+            mz_to_yaw_sign=1.0,
+            positive_limit=1000.0,
+            negative_limit=1500.0,
+        )
+        self.assertEqual((command, phase, crossed), (1000, 'TRACK', False))
+
+        closed_loop_command, closed_loop_phase, unused_stop = self.command(
+            math.radians(-24.0), math.radians(0.4))
+        self.assertEqual(closed_loop_phase, 'TRACK')
+        self.assertLess(closed_loop_command, 0)
+        command, phase, crossed = apply_fixed_track_policy(
+            command_mz=closed_loop_command,
+            controller_phase=closed_loop_phase,
+            yaw_error=math.radians(-24.0),
+            direction=1,
+            target_crossed=crossed,
+            mz_to_yaw_sign=1.0,
+            positive_limit=1000.0,
+            negative_limit=1500.0,
+        )
+        self.assertEqual(
+            (command, phase, crossed),
+            (closed_loop_command, 'RECOVER', True),
+        )
+
+        command, phase, crossed = apply_fixed_track_policy(
+            command_mz=420,
+            controller_phase='TRACK',
+            yaw_error=math.radians(4.0),
+            direction=1,
+            target_crossed=crossed,
+            mz_to_yaw_sign=1.0,
+            positive_limit=1000.0,
+            negative_limit=1500.0,
+        )
+        self.assertEqual(
+            (command, phase, crossed), (420, 'RECOVER', True))
 
     def test_recommendation_prefers_medium_when_quality_is_close(self):
         results = {
@@ -164,6 +215,16 @@ class RotationCenterCalibrationCoreTest(unittest.TestCase):
             1,
             math.radians(0.5),
         ))
+
+    def test_large_rotation_drift_only_triggers_warning(self):
+        self.assertFalse(drift_exceeds_warning_threshold(0.75, 0.75))
+        self.assertTrue(drift_exceeds_warning_threshold(0.90, 0.75))
+        for drift, warning_radius in (
+                (-0.01, 0.75),
+                (0.50, 0.0)):
+            with self.assertRaises(ValueError):
+                drift_exceeds_warning_threshold(
+                    drift, warning_radius)
 
     def test_locked_handover_requires_all_conditions(self):
         arguments = dict(
