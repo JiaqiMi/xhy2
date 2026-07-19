@@ -539,11 +539,17 @@ class MotionSupervisorCore(object):
             margin,
         )
 
+    def _axis_track_command(self, axis_name, error, velocity):
+        """计算水平轴 TRACK 输出，不执行单轴捕获状态切换。"""
+        kp_prefix = 'kp_' + axis_name
+        kv_prefix = 'kv_' + axis_name
+        kp = self._motion_parameter(kp_prefix, error)
+        kv = self._motion_parameter(kv_prefix, error)
+        return kp * error - kv * velocity
+
     def _axis_control(self, axis_name, state, error, velocity):
         """推进单个水平轴的 TRACK、BRAKE、HOLD 子状态。"""
         force_prefix = 'tx' if axis_name == 'x' else 'ty'
-        kp_prefix = 'kp_' + axis_name
-        kv_prefix = 'kv_' + axis_name
         threshold = self.parameters['horizontal_speed_threshold']
         capture = self.parameters['capture_radius']
         stop_distance = self._axis_stop_distance(
@@ -579,9 +585,11 @@ class MotionSupervisorCore(object):
             state = AXIS_BRAKE
 
         if state == AXIS_TRACK:
-            kp = self._motion_parameter(kp_prefix, error)
-            kv = self._motion_parameter(kv_prefix, error)
-            return state, kp * error - kv * velocity, False
+            return (
+                state,
+                self._axis_track_command(axis_name, error, velocity),
+                False,
+            )
         if state == AXIS_BRAKE:
             return (
                 state,
@@ -832,16 +840,24 @@ class MotionSupervisorCore(object):
                 vehicle.lateral_velocity,
             )
 
+            if distance > self.parameters['capture_radius']:
+                # 二维距离在捕获区外时，不能忽略已经进入 HOLD 的另一轴。
+                # 两轴都保持闭环，可用较小的反馈输出抑制推进耦合造成的漂移。
+                if self.x_axis_state == AXIS_HOLD:
+                    self.x_axis_state = AXIS_TRACK
+                    tx = self._axis_track_command(
+                        'x', error_x, vehicle.forward_velocity)
+                    x_braking = False
+                if self.y_axis_state == AXIS_HOLD:
+                    self.y_axis_state = AXIS_TRACK
+                    ty = self._axis_track_command(
+                        'y', error_y, vehicle.lateral_velocity)
+                    y_braking = False
+
             axes_hold = (
                 self.x_axis_state == AXIS_HOLD
                 and self.y_axis_state == AXIS_HOLD
             )
-            if axes_hold and distance > self.parameters['capture_radius']:
-                if abs(error_x) >= abs(error_y):
-                    self.x_axis_state = AXIS_TRACK
-                else:
-                    self.y_axis_state = AXIS_TRACK
-                axes_hold = False
 
             if axes_hold:
                 self.yaw_axis_state = AXIS_HOLD

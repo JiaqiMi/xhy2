@@ -26,6 +26,8 @@
     验证水平轴独立切换、方向参数和最终转向时 control_link 位置保持。
 2026.7.19
     验证计划旋转方向选择和刹转阶段方向锁存。
+2026.7.19
+    验证二维距离超限时 X/Y 两轴持续闭环并抑制耦合漂移。
 """
 
 import math
@@ -395,6 +397,31 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.y_axis_state, AXIS_TRACK)
         self.assertLess(output.tx, 0)
         self.assertGreater(output.ty, 0)
+
+    def test_two_axis_capture_conflict_tracks_both_axes(self):
+        cases = (
+            (MotionGoal(0.1478, 0.0435, -0.6, 0.0), 'x'),
+            (MotionGoal(0.0435, 0.1478, -0.6, 0.0), 'y'),
+        )
+        for goal, recovery_axis in cases:
+            core = MotionSupervisorCore(self.parameters)
+            core.goal = goal
+            core.state = TRANSLATE
+            core.translation_yaw = 0.0
+            core.x_axis_state = AXIS_HOLD
+            core.y_axis_state = AXIS_HOLD
+
+            for unused_cycle in range(2):
+                output = core.step(self.vehicle())
+                self.assertEqual(output.state, TRANSLATE)
+                self.assertEqual(output.x_axis_state, AXIS_TRACK)
+                self.assertEqual(output.y_axis_state, AXIS_TRACK)
+                self.assertGreater(output.tx, 0)
+                self.assertGreater(output.ty, 0)
+                if recovery_axis == 'x':
+                    self.assertGreater(output.tx, output.ty)
+                else:
+                    self.assertGreater(output.ty, output.tx)
 
     def test_directional_motion_gains_and_limits_are_independent(self):
         core = MotionSupervisorCore({

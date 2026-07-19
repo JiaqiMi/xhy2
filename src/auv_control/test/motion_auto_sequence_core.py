@@ -13,6 +13,8 @@
 记录：
 2026.7.18
     新增 X、Y、Yaw 单轴自动往返测试的纯算法工具。
+2026.7.19
+    增加 X/Y 刹停方向分类、实际位置验收和零输出停滞判据。
 """
 
 from __future__ import division
@@ -22,6 +24,15 @@ from collections import namedtuple
 
 
 SUPPORTED_AXES = ('x', 'y', 'yaw')
+MOTION_DIRECTIONS = {
+    'positive': 1.0,
+    'return_after_positive': -1.0,
+    'negative': -1.0,
+    'return_after_negative': 1.0,
+}
+EARLY_STOP = 'EARLY_STOP'
+OVERSHOOT = 'OVERSHOOT'
+ON_TARGET = 'ON_TARGET'
 SequenceStep = namedtuple(
     'SequenceStep',
     ('index', 'axis', 'magnitude', 'repetition', 'phase', 'offset'),
@@ -71,6 +82,60 @@ def build_axis_sequence(axis, magnitudes, repetitions=3):
                     sign * magnitude,
                 ))
     return steps
+
+
+def step_motion_direction(phase):
+    """返回动作沿锁定测试轴的运动方向，正向为 1，负向为 -1。"""
+    try:
+        return MOTION_DIRECTIONS[str(phase)]
+    except KeyError:
+        raise ValueError('不支持的动作阶段: {}'.format(phase))
+
+
+def signed_axis_stop_error(axis_position, target_offset, phase):
+    """计算有符号轴向刹停误差：负值提前停下，正值表示超调。"""
+    values = (axis_position, target_offset)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError('轴向位置和目标偏移必须为有限值')
+    return step_motion_direction(phase) * (
+        float(axis_position) - float(target_offset))
+
+
+def classify_signed_stop_error(signed_error, tolerance=0.005):
+    """按有符号轴向误差分类刹停结果。"""
+    signed_error = float(signed_error)
+    tolerance = float(tolerance)
+    if not math.isfinite(signed_error) or not math.isfinite(tolerance):
+        raise ValueError('刹停误差和分类容差必须为有限值')
+    if tolerance < 0.0:
+        raise ValueError('分类容差不能为负数')
+    if signed_error < -tolerance:
+        return EARLY_STOP
+    if signed_error > tolerance:
+        return OVERSHOOT
+    return ON_TARGET
+
+
+def xy_motion_is_stable(
+        position_error, horizontal_speed,
+        position_tolerance, speed_threshold):
+    """判断 X/Y 实际位置和速度是否同时满足稳定要求。"""
+    return (
+        abs(float(position_error)) <= float(position_tolerance)
+        and abs(float(horizontal_speed)) <= float(speed_threshold)
+    )
+
+
+def xy_motion_is_stalled(
+        position_error, horizontal_speed, tx, ty,
+        position_tolerance, speed_threshold, force_threshold):
+    """判断误差超限时是否出现低速且双轴近零输出停滞。"""
+    return (
+        abs(float(position_error)) > float(position_tolerance)
+        and abs(float(horizontal_speed)) <= float(speed_threshold)
+        and abs(float(tx)) <= float(force_threshold)
+        and abs(float(ty)) <= float(force_threshold)
+    )
 
 
 def relative_goal(start_x, start_y, start_yaw, target_z, axis, offset):

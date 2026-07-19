@@ -18,6 +18,8 @@
 记录：
 2026.7.18
     新增 X、Y、Yaw 单轴自动水池测试执行器和摘要 CSV。
+2026.7.19
+    X/Y 测试增加实际位置验收、连续停稳等待、停滞诊断和刹停方向分类。
 """
 
 from __future__ import division
@@ -46,8 +48,12 @@ if TEST_DIR not in sys.path:
 
 from motion_auto_sequence_core import (  # noqa: E402
     build_axis_sequence,
+    classify_signed_stop_error,
     goal_matches,
     relative_goal,
+    signed_axis_stop_error,
+    xy_motion_is_stable,
+    xy_motion_is_stalled,
 )
 
 
@@ -71,6 +77,9 @@ class MotionAxisAutoTest(object):
         'started_at',
         'finished_at',
         'duration_s',
+        'acceptance_position_tolerance',
+        'stable_speed_threshold',
+        'required_stable_seconds',
         'peak_position_error',
         'peak_base_position_error',
         'peak_yaw_error_deg',
@@ -82,6 +91,13 @@ class MotionAxisAutoTest(object):
         'minimum_axis_position',
         'maximum_axis_position',
         'maximum_target_overshoot',
+        'final_position_error',
+        'final_base_position_error',
+        'final_horizontal_speed',
+        'final_axis_position',
+        'signed_axis_stop_error',
+        'stop_classification',
+        'ever_crossed_target',
         'axis_position_unit',
         'result',
         'reason',
@@ -108,6 +124,20 @@ class MotionAxisAutoTest(object):
             rospy.get_param('~goal_depth_tolerance', 0.05))
         self.goal_yaw_tolerance = math.radians(float(
             rospy.get_param('~goal_yaw_tolerance_deg', 2.0)))
+        self.acceptance_position_tolerance = float(
+            rospy.get_param('~acceptance_position_tolerance', 0.10))
+        self.inter_step_stable_seconds = float(
+            rospy.get_param('~inter_step_stable_seconds', 12.0))
+        self.stable_speed_threshold = float(
+            rospy.get_param('~stable_speed_threshold', 0.03))
+        self.stall_detection_seconds = float(
+            rospy.get_param('~stall_detection_seconds', 2.0))
+        self.stall_speed_threshold = float(
+            rospy.get_param('~stall_speed_threshold', 0.03))
+        self.stall_force_threshold = float(
+            rospy.get_param('~stall_force_threshold', 1.0))
+        self.stop_classification_tolerance = float(
+            rospy.get_param('~stop_classification_tolerance', 0.005))
         self.log_directory = os.path.abspath(os.path.expanduser(str(
             rospy.get_param(
                 '~log_directory',
@@ -136,6 +166,13 @@ class MotionAxisAutoTest(object):
             self.goal_position_tolerance,
             self.goal_depth_tolerance,
             self.goal_yaw_tolerance,
+            self.acceptance_position_tolerance,
+            self.inter_step_stable_seconds,
+            self.stable_speed_threshold,
+            self.stall_detection_seconds,
+            self.stall_speed_threshold,
+            self.stall_force_threshold,
+            self.stop_classification_tolerance,
         ) + self.magnitudes
         if not all(math.isfinite(value) for value in numeric):
             raise ValueError('测试参数必须是有限值')
@@ -144,8 +181,23 @@ class MotionAxisAutoTest(object):
                 or self.startup_timeout <= 0.0
                 or self.action_timeout <= 0.0
                 or self.hover_hold_seconds < 0.0
-                or self.feedback_timeout <= 0.0):
+                or self.feedback_timeout <= 0.0
+                or self.acceptance_position_tolerance <= 0.0
+                or self.stable_speed_threshold <= 0.0
+                or self.stall_detection_seconds <= 0.0
+                or self.stall_speed_threshold <= 0.0
+                or self.stall_force_threshold < 0.0
+                or self.stop_classification_tolerance < 0.0):
             raise ValueError('频率和超时必须为正数，稳定保持时间不能为负数')
+        if (
+                self.axis in ('x', 'y')
+                and self.inter_step_stable_seconds < 10.0):
+            raise ValueError('X/Y 段间连续稳定时间不能小于 10 s')
+        self.required_stable_seconds = (
+            max(self.hover_hold_seconds, self.inter_step_stable_seconds)
+            if self.axis in ('x', 'y')
+            else self.hover_hold_seconds
+        )
 
         self.steps = build_axis_sequence(
             self.axis, self.magnitudes, self.repetitions)
@@ -401,6 +453,25 @@ class MotionAxisAutoTest(object):
     def _write_result(
             self, step, target, started_at, finished_at,
             peaks, result, reason):
+        state = self.latest_state
+        final_axis_position = (
+            self._current_axis_position()
+            if self.axis in ('x', 'y')
+            else None
+        )
+        if final_axis_position is None:
+            final_signed_axis_error = None
+            stop_classification = 'UNKNOWN' if self.axis in ('x', 'y') else ''
+        else:
+            final_signed_axis_error = signed_axis_stop_error(
+                final_axis_position,
+                step.offset,
+                step.phase,
+            )
+            stop_classification = classify_signed_stop_error(
+                final_signed_axis_error,
+                self.stop_classification_tolerance,
+            )
         self.summary_writer.writerow({
             'step': step.index,
             'axis': step.axis,
@@ -423,6 +494,17 @@ class MotionAxisAutoTest(object):
             'started_at': started_at.to_sec(),
             'finished_at': finished_at.to_sec(),
             'duration_s': (finished_at - started_at).to_sec(),
+            'acceptance_position_tolerance': (
+                self.acceptance_position_tolerance
+                if self.axis in ('x', 'y')
+                else ''
+            ),
+            'stable_speed_threshold': (
+                self.stable_speed_threshold
+                if self.axis in ('x', 'y')
+                else ''
+            ),
+            'required_stable_seconds': self.required_stable_seconds,
             'peak_position_error': peaks['position_error'],
             'peak_base_position_error': peaks['base_position_error'],
             'peak_yaw_error_deg': math.degrees(peaks['yaw_error']),
@@ -454,6 +536,27 @@ class MotionAxisAutoTest(object):
                 if self.axis == 'yaw'
                 else peaks['target_overshoot']
             ),
+            'final_position_error': (
+                '' if state is None else state.position_error),
+            'final_base_position_error': (
+                '' if state is None else state.base_position_error),
+            'final_horizontal_speed': (
+                '' if state is None else state.horizontal_speed),
+            'final_axis_position': (
+                '' if final_axis_position is None else final_axis_position),
+            'signed_axis_stop_error': (
+                ''
+                if final_signed_axis_error is None
+                else final_signed_axis_error
+            ),
+            'stop_classification': stop_classification,
+            'ever_crossed_target': (
+                ''
+                if self.axis == 'yaw'
+                else int(
+                    peaks['target_overshoot']
+                    > self.stop_classification_tolerance)
+            ),
             'axis_position_unit': (
                 'deg' if self.axis == 'yaw' else 'm'),
             'result': result,
@@ -466,6 +569,7 @@ class MotionAxisAutoTest(object):
         started_at = rospy.Time.now()
         deadline = started_at + rospy.Duration(self.action_timeout)
         stable_started_at = None
+        stall_started_at = None
         peaks = self._new_peaks()
         rate = rospy.Rate(self.publish_rate_hz)
         rospy.loginfo(
@@ -491,19 +595,27 @@ class MotionAxisAutoTest(object):
             self._update_peaks(peaks, step)
 
             state = self.latest_state
+            goal_confirmed = self._state_matches_goal(target)
             arrived = (
                 self._state_fresh()
                 and state is not None
                 and state.startup_complete
                 and state.state == MotionState.HOVER
-                and self._state_matches_goal(target)
+                and goal_confirmed
             )
+            if arrived and self.axis in ('x', 'y'):
+                arrived = xy_motion_is_stable(
+                    state.base_position_error,
+                    state.horizontal_speed,
+                    self.acceptance_position_tolerance,
+                    self.stable_speed_threshold,
+                )
             if arrived:
                 if stable_started_at is None:
                     stable_started_at = now
                 if (
                         now - stable_started_at
-                ).to_sec() >= self.hover_hold_seconds:
+                ).to_sec() >= self.required_stable_seconds:
                     self._write_result(
                         step,
                         target,
@@ -511,11 +623,76 @@ class MotionAxisAutoTest(object):
                         now,
                         peaks,
                         'PASS',
-                        '目标匹配且 HOVER 稳定保持完成',
+                        (
+                            '实际位置与速度达标，连续稳定保持 '
+                            '{:.1f} s 完成'.format(
+                                self.required_stable_seconds)
+                        ),
                     )
                     return True
             else:
                 stable_started_at = None
+
+            stalled = (
+                self.axis in ('x', 'y')
+                and self._state_fresh()
+                and state is not None
+                and state.startup_complete
+                and goal_confirmed
+                and xy_motion_is_stalled(
+                    state.base_position_error,
+                    state.horizontal_speed,
+                    state.tx,
+                    state.ty,
+                    self.acceptance_position_tolerance,
+                    self.stall_speed_threshold,
+                    self.stall_force_threshold,
+                )
+            )
+            if stalled:
+                if stall_started_at is None:
+                    stall_started_at = now
+                if (
+                        now - stall_started_at
+                ).to_sec() >= self.stall_detection_seconds:
+                    axis_position = self._current_axis_position()
+                    signed_error = (
+                        None
+                        if axis_position is None
+                        else signed_axis_stop_error(
+                            axis_position,
+                            step.offset,
+                            step.phase,
+                        )
+                    )
+                    reason = (
+                        '检测到零输出停滞：二维误差={:.3f} m，'
+                        '速度={:.4f} m/s，TX/TY={}/{}，'
+                        '有符号轴向误差={}'.format(
+                            state.base_position_error,
+                            state.horizontal_speed,
+                            state.tx,
+                            state.ty,
+                            (
+                                '未知'
+                                if signed_error is None
+                                else '{:+.3f} m'.format(signed_error)
+                            ),
+                        )
+                    )
+                    self._write_result(
+                        step,
+                        target,
+                        started_at,
+                        now,
+                        peaks,
+                        'FAIL',
+                        reason,
+                    )
+                    rospy.logerr('%s: %s', NODE_NAME, reason)
+                    return False
+            else:
+                stall_started_at = None
 
             if now >= deadline:
                 reason = (
@@ -538,8 +715,9 @@ class MotionAxisAutoTest(object):
                 return False
             rospy.loginfo_throttle(
                 2.0,
-                '%s: 等待当前目标 HOVER；state=%s，'
-                'position_error=%.3f m，yaw_error=%.2f deg',
+                '%s: 等待当前目标稳定；state=%s，'
+                'position_error=%.3f m，speed=%.4f m/s，'
+                'yaw_error=%.2f deg',
                 NODE_NAME,
                 (
                     '无新鲜反馈'
@@ -547,6 +725,7 @@ class MotionAxisAutoTest(object):
                     else str(state.state)
                 ),
                 0.0 if state is None else state.base_position_error,
+                0.0 if state is None else state.horizontal_speed,
                 0.0 if state is None else math.degrees(state.yaw_error),
             )
             rate.sleep()
@@ -573,6 +752,15 @@ class MotionAxisAutoTest(object):
             len(self.steps),
             self.summary_path,
         )
+        if self.axis in ('x', 'y'):
+            rospy.loginfo(
+                '%s: X/Y 验收误差≤%.3f m、稳定速度≤%.4f m/s，'
+                '每步出发前连续稳定 %.1f s',
+                NODE_NAME,
+                self.acceptance_position_tolerance,
+                self.stable_speed_threshold,
+                self.required_stable_seconds,
+            )
         if not self._wait_for_supervisor():
             raise RuntimeError(
                 '等待 motion_supervisor startup_complete + HOVER 超时')
