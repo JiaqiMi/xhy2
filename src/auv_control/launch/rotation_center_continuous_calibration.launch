@@ -1,0 +1,125 @@
+<launch>
+    <!--
+      连续多圈旋转中心自动标定。运行前必须停止 motion_supervisor 及所有其他
+      /cmd/pose/ned 发布者。本节点按 low、medium、high 三档执行，每档先正向、
+      再负向连续旋转三圈，仅在第三圈末端刹停并返回同一个锁定初始位置。
+      六段全部完成后，按档位和计划方向分别拟合虚拟旋转中心。
+    -->
+
+    <arg name="target_z" default="-0.9" />
+    <arg name="control_to_imu_z" default="0.0" />
+    <arg name="control_rate_hz" default="5.0" />
+    <!-- 每个档位、每个方向连续旋转的圈数。 -->
+    <arg name="continuous_turns" default="2" />
+    <!-- 单个连续三圈旋转段的最大允许时间，单位 s。 -->
+    <arg name="continuous_step_timeout" default="600.0" />
+    <!-- mode=4 返回初始位置的最大判稳等待时间，单位 s。 -->
+    <arg name="handover_timeout" default="90.0" />
+    <arg name="initial_hold_seconds" default="3.0" />
+    <!-- 判稳后必须继续连续稳定的时间；任一条件失稳都会重新计时。 -->
+    <arg name="handover_hold_seconds" default="12.0" />
+    <arg name="feedback_timeout" default="0.5" />
+    <arg name="stable_frames" default="5" />
+    <arg name="yaw_tolerance_deg" default="3.0" />
+    <arg name="yaw_rate_threshold_deg_s" default="0.5" />
+    <arg name="handover_speed_threshold" default="0.05" />
+    <arg name="handover_position_tolerance" default="0.15" />
+    <arg name="velocity_filter_alpha" default="0.35" />
+    <arg name="yaw_rate_feedback_sign" default="-1.0" />
+    <arg name="mz_to_yaw_sign" default="1.0" />
+
+    <arg name="kp_yaw" default="6000.0" />
+    <arg name="kd_yaw" default="2000.0" />
+    <arg name="brake_gain_yaw" default="6000.0" />
+    <!-- low、medium、high 三档正向固定 TRACK MZ。 -->
+    <arg name="positive_mz_levels" default="[1000.0, 2000.0, 3000.0]" />
+    <!-- 负向固定 TRACK MZ 绝对值为同档正向值的 1.5 倍。 -->
+    <arg name="negative_mz_scale" default="1.5" />
+    <arg name="brake_max_mz_positive" default="3000.0" />
+    <arg name="brake_max_mz_negative" default="3000.0" />
+    <arg name="angular_brake_acceleration_mz_positive" default="0.025" />
+    <arg name="angular_brake_acceleration_mz_negative" default="0.040" />
+    <arg name="control_delay" default="0.35" />
+    <arg name="yaw_brake_margin_deg" default="3.0" />
+    <arg name="minimum_brake_mz" default="100.0" />
+
+    <!-- 漂移超限只告警；完成三圈后仍返回全程锁定的初始位置。 -->
+    <arg name="drift_warning_radius" default="0.75" />
+    <arg name="sample_min_yaw_rate_deg_s" default="1.0" />
+    <arg name="max_yaw_rate_deg_s" default="45.0" />
+    <arg name="moving_away_timeout" default="3.0" />
+
+    <arg name="preferred_profile" default="medium" />
+    <arg name="recommendation_degradation_ratio" default="1.5" />
+    <arg name="recommendation_degradation_margin" default="0.01" />
+    <arg name="log_directory"
+         default="$(env HOME)/.ros/auv_logs/rotation_center_continuous_calibration" />
+
+    <node pkg="auv_control"
+          type="rotation_center_continuous_calibration.py"
+          name="rotation_center_continuous_calibration"
+          output="screen">
+        <param name="target_z" value="$(arg target_z)" />
+        <param name="control_to_imu_z" value="$(arg control_to_imu_z)" />
+        <param name="control_rate_hz" value="$(arg control_rate_hz)" />
+        <param name="continuous_turns" value="$(arg continuous_turns)" />
+        <param name="continuous_step_timeout"
+               value="$(arg continuous_step_timeout)" />
+        <param name="step_timeout" value="$(arg handover_timeout)" />
+        <param name="initial_hold_seconds"
+               value="$(arg initial_hold_seconds)" />
+        <param name="handover_hold_seconds"
+               value="$(arg handover_hold_seconds)" />
+        <param name="feedback_timeout" value="$(arg feedback_timeout)" />
+        <param name="stable_frames" value="$(arg stable_frames)" />
+        <param name="yaw_tolerance_deg" value="$(arg yaw_tolerance_deg)" />
+        <param name="yaw_rate_threshold_deg_s"
+               value="$(arg yaw_rate_threshold_deg_s)" />
+        <param name="handover_speed_threshold"
+               value="$(arg handover_speed_threshold)" />
+        <param name="handover_position_tolerance"
+               value="$(arg handover_position_tolerance)" />
+        <param name="velocity_filter_alpha"
+               value="$(arg velocity_filter_alpha)" />
+        <param name="yaw_rate_feedback_sign"
+               value="$(arg yaw_rate_feedback_sign)" />
+        <param name="mz_to_yaw_sign" value="$(arg mz_to_yaw_sign)" />
+
+        <param name="kp_yaw" value="$(arg kp_yaw)" />
+        <param name="kd_yaw" value="$(arg kd_yaw)" />
+        <param name="brake_gain_yaw" value="$(arg brake_gain_yaw)" />
+        <rosparam subst_value="true"
+                  param="positive_mz_levels">$(arg positive_mz_levels)</rosparam>
+        <param name="negative_mz_scale"
+               value="$(arg negative_mz_scale)" />
+        <param name="brake_max_mz_positive"
+               value="$(arg brake_max_mz_positive)" />
+        <param name="brake_max_mz_negative"
+               value="$(arg brake_max_mz_negative)" />
+        <param name="angular_brake_acceleration_mz_positive"
+               value="$(arg angular_brake_acceleration_mz_positive)" />
+        <param name="angular_brake_acceleration_mz_negative"
+               value="$(arg angular_brake_acceleration_mz_negative)" />
+        <param name="control_delay" value="$(arg control_delay)" />
+        <param name="yaw_brake_margin_deg"
+               value="$(arg yaw_brake_margin_deg)" />
+        <param name="minimum_brake_mz" value="$(arg minimum_brake_mz)" />
+
+        <param name="drift_warning_radius"
+               value="$(arg drift_warning_radius)" />
+        <param name="sample_min_yaw_rate_deg_s"
+               value="$(arg sample_min_yaw_rate_deg_s)" />
+        <param name="max_yaw_rate_deg_s"
+               value="$(arg max_yaw_rate_deg_s)" />
+        <param name="moving_away_timeout"
+               value="$(arg moving_away_timeout)" />
+
+        <param name="preferred_profile"
+               value="$(arg preferred_profile)" />
+        <param name="recommendation_degradation_ratio"
+               value="$(arg recommendation_degradation_ratio)" />
+        <param name="recommendation_degradation_margin"
+               value="$(arg recommendation_degradation_margin)" />
+        <param name="log_directory" value="$(arg log_directory)" />
+    </node>
+</launch>

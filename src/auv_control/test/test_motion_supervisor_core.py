@@ -26,6 +26,8 @@
     验证水平轴独立切换、方向参数和最终转向时 control_link 位置保持。
 2026.7.19
     验证计划旋转方向选择和刹转阶段方向锁存。
+2026.7.19
+    验证二维距离超限时 X/Y 两轴持续闭环并抑制耦合漂移。
 """
 
 import math
@@ -305,8 +307,8 @@ class MotionSupervisorCoreTest(unittest.TestCase):
             self.vehicle(x=0.1, yaw=0.0, u=0.02, v=-0.01))
         self.assertEqual(output.state, ALIGN_FINAL)
         self.assertLess(output.tx, 0)
-        self.assertEqual(output.ty, 0)
-        self.assertEqual(output.y_axis_state, AXIS_HOLD)
+        self.assertGreater(output.ty, 0)
+        self.assertEqual(output.y_axis_state, AXIS_TRACK)
         self.assertGreater(output.mz, 0)
 
         output = self.core.step(self.vehicle(x=0.4, yaw=0.0))
@@ -327,6 +329,46 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertGreater(output.ty, 0)
         self.assertGreater(output.mz, 0)
 
+    def test_final_alignment_uses_two_dimensional_center_deadband(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, math.radians(30.0))
+        self.core.state = ALIGN_FINAL
+
+        output = self.core.step(
+            self.vehicle(x=-0.02, y=-0.02, yaw=0.0))
+
+        self.assertEqual(output.x_axis_state, AXIS_HOLD)
+        self.assertEqual(output.y_axis_state, AXIS_HOLD)
+        self.assertEqual((output.tx, output.ty), (0, 0))
+
+        output = self.core.step(
+            self.vehicle(x=-0.04, y=-0.005, yaw=0.0))
+
+        self.assertEqual(output.x_axis_state, AXIS_TRACK)
+        self.assertEqual(output.y_axis_state, AXIS_TRACK)
+        self.assertGreater(output.tx, output.ty)
+        self.assertGreater(output.ty, 0)
+
+    def test_final_alignment_uses_directional_xy_gains(self):
+        core = MotionSupervisorCore({
+            'kp_x_positive': 1000.0,
+            'kp_x_negative': 3000.0,
+            'kp_y_positive': 2000.0,
+            'kp_y_negative': 4000.0,
+            'kv_x_positive': 10.0,
+            'kv_x_negative': 10.0,
+            'kv_y_positive': 10.0,
+            'kv_y_negative': 10.0,
+            'force_slew_per_cycle': 10000.0,
+        })
+        core.goal = MotionGoal(0.0, 0.0, -0.6, math.radians(30.0))
+        core.state = ALIGN_FINAL
+
+        positive_x = core.step(self.vehicle(x=-0.04, y=0.01, yaw=0.0))
+        self.assertEqual((positive_x.tx, positive_x.ty), (40, -40))
+
+        negative_x = core.step(self.vehicle(x=0.04, y=-0.01, yaw=0.0))
+        self.assertEqual((negative_x.tx, negative_x.ty), (-120, 20))
+
     def test_final_brake_keeps_control_center_hold_active(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = FINAL_BRAKE
@@ -345,6 +387,27 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         output = self.core.step(self.vehicle(x=0.20))
         self.assertEqual(output.state, TRANSLATE)
         self.assertEqual(output.mode, MODE_DEPTH)
+
+    def test_final_brake_realigns_stopped_yaw_error_outside_tolerance(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = FINAL_BRAKE
+
+        output = self.core.step(self.vehicle(yaw=math.radians(-6.0)))
+
+        self.assertEqual(output.state, ALIGN_FINAL)
+        self.assertEqual(output.yaw_axis_state, AXIS_TRACK)
+        self.assertGreater(output.mz, 0)
+
+    def test_final_brake_keeps_braking_while_yaw_is_still_rotating(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = FINAL_BRAKE
+
+        output = self.core.step(self.vehicle(
+            yaw=math.radians(-6.0), r=math.radians(1.0)))
+
+        self.assertEqual(output.state, FINAL_BRAKE)
+        self.assertEqual(output.yaw_axis_state, AXIS_BRAKE)
+        self.assertGreater(output.mz, 0)
 
     def test_feedback_timeout_enters_safe_with_zero_force(self):
         self.core.set_goal(MotionGoal(2.0, 0.0, 1.5, 0.0))
@@ -395,6 +458,31 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.y_axis_state, AXIS_TRACK)
         self.assertLess(output.tx, 0)
         self.assertGreater(output.ty, 0)
+
+    def test_two_axis_capture_conflict_tracks_both_axes(self):
+        cases = (
+            (MotionGoal(0.1478, 0.0435, -0.6, 0.0), 'x'),
+            (MotionGoal(0.0435, 0.1478, -0.6, 0.0), 'y'),
+        )
+        for goal, recovery_axis in cases:
+            core = MotionSupervisorCore(self.parameters)
+            core.goal = goal
+            core.state = TRANSLATE
+            core.translation_yaw = 0.0
+            core.x_axis_state = AXIS_HOLD
+            core.y_axis_state = AXIS_HOLD
+
+            for unused_cycle in range(2):
+                output = core.step(self.vehicle())
+                self.assertEqual(output.state, TRANSLATE)
+                self.assertEqual(output.x_axis_state, AXIS_TRACK)
+                self.assertEqual(output.y_axis_state, AXIS_TRACK)
+                self.assertGreater(output.tx, 0)
+                self.assertGreater(output.ty, 0)
+                if recovery_axis == 'x':
+                    self.assertGreater(output.tx, output.ty)
+                else:
+                    self.assertGreater(output.ty, output.tx)
 
     def test_directional_motion_gains_and_limits_are_independent(self):
         core = MotionSupervisorCore({
@@ -516,6 +604,19 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.mode, MODE_DEPTH)
         self.assertIsNone(self.core.handover_started_at)
 
+    def test_capture_realigns_stopped_yaw_error_outside_tolerance(self):
+        self.core.goal = MotionGoal(0.0, 0.0, 1.5, 0.0)
+        self.core.state = CAPTURE
+        self.core.handover_started_at = self.now
+
+        output = self.core.step(self.vehicle(
+            yaw=math.radians(-6.0), mode=MODE_DEPTH))
+
+        self.assertEqual(output.state, ALIGN_FINAL)
+        self.assertEqual(output.yaw_axis_state, AXIS_TRACK)
+        self.assertGreater(output.mz, 0)
+        self.assertIsNone(self.core.handover_started_at)
+
     def test_repeated_identical_goal_does_not_reset_capture_ack(self):
         goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.goal = goal
@@ -527,15 +628,29 @@ class MotionSupervisorCoreTest(unittest.TestCase):
     def test_hover_abnormal_speed_fallback(self):
         self.core.goal = MotionGoal(0.0, 0.0, 1.5, 0.0)
         self.core.state = HOVER
-        output = self.core.step(self.vehicle(u=0.09, mode=MODE_DPROV))
+        output = self.core.step(self.vehicle(u=0.16, mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
+
+    def test_hover_keeps_mode4_for_small_terminal_deviation(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = HOVER
+
+        output = self.core.step(self.vehicle(
+            x=0.30,
+            yaw=math.radians(15.0),
+            u=0.10,
+            r=math.radians(4.0),
+            mode=MODE_DPROV))
+
+        self.assertEqual(output.state, HOVER)
+        self.assertEqual(output.mode, MODE_DPROV)
 
     def test_hover_yaw_error_and_rate_fallback(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = HOVER
         output = self.core.step(
-            self.vehicle(yaw=math.radians(11.0), mode=MODE_DPROV))
+            self.vehicle(yaw=math.radians(21.0), mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
@@ -543,13 +658,13 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = HOVER
         output = self.core.step(
-            self.vehicle(x=0.30, mode=MODE_DPROV))
+            self.vehicle(x=0.41, mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
         self.core.state = HOVER
         output = self.core.step(
-            self.vehicle(r=math.radians(2.1), mode=MODE_DPROV))
+            self.vehicle(r=math.radians(5.1), mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
 

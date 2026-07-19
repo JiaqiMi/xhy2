@@ -205,6 +205,7 @@ catkin_install_python(PROGRAMS
   test/motion_axis_auto_test.py
   test/motion_goal_test.py
   test/rotation_center_calibration.py
+  test/rotation_center_continuous_calibration.py
   test/rotation_center_calibration_core.py
   test/test_task1_v2_black_marker.py
   test/test_task1_v2_line_fitting.py

@@ -34,6 +34,12 @@
     最低角速度的样本，主动刹转样本不混入计划方向中心。
 2026.7.19
     增加低、中、高三档不对称 MZ 自动序列、分档统计拟合及推荐中心输出。
+2026.7.19
+    取消自由旋转漂移超限中止；漂移只记录告警，完成 90° 后仍返回全程锁定的初始位置。
+2026.7.19
+    修复越过目标后低速阶段重新输出原方向固定 MZ 的问题；改为闭环恢复并正确刹停。
+2026.7.19
+    段间 mode=4 改为判稳后连续保持 12 s；恢复阶段不再触发首次接近方向保护。
 """
 
 from __future__ import division
@@ -60,15 +66,17 @@ if TEST_DIR not in sys.path:
 
 from rotation_center_calibration_core import (  # noqa: E402
     CalibrationSample,
+    apply_fixed_track_policy,
     build_torque_profiles,
     direct_yaw_command,
+    drift_exceeds_warning_threshold,
     fit_planned_direction_centers,
     fit_quality_score,
-    fixed_track_command,
     locked_handover_is_stable,
     rotation_is_unexpectedly_moving_away,
     select_recommended_profile,
     unwrap_angle,
+    update_continuous_stability,
     wrap_angle,
 )
 
@@ -80,6 +88,9 @@ MODE_DPROV = 4
 
 class RotationCenterCalibration(object):
     """执行自由偏航并分别拟合正、负计划方向的水平旋转中心。"""
+
+    LOG_STEM = 'rotation_center'
+    RESULT_GENERATOR = 'rotation_center_calibration.py'
 
     LOG_FIELDS = (
         'ros_time',
@@ -174,7 +185,7 @@ class RotationCenterCalibration(object):
         self.initial_hold_seconds = float(
             rospy.get_param('~initial_hold_seconds', 3.0))
         self.handover_hold_seconds = float(
-            rospy.get_param('~handover_hold_seconds', 2.0))
+            rospy.get_param('~handover_hold_seconds', 12.0))
         self.step_timeout = float(
             rospy.get_param('~step_timeout', 90.0))
         self.feedback_timeout = float(
@@ -229,8 +240,10 @@ class RotationCenterCalibration(object):
             rospy.get_param('~yaw_brake_margin_deg', 3.0)))
         self.minimum_brake_mz = float(
             rospy.get_param('~minimum_brake_mz', 100.0))
-        self.drift_abort_radius = float(
-            rospy.get_param('~drift_abort_radius', 0.75))
+        legacy_drift_radius = rospy.get_param(
+            '~drift_abort_radius', 0.75)
+        self.drift_warning_radius = float(rospy.get_param(
+            '~drift_warning_radius', legacy_drift_radius))
         self.sample_min_yaw_rate = math.radians(float(
             rospy.get_param('~sample_min_yaw_rate_deg_s', 1.0)))
         self.max_yaw_rate = math.radians(float(
@@ -274,7 +287,7 @@ class RotationCenterCalibration(object):
             self.control_delay,
             self.brake_margin,
             self.minimum_brake_mz,
-            self.drift_abort_radius,
+            self.drift_warning_radius,
             self.sample_min_yaw_rate,
             self.max_yaw_rate,
             self.moving_away_timeout,
@@ -296,12 +309,14 @@ class RotationCenterCalibration(object):
                 or self.turn_step <= 0.0
                 or abs(self.turn_step - math.pi / 2.0) > 1e-6
                 or self.turns_each_direction <= 0
+                or self.initial_hold_seconds < 0.0
+                or self.handover_hold_seconds < 0.0
                 or self.step_timeout <= 0.0
                 or self.feedback_timeout <= 0.0
                 or self.stable_frames <= 0
                 or self.handover_position_tolerance <= 0.0
                 or not 0.0 < self.velocity_filter_alpha <= 1.0
-                or self.drift_abort_radius <= 0.0
+                or self.drift_warning_radius <= 0.0
                 or self.max_yaw_rate <= 0.0
                 or self.moving_away_timeout <= 0.0
                 or self.preferred_profile not in tuple(
@@ -389,8 +404,10 @@ class RotationCenterCalibration(object):
     def _open_log(self):
         if not os.path.isdir(self.log_directory):
             os.makedirs(self.log_directory)
-        stem = 'rotation_center_{0}'.format(
-            datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+        stem = '{}_{}'.format(
+            self.LOG_STEM,
+            datetime.now().strftime('%Y%m%d_%H%M%S_%f'),
+        )
         self.log_path = os.path.join(self.log_directory, stem + '.csv')
         self.result_path = os.path.join(
             self.log_directory, stem + '_result.yaml')
@@ -598,6 +615,10 @@ class RotationCenterCalibration(object):
     def _hold_locked_position(
             self, duration, label, target_yaw, profile=None,
             segment=0, direction=0, turn_index=0, quarter_index=0):
+        """返回锁定位置，完成判稳后再连续保持指定秒数。"""
+        duration = float(duration)
+        if not math.isfinite(duration) or duration < 0.0:
+            raise ValueError('{} 连续稳定时间不合法'.format(label))
         if not self._update_tf() or not self._feedback_fresh():
             raise RuntimeError('{} 前反馈无效'.format(label))
         if self.locked_initial_pose is None:
@@ -605,9 +626,11 @@ class RotationCenterCalibration(object):
         command = self._make_command(
             MODE_DPROV, self.locked_initial_pose, target_yaw, mz=0)
         stable_count = 0
+        stable_started_at = None
+        stable_elapsed = 0.0
         started_at = rospy.Time.now()
         deadline = started_at + rospy.Duration(
-            max(duration + 10.0, self.step_timeout))
+            self.step_timeout + duration)
         rate = rospy.Rate(self.control_rate_hz)
         while not rospy.is_shutdown():
             now = rospy.Time.now()
@@ -639,7 +662,15 @@ class RotationCenterCalibration(object):
                 self.yaw_tolerance,
                 self.yaw_rate_threshold,
             )
-            stable_count = stable_count + 1 if stable else 0
+            stable_count, stable_started_at, stable_elapsed = (
+                update_continuous_stability(
+                    stable,
+                    stable_count,
+                    stable_started_at,
+                    now.to_sec(),
+                    self.stable_frames,
+                )
+            )
             self._log_cycle(
                 label,
                 profile,
@@ -656,14 +687,17 @@ class RotationCenterCalibration(object):
             )
             if (
                     stable_count >= self.stable_frames
-                    and (now - started_at).to_sec() >= duration):
+                    and stable_elapsed >= duration):
                 return
             if now >= deadline:
-                raise RuntimeError('{} mode=4 稳定接管超时'.format(label))
+                raise RuntimeError(
+                    '{} mode=4 稳定接管超时，连续稳定 {:.1f}/{:.1f} s'.format(
+                        label, stable_elapsed, duration))
             rospy.loginfo_throttle(
                 2.0,
                 '%s: %s，位置误差=%.2f m，航向误差=%.1f deg，'
-                '水平速度=%.3f m/s，角速度=%.2f deg/s，稳定帧=%d/%d',
+                '水平速度=%.3f m/s，角速度=%.2f deg/s，稳定帧=%d/%d，'
+                '连续稳定=%.1f/%.1f s',
                 NODE_NAME,
                 label,
                 position_error,
@@ -672,38 +706,61 @@ class RotationCenterCalibration(object):
                 math.degrees(yaw_rate),
                 stable_count,
                 self.stable_frames,
+                stable_elapsed,
+                duration,
             )
             rate.sleep()
 
     def _rotate_segment(
             self, profile, segment, direction,
-            turn_index, quarter_index):
+            turn_index, quarter_index, turn_angle=None,
+            rotation_timeout=None, description=None):
         if not self._update_tf() or not self._feedback_fresh():
             raise RuntimeError('自由旋转前反馈无效')
         if self.locked_initial_pose is None:
             raise RuntimeError('自由旋转前尚未锁定初始位置')
+        turn_angle = (
+            self.turn_step
+            if turn_angle is None
+            else float(turn_angle)
+        )
+        rotation_timeout = (
+            self.step_timeout
+            if rotation_timeout is None
+            else float(rotation_timeout)
+        )
+        if (
+                not math.isfinite(turn_angle)
+                or turn_angle <= 0.0
+                or not math.isfinite(rotation_timeout)
+                or rotation_timeout <= 0.0):
+            raise ValueError('自由旋转角度和超时必须为有限正数')
         segment_start_position = self.locked_initial_pose[0]
         segment_start_yaw = self.unwrapped_yaw
         target_unwrapped = (
-            segment_start_yaw + direction * self.turn_step)
+            segment_start_yaw + direction * turn_angle)
         stable_count = 0
+        target_crossed = False
         moving_away_started_at = None
-        deadline = rospy.Time.now() + rospy.Duration(self.step_timeout)
+        deadline = rospy.Time.now() + rospy.Duration(rotation_timeout)
         rate = rospy.Rate(self.control_rate_hz)
+        if description is None:
+            description = '{}第 {} 圈第 {}/4 段'.format(
+                '正向' if direction > 0 else '负向',
+                turn_index,
+                quarter_index,
+            )
         rospy.loginfo(
             '%s: %s档 MZ(+%.0f/-%.0f)，段 %d/%d，'
-            '%s第 %d 圈第 %d/4 段，'
-            '目标增量=%+.1f deg',
+            '%s，目标增量=%+.1f deg',
             NODE_NAME,
             profile.name,
             profile.positive_limit,
             profile.negative_limit,
             segment,
             self.total_segments,
-            '正向' if direction > 0 else '负向',
-            turn_index,
-            quarter_index,
-            math.degrees(direction * self.turn_step),
+            description,
+            math.degrees(direction * turn_angle),
         )
         while not rospy.is_shutdown():
             now = rospy.Time.now()
@@ -716,10 +773,19 @@ class RotationCenterCalibration(object):
                 imu_position[0] - segment_start_position[0],
                 imu_position[1] - segment_start_position[1],
             )
-            if drift > self.drift_abort_radius:
-                raise RuntimeError(
-                    '自由旋转段 {} IMU 漂移 {:.2f} m，超过安全阈值 {:.2f} m'.format(
-                        segment, drift, self.drift_abort_radius))
+            if drift_exceeds_warning_threshold(
+                    drift, self.drift_warning_radius):
+                # 漂移不再中止旋转，否则异常接管会锁定漂移后的当前位置。
+                # 继续完成本段目标，随后由 mode=4 返回全程初始位置。
+                rospy.logwarn_throttle(
+                    2.0,
+                    '%s: 自由旋转段 %d IMU 漂移 %.2f m，超过告警半径 '
+                    '%.2f m；继续完成本段目标，随后返回锁定初始位置',
+                    NODE_NAME,
+                    segment,
+                    drift,
+                    self.drift_warning_radius,
+                )
             yaw_rate = (
                 self.yaw_rate_feedback_sign * self.filtered_velocity[2])
             yaw_error = target_unwrapped - self.unwrapped_yaw
@@ -752,20 +818,24 @@ class RotationCenterCalibration(object):
                     self.mz_to_yaw_sign,
                 )
             )
-            if controller_phase == 'TRACK':
-                # 三档对比要求 TRACK 使用确定的固定 MZ；停车距离判定、
-                # BRAKE 反向力矩和 HOLD 条件仍由同一控制器负责。
-                command_mz = fixed_track_command(
+            command_mz, controller_phase, target_crossed = (
+                apply_fixed_track_policy(
+                    command_mz,
+                    controller_phase,
+                    yaw_error,
                     direction,
+                    target_crossed,
                     self.mz_to_yaw_sign,
                     profile.positive_limit,
                     profile.negative_limit,
                 )
+            )
             moving_away = rotation_is_unexpectedly_moving_away(
                 yaw_error,
                 yaw_rate,
                 direction,
                 self.yaw_rate_threshold,
+                target_crossed=target_crossed,
             )
             if moving_away:
                 if moving_away_started_at is None:
@@ -836,7 +906,7 @@ class RotationCenterCalibration(object):
             if now >= deadline:
                 raise RuntimeError(
                     '自由旋转段 {} 在 {:.1f} s 内未停稳'.format(
-                        segment, self.step_timeout))
+                        segment, rotation_timeout))
             rospy.loginfo_throttle(
                 2.0,
                 '%s: %s档段 %d %s，yaw_error=%.1f deg，'
@@ -930,7 +1000,7 @@ class RotationCenterCalibration(object):
             profile.name: profile for profile in self.torque_profiles}
         with open(self.result_path, 'w', encoding='utf-8') as stream:
             stream.write(
-                '# 由 rotation_center_calibration.py 自动生成\n')
+                '# 由 {} 自动生成\n'.format(self.RESULT_GENERATOR))
             stream.write(
                 '# 顶层 control_to_imu_* 是推荐结果，可写入 motion_supervisor\n')
             stream.write(
@@ -1024,23 +1094,8 @@ class RotationCenterCalibration(object):
             self.emergency_hold()
         self._close_log()
 
-    def run(self):
-        profile_description = ', '.join(
-            '{}(+{:.0f}/-{:.0f})'.format(
-                profile.name,
-                profile.positive_limit,
-                profile.negative_limit,
-            )
-            for profile in self.torque_profiles
-        )
-        rospy.logwarn(
-            '%s: 本程序将独占 /cmd/pose/ned；TX=TY 始终为 0，'
-            '每档正反各 %d 圈；力矩档位=%s；原始日志: %s',
-            NODE_NAME,
-            self.turns_each_direction,
-            profile_description,
-            self.log_path,
-        )
+    def _prepare_calibration(self):
+        """等待反馈，锁定唯一初始位置并完成启动接管。"""
         if not self._wait_for_feedback():
             raise RuntimeError('等待 TF、速度和模式反馈超时')
         self.locked_initial_pose = (
@@ -1063,39 +1118,8 @@ class RotationCenterCalibration(object):
             self.locked_initial_yaw,
         )
 
-        segment = 0
-        for profile in self.torque_profiles:
-            rospy.logwarn(
-                '%s: 开始%s档标定，TRACK MZ 正向上限=%.0f，'
-                '负向上限=%.0f',
-                NODE_NAME,
-                profile.name,
-                profile.positive_limit,
-                profile.negative_limit,
-            )
-            for direction in (1, -1):
-                for turn_index in range(
-                        1, self.turns_each_direction + 1):
-                    for quarter_index in range(1, 5):
-                        segment += 1
-                        target_yaw = self._rotate_segment(
-                            profile,
-                            segment,
-                            direction,
-                            turn_index,
-                            quarter_index,
-                        )
-                        self._hold_locked_position(
-                            self.handover_hold_seconds,
-                            'SEGMENT_HOLD',
-                            target_yaw,
-                            profile,
-                            segment,
-                            direction,
-                            turn_index,
-                            quarter_index,
-                        )
-
+    def _finalize_calibration(self):
+        """拟合三档正负方向结果，写入推荐配置并关闭日志。"""
         profile_results = {}
         finalized_statistics = {}
         for profile in self.torque_profiles:
@@ -1156,6 +1180,60 @@ class RotationCenterCalibration(object):
             self.control_to_imu_z,
             negative_result['rms_residual'])
         rospy.loginfo('%s: 结果文件: %s', NODE_NAME, self.result_path)
+
+    def run(self):
+        profile_description = ', '.join(
+            '{}(+{:.0f}/-{:.0f})'.format(
+                profile.name,
+                profile.positive_limit,
+                profile.negative_limit,
+            )
+            for profile in self.torque_profiles
+        )
+        rospy.logwarn(
+            '%s: 本程序将独占 /cmd/pose/ned；TX=TY 始终为 0，'
+            '每档正反各 %d 圈；力矩档位=%s；原始日志: %s',
+            NODE_NAME,
+            self.turns_each_direction,
+            profile_description,
+            self.log_path,
+        )
+        self._prepare_calibration()
+
+        segment = 0
+        for profile in self.torque_profiles:
+            rospy.logwarn(
+                '%s: 开始%s档标定，TRACK MZ 正向上限=%.0f，'
+                '负向上限=%.0f',
+                NODE_NAME,
+                profile.name,
+                profile.positive_limit,
+                profile.negative_limit,
+            )
+            for direction in (1, -1):
+                for turn_index in range(
+                        1, self.turns_each_direction + 1):
+                    for quarter_index in range(1, 5):
+                        segment += 1
+                        target_yaw = self._rotate_segment(
+                            profile,
+                            segment,
+                            direction,
+                            turn_index,
+                            quarter_index,
+                        )
+                        self._hold_locked_position(
+                            self.handover_hold_seconds,
+                            'SEGMENT_HOLD',
+                            target_yaw,
+                            profile,
+                            segment,
+                            direction,
+                            turn_index,
+                            quarter_index,
+                        )
+
+        self._finalize_calibration()
 
 
 def main():

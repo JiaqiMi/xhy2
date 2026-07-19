@@ -17,6 +17,12 @@
     验证正负计划方向可拟合不同旋转中心。
 2026.7.19
     验证低、中、高不对称力矩档位和优先中速的推荐策略。
+2026.7.19
+    验证旋转漂移超过半径时只产生告警判定，不中止后续定点接管流程。
+2026.7.19
+    回归验证越过 90° 目标后不再恢复原方向固定 MZ，而是使用闭环指令刹停。
+2026.7.19
+    验证判稳后连续保持计时，以及越过目标后的方向保护锁存。
 """
 
 import math
@@ -31,8 +37,11 @@ if TEST_DIR not in sys.path:
 
 from rotation_center_calibration_core import (  # noqa: E402
     CalibrationSample,
+    apply_fixed_track_policy,
+    build_continuous_rotation_steps,
     build_torque_profiles,
     direct_yaw_command,
+    drift_exceeds_warning_threshold,
     fixed_track_command,
     fit_planned_direction_centers,
     fit_segmented_rotation_center,
@@ -41,6 +50,7 @@ from rotation_center_calibration_core import (  # noqa: E402
     rotation_is_unexpectedly_moving_away,
     select_recommended_profile,
     unwrap_angle,
+    update_continuous_stability,
 )
 
 
@@ -69,6 +79,42 @@ class RotationCenterCalibrationCoreTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_torque_profiles(levels, negative_scale=scale)
 
+    def test_build_continuous_rotation_steps_uses_six_expected_segments(self):
+        profiles = build_torque_profiles(
+            (1000.0, 2000.0, 3000.0), negative_scale=1.5)
+
+        steps = build_continuous_rotation_steps(profiles, turns=3)
+
+        self.assertEqual(
+            [(step.segment, step.profile.name, step.direction, step.turns)
+             for step in steps],
+            [
+                (1, 'low', 1, 3),
+                (2, 'low', -1, 3),
+                (3, 'medium', 1, 3),
+                (4, 'medium', -1, 3),
+                (5, 'high', 1, 3),
+                (6, 'high', -1, 3),
+            ],
+        )
+        for step in steps:
+            self.assertAlmostEqual(step.turn_angle, 6.0 * math.pi)
+
+    def test_build_continuous_rotation_steps_rejects_invalid_turn_count(self):
+        profiles = build_torque_profiles(
+            (1000.0, 2000.0, 3000.0), negative_scale=1.5)
+
+        with self.assertRaises(ValueError):
+            build_continuous_rotation_steps(profiles, turns=0)
+
+    def test_unwrap_tracks_three_continuous_turns(self):
+        unwrapped_yaw = 0.0
+        for degree in range(10, 1081, 10):
+            wrapped_yaw = math.radians((degree + 180) % 360 - 180)
+            unwrapped_yaw = unwrap_angle(unwrapped_yaw, wrapped_yaw)
+
+        self.assertAlmostEqual(unwrapped_yaw, 6.0 * math.pi, places=9)
+
     def test_fixed_track_command_uses_planned_direction_and_asymmetry(self):
         self.assertEqual(
             fixed_track_command(1, 1.0, 1000.0, 1500.0), 1000)
@@ -76,6 +122,51 @@ class RotationCenterCalibrationCoreTest(unittest.TestCase):
             fixed_track_command(-1, 1.0, 1000.0, 1500.0), -1500)
         self.assertEqual(
             fixed_track_command(1, -1.0, 1000.0, 1500.0), -1500)
+
+    def test_fixed_track_is_latched_off_after_crossing_target(self):
+        command, phase, crossed = apply_fixed_track_policy(
+            command_mz=600,
+            controller_phase='TRACK',
+            yaw_error=math.radians(30.0),
+            direction=1,
+            target_crossed=False,
+            mz_to_yaw_sign=1.0,
+            positive_limit=1000.0,
+            negative_limit=1500.0,
+        )
+        self.assertEqual((command, phase, crossed), (1000, 'TRACK', False))
+
+        closed_loop_command, closed_loop_phase, unused_stop = self.command(
+            math.radians(-24.0), math.radians(0.4))
+        self.assertEqual(closed_loop_phase, 'TRACK')
+        self.assertLess(closed_loop_command, 0)
+        command, phase, crossed = apply_fixed_track_policy(
+            command_mz=closed_loop_command,
+            controller_phase=closed_loop_phase,
+            yaw_error=math.radians(-24.0),
+            direction=1,
+            target_crossed=crossed,
+            mz_to_yaw_sign=1.0,
+            positive_limit=1000.0,
+            negative_limit=1500.0,
+        )
+        self.assertEqual(
+            (command, phase, crossed),
+            (closed_loop_command, 'RECOVER', True),
+        )
+
+        command, phase, crossed = apply_fixed_track_policy(
+            command_mz=420,
+            controller_phase='TRACK',
+            yaw_error=math.radians(4.0),
+            direction=1,
+            target_crossed=crossed,
+            mz_to_yaw_sign=1.0,
+            positive_limit=1000.0,
+            negative_limit=1500.0,
+        )
+        self.assertEqual(
+            (command, phase, crossed), (420, 'RECOVER', True))
 
     def test_recommendation_prefers_medium_when_quality_is_close(self):
         results = {
@@ -153,6 +244,17 @@ class RotationCenterCalibrationCoreTest(unittest.TestCase):
             threshold,
         ))
 
+    def test_moving_away_protection_is_disabled_after_target_crossing(self):
+        arguments = (
+            math.radians(-2.9),
+            math.radians(0.65),
+            -1,
+            math.radians(0.5),
+        )
+        self.assertTrue(rotation_is_unexpectedly_moving_away(*arguments))
+        self.assertFalse(rotation_is_unexpectedly_moving_away(
+            *arguments, target_crossed=True))
+
     def test_braking_overshoot_from_log_is_not_direction_error(self):
         command, phase, unused_stop = self.command(
             math.radians(-4.8), math.radians(1.1))
@@ -164,6 +266,35 @@ class RotationCenterCalibrationCoreTest(unittest.TestCase):
             1,
             math.radians(0.5),
         ))
+
+    def test_large_rotation_drift_only_triggers_warning(self):
+        self.assertFalse(drift_exceeds_warning_threshold(0.75, 0.75))
+        self.assertTrue(drift_exceeds_warning_threshold(0.90, 0.75))
+        for drift, warning_radius in (
+                (-0.01, 0.75),
+                (0.50, 0.0)):
+            with self.assertRaises(ValueError):
+                drift_exceeds_warning_threshold(
+                    drift, warning_radius)
+
+    def test_continuous_stability_starts_after_frames_and_resets(self):
+        count = 0
+        started_at = None
+        elapsed = 0.0
+        for now in (0.0, 0.2, 0.4, 0.6, 0.8):
+            count, started_at, elapsed = update_continuous_stability(
+                True, count, started_at, now, required_frames=5)
+        self.assertEqual(count, 5)
+        self.assertAlmostEqual(started_at, 0.8)
+        self.assertAlmostEqual(elapsed, 0.0)
+
+        count, started_at, elapsed = update_continuous_stability(
+            True, count, started_at, 12.8, required_frames=5)
+        self.assertAlmostEqual(elapsed, 12.0)
+
+        count, started_at, elapsed = update_continuous_stability(
+            False, count, started_at, 13.0, required_frames=5)
+        self.assertEqual((count, started_at, elapsed), (0, None, 0.0))
 
     def test_locked_handover_requires_all_conditions(self):
         arguments = dict(
