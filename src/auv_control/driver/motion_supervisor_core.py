@@ -358,7 +358,7 @@ class MotionSupervisorCore(object):
             raise ValueError('capture_exit_radius 必须大于 capture_radius')
         if self.parameters['control_center_hold_tolerance'] >= (
                 self.parameters['capture_radius']):
-            raise ValueError('control_center_hold_tolerance 必须小于 capture_radius')
+            raise ValueError('control_center_hold_tolerance 二维死区必须小于 capture_radius')
         if self.parameters['brake_min_mz'] > min(
                 self.parameters['brake_max_mz_positive'],
                 self.parameters['brake_max_mz_negative']):
@@ -686,30 +686,34 @@ class MotionSupervisorCore(object):
             yaw_braking=True,
         )
 
-    def _center_hold_axis(self, axis_name, error, velocity):
-        """最终转向时用无积分位置控制保持 control_link 旋转中心。"""
-        stopped = (
-            abs(error) <= self.parameters['control_center_hold_tolerance']
-            and abs(velocity)
-            <= self.parameters['horizontal_speed_threshold']
-        )
-        if stopped:
-            return AXIS_HOLD, 0.0
-        kp = self._motion_parameter('kp_' + axis_name, error)
-        kv = self._motion_parameter('kv_' + axis_name, error)
-        return AXIS_TRACK, kp * error - kv * velocity
-
     def _center_hold_commands(self, vehicle):
-        """计算 control_link 在当前艇体坐标系下的平面位置保持输出。"""
+        """用二维圆形死区保持 control_link，并同时补偿 X/Y 耦合漂移。"""
         dx, dy, unused_distance, unused_yaw_error = (
             self._goal_metrics(vehicle))
         del unused_distance, unused_yaw_error
         error_x, error_y = map_error_to_body(dx, dy, vehicle.yaw)
-        self.x_axis_state, tx = self._center_hold_axis(
-            'x', error_x, vehicle.forward_velocity)
-        self.y_axis_state, ty = self._center_hold_axis(
-            'y', error_y, vehicle.lateral_velocity)
-        return tx, ty
+        center_stable = (
+            math.hypot(error_x, error_y)
+            <= self.parameters['control_center_hold_tolerance']
+            and math.hypot(
+                vehicle.forward_velocity,
+                vehicle.lateral_velocity,
+            ) <= self.parameters['horizontal_speed_threshold']
+        )
+        if center_stable:
+            self.x_axis_state = AXIS_HOLD
+            self.y_axis_state = AXIS_HOLD
+            return 0.0, 0.0
+
+        # 最终调航向时两轴始终共同闭环；小误差轴的输出由自身 PD 自然减小。
+        self.x_axis_state = AXIS_TRACK
+        self.y_axis_state = AXIS_TRACK
+        return (
+            self._axis_track_command(
+                'x', error_x, vehicle.forward_velocity),
+            self._axis_track_command(
+                'y', error_y, vehicle.lateral_velocity),
+        )
 
     def _final_alignment_output(self, vehicle, yaw_error):
         """保持 control_link 位置并调整最终航向。"""

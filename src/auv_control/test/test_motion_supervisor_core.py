@@ -307,8 +307,8 @@ class MotionSupervisorCoreTest(unittest.TestCase):
             self.vehicle(x=0.1, yaw=0.0, u=0.02, v=-0.01))
         self.assertEqual(output.state, ALIGN_FINAL)
         self.assertLess(output.tx, 0)
-        self.assertEqual(output.ty, 0)
-        self.assertEqual(output.y_axis_state, AXIS_HOLD)
+        self.assertGreater(output.ty, 0)
+        self.assertEqual(output.y_axis_state, AXIS_TRACK)
         self.assertGreater(output.mz, 0)
 
         output = self.core.step(self.vehicle(x=0.4, yaw=0.0))
@@ -328,6 +328,46 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertLess(output.tx, 0)
         self.assertGreater(output.ty, 0)
         self.assertGreater(output.mz, 0)
+
+    def test_final_alignment_uses_two_dimensional_center_deadband(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, math.radians(30.0))
+        self.core.state = ALIGN_FINAL
+
+        output = self.core.step(
+            self.vehicle(x=-0.02, y=-0.02, yaw=0.0))
+
+        self.assertEqual(output.x_axis_state, AXIS_HOLD)
+        self.assertEqual(output.y_axis_state, AXIS_HOLD)
+        self.assertEqual((output.tx, output.ty), (0, 0))
+
+        output = self.core.step(
+            self.vehicle(x=-0.04, y=-0.005, yaw=0.0))
+
+        self.assertEqual(output.x_axis_state, AXIS_TRACK)
+        self.assertEqual(output.y_axis_state, AXIS_TRACK)
+        self.assertGreater(output.tx, output.ty)
+        self.assertGreater(output.ty, 0)
+
+    def test_final_alignment_uses_directional_xy_gains(self):
+        core = MotionSupervisorCore({
+            'kp_x_positive': 1000.0,
+            'kp_x_negative': 3000.0,
+            'kp_y_positive': 2000.0,
+            'kp_y_negative': 4000.0,
+            'kv_x_positive': 10.0,
+            'kv_x_negative': 10.0,
+            'kv_y_positive': 10.0,
+            'kv_y_negative': 10.0,
+            'force_slew_per_cycle': 10000.0,
+        })
+        core.goal = MotionGoal(0.0, 0.0, -0.6, math.radians(30.0))
+        core.state = ALIGN_FINAL
+
+        positive_x = core.step(self.vehicle(x=-0.04, y=0.01, yaw=0.0))
+        self.assertEqual((positive_x.tx, positive_x.ty), (40, -40))
+
+        negative_x = core.step(self.vehicle(x=0.04, y=-0.01, yaw=0.0))
+        self.assertEqual((negative_x.tx, negative_x.ty), (-120, 20))
 
     def test_final_brake_keeps_control_center_hold_active(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
