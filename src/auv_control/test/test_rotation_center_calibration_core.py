@@ -21,6 +21,8 @@
     验证旋转漂移超过半径时只产生告警判定，不中止后续定点接管流程。
 2026.7.19
     回归验证越过 90° 目标后不再恢复原方向固定 MZ，而是使用闭环指令刹停。
+2026.7.19
+    验证判稳后连续保持计时，以及越过目标后的方向保护锁存。
 """
 
 import math
@@ -47,6 +49,7 @@ from rotation_center_calibration_core import (  # noqa: E402
     rotation_is_unexpectedly_moving_away,
     select_recommended_profile,
     unwrap_angle,
+    update_continuous_stability,
 )
 
 
@@ -204,6 +207,17 @@ class RotationCenterCalibrationCoreTest(unittest.TestCase):
             threshold,
         ))
 
+    def test_moving_away_protection_is_disabled_after_target_crossing(self):
+        arguments = (
+            math.radians(-2.9),
+            math.radians(0.65),
+            -1,
+            math.radians(0.5),
+        )
+        self.assertTrue(rotation_is_unexpectedly_moving_away(*arguments))
+        self.assertFalse(rotation_is_unexpectedly_moving_away(
+            *arguments, target_crossed=True))
+
     def test_braking_overshoot_from_log_is_not_direction_error(self):
         command, phase, unused_stop = self.command(
             math.radians(-4.8), math.radians(1.1))
@@ -225,6 +239,25 @@ class RotationCenterCalibrationCoreTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 drift_exceeds_warning_threshold(
                     drift, warning_radius)
+
+    def test_continuous_stability_starts_after_frames_and_resets(self):
+        count = 0
+        started_at = None
+        elapsed = 0.0
+        for now in (0.0, 0.2, 0.4, 0.6, 0.8):
+            count, started_at, elapsed = update_continuous_stability(
+                True, count, started_at, now, required_frames=5)
+        self.assertEqual(count, 5)
+        self.assertAlmostEqual(started_at, 0.8)
+        self.assertAlmostEqual(elapsed, 0.0)
+
+        count, started_at, elapsed = update_continuous_stability(
+            True, count, started_at, 12.8, required_frames=5)
+        self.assertAlmostEqual(elapsed, 12.0)
+
+        count, started_at, elapsed = update_continuous_stability(
+            False, count, started_at, 13.0, required_frames=5)
+        self.assertEqual((count, started_at, elapsed), (0, None, 0.0))
 
     def test_locked_handover_requires_all_conditions(self):
         arguments = dict(

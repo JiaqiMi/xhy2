@@ -38,6 +38,8 @@
     取消自由旋转漂移超限中止；漂移只记录告警，完成 90° 后仍返回全程锁定的初始位置。
 2026.7.19
     修复越过目标后低速阶段重新输出原方向固定 MZ 的问题；改为闭环恢复并正确刹停。
+2026.7.19
+    段间 mode=4 改为判稳后连续保持 12 s；恢复阶段不再触发首次接近方向保护。
 """
 
 from __future__ import division
@@ -74,6 +76,7 @@ from rotation_center_calibration_core import (  # noqa: E402
     rotation_is_unexpectedly_moving_away,
     select_recommended_profile,
     unwrap_angle,
+    update_continuous_stability,
     wrap_angle,
 )
 
@@ -179,7 +182,7 @@ class RotationCenterCalibration(object):
         self.initial_hold_seconds = float(
             rospy.get_param('~initial_hold_seconds', 3.0))
         self.handover_hold_seconds = float(
-            rospy.get_param('~handover_hold_seconds', 2.0))
+            rospy.get_param('~handover_hold_seconds', 12.0))
         self.step_timeout = float(
             rospy.get_param('~step_timeout', 90.0))
         self.feedback_timeout = float(
@@ -303,6 +306,8 @@ class RotationCenterCalibration(object):
                 or self.turn_step <= 0.0
                 or abs(self.turn_step - math.pi / 2.0) > 1e-6
                 or self.turns_each_direction <= 0
+                or self.initial_hold_seconds < 0.0
+                or self.handover_hold_seconds < 0.0
                 or self.step_timeout <= 0.0
                 or self.feedback_timeout <= 0.0
                 or self.stable_frames <= 0
@@ -605,6 +610,10 @@ class RotationCenterCalibration(object):
     def _hold_locked_position(
             self, duration, label, target_yaw, profile=None,
             segment=0, direction=0, turn_index=0, quarter_index=0):
+        """返回锁定位置，完成判稳后再连续保持指定秒数。"""
+        duration = float(duration)
+        if not math.isfinite(duration) or duration < 0.0:
+            raise ValueError('{} 连续稳定时间不合法'.format(label))
         if not self._update_tf() or not self._feedback_fresh():
             raise RuntimeError('{} 前反馈无效'.format(label))
         if self.locked_initial_pose is None:
@@ -612,9 +621,11 @@ class RotationCenterCalibration(object):
         command = self._make_command(
             MODE_DPROV, self.locked_initial_pose, target_yaw, mz=0)
         stable_count = 0
+        stable_started_at = None
+        stable_elapsed = 0.0
         started_at = rospy.Time.now()
         deadline = started_at + rospy.Duration(
-            max(duration + 10.0, self.step_timeout))
+            self.step_timeout + duration)
         rate = rospy.Rate(self.control_rate_hz)
         while not rospy.is_shutdown():
             now = rospy.Time.now()
@@ -646,7 +657,15 @@ class RotationCenterCalibration(object):
                 self.yaw_tolerance,
                 self.yaw_rate_threshold,
             )
-            stable_count = stable_count + 1 if stable else 0
+            stable_count, stable_started_at, stable_elapsed = (
+                update_continuous_stability(
+                    stable,
+                    stable_count,
+                    stable_started_at,
+                    now.to_sec(),
+                    self.stable_frames,
+                )
+            )
             self._log_cycle(
                 label,
                 profile,
@@ -663,14 +682,17 @@ class RotationCenterCalibration(object):
             )
             if (
                     stable_count >= self.stable_frames
-                    and (now - started_at).to_sec() >= duration):
+                    and stable_elapsed >= duration):
                 return
             if now >= deadline:
-                raise RuntimeError('{} mode=4 稳定接管超时'.format(label))
+                raise RuntimeError(
+                    '{} mode=4 稳定接管超时，连续稳定 {:.1f}/{:.1f} s'.format(
+                        label, stable_elapsed, duration))
             rospy.loginfo_throttle(
                 2.0,
                 '%s: %s，位置误差=%.2f m，航向误差=%.1f deg，'
-                '水平速度=%.3f m/s，角速度=%.2f deg/s，稳定帧=%d/%d',
+                '水平速度=%.3f m/s，角速度=%.2f deg/s，稳定帧=%d/%d，'
+                '连续稳定=%.1f/%.1f s',
                 NODE_NAME,
                 label,
                 position_error,
@@ -679,6 +701,8 @@ class RotationCenterCalibration(object):
                 math.degrees(yaw_rate),
                 stable_count,
                 self.stable_frames,
+                stable_elapsed,
+                duration,
             )
             rate.sleep()
 
@@ -786,6 +810,7 @@ class RotationCenterCalibration(object):
                 yaw_rate,
                 direction,
                 self.yaw_rate_threshold,
+                target_crossed=target_crossed,
             )
             if moving_away:
                 if moving_away_started_at is None:

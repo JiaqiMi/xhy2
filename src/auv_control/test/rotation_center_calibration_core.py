@@ -26,6 +26,8 @@
     将旋转漂移半径改为告警判定，不再因平移漂移中止 90° 旋转。
 2026.7.19
     固定档位 MZ 仅用于首次接近目标；越过目标后锁存 RECOVER，使用闭环指令刹停。
+2026.7.19
+    增加连续稳定计时；方向保护读取目标越过锁存，避免恢复阶段误报方向错误。
 """
 
 from __future__ import division
@@ -208,15 +210,17 @@ def apply_fixed_track_policy(
 
 
 def rotation_is_unexpectedly_moving_away(
-        yaw_error, yaw_rate, direction, yaw_rate_threshold):
-    """判断目标尚未越过时是否持续向目标反方向旋转。"""
+        yaw_error, yaw_rate, direction, yaw_rate_threshold,
+        target_crossed=False):
+    """判断首次越过目标前是否持续向目标反方向旋转。"""
     values = (yaw_error, yaw_rate, direction, yaw_rate_threshold)
     if not all(math.isfinite(float(value)) for value in values):
         raise ValueError('远离目标判断参数必须为有限值')
     if abs(float(direction)) < 1e-9:
         raise ValueError('旋转方向不能为 0')
     return (
-        float(direction) * float(yaw_error) > 0.0
+        not bool(target_crossed)
+        and float(direction) * float(yaw_error) > 0.0
         and float(yaw_error) * float(yaw_rate) < 0.0
         and abs(float(yaw_rate)) > float(yaw_rate_threshold)
     )
@@ -230,6 +234,39 @@ def drift_exceeds_warning_threshold(drift, warning_radius):
     if float(drift) < 0.0 or float(warning_radius) <= 0.0:
         raise ValueError('旋转漂移必须非负，告警半径必须为正数')
     return float(drift) > float(warning_radius)
+
+
+def update_continuous_stability(
+        stable,
+        stable_count,
+        stable_started_at,
+        now,
+        required_frames):
+    """更新连续判稳帧数和判稳后的连续保持时间。"""
+    count = int(stable_count)
+    frame_limit = int(required_frames)
+    now = float(now)
+    if count < 0 or frame_limit <= 0:
+        raise ValueError('连续判稳帧数必须合法')
+    if not math.isfinite(now):
+        raise ValueError('连续判稳时间必须为有限值')
+    if stable_started_at is not None:
+        stable_started_at = float(stable_started_at)
+        if not math.isfinite(stable_started_at):
+            raise ValueError('连续判稳起始时间必须为有限值')
+
+    if not bool(stable):
+        return 0, None, 0.0
+
+    count += 1
+    if count >= frame_limit and stable_started_at is None:
+        stable_started_at = now
+    elapsed = (
+        0.0
+        if stable_started_at is None
+        else max(0.0, now - stable_started_at)
+    )
+    return count, stable_started_at, elapsed
 
 
 def locked_handover_is_stable(
