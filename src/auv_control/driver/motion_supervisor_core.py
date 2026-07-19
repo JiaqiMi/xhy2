@@ -360,7 +360,7 @@ class MotionSupervisorCore(object):
             raise ValueError('capture_exit_radius 必须大于 capture_radius')
         if self.parameters['control_center_hold_tolerance'] >= (
                 self.parameters['capture_radius']):
-            raise ValueError('control_center_hold_tolerance 二维死区必须小于 capture_radius')
+            raise ValueError('control_center_hold_tolerance 二维死区二维死区必须小于 capture_radius')
         if self.parameters['hover_fault_position_error'] <= (
                 self.parameters['capture_exit_radius']):
             raise ValueError(
@@ -565,6 +565,14 @@ class MotionSupervisorCore(object):
         kv = self._motion_parameter(kv_prefix, error)
         return kp * error - kv * velocity
 
+    def _axis_track_command(self, axis_name, error, velocity):
+        """计算水平轴 TRACK 输出，不执行单轴捕获状态切换。"""
+        kp_prefix = 'kp_' + axis_name
+        kv_prefix = 'kv_' + axis_name
+        kp = self._motion_parameter(kp_prefix, error)
+        kv = self._motion_parameter(kv_prefix, error)
+        return kp * error - kv * velocity
+
     def _axis_control(self, axis_name, state, error, velocity):
         """推进单个水平轴的 TRACK、BRAKE、HOLD 子状态。"""
         force_prefix = 'tx' if axis_name == 'x' else 'ty'
@@ -603,6 +611,11 @@ class MotionSupervisorCore(object):
             state = AXIS_BRAKE
 
         if state == AXIS_TRACK:
+            return (
+                state,
+                self._axis_track_command(axis_name, error, velocity),
+                False,
+            )
             return (
                 state,
                 self._axis_track_command(axis_name, error, velocity),
@@ -706,10 +719,33 @@ class MotionSupervisorCore(object):
 
     def _center_hold_commands(self, vehicle):
         """用二维圆形死区保持 control_link，并同时补偿 X/Y 耦合漂移。"""
+        """用二维圆形死区保持 control_link，并同时补偿 X/Y 耦合漂移。"""
         dx, dy, unused_distance, unused_yaw_error = (
             self._goal_metrics(vehicle))
         del unused_distance, unused_yaw_error
         error_x, error_y = map_error_to_body(dx, dy, vehicle.yaw)
+        center_stable = (
+            math.hypot(error_x, error_y)
+            <= self.parameters['control_center_hold_tolerance']
+            and math.hypot(
+                vehicle.forward_velocity,
+                vehicle.lateral_velocity,
+            ) <= self.parameters['horizontal_speed_threshold']
+        )
+        if center_stable:
+            self.x_axis_state = AXIS_HOLD
+            self.y_axis_state = AXIS_HOLD
+            return 0.0, 0.0
+
+        # 最终调航向时两轴始终共同闭环；小误差轴的输出由自身 PD 自然减小。
+        self.x_axis_state = AXIS_TRACK
+        self.y_axis_state = AXIS_TRACK
+        return (
+            self._axis_track_command(
+                'x', error_x, vehicle.forward_velocity),
+            self._axis_track_command(
+                'y', error_y, vehicle.lateral_velocity),
+        )
         center_stable = (
             math.hypot(error_x, error_y)
             <= self.parameters['control_center_hold_tolerance']
@@ -872,6 +908,20 @@ class MotionSupervisorCore(object):
                 error_y,
                 vehicle.lateral_velocity,
             )
+
+            if distance > self.parameters['capture_radius']:
+                # 二维距离在捕获区外时，不能忽略已经进入 HOLD 的另一轴。
+                # 两轴都保持闭环，可用较小的反馈输出抑制推进耦合造成的漂移。
+                if self.x_axis_state == AXIS_HOLD:
+                    self.x_axis_state = AXIS_TRACK
+                    tx = self._axis_track_command(
+                        'x', error_x, vehicle.forward_velocity)
+                    x_braking = False
+                if self.y_axis_state == AXIS_HOLD:
+                    self.y_axis_state = AXIS_TRACK
+                    ty = self._axis_track_command(
+                        'y', error_y, vehicle.lateral_velocity)
+                    y_braking = False
 
             if distance > self.parameters['capture_radius']:
                 # 二维距离在捕获区外时，不能忽略已经进入 HOLD 的另一轴。

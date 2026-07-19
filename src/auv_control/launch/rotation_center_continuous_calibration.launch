@@ -10,7 +10,7 @@
     <arg name="control_to_imu_z" default="0.0" />
     <arg name="control_rate_hz" default="5.0" />
     <!-- 每个档位、每个方向连续旋转的圈数。 -->
-    <arg name="continuous_turns" default="3" />
+    <arg name="continuous_turns" default="2" />
     <!-- 单个连续三圈旋转段的最大允许时间，单位 s。 -->
     <arg name="continuous_step_timeout" default="600.0" />
     <!-- mode=4 返回初始位置的最大判稳等待时间，单位 s。 -->
