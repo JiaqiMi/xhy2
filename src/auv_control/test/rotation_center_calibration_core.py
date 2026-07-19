@@ -46,6 +46,10 @@ TorqueProfile = namedtuple(
     'TorqueProfile',
     ('name', 'positive_limit', 'negative_limit'),
 )
+ContinuousRotationStep = namedtuple(
+    'ContinuousRotationStep',
+    ('segment', 'profile', 'direction', 'turns', 'turn_angle'),
+)
 
 
 def build_torque_profiles(
@@ -75,6 +79,30 @@ def build_torque_profiles(
         for name, positive, negative in zip(
             profile_names, levels, negative_levels)
     )
+
+
+def build_continuous_rotation_steps(torque_profiles, turns=3):
+    """构造低中高三档、正负方向各一次的连续多圈旋转序列。"""
+    profiles = tuple(torque_profiles)
+    turns = int(turns)
+    if not profiles:
+        raise ValueError('连续旋转标定至少需要一个力矩档位')
+    if turns <= 0:
+        raise ValueError('连续旋转圈数必须大于 0')
+    if any(not isinstance(profile, TorqueProfile) for profile in profiles):
+        raise TypeError('连续旋转标定档位类型不合法')
+
+    steps = []
+    for profile in profiles:
+        for direction in (1, -1):
+            steps.append(ContinuousRotationStep(
+                len(steps) + 1,
+                profile,
+                direction,
+                turns,
+                2.0 * math.pi * turns,
+            ))
+    return tuple(steps)
 
 
 def fit_quality_score(result):

@@ -38,6 +38,7 @@ if TEST_DIR not in sys.path:
 from rotation_center_calibration_core import (  # noqa: E402
     CalibrationSample,
     apply_fixed_track_policy,
+    build_continuous_rotation_steps,
     build_torque_profiles,
     direct_yaw_command,
     drift_exceeds_warning_threshold,
@@ -77,6 +78,42 @@ class RotationCenterCalibrationCoreTest(unittest.TestCase):
                 ((1000.0, 2000.0, 8000.0), 1.5)):
             with self.assertRaises(ValueError):
                 build_torque_profiles(levels, negative_scale=scale)
+
+    def test_build_continuous_rotation_steps_uses_six_expected_segments(self):
+        profiles = build_torque_profiles(
+            (1000.0, 2000.0, 3000.0), negative_scale=1.5)
+
+        steps = build_continuous_rotation_steps(profiles, turns=3)
+
+        self.assertEqual(
+            [(step.segment, step.profile.name, step.direction, step.turns)
+             for step in steps],
+            [
+                (1, 'low', 1, 3),
+                (2, 'low', -1, 3),
+                (3, 'medium', 1, 3),
+                (4, 'medium', -1, 3),
+                (5, 'high', 1, 3),
+                (6, 'high', -1, 3),
+            ],
+        )
+        for step in steps:
+            self.assertAlmostEqual(step.turn_angle, 6.0 * math.pi)
+
+    def test_build_continuous_rotation_steps_rejects_invalid_turn_count(self):
+        profiles = build_torque_profiles(
+            (1000.0, 2000.0, 3000.0), negative_scale=1.5)
+
+        with self.assertRaises(ValueError):
+            build_continuous_rotation_steps(profiles, turns=0)
+
+    def test_unwrap_tracks_three_continuous_turns(self):
+        unwrapped_yaw = 0.0
+        for degree in range(10, 1081, 10):
+            wrapped_yaw = math.radians((degree + 180) % 360 - 180)
+            unwrapped_yaw = unwrap_angle(unwrapped_yaw, wrapped_yaw)
+
+        self.assertAlmostEqual(unwrapped_yaw, 6.0 * math.pi, places=9)
 
     def test_fixed_track_command_uses_planned_direction_and_asymmetry(self):
         self.assertEqual(

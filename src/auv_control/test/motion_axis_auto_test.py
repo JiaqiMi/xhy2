@@ -633,11 +633,32 @@ class MotionAxisAutoTest(object):
             else:
                 stable_started_at = None
 
+            hover_acceptance_lost = (
+                self.axis in ('x', 'y')
+                and self._state_fresh()
+                and state is not None
+                and state.startup_complete
+                and state.state == MotionState.HOVER
+                and goal_confirmed
+                and not arrived
+            )
+            if hover_acceptance_lost:
+                rospy.logwarn_throttle(
+                    2.0,
+                    '%s: mode=4 接管后暂未满足测试验收；'
+                    '二维误差=%.3f m，速度=%.4f m/s，继续等待稳定',
+                    NODE_NAME,
+                    state.base_position_error,
+                    state.horizontal_speed,
+                )
+
             stalled = (
                 self.axis in ('x', 'y')
                 and self._state_fresh()
                 and state is not None
                 and state.startup_complete
+                # HOVER 后 TX/TY=0 是 mode=4 接管的正常表现，不能判为停滞。
+                and state.state != MotionState.HOVER
                 and goal_confirmed
                 and xy_motion_is_stalled(
                     state.base_position_error,
