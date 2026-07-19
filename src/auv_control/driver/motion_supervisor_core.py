@@ -277,9 +277,10 @@ DEFAULT_PARAMETERS = {
     'yaw_tolerance': math.radians(5.0),
     'yaw_rate_threshold': math.radians(0.3),
     'stable_frames': 5,
-    'hover_fault_speed': 0.08,
-    'hover_fault_yaw_rate': math.radians(2.0),
-    'hover_fault_yaw_error': math.radians(10.0),
+    'hover_fault_position_error': 0.40,
+    'hover_fault_speed': 0.15,
+    'hover_fault_yaw_rate': math.radians(5.0),
+    'hover_fault_yaw_error': math.radians(20.0),
     'mode_ack_timeout': 1.0,
 }
 
@@ -337,7 +338,8 @@ class MotionSupervisorCore(object):
             'axis_brake_exit_hysteresis',
             'horizontal_speed_threshold',
             'yaw_tolerance', 'yaw_rate_threshold',
-            'stable_frames', 'hover_fault_yaw_rate',
+            'stable_frames', 'hover_fault_position_error',
+            'hover_fault_speed', 'hover_fault_yaw_rate',
             'hover_fault_yaw_error', 'mode_ack_timeout',
             'brake_margin_tx_positive', 'brake_margin_tx_negative',
             'brake_margin_ty_positive', 'brake_margin_ty_negative',
@@ -359,6 +361,22 @@ class MotionSupervisorCore(object):
         if self.parameters['control_center_hold_tolerance'] >= (
                 self.parameters['capture_radius']):
             raise ValueError('control_center_hold_tolerance 二维死区必须小于 capture_radius')
+        if self.parameters['hover_fault_position_error'] <= (
+                self.parameters['capture_exit_radius']):
+            raise ValueError(
+                'hover_fault_position_error 必须大于 capture_exit_radius')
+        if self.parameters['hover_fault_speed'] <= (
+                self.parameters['horizontal_speed_threshold']):
+            raise ValueError(
+                'hover_fault_speed 必须大于 horizontal_speed_threshold')
+        if self.parameters['hover_fault_yaw_rate'] <= (
+                self.parameters['yaw_rate_threshold']):
+            raise ValueError(
+                'hover_fault_yaw_rate 必须大于 yaw_rate_threshold')
+        if self.parameters['hover_fault_yaw_error'] <= (
+                self.parameters['yaw_tolerance']):
+            raise ValueError(
+                'hover_fault_yaw_error 必须大于 yaw_tolerance')
         if self.parameters['brake_min_mz'] > min(
                 self.parameters['brake_max_mz_positive'],
                 self.parameters['brake_max_mz_negative']):
@@ -743,6 +761,17 @@ class MotionSupervisorCore(object):
             yaw_braking=True,
         )
 
+    def _final_yaw_needs_realign(self, yaw_error, yaw_rate_abs):
+        """判断刹转后是否必须恢复主动调航向，避免停在误差死区。"""
+        tolerance = self.parameters['yaw_tolerance']
+        return (
+            abs(yaw_error) > 2.0 * tolerance
+            or (
+                abs(yaw_error) > tolerance
+                and yaw_rate_abs <= self.parameters['yaw_rate_threshold']
+            )
+        )
+
     def step(self, vehicle):
         """推进一个控制周期。"""
         if not isinstance(vehicle, VehicleState):
@@ -945,9 +974,9 @@ class MotionSupervisorCore(object):
                     '最终刹转时漂出捕获区，保持当前航向重新接近',
                 )
                 return self._brake_output(vehicle)
-            if abs(yaw_error) > 2.0 * self.parameters['yaw_tolerance']:
+            if self._final_yaw_needs_realign(yaw_error, yaw_rate_abs):
                 self.yaw_axis_state = AXIS_TRACK
-                self._transition(ALIGN_FINAL, '最终航向偏差过大，重新调整')
+                self._transition(ALIGN_FINAL, '最终刹转后航向未收敛，重新调整')
                 return self._final_alignment_output(vehicle, yaw_error)
             pose_stopped = (
                 abs(yaw_error) <= self.parameters['yaw_tolerance']
@@ -988,8 +1017,9 @@ class MotionSupervisorCore(object):
                     '捕获期间漂出位置范围，保持当前航向重新接近',
                 )
                 return self._brake_output(vehicle)
-            if abs(yaw_error) > 2.0 * self.parameters['yaw_tolerance']:
-                self._transition(ALIGN_FINAL, '捕获期间航向偏差过大')
+            if self._final_yaw_needs_realign(yaw_error, yaw_rate_abs):
+                self.yaw_axis_state = AXIS_TRACK
+                self._transition(ALIGN_FINAL, '捕获期间航向未收敛，重新调整')
                 return self._final_alignment_output(vehicle, yaw_error)
             captured = (
                 distance <= self.parameters['capture_radius']
@@ -1061,7 +1091,7 @@ class MotionSupervisorCore(object):
             if speed > self.parameters['hover_fault_speed']:
                 self._transition(TRANSLATE_BRAKE, '定点接管后水平速度异常')
                 return self._brake_output(vehicle)
-            if hover_distance > self.parameters['capture_exit_radius']:
+            if hover_distance > self.parameters['hover_fault_position_error']:
                 self._transition(TRANSLATE_BRAKE, '定点接管后位置误差超限')
                 return self._brake_output(vehicle)
             if yaw_rate_abs > self.parameters['hover_fault_yaw_rate']:

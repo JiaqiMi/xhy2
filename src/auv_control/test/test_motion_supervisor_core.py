@@ -388,6 +388,27 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.state, TRANSLATE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
+    def test_final_brake_realigns_stopped_yaw_error_outside_tolerance(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = FINAL_BRAKE
+
+        output = self.core.step(self.vehicle(yaw=math.radians(-6.0)))
+
+        self.assertEqual(output.state, ALIGN_FINAL)
+        self.assertEqual(output.yaw_axis_state, AXIS_TRACK)
+        self.assertGreater(output.mz, 0)
+
+    def test_final_brake_keeps_braking_while_yaw_is_still_rotating(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = FINAL_BRAKE
+
+        output = self.core.step(self.vehicle(
+            yaw=math.radians(-6.0), r=math.radians(1.0)))
+
+        self.assertEqual(output.state, FINAL_BRAKE)
+        self.assertEqual(output.yaw_axis_state, AXIS_BRAKE)
+        self.assertGreater(output.mz, 0)
+
     def test_feedback_timeout_enters_safe_with_zero_force(self):
         self.core.set_goal(MotionGoal(2.0, 0.0, 1.5, 0.0))
         self.core.step(self.vehicle())
@@ -583,6 +604,19 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.mode, MODE_DEPTH)
         self.assertIsNone(self.core.handover_started_at)
 
+    def test_capture_realigns_stopped_yaw_error_outside_tolerance(self):
+        self.core.goal = MotionGoal(0.0, 0.0, 1.5, 0.0)
+        self.core.state = CAPTURE
+        self.core.handover_started_at = self.now
+
+        output = self.core.step(self.vehicle(
+            yaw=math.radians(-6.0), mode=MODE_DEPTH))
+
+        self.assertEqual(output.state, ALIGN_FINAL)
+        self.assertEqual(output.yaw_axis_state, AXIS_TRACK)
+        self.assertGreater(output.mz, 0)
+        self.assertIsNone(self.core.handover_started_at)
+
     def test_repeated_identical_goal_does_not_reset_capture_ack(self):
         goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.goal = goal
@@ -594,15 +628,29 @@ class MotionSupervisorCoreTest(unittest.TestCase):
     def test_hover_abnormal_speed_fallback(self):
         self.core.goal = MotionGoal(0.0, 0.0, 1.5, 0.0)
         self.core.state = HOVER
-        output = self.core.step(self.vehicle(u=0.09, mode=MODE_DPROV))
+        output = self.core.step(self.vehicle(u=0.16, mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
+
+    def test_hover_keeps_mode4_for_small_terminal_deviation(self):
+        self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
+        self.core.state = HOVER
+
+        output = self.core.step(self.vehicle(
+            x=0.30,
+            yaw=math.radians(15.0),
+            u=0.10,
+            r=math.radians(4.0),
+            mode=MODE_DPROV))
+
+        self.assertEqual(output.state, HOVER)
+        self.assertEqual(output.mode, MODE_DPROV)
 
     def test_hover_yaw_error_and_rate_fallback(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = HOVER
         output = self.core.step(
-            self.vehicle(yaw=math.radians(11.0), mode=MODE_DPROV))
+            self.vehicle(yaw=math.radians(21.0), mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
@@ -610,13 +658,13 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = HOVER
         output = self.core.step(
-            self.vehicle(x=0.30, mode=MODE_DPROV))
+            self.vehicle(x=0.41, mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
         self.core.state = HOVER
         output = self.core.step(
-            self.vehicle(r=math.radians(2.1), mode=MODE_DPROV))
+            self.vehicle(r=math.radians(5.1), mode=MODE_DPROV))
         self.assertEqual(output.state, TRANSLATE_BRAKE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
