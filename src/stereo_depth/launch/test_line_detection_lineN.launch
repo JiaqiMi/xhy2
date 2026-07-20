@@ -9,7 +9,7 @@
          default="/home/xhy/catkin_ws/models/line0709.pt" />
 
     <!-- 10或20均可 -->
-    <arg name="line_sample_count" default="20" />
+    <arg name="line_sample_count" default="10" />
 
     <arg name="exp_env" default="water" />
     <arg name="conf_thre" default="0.2" />

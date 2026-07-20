@@ -5,11 +5,11 @@
     <arg name="start_splitter" default="false" />
     <arg name="start_web" default="true" />
 
-    <!-- <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/rectangle0710.pt" /> -->
+    <arg name="model_path"
+         default="/home/xhy/catkin_ws/models/rectangles0720.pt" />
     <arg name="task_mode" default="detect" />
     <arg name="detect_mode" default="2" />   
-    <arg name="model_path" default="" />
+    <!-- <arg name="model_path" default="" /> -->
     <arg name="exp_env" default="water" />
     <arg name="conf_thre" default="0.2" />
     <arg name="top_k" default="3" />
