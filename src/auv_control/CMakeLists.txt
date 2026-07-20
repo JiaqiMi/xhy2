@@ -180,7 +180,7 @@ include_directories(
 ## in contrast to setup.py, you can choose the destination
 catkin_install_python(PROGRAMS
   driver/auv_tf_handler.py
-  driver/debug_driver.py
+#  driver/debug_driver.py
   driver/debug_driver_v2.py
   driver/debug_protocol.py
   driver/lever_arm.py

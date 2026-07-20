@@ -5,12 +5,18 @@
     <!-- 包含任务参数 -->
     <!-- <include file="$(find auv_control)/launch/param.launch"/> -->
     <arg name="save_dir" default="$(env HOME)/.ros/auv_logs" />
+
+    <!-- 下位机ip -->
     <arg name="vehicle_ip" default="192.168.1.115" />
+
+    <!-- 启动节点参数 -->
     <arg name="start_camera" default="true" />
     <arg name="start_splitter" default="true" />
     <arg name="start_state_web" default="true" />
     <arg name="start_fisheye" default="true" />
     <arg name="start_motion_supervisor" default="false" />
+
+
     <arg name="motion_supervisor_config_file"
          default="$(find auv_control)/config/motion_supervisor.yaml" />
     <!-- debug_driver_v2 向下位机发送完整控制帧的频率，单位 Hz。 -->
@@ -22,6 +28,7 @@
     <arg name="base_to_imu_x" default="0.0" />
     <arg name="base_to_imu_y" default="0.0" />
     <arg name="base_to_imu_z" default="0.0" />
+
     <!-- web 参数 -->    
     <arg name="state_web_host" default="0.0.0.0" />
     <arg name="state_web_port" default="8088" />
@@ -54,7 +61,7 @@
 
     <!-- 调试驱动 V2 (TCP 5063, 支持定深/定深定向/定点三种模式) -->
     <node pkg="auv_control" type="debug_driver_v2.py" name="debug_driver_v2" output="screen">
-        <param name="debug_ip" value="192.168.1.115"/>
+        <param name="debug_ip" value="$(arg vehicle_ip)"/>
         <param name="debug_port" value="5063"/>
         <param name="save_raw_data" type="bool" value="true" />
         <param name="raw_save_dir" type="string" value="$(arg save_dir)" />
@@ -94,6 +101,7 @@
     </group>
 
     <!-- <node pkg="auv_control" type="state_control.py" name="state_control" output="screen"/> -->
+    
     <!-- 启动 USB 相机 -->
     <node if="$(arg start_camera)" name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
 
@@ -111,6 +119,8 @@
         <arg name="subtype" value="$(arg subtype)" />
         <arg name="image_topic" value="$(arg image_topic)" />
     </include>
+    
+    <!-- 启动控制状态机 -->
     <include if="$(arg start_motion_supervisor)"
              file="$(find auv_control)/launch/motion_supervisor_prototype.launch">
         <arg name="start_goal_test" value="false" />
