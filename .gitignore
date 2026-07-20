@@ -39,6 +39,15 @@ datasets/xhy0718-balls/
 train_models/
 models/
 
+# 仅保留在本地的纯 Python 单元测试（不依赖 ROS）
+/src/auv_control/test/test_debug_protocol.py
+/src/auv_control/test/test_lever_arm.py
+/src/auv_control/test/test_motion_auto_sequence_core.py
+/src/auv_control/test/test_motion_supervisor_core.py
+/src/auv_control/test/test_rotation_center_calibration_core.py
+/src/auv_control/test/test_world_frame.py
+/src/auv_control/test/test_world_origin_reset_utils.py
+
 
 
 # 豁免相机参数文件

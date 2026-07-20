@@ -37,13 +37,6 @@
     <arg name="base_to_imu_z" default="0.0" />
 
     <!--
-      control_link 水平旋转中心指向 IMU/GNSS 点的前、右、下偏置，单位 m。
-      未完成原地旋转标定前默认与 IMU 重合；标定后覆盖 x/y。
-    -->
-    <arg name="control_to_imu_x" default="0.0" />
-    <arg name="control_to_imu_y" default="0.0" />
-    <arg name="control_to_imu_z" default="0.0" />
-    <!--
       是否同时启动相对目标测试节点。
       false：只启动 motion_supervisor，目标由其他节点发布；
       true：启动 motion_goal_test，并自动发布下方参数定义的测试目标。
@@ -108,14 +101,11 @@
         <param name="log_enabled" value="$(arg log_enabled)" />
         <!-- CSV 完整数据日志目录；此 launch 参数覆盖 YAML 中的默认目录。 -->
         <param name="log_directory" value="$(arg log_directory)" />
-        <!-- base_link 和兼容单中心 TF 使用的杆臂。 -->
+        <!-- base_link 到导航点的杆臂。 -->
         <param name="base_to_imu_x" value="$(arg base_to_imu_x)" />
         <param name="base_to_imu_y" value="$(arg base_to_imu_y)" />
         <param name="base_to_imu_z" value="$(arg base_to_imu_z)" />
-        <param name="control_to_imu_x" value="$(arg control_to_imu_x)" />
-        <param name="control_to_imu_y" value="$(arg control_to_imu_y)" />
-        <param name="control_to_imu_z" value="$(arg control_to_imu_z)" />
-        <!-- 两套方向旋转中心由 motion_supervisor.yaml 统一加载，launch 不得覆盖。 -->
+        <!-- 两套方向控制中心由 config_file 统一加载。 -->
     </node>
 
     <!--

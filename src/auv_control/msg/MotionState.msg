@@ -1,5 +1,6 @@
-# 默认随状态机以 5 Hz 发布；任务节点仅将 HOVER 视为目标到达且定点接管已确认
+# 随状态机控制循环发布；任务节点仅将 HOVER 视为目标到达且定点接管已确认
 uint8 IDLE=0
+# ALIGN_PATH、ALIGN_PATH_BRAKE、ALIGN_FINAL、FINAL_BRAKE 仅为兼容保留
 uint8 ALIGN_PATH=1
 uint8 ALIGN_PATH_BRAKE=2
 uint8 TRANSLATE=3
@@ -10,7 +11,7 @@ uint8 CAPTURE=7
 uint8 HOVER=8
 uint8 SAFE=9
 
-# 单轴子状态；X/Y 独立运行，Yaw 在水平停稳后运行
+# 三轴诊断子状态；X/Y 在统一二维轨迹下同步运行，Yaw 同时运行
 uint8 AXIS_HOLD=0
 uint8 AXIS_TRACK=1
 uint8 AXIS_BRAKE=2
@@ -23,7 +24,7 @@ uint8 state
 bool goal_active
 # 当前控制器实际采用的 map 绝对目标位姿
 geometry_msgs/PoseStamped goal
-# control_link 到内部旋转中心目标的水平位置误差，单位 m，不包含深度误差
+# 当前锁存控制中心到内部目标的水平位置误差，单位 m，不包含深度误差
 float32 position_error
 # 当前 base_link 到任务最终 base_link 目标的水平误差，单位 m
 float32 base_position_error
@@ -41,10 +42,10 @@ int16 mz
 uint8 x_axis_state
 uint8 y_axis_state
 uint8 yaw_axis_state
-# control_link 当前本体前、右方向误差，单位 m
+# 当前锁存控制中心的本体前、右方向误差，单位 m
 float32 x_axis_error
 float32 y_axis_error
-# control_link 当前本体前、右速度，单位 m/s
+# 当前锁存控制中心的本体前、右速度，单位 m/s
 float32 x_axis_speed
 float32 y_axis_speed
 # 是否已经完成启动首帧锁定及 mode=4 定点接管

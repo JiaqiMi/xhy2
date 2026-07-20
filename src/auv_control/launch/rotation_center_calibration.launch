@@ -8,7 +8,7 @@
 
     <!-- 自由旋转和段间 mode=4 接管使用的 NED 绝对目标深度，单位 m。 -->
     <arg name="target_z" default="-0.9" />
-    <!-- 水平旋转无法标定 Z；结果文件原样保留的 control_link -> imu Z，单位 m。 -->
+    <!-- 水平旋转无法标定 Z；结果文件原样保留的方向控制中心 -> imu Z，单位 m。 -->
     <arg name="control_to_imu_z" default="0.0" />
     <!-- 指令、采样和控制频率，单位 Hz，与底层 5 Hz 指令链路一致。 -->
     <arg name="control_rate_hz" default="5.0" />
