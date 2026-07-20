@@ -19,7 +19,8 @@
     <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
     <arg name="motion_state_topic" default="/motion/state" />
     <arg name="motion_state_timeout" default="5" />
-    <arg name="motion_goal_position_tolerance" default="0.05" />
+    <arg name="motion_goal_position_tolerance" default="0.15" />
+    <!-- 2026年7月20日：测试改为0.15m容忍度 -->
     <arg name="motion_goal_yaw_tolerance_deg" default="3.0" />
 
     <!-- 红线识别、任务完成、相机和轨迹 JSON。 -->
@@ -31,7 +32,7 @@
     <arg name="trajectory_topic" default="/task1/v3/trajectory" />
 
     <!-- 未识别红线：左右转并回到启动航向后，提交前方绝对目标的距离，单位 m。 -->
-    <arg name="search_forward_distance" default="0.5" />
+    <arg name="search_forward_distance" default="0.3" />
     <!-- 搜索旋转：相对启动航向左右旋转角度、航向容差（deg）。
          NED 中默认正航向向右，search_yaw_sign=1；实机方向相反时改为 -1。 -->
     <arg name="search_yaw_angle_deg" default="30.0" />
@@ -45,7 +46,7 @@
     <arg name="position_tolerance" default="0.15" />
 
     <!-- 节点启动后提交初始位姿并等待 HOVER/识别模块的时间，单位 s。 -->
-    <arg name="startup_hold_seconds" default="10.0" />
+    <arg name="startup_hold_seconds" default="30.0" />
     <!-- 相机消息超过该时间未更新则认为相机未就绪，单位 s。 -->
     <arg name="camera_message_timeout" default="2.0" />
     <!-- 终点 HOVER 后要求持续保持的时间，单位 s。 -->
@@ -147,8 +148,10 @@
     <arg name="trajectory_web_host" default="192.168.1.117" />
     <!-- 网页端口；默认访问 http://192.168.1.117:8083。 -->
     <arg name="trajectory_web_port" default="8083" />
+    <arg name="start_line_node" default="true" />
 
-
+    <include if="$(arg start_line_node)"
+             file="$(find stereo_depth)/launch/test_line_detection.launch" />
     <node pkg="auv_control"
           type="test_task1_v3_line_follow.py"
           name="test_task1_v3_line_follow"
