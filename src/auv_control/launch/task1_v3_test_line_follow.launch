@@ -13,6 +13,8 @@
 
     <!-- 基础：主循环频率，单位 Hz。 -->
     <arg name="rate" default="5.0" />
+    <!-- 红线识别点统一转换到的世界坐标系。 -->
+    <arg name="map_frame" default="map" />
 
     <!-- motion_supervisor 接口：绝对目标、取消和状态反馈。 -->
     <arg name="motion_goal_topic" default="/cmd/motion/goal" />
@@ -44,6 +46,10 @@
     <arg name="startup_hold_seconds" default="10.0" />
     <!-- 相机消息超过该时间未更新则认为相机未就绪，单位 s。 -->
     <arg name="camera_message_timeout" default="2.0" />
+    <!-- 每帧红线只等待一次原时间戳 TF；超过该时间仍不可用则丢弃整帧，单位 s。 -->
+    <arg name="tf_timeout_seconds" default="0.1" />
+    <!-- 红线消息允许的最大年龄；过期帧不参与锁线、关联或拟合，单位 s。 -->
+    <arg name="line_message_max_age_seconds" default="0.5" />
 
     <!-- 可接受的红线类别名，多个名称使用英文逗号分隔。 -->
     <arg name="line_classes" default="line" />
@@ -75,6 +81,13 @@
     <arg name="line_high_confidence_association_angle_deg" default="45.0" />
     <!-- 允许新线段从当前曲线端部向外延伸的最大间隔，单位 m。 -->
     <arg name="line_extension_max_gap" default="1.0" />
+    <!-- 整帧至少有该比例的点同时满足距离和局部方向要求，才允许进入拟合。 -->
+    <arg name="line_association_min_inlier_ratio" default="0.60" />
+    <!-- 任一点允许的硬距离上限=当前关联距离×该倍数，防止远端异常点随整帧进入。 -->
+    <arg name="line_association_max_distance_factor" default="2.0" />
+    <!-- 末端延伸至少需要的点数，以及延伸候选占非关联点的最低比例。 -->
+    <arg name="line_extension_min_points" default="2" />
+    <arg name="line_extension_min_inlier_ratio" default="0.60" />
 
     <!-- 新点与已有点距离小于该值时做平滑融合，不重复增加点，单位 m。 -->
     <arg name="line_point_merge_distance" default="0.12" />
@@ -149,6 +162,7 @@
         <env name="ROS_PYTHON_LOG_CONFIG_FILE"
              value="$(find auv_control)/config/task1_v3_python_logging.conf" />
         <param name="rate" type="double" value="$(arg rate)" />
+        <param name="map_frame" type="string" value="$(arg map_frame)" />
 
         <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
         <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
@@ -168,6 +182,8 @@
 
         <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
         <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
+        <param name="tf_timeout_seconds" type="double" value="$(arg tf_timeout_seconds)" />
+        <param name="line_message_max_age_seconds" type="double" value="$(arg line_message_max_age_seconds)" />
 
         <param name="line_classes" type="string" value="$(arg line_classes)" />
         <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
@@ -183,6 +199,10 @@
         <param name="line_association_angle_deg" type="double" value="$(arg line_association_angle_deg)" />
         <param name="line_high_confidence_association_angle_deg" type="double" value="$(arg line_high_confidence_association_angle_deg)" />
         <param name="line_extension_max_gap" type="double" value="$(arg line_extension_max_gap)" />
+        <param name="line_association_min_inlier_ratio" type="double" value="$(arg line_association_min_inlier_ratio)" />
+        <param name="line_association_max_distance_factor" type="double" value="$(arg line_association_max_distance_factor)" />
+        <param name="line_extension_min_points" type="int" value="$(arg line_extension_min_points)" />
+        <param name="line_extension_min_inlier_ratio" type="double" value="$(arg line_extension_min_inlier_ratio)" />
 
         <param name="line_point_merge_distance" type="double" value="$(arg line_point_merge_distance)" />
         <param name="line_point_update_alpha" type="double" value="$(arg line_point_update_alpha)" />

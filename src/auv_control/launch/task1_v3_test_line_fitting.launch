@@ -20,8 +20,11 @@
     <arg name="line_accept_point_count" default="20" />
     <arg name="camera_topic" default="/left/image_raw" />
     <arg name="trajectory_topic" default="/task1/v3/line_fitting/trajectory" />
-    <!-- 单次 TF 等待超时和相机消息就绪超时，单位 s。相机状态只显示，不阻止拟合。 -->
-    <arg name="tf_timeout_seconds" default="1.0" />
+    <!-- 每帧红线只等待一次原时间戳 TF；超过该时间仍不可用则丢弃整帧，单位 s。 -->
+    <arg name="tf_timeout_seconds" default="0.1" />
+    <!-- 红线消息允许的最大年龄；过期帧不参与锁线、关联或拟合，单位 s。 -->
+    <arg name="line_message_max_age_seconds" default="0.5" />
+    <!-- 相机消息就绪超时，单位 s。相机状态只显示，不阻止拟合。 -->
     <arg name="camera_message_timeout" default="2.0" />
     <!-- 终端状态输出节流周期，单位 s。 -->
     <arg name="log_period_seconds" default="2.0" />
@@ -52,6 +55,13 @@
     <arg name="line_high_confidence_association_angle_deg" default="45.0" />
     <!-- 新线段从曲线端部向外延伸时允许的最大间隔，单位 m。 -->
     <arg name="line_extension_max_gap" default="1.0" />
+    <!-- 整帧至少有该比例的点同时满足距离和局部方向要求，才允许进入拟合。 -->
+    <arg name="line_association_min_inlier_ratio" default="0.60" />
+    <!-- 任一点允许的硬距离上限=当前关联距离×该倍数，防止远端异常点随整帧进入。 -->
+    <arg name="line_association_max_distance_factor" default="2.0" />
+    <!-- 末端延伸至少需要的点数，以及延伸候选占非关联点的最低比例。 -->
+    <arg name="line_extension_min_points" default="2" />
+    <arg name="line_extension_min_inlier_ratio" default="0.60" />
 
     <!-- 新点距已有点小于该值时融合而不重复增加，单位 m。 -->
     <arg name="line_point_merge_distance" default="0.12" />
@@ -108,6 +118,7 @@
         <param name="camera_topic" type="string" value="$(arg camera_topic)" />
         <param name="trajectory_topic" type="string" value="$(arg trajectory_topic)" />
         <param name="tf_timeout_seconds" type="double" value="$(arg tf_timeout_seconds)" />
+        <param name="line_message_max_age_seconds" type="double" value="$(arg line_message_max_age_seconds)" />
         <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
         <param name="log_period_seconds" type="double" value="$(arg log_period_seconds)" />
 
@@ -125,6 +136,10 @@
         <param name="line_association_angle_deg" type="double" value="$(arg line_association_angle_deg)" />
         <param name="line_high_confidence_association_angle_deg" type="double" value="$(arg line_high_confidence_association_angle_deg)" />
         <param name="line_extension_max_gap" type="double" value="$(arg line_extension_max_gap)" />
+        <param name="line_association_min_inlier_ratio" type="double" value="$(arg line_association_min_inlier_ratio)" />
+        <param name="line_association_max_distance_factor" type="double" value="$(arg line_association_max_distance_factor)" />
+        <param name="line_extension_min_points" type="int" value="$(arg line_extension_min_points)" />
+        <param name="line_extension_min_inlier_ratio" type="double" value="$(arg line_extension_min_inlier_ratio)" />
 
         <param name="line_point_merge_distance" type="double" value="$(arg line_point_merge_distance)" />
         <param name="line_point_update_alpha" type="double" value="$(arg line_point_update_alpha)" />
