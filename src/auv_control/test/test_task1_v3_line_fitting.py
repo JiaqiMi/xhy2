@@ -36,6 +36,9 @@
 2026.7.20
     红线输入由固定三点 TargetDetection3 迁移到多点 LineDetection；逐点过滤
     point_valid，launch 可限制每帧参与拟合的有效点数量，Web 显示总/有效/使用点数。
+2026.7.20
+    增加置信度硬下限、单向连续性检查和自动降阶拟合；出现长跳变、反向
+    延伸或近 180 度回折的曲线不允许冻结，Web 曲线直接使用 base_link 规划坐标。
 """
 
 import copy
@@ -202,6 +205,9 @@ class LineFittingTest:
         self.line_lock_window_seconds = max(0.0, float(rospy.get_param(
             "~line_lock_window_seconds", 0.3
         )))
+        self.line_min_confidence = clamp(float(rospy.get_param(
+            "~line_min_confidence", 0.70
+        )), 0.0, 1.0)
         self.line_low_confidence_threshold = float(rospy.get_param(
             "~line_low_confidence_threshold", 0.50
         ))
@@ -259,6 +265,15 @@ class LineFittingTest:
         )))
         self.line_curve_min_length = max(0.01, float(rospy.get_param(
             "~line_curve_min_length", 0.15
+        )))
+        self.line_curve_max_turn = math.radians(max(1.0, float(
+            rospy.get_param("~line_curve_max_turn_deg", 75.0)
+        )))
+        self.line_curve_max_sample_gap = max(0.01, float(rospy.get_param(
+            "~line_curve_max_sample_gap", 0.20
+        )))
+        self.line_curve_backtrack_tolerance = max(0.0, float(rospy.get_param(
+            "~line_curve_backtrack_tolerance", 0.01
         )))
 
         # 实时拟合曲线经后续帧确认后立即冻结，不再等待原始点达到上限。
@@ -347,7 +362,6 @@ class LineFittingTest:
         self.rejected_triplets = 0
         self.last_reject_reason = "none"
         self.actual_trajectory = []
-        self.tracking_lever_arm = None
         self.last_trajectory_publish_time = rospy.Time(0)
 
         rospy.Subscriber(
@@ -357,10 +371,11 @@ class LineFittingTest:
             self.camera_topic, rospy.AnyMsg, self.camera_callback, queue_size=1
         )
         rospy.loginfo(
-            "%s: 红线接口=auv_control/LineDetection；每帧拟合点上限=%s",
+            "%s: 红线接口=auv_control/LineDetection；每帧拟合点上限=%s；置信度下限=%.2f",
             NODE_NAME,
             "全部有效点" if self.line_accept_point_count == 0
             else str(self.line_accept_point_count),
+            self.line_min_confidence,
         )
 
     def camera_callback(self, _message):
@@ -399,64 +414,9 @@ class LineFittingTest:
         """返回 Web 航向箭头终点使用的 camera 位姿。"""
         return self.get_frame_pose(self.line_tracking_frame)
 
-    def get_tracking_lever_arm(self):
-        """读取 base_link 指向 camera 的水平杆臂。"""
-        if self.tracking_lever_arm is not None:
-            return self.tracking_lever_arm
-        try:
-            translation, _rotation = self.tf_listener.lookupTransform(
-                self.robot_frame, self.line_tracking_frame, rospy.Time(0)
-            )
-        except tf.Exception as error:
-            rospy.logwarn_throttle(
-                2.0,
-                "%s: 等待 %s -> %s 杆臂 TF: %s",
-                NODE_NAME,
-                self.robot_frame,
-                self.line_tracking_frame,
-                error,
-            )
-            return None
-        self.tracking_lever_arm = (float(translation[0]), float(translation[1]))
-        rospy.loginfo(
-            "%s: Web 规划轨迹使用 %s 水平杆臂=(%.3f, %.3f) m",
-            NODE_NAME,
-            self.line_tracking_frame,
-            self.tracking_lever_arm[0],
-            self.tracking_lever_arm[1],
-        )
-        return self.tracking_lever_arm
-
-    def tracking_point_to_base_point(self, camera_point, target_yaw):
-        """按曲线切向把 camera 曲线点换算为 base_link 规划点。"""
-        lever_arm = self.get_tracking_lever_arm()
-        if lever_arm is None:
-            return None
-        cosine = math.cos(target_yaw)
-        sine = math.sin(target_yaw)
-        return Point(
-            camera_point.x - (cosine * lever_arm[0] - sine * lever_arm[1]),
-            camera_point.y - (sine * lever_arm[0] + cosine * lever_arm[1]),
-            camera_point.z,
-        )
-
     def tracking_curve_to_base_points(self, points):
-        """生成仅供 Web 显示的 base_link 拟合轨迹。"""
-        if len(points) < 2:
-            return []
-        converted = []
-        for index, point in enumerate(points):
-            if index < len(points) - 1:
-                other = points[index + 1]
-                yaw = math.atan2(other.y - point.y, other.x - point.x)
-            else:
-                other = points[index - 1]
-                yaw = math.atan2(point.y - other.y, point.x - other.x)
-            base_point = self.tracking_point_to_base_point(point, yaw)
-            if base_point is None:
-                return []
-            converted.append(base_point)
-        return converted
+        """拟合曲线现在直接作为 base_link 规划轨迹显示。"""
+        return [copy.deepcopy(point) for point in points]
 
     def transform_pose_to_map(self, pose):
         try:
@@ -542,7 +502,7 @@ class LineFittingTest:
             )
             maximum_bend = max(
                 maximum_bend,
-                self.undirected_angle_error(first_yaw, second_yaw),
+                abs(wrap_angle(second_yaw - first_yaw)),
             )
             maximum_residual = max(
                 maximum_residual,
@@ -819,6 +779,34 @@ class LineFittingTest:
                 self.line_raw_points.append(point)
         self.roll_line_fit_window()
 
+    def curve_geometry_reason(self, curve, axis):
+        """禁止拟合采样出现长跳变、反向延伸或大角度回折。"""
+        if len(curve) < 2:
+            return "curve_too_short"
+        previous_yaw = None
+        for index in range(1, len(curve)):
+            dx = curve[index].x - curve[index - 1].x
+            dy = curve[index].y - curve[index - 1].y
+            distance = math.hypot(dx, dy)
+            if distance < 1e-6:
+                continue
+            if distance > self.line_curve_max_sample_gap:
+                return "curve_sample_gap"
+            if (
+                dx * axis[0] + dy * axis[1]
+                < -self.line_curve_backtrack_tolerance
+            ):
+                return "curve_backtracking"
+            yaw = math.atan2(dy, dx)
+            if (
+                previous_yaw is not None
+                and abs(wrap_angle(yaw - previous_yaw))
+                > self.line_curve_max_turn
+            ):
+                return "curve_turn_too_large"
+            previous_yaw = yaw
+        return None
+
     def fit_line_curve(self):
         if len(self.line_raw_points) < 2 or self.line_reference_point is None:
             return False
@@ -851,55 +839,110 @@ class LineFittingTest:
         if span < self.line_curve_min_length:
             return False
 
-        degree = min(self.line_curve_degree, len(self.line_raw_points) - 1)
         samples = np.linspace(
             float(parameters[0]),
             float(parameters[-1]),
             self.line_curve_sample_count,
         )
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                x_model = np.poly1d(np.polyfit(parameters, ordered[:, 0], degree))
-                y_model = np.poly1d(np.polyfit(parameters, ordered[:, 1], degree))
-            mean_z = sum(point.z for point in self.line_raw_points) / len(
-                self.line_raw_points
-            )
-            curve = [
-                Point(float(x_model(value)), float(y_model(value)), mean_z)
-                for value in samples
-            ]
-        except (TypeError, ValueError, np.linalg.LinAlgError):
-            return False
-
         local_start = min(
             self.line_raw_points,
             key=lambda point: xy_distance(point, self.line_reference_point),
         )
-        if xy_distance(curve[-1], local_start) < xy_distance(curve[0], local_start):
-            curve.reverse()
-            self.line_axis = -self.line_axis
-        if self.line_start_point is None or not self.line_locked:
-            self.line_start_point = copy.deepcopy(local_start)
-        curve[0] = copy.deepcopy(self.line_start_point)
+        selected_start = (
+            copy.deepcopy(local_start)
+            if self.line_start_point is None or not self.line_locked
+            else copy.deepcopy(self.line_start_point)
+        )
+        mean_z = sum(point.z for point in self.line_raw_points) / len(
+            self.line_raw_points
+        )
+        curve = None
+        selected_axis = axis
+        requested_degree = min(
+            self.line_curve_degree, len(self.line_raw_points) - 1
+        )
+        last_reason = "curve_fit_failed"
+        for degree in range(requested_degree, 0, -1):
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    x_model = np.poly1d(np.polyfit(
+                        parameters, ordered[:, 0], degree
+                    ))
+                    y_model = np.poly1d(np.polyfit(
+                        parameters, ordered[:, 1], degree
+                    ))
+                candidate = [
+                    Point(
+                        float(x_model(value)),
+                        float(y_model(value)),
+                        mean_z,
+                    )
+                    for value in samples
+                ]
+            except (TypeError, ValueError, np.linalg.LinAlgError):
+                continue
 
-        if self.line_committed_curve_points:
-            committed = [
-                copy.deepcopy(point) for point in self.line_committed_curve_points
-            ]
-            join_index = min(
-                range(len(curve)),
-                key=lambda index: xy_distance(committed[-1], curve[index]),
-            )
-            suffix = [copy.deepcopy(point) for point in curve[join_index:]]
-            if (
-                suffix
-                and xy_distance(committed[-1], suffix[0])
-                <= self.line_point_merge_distance
+            candidate_axis = axis
+            if xy_distance(candidate[-1], selected_start) < xy_distance(
+                candidate[0], selected_start
             ):
-                suffix = suffix[1:]
-            curve = committed + suffix
+                candidate.reverse()
+                candidate_axis = -axis
+            candidate_end = max(
+                self.line_raw_points,
+                key=lambda point: (
+                    (point.x - center[0]) * candidate_axis[0]
+                    + (point.y - center[1]) * candidate_axis[1]
+                ),
+            )
+            candidate[0] = copy.deepcopy(selected_start)
+            candidate[-1] = copy.deepcopy(candidate_end)
+            committed_count = 0
+            if self.line_committed_curve_points:
+                committed = [
+                    copy.deepcopy(point)
+                    for point in self.line_committed_curve_points
+                ]
+                join_index = min(
+                    range(len(candidate)),
+                    key=lambda index: xy_distance(
+                        committed[-1], candidate[index]
+                    ),
+                )
+                suffix = [
+                    copy.deepcopy(point) for point in candidate[join_index:]
+                ]
+                if (
+                    suffix
+                    and xy_distance(committed[-1], suffix[0])
+                    <= self.line_point_merge_distance
+                ):
+                    suffix = suffix[1:]
+                candidate = committed + suffix
+                committed_count = len(committed)
+            candidate[0] = copy.deepcopy(selected_start)
+            validation_start = max(0, committed_count - 1)
+            last_reason = self.curve_geometry_reason(
+                candidate[validation_start:], candidate_axis
+            )
+            if last_reason is None:
+                curve = candidate
+                selected_axis = candidate_axis
+                if degree < requested_degree:
+                    rospy.loginfo_throttle(
+                        self.log_period_seconds,
+                        "%s: 高阶拟合出现回折，已自动降为 %d 阶曲线",
+                        NODE_NAME,
+                        degree,
+                    )
+                break
 
+        if curve is None:
+            self.last_reject_reason = last_reason
+            return False
+        self.line_axis = selected_axis
+        self.line_start_point = selected_start
         self.line_curve_points = curve
         self.line_curve_s = self.cumulative_distance(curve)
         if self.line_curve_s[-1] < self.line_curve_min_length:
@@ -983,6 +1026,14 @@ class LineFittingTest:
     def line_callback(self, message):
         if message.class_name and message.class_name not in self.line_classes:
             return
+        self.latest_line_input_count = int(message.point_count)
+        self.latest_line_valid_count = int(message.valid_count)
+        self.latest_line_used_count = 0
+        confidence = self.normalized_confidence(message.conf)
+        self.latest_confidence = confidence
+        if confidence < self.line_min_confidence:
+            self.reject_triplet("confidence_below_minimum")
+            return
         camera_poses, reason = self.valid_line_poses(message)
         if camera_poses is None:
             self.reject_triplet(reason)
@@ -1015,8 +1066,6 @@ class LineFittingTest:
             self.reject_triplet(reason)
             return
 
-        confidence = self.normalized_confidence(message.conf)
-        self.latest_confidence = confidence
         now = rospy.Time.now()
         if not self.line_locked:
             if self.line_lock_candidate is None:
@@ -1065,7 +1114,7 @@ class LineFittingTest:
             )
             self.freeze_confirmed_curve()
         else:
-            self.reject_triplet("curve_fit_failed")
+            self.reject_triplet(self.last_reject_reason or "curve_fit_failed")
 
     def try_lock_line(self):
         if self.line_locked or self.line_lock_candidate is None:

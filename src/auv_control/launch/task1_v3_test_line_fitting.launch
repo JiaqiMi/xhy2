@@ -11,7 +11,7 @@
     <arg name="rate" default="5.0" />
     <arg name="map_frame" default="map" />
     <arg name="robot_frame" default="base_link" />
-    <!-- Web 航向箭头终点和 base_link 规划轨迹杆臂补偿使用的双目坐标系。 -->
+    <!-- Web 航向箭头终点使用的双目坐标系；拟合轨迹不再做杆臂补偿。 -->
     <arg name="line_tracking_frame" default="camera" />
 
     <!-- 话题：红线识别、相机状态和拟合调试 JSON；不存在运动控制话题。 -->
@@ -32,6 +32,8 @@
     <arg name="max_camera_distance" default="6.0" />
     <!-- 首次合理红线出现后的候选时间窗，窗内选择最高置信结果，单位 s。 -->
     <arg name="line_lock_window_seconds" default="0.3" />
+    <!-- 红线置信度硬下限；低于该值的整帧识别不参与锁线、拟合和冻结。 -->
+    <arg name="line_min_confidence" default="0.70" />
     <!-- 低于该置信度的新点使用更严格的曲线关联门槛。 -->
     <arg name="line_low_confidence_threshold" default="0.50" />
 
@@ -64,6 +66,10 @@
     <arg name="line_curve_sample_count" default="100" />
     <arg name="line_curve_degree" default="3" />
     <arg name="line_curve_min_length" default="0.15" />
+    <!-- 拟合曲线相邻采样段允许的最大转角、最大间距和沿主轴反向容差。 -->
+    <arg name="line_curve_max_turn_deg" default="75.0" />
+    <arg name="line_curve_max_sample_gap" default="0.20" />
+    <arg name="line_curve_backtrack_tolerance" default="0.01" />
 
     <!-- 在线冻结：连续多少个合理拟合帧后，把当前曲线立即固定。默认 2 帧以降低等待。 -->
     <arg name="curve_freeze_required_frames" default="2" />
@@ -108,6 +114,7 @@
         <param name="line_classes" type="string" value="$(arg line_classes)" />
         <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
         <param name="line_lock_window_seconds" type="double" value="$(arg line_lock_window_seconds)" />
+        <param name="line_min_confidence" type="double" value="$(arg line_min_confidence)" />
         <param name="line_low_confidence_threshold" type="double" value="$(arg line_low_confidence_threshold)" />
         <param name="line_min_point_spacing" type="double" value="$(arg line_min_point_spacing)" />
         <param name="line_max_point_spacing" type="double" value="$(arg line_max_point_spacing)" />
@@ -127,6 +134,9 @@
         <param name="line_curve_sample_count" type="int" value="$(arg line_curve_sample_count)" />
         <param name="line_curve_degree" type="int" value="$(arg line_curve_degree)" />
         <param name="line_curve_min_length" type="double" value="$(arg line_curve_min_length)" />
+        <param name="line_curve_max_turn_deg" type="double" value="$(arg line_curve_max_turn_deg)" />
+        <param name="line_curve_max_sample_gap" type="double" value="$(arg line_curve_max_sample_gap)" />
+        <param name="line_curve_backtrack_tolerance" type="double" value="$(arg line_curve_backtrack_tolerance)" />
         <param name="curve_freeze_required_frames" type="int" value="$(arg curve_freeze_required_frames)" />
         <param name="curve_freeze_min_length" type="double" value="$(arg curve_freeze_min_length)" />
         <param name="curve_freeze_min_advance" type="double" value="$(arg curve_freeze_min_advance)" />
