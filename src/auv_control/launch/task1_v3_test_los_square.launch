@@ -5,12 +5,16 @@
         本测试不使用视觉识别；请先启动真实下位机、TF 和 motion_supervisor。
         本节点不会发布 /cmd/pose/ned，motion_supervisor 必须是其唯一发布者。
         Web 默认使用 192.168.1.117:8083，不能与其他占用 8083 的测试节点同时启动。
+        每周期完整诊断使用 rospy.logdebug 并写入节点日志文件；
+        屏幕只显示阶段、节流摘要、警告和错误（INFO 及以上）。
     -->
 
     <!-- 基础坐标系和主循环频率。 -->
     <arg name="rate" default="5.0" />
     <arg name="map_frame" default="map" />
     <arg name="robot_frame" default="base_link" />
+    <!-- 固定正方形和 LOS 使用的双目摄像头坐标系。 -->
+    <arg name="line_tracking_frame" default="camera" />
 
     <!-- motion_supervisor 接口及目标回执匹配容差。 -->
     <arg name="motion_goal_topic" default="/cmd/motion/goal" />
@@ -37,8 +41,10 @@
     <!-- 连续 LOS 目标单周期最大位置（m）和 yaw（deg）变化，均低于监督器抢占阈值。 -->
     <arg name="los_goal_max_step" default="0.20" />
     <arg name="los_goal_max_yaw_step_deg" default="20.0" />
+    <!-- 摄像头到达当前航点后，切换下一点允许的最大机器人航向误差，单位 deg。 -->
+    <arg name="los_waypoint_yaw_tolerance_deg" default="10.0" />
 
-    <!-- 同时满足剩余路径和距原点容差后，提交原点目标，单位 m。 -->
+    <!-- 航点/原点位置容差和末段剩余路径容差，单位 m。 -->
     <arg name="endpoint_path_tolerance" default="0.15" />
     <arg name="endpoint_position_tolerance" default="0.15" />
     <!-- 原点目标进入 HOVER 后的持续保持时间，单位 s。 -->
@@ -57,9 +63,13 @@
           type="test_task1_v3_los_square.py"
           name="test_task1_v3_los_square"
           output="screen">
+        <!-- 文件记录 DEBUG 及以上，屏幕只显示 INFO 及以上。 -->
+        <env name="ROS_PYTHON_LOG_CONFIG_FILE"
+             value="$(find auv_control)/config/task1_v3_python_logging.conf" />
         <param name="rate" type="double" value="$(arg rate)" />
         <param name="map_frame" type="string" value="$(arg map_frame)" />
         <param name="robot_frame" type="string" value="$(arg robot_frame)" />
+        <param name="line_tracking_frame" type="string" value="$(arg line_tracking_frame)" />
 
         <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
         <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
@@ -78,6 +88,7 @@
         <param name="los_lookahead_distance" type="double" value="$(arg los_lookahead_distance)" />
         <param name="los_goal_max_step" type="double" value="$(arg los_goal_max_step)" />
         <param name="los_goal_max_yaw_step_deg" type="double" value="$(arg los_goal_max_yaw_step_deg)" />
+        <param name="los_waypoint_yaw_tolerance_deg" type="double" value="$(arg los_waypoint_yaw_tolerance_deg)" />
 
         <param name="endpoint_path_tolerance" type="double" value="$(arg endpoint_path_tolerance)" />
         <param name="endpoint_position_tolerance" type="double" value="$(arg endpoint_position_tolerance)" />

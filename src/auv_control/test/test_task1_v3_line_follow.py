@@ -56,6 +56,9 @@
     巡线投影、起终点距离和 Web 实际轨迹改用双目摄像头位置；下发运动目标前
     根据 base_link -> camera 静态 TF 补偿水平杆臂。
     LOS 当前航点保持不变，摄像头位置和机器人航向同时到达门槛后才切换下一点。
+2026.7.20
+    每个控制周期的完整位姿、目标、误差、路径和监督器输出改用 logdebug；
+    loginfo 只保留阶段变化、航点到达和节流后的测试摘要。
 """
 
 import copy
@@ -2049,6 +2052,73 @@ class Task1LineFollowTest:
             self.trajectory_web.update(encoded)
         self.last_trajectory_publish_time = now
 
+    def log_debug_cycle(self):
+        """以 DEBUG 级别记录每个控制周期的完整诊断。"""
+        current = self.get_current_pose()
+        tracking = self.get_tracking_pose()
+        if current is None or tracking is None:
+            return
+        target = self.current_tracking_point
+        goal = self.last_motion_goal
+        current_yaw = yaw_from_quaternion(current.pose.orientation)
+        target_yaw = (
+            self.active_los_yaw
+            if self.active_los_yaw is not None
+            else (
+                yaw_from_quaternion(goal.pose.orientation)
+                if goal is not None else current_yaw
+            )
+        )
+        position_error = (
+            xy_distance(tracking.pose.position, target)
+            if target is not None else float("nan")
+        )
+        yaw_error = (
+            math.degrees(abs(wrap_angle(target_yaw - current_yaw)))
+            if target is not None else float("nan")
+        )
+        motion_state = self.latest_motion_state
+        rospy.logdebug(
+            "%s: FULL state=%s base=(%.3f,%.3f,%.3f,%.2fdeg) "
+            "%s=(%.3f,%.3f,%.3f) camera_target=(%.3f,%.3f) "
+            "base_goal=(%.3f,%.3f,%.3f,%.2fdeg) error=(%.3fm,%.2fdeg) "
+            "path=%.3f/%.3f active_s=%s line=(%s,%.3f,%.3f,%s/%s) "
+            "motion=(%s,%s,%s,%s,%s)",
+            NODE_NAME,
+            self.state,
+            current.pose.position.x,
+            current.pose.position.y,
+            current.pose.position.z,
+            math.degrees(current_yaw),
+            self.line_tracking_frame,
+            tracking.pose.position.x,
+            tracking.pose.position.y,
+            tracking.pose.position.z,
+            target.x if target is not None else float("nan"),
+            target.y if target is not None else float("nan"),
+            goal.pose.position.x if goal is not None else float("nan"),
+            goal.pose.position.y if goal is not None else float("nan"),
+            goal.pose.position.z if goal is not None else float("nan"),
+            math.degrees(yaw_from_quaternion(goal.pose.orientation))
+            if goal is not None else float("nan"),
+            position_error,
+            yaw_error,
+            self.completed_path_length,
+            self.tracking_curve_s[-1] if self.tracking_curve_s else 0.0,
+            "%.3f" % self.active_los_target_s
+            if self.active_los_target_s is not None else "-",
+            self.line_locked,
+            self.line_lock_confidence,
+            self.line_fit_residual,
+            self.tracking_curve_version,
+            self.line_version,
+            motion_state.state if motion_state is not None else "-",
+            motion_state.reason if motion_state is not None else "-",
+            motion_state.tx if motion_state is not None else 0,
+            motion_state.ty if motion_state is not None else 0,
+            motion_state.mz if motion_state is not None else 0,
+        )
+
     def finish(self):
         self.cancel_motion()
         self.finished_pub.publish(String(data="%s finished" % NODE_NAME))
@@ -2077,6 +2147,7 @@ class Task1LineFollowTest:
                     NODE_NAME,
                     self.latest_motion_state.reason,
                 )
+                self.log_debug_cycle()
                 self.rate.sleep()
                 continue
 
@@ -2143,6 +2214,7 @@ class Task1LineFollowTest:
             elif self.state == self.FINISH:
                 self.finish()
 
+            self.log_debug_cycle()
             self.rate.sleep()
 
 

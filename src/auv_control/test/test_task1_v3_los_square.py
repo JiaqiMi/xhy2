@@ -5,11 +5,11 @@
 功能：Task1 LOS 固定正方形轨迹单项测试，使用 motion_supervisor 运动接口。
 
 流程：
-    1. 节点启动时记录机器人当前位置、当前高度和当前航向；
-    2. 以该位姿为起点生成“前、右、后、回原点”的正方形轨迹；
+    1. 节点启动时记录机器人和双目摄像头当前位置、当前高度和当前航向；
+    2. 以双目摄像头位置为起点生成“前、右、后、回原点”的正方形轨迹；
     3. 启动阶段向运动监督器发布启动位姿并等待 HOVER；
-    4. LOS 在固定轨迹上投影机器人位置，并沿轨迹向前选择前视点；
-    5. 把 LOS 前视点作为连续 map 绝对目标发布，由运动监督器完成控制和刹车；
+    4. LOS 按顺序选择固定轨迹前视点，只有位置和航向均到达后才推进；
+    5. 把摄像头前视点补偿为 base_link 目标后发布，由运动监督器完成控制和刹车；
     6. 回到原点附近后发布原点目标并等待 HOVER；
     7. Web 实时显示固定轨迹、LOS 跟踪点、机器人航向和实际运动轨迹。
 
@@ -24,6 +24,11 @@
     新增 v3：LOS 只计算前视目标，不再直接下发 TX 和目标模式；相邻目标位置
     与 yaw 做步长限制后交给 motion_supervisor，并以匹配目标的新鲜 HOVER 判定到达。
     将 Web 实际轨迹最大保存点数开放为 launch 参数，避免长时间测试持续增长。
+2026.7.20
+    修复闭合正方形起终点重合时，全局最近投影可能直接跳到路径末段并提前完成的问题。
+    轨迹和 LOS 改用双目摄像头位置，控制目标按 TF 杆臂补偿回 base_link；
+    当前航点的位置与目标航向同时满足门槛后才顺序推进。
+    控制周期完整诊断使用 logdebug，控制台 loginfo 只保留阶段和节流摘要。
 """
 
 import copy
@@ -74,8 +79,8 @@ body{margin:0;background:#101820;color:#eef;font-family:Arial,"Microsoft YaHei"}
 header{padding:12px 18px;background:#172630}canvas{display:block;margin:16px auto;background:#f7fbfd;border-radius:8px}
 #s{margin-left:25px;color:#bcd0d8}.legend{font-size:13px;color:#bcd0d8;margin-top:8px}.legend span{margin-right:18px}
 </style></head><body><header><b>Task1 LOS 固定正方形测试</b><span id="s">等待数据</span>
-<div class="legend"><span>红线：固定正方形轨迹</span><span>蓝线：机器人实际轨迹</span>
-<span>青色箭头：机器人位置与航向</span><span>紫点：LOS 当前跟踪点</span></div></header>
+<div class="legend"><span>红线：固定正方形轨迹</span><span>蓝线：双目摄像头实际轨迹</span>
+<span>青色箭头：双目位置/机器人航向</span><span>紫点：LOS 当前跟踪点</span></div></header>
 <canvas id="c" width="960" height="680"></canvas><script>
 const c=document.getElementById('c'),x=c.getContext('2d'),p=45;let k=1,mx=0,my=0;
 function q(a){return[p+(a[0]-mx)*k,c.height-p-(a[1]-my)*k]}
@@ -142,6 +147,9 @@ class LosSquareTest:
 
         self.map_frame = rospy.get_param("~map_frame", "map")
         self.robot_frame = rospy.get_param("~robot_frame", "base_link")
+        self.line_tracking_frame = str(rospy.get_param(
+            "~line_tracking_frame", "camera"
+        )).strip().lstrip("/") or "camera"
         self.motion_goal_topic = rospy.get_param(
             "~motion_goal_topic", "/cmd/motion/goal"
         )
@@ -188,6 +196,12 @@ class LosSquareTest:
         self.los_goal_max_yaw_step = math.radians(max(
             0.1,
             float(rospy.get_param("~los_goal_max_yaw_step_deg", 20.0)),
+        ))
+        self.los_waypoint_yaw_tolerance = math.radians(max(
+            0.1,
+            float(rospy.get_param(
+                "~los_waypoint_yaw_tolerance_deg", 10.0
+            )),
         ))
 
         self.endpoint_path_tolerance = max(0.0, float(rospy.get_param(
@@ -262,7 +276,12 @@ class LosSquareTest:
         self.current_path_s = 0.0
         self.completed_path_length = 0.0
         self.current_tracking_point = None
+        self.active_los_target_s = None
+        self.active_los_target = None
+        self.active_los_yaw = None
         self.last_los_goal = None
+        self.tracking_lever_arm = None
+        self.end_goal = None
         self.end_hold_started = None
         self.latest_motion_state = None
         self.last_motion_goal = None
@@ -274,15 +293,15 @@ class LosSquareTest:
     def motion_state_callback(self, message):
         self.latest_motion_state = copy.deepcopy(message)
 
-    def get_current_pose(self):
+    def get_frame_pose(self, frame):
         try:
             translation, rotation = self.tf_listener.lookupTransform(
-                self.map_frame, self.robot_frame, rospy.Time(0)
+                self.map_frame, frame, rospy.Time(0)
             )
         except tf.Exception as error:
             rospy.logwarn_throttle(
                 2.0, "%s: 等待 %s -> %s TF: %s",
-                NODE_NAME, self.map_frame, self.robot_frame, error
+                NODE_NAME, self.map_frame, frame, error
             )
             return None
         pose = PoseStamped()
@@ -291,6 +310,43 @@ class LosSquareTest:
         pose.pose.position = Point(*translation)
         pose.pose.orientation = Quaternion(*rotation)
         return pose
+
+    def get_current_pose(self):
+        """返回控制器使用的 base_link 当前位姿。"""
+        return self.get_frame_pose(self.robot_frame)
+
+    def get_tracking_pose(self):
+        """返回固定轨迹和 LOS 使用的双目摄像头当前位姿。"""
+        return self.get_frame_pose(self.line_tracking_frame)
+
+    def get_tracking_lever_arm(self):
+        """读取 base_link 指向双目摄像头的水平杆臂。"""
+        if self.tracking_lever_arm is not None:
+            return self.tracking_lever_arm
+        try:
+            translation, _rotation = self.tf_listener.lookupTransform(
+                self.robot_frame, self.line_tracking_frame, rospy.Time(0)
+            )
+        except tf.Exception as error:
+            rospy.logwarn_throttle(
+                2.0,
+                "%s: 等待 %s -> %s 杆臂 TF: %s",
+                NODE_NAME,
+                self.robot_frame,
+                self.line_tracking_frame,
+                error,
+            )
+            return None
+        self.tracking_lever_arm = (float(translation[0]), float(translation[1]))
+        rospy.loginfo(
+            "%s: LOS 定位坐标=%s，%s 水平杆臂=(%.3f, %.3f) m",
+            NODE_NAME,
+            self.line_tracking_frame,
+            self.robot_frame,
+            self.tracking_lever_arm[0],
+            self.tracking_lever_arm[1],
+        )
+        return self.tracking_lever_arm
 
     @staticmethod
     def cumulative_distance(points):
@@ -332,25 +388,26 @@ class LosSquareTest:
         if self.start_pose is not None:
             return True
         current = self.get_current_pose()
-        if current is None:
+        tracking = self.get_tracking_pose()
+        if current is None or tracking is None:
             return False
         self.start_pose = copy.deepcopy(current)
         self.start_yaw = yaw_from_quaternion(current.pose.orientation)
         self.hold_z = current.pose.position.z
         self.startup_started = rospy.Time.now()
         self.planned_path = self.sample_square(
-            current.pose.position, self.start_yaw
+            tracking.pose.position, self.start_yaw
         )
         self.planned_path_s = self.cumulative_distance(self.planned_path)
         self.current_tracking_point = copy.deepcopy(self.planned_path[0])
-        self.actual_trajectory.append(copy.deepcopy(current.pose.position))
+        self.actual_trajectory.append(copy.deepcopy(tracking.pose.position))
         rospy.loginfo(
-            "%s: 起点=(%.2f, %.2f, %.2f)，初始航向=%.1f deg，"
+            "%s: 双目起点=(%.2f, %.2f, %.2f)，初始航向=%.1f deg，"
             "正方形边长=%.2f m，总轨迹=%.2f m",
             NODE_NAME,
-            current.pose.position.x,
-            current.pose.position.y,
-            current.pose.position.z,
+            tracking.pose.position.x,
+            tracking.pose.position.y,
+            tracking.pose.position.z,
             math.degrees(self.start_yaw),
             self.square_side_length,
             self.planned_path_s[-1],
@@ -365,6 +422,21 @@ class LosSquareTest:
         pose.pose.orientation = Quaternion(*quaternion_from_euler(0.0, 0.0, yaw))
         return pose
 
+    def make_tracking_goal(self, camera_point, target_yaw):
+        """把 map 下的摄像头 XY 目标补偿为 base_link 控制目标。"""
+        lever_arm = self.get_tracking_lever_arm()
+        if lever_arm is None:
+            return None
+        cosine = math.cos(target_yaw)
+        sine = math.sin(target_yaw)
+        offset_x = cosine * lever_arm[0] - sine * lever_arm[1]
+        offset_y = sine * lever_arm[0] + cosine * lever_arm[1]
+        return self.make_pose(
+            camera_point.x - offset_x,
+            camera_point.y - offset_y,
+            target_yaw,
+        )
+
     def publish_motion_goal(self, target):
         goal = copy.deepcopy(target)
         goal.header.frame_id = self.map_frame
@@ -376,20 +448,11 @@ class LosSquareTest:
         """兼容原函数名；v3 只向 motion_supervisor 发布目标。"""
         self.publish_motion_goal(target)
 
-    def publish_los_goal(self, point, desired_yaw):
-        """限制连续 LOS 目标变化，避免触发监督器的大目标抢占阈值。"""
-        target_x = point.x
-        target_y = point.y
+    def publish_los_goal(self, camera_point, desired_yaw):
+        """补偿相机杆臂并限制 base_link 目标变化。"""
         target_yaw = desired_yaw
         if self.last_los_goal is not None:
             previous = self.last_los_goal
-            dx = point.x - previous.pose.position.x
-            dy = point.y - previous.pose.position.y
-            distance = math.hypot(dx, dy)
-            if distance > self.los_goal_max_step:
-                ratio = self.los_goal_max_step / distance
-                target_x = previous.pose.position.x + ratio * dx
-                target_y = previous.pose.position.y + ratio * dy
             previous_yaw = yaw_from_quaternion(previous.pose.orientation)
             yaw_step = clamp(
                 wrap_angle(desired_yaw - previous_yaw),
@@ -397,6 +460,21 @@ class LosSquareTest:
                 self.los_goal_max_yaw_step,
             )
             target_yaw = wrap_angle(previous_yaw + yaw_step)
+
+        compensated = self.make_tracking_goal(camera_point, target_yaw)
+        if compensated is None:
+            return None
+        target_x = compensated.pose.position.x
+        target_y = compensated.pose.position.y
+        if self.last_los_goal is not None:
+            previous = self.last_los_goal
+            dx = target_x - previous.pose.position.x
+            dy = target_y - previous.pose.position.y
+            distance = math.hypot(dx, dy)
+            if distance > self.los_goal_max_step:
+                ratio = self.los_goal_max_step / distance
+                target_x = previous.pose.position.x + ratio * dx
+                target_y = previous.pose.position.y + ratio * dy
         goal = self.make_pose(target_x, target_y, target_yaw)
         self.last_los_goal = copy.deepcopy(goal)
         self.publish_motion_goal(goal)
@@ -446,34 +524,6 @@ class LosSquareTest:
             self.motion_cancel_pub.publish(Empty())
             self.cancel_sent = True
 
-    def project_to_path(self, point):
-        best = None
-        for index in range(len(self.planned_path) - 1):
-            start = self.planned_path[index]
-            end = self.planned_path[index + 1]
-            vx = end.x - start.x
-            vy = end.y - start.y
-            segment_sq = vx * vx + vy * vy
-            if segment_sq < 1e-9:
-                continue
-            ratio = clamp(
-                ((point.x - start.x) * vx + (point.y - start.y) * vy)
-                / segment_sq,
-                0.0,
-                1.0,
-            )
-            projected_x = start.x + ratio * vx
-            projected_y = start.y + ratio * vy
-            distance = math.hypot(point.x - projected_x, point.y - projected_y)
-            segment_length = math.sqrt(segment_sq)
-            candidate = {
-                "distance": distance,
-                "path_s": self.planned_path_s[index] + ratio * segment_length,
-            }
-            if best is None or distance < best["distance"]:
-                best = candidate
-        return best
-
     def point_at_path_s(self, target_s):
         target_s = clamp(target_s, 0.0, self.planned_path_s[-1])
         for index in range(len(self.planned_path_s) - 1):
@@ -493,13 +543,31 @@ class LosSquareTest:
             )
         return copy.deepcopy(self.planned_path[-1])
 
-    def record_actual_trajectory(self, current):
+    def path_yaw_at_s(self, target_s):
+        """使用当前航点到下一前视点的方向作为机器人目标航向。"""
+        path_end_s = self.planned_path_s[-1]
+        target = self.point_at_path_s(target_s)
+        next_s = min(path_end_s, target_s + self.los_lookahead_distance)
+        next_point = self.point_at_path_s(next_s)
+        if xy_distance(target, next_point) > 1e-6:
+            return math.atan2(next_point.y - target.y, next_point.x - target.x)
+        previous = self.point_at_path_s(max(
+            0.0, target_s - self.los_lookahead_distance
+        ))
+        return math.atan2(target.y - previous.y, target.x - previous.x)
+
+    def clear_active_los_target(self):
+        self.active_los_target_s = None
+        self.active_los_target = None
+        self.active_los_yaw = None
+
+    def record_actual_trajectory(self, tracking):
         if (
             not self.actual_trajectory
-            or xy_distance(current.pose.position, self.actual_trajectory[-1])
+            or xy_distance(tracking.pose.position, self.actual_trajectory[-1])
             >= self.actual_path_min_spacing
         ):
-            self.actual_trajectory.append(copy.deepcopy(current.pose.position))
+            self.actual_trajectory.append(copy.deepcopy(tracking.pose.position))
             if len(self.actual_trajectory) > self.actual_path_max_points:
                 self.actual_trajectory = self.actual_trajectory[
                     -self.actual_path_max_points:
@@ -507,43 +575,78 @@ class LosSquareTest:
 
     def enter_hold_end(self):
         self.last_los_goal = None
+        self.clear_active_los_target()
         self.end_hold_started = None
         self.current_tracking_point = copy.deepcopy(self.planned_path[-1])
+        self.end_goal = self.make_tracking_goal(
+            self.planned_path[-1], self.start_yaw
+        )
+        if self.end_goal is None:
+            return
         self.state = self.HOLD_END
-        self.publish_dprov(self.start_pose)
+        self.publish_dprov(self.end_goal)
         rospy.loginfo(
             "%s: 已走完固定轨迹，发布原点目标并等待运动监督器 HOVER",
             NODE_NAME,
         )
 
-    def run_follow(self, current):
-        projection = self.project_to_path(current.pose.position)
-        if projection is None:
-            return
-        self.current_path_s = max(self.current_path_s, projection["path_s"])
-        self.completed_path_length = max(
-            self.completed_path_length, self.current_path_s
-        )
+    def run_follow(self, current, tracking):
         remaining = max(0.0, self.planned_path_s[-1] - self.current_path_s)
         endpoint_distance = xy_distance(
-            current.pose.position, self.planned_path[-1]
+            tracking.pose.position, self.planned_path[-1]
         )
+        current_yaw = yaw_from_quaternion(current.pose.orientation)
+        endpoint_yaw = self.path_yaw_at_s(self.planned_path_s[-1])
+        endpoint_yaw_error = abs(wrap_angle(endpoint_yaw - current_yaw))
         if (
             remaining <= self.endpoint_path_tolerance
             and endpoint_distance <= self.endpoint_position_tolerance
+            and endpoint_yaw_error <= self.los_waypoint_yaw_tolerance
         ):
             self.enter_hold_end()
             return
 
-        target = self.point_at_path_s(
-            self.current_path_s + self.los_lookahead_distance
+        if self.active_los_target is None:
+            self.active_los_target_s = min(
+                self.planned_path_s[-1],
+                self.current_path_s + self.los_lookahead_distance,
+            )
+            self.active_los_target = self.point_at_path_s(
+                self.active_los_target_s
+            )
+            self.active_los_yaw = self.path_yaw_at_s(
+                self.active_los_target_s
+            )
+
+        self.current_tracking_point = copy.deepcopy(self.active_los_target)
+        position_error = xy_distance(
+            tracking.pose.position, self.active_los_target
         )
-        self.current_tracking_point = copy.deepcopy(target)
-        desired_yaw = math.atan2(
-            target.y - current.pose.position.y,
-            target.x - current.pose.position.x,
+        yaw_error = abs(wrap_angle(self.active_los_yaw - current_yaw))
+        commanded_goal = self.publish_los_goal(
+            self.active_los_target, self.active_los_yaw
         )
-        commanded_goal = self.publish_los_goal(target, desired_yaw)
+        if commanded_goal is None:
+            return
+
+        if (
+            position_error <= self.endpoint_position_tolerance
+            and yaw_error <= self.los_waypoint_yaw_tolerance
+        ):
+            reached_s = self.active_los_target_s
+            self.current_path_s = max(self.current_path_s, reached_s)
+            self.completed_path_length = self.current_path_s
+            rospy.loginfo(
+                "%s: LOS 航点已到达；双目位置误差=%.2f m，航向误差=%.1f deg，"
+                "推进到 s=%.2f/%.2f m",
+                NODE_NAME,
+                position_error,
+                math.degrees(yaw_error),
+                reached_s,
+                self.planned_path_s[-1],
+            )
+            self.clear_active_los_target()
+
         motion_state = (
             str(self.latest_motion_state.state)
             if self.motion_state_fresh()
@@ -551,29 +654,30 @@ class LosSquareTest:
         )
         rospy.loginfo_throttle(
             self.log_period_seconds,
-            "%s: LOS跟踪；位置=(%.2f, %.2f)，跟踪点=(%.2f, %.2f)，"
-            "下发目标=(%.2f, %.2f)，进度=%.2f/%.2f m，motion_state=%s",
+            "%s: LOS跟踪；双目位置=(%.2f, %.2f)，跟踪点=(%.2f, %.2f)，"
+            "位置误差=%.2f m，航向误差=%.1f deg，进度=%.2f/%.2f m，"
+            "motion_state=%s",
             NODE_NAME,
-            current.pose.position.x,
-            current.pose.position.y,
-            target.x,
-            target.y,
-            commanded_goal.pose.position.x,
-            commanded_goal.pose.position.y,
+            tracking.pose.position.x,
+            tracking.pose.position.y,
+            self.current_tracking_point.x,
+            self.current_tracking_point.y,
+            position_error,
+            math.degrees(yaw_error),
             self.completed_path_length,
             self.planned_path_s[-1],
             motion_state,
         )
 
-    def run_hold_end(self, current):
-        self.publish_dprov(self.start_pose)
+    def run_hold_end(self, current, tracking):
+        self.publish_dprov(self.end_goal)
         position_error = xy_distance(
-            current.pose.position, self.start_pose.pose.position
+            tracking.pose.position, self.planned_path[-1]
         )
         yaw_error = abs(wrap_angle(
             self.start_yaw - yaw_from_quaternion(current.pose.orientation)
         ))
-        stable = self.motion_arrived(self.start_pose)
+        stable = self.motion_arrived(self.end_goal)
         if stable:
             if self.end_hold_started is None:
                 self.end_hold_started = rospy.Time.now()
@@ -597,7 +701,7 @@ class LosSquareTest:
         if stable and held >= self.endpoint_hold_seconds:
             self.state = self.FINISH
 
-    def publish_trajectory_status(self, current):
+    def publish_trajectory_status(self, current, tracking):
         now = rospy.Time.now()
         if (
             now - self.last_trajectory_publish_time
@@ -615,10 +719,11 @@ class LosSquareTest:
                 if self.motion_state_fresh() else None
             ),
             "path_fixed": True,
-            "robot": point_data(current.pose.position),
+            "robot": point_data(tracking.pose.position),
             "robot_yaw_deg": round(math.degrees(yaw_from_quaternion(
                 current.pose.orientation
             )), 2),
+            "tracking_frame": self.line_tracking_frame,
             "tracking_point": point_data(self.current_tracking_point),
             "planned_path": [point_data(point) for point in self.planned_path],
             "actual_path": [point_data(point) for point in self.actual_trajectory],
@@ -633,6 +738,60 @@ class LosSquareTest:
         if self.trajectory_web is not None:
             self.trajectory_web.update(encoded)
         self.last_trajectory_publish_time = now
+
+    def log_debug_cycle(self, current, tracking):
+        """以 DEBUG 级别记录每个控制周期的完整诊断。"""
+        target = self.current_tracking_point
+        goal = self.last_motion_goal
+        current_yaw = yaw_from_quaternion(current.pose.orientation)
+        target_yaw = (
+            self.active_los_yaw
+            if self.active_los_yaw is not None
+            else current_yaw
+        )
+        position_error = (
+            xy_distance(tracking.pose.position, target)
+            if target is not None else float("nan")
+        )
+        yaw_error = (
+            math.degrees(abs(wrap_angle(target_yaw - current_yaw)))
+            if target is not None else float("nan")
+        )
+        motion_state = self.latest_motion_state
+        rospy.logdebug(
+            "%s: FULL state=%s base=(%.3f,%.3f,%.3f,%.2fdeg) "
+            "%s=(%.3f,%.3f,%.3f) camera_target=(%.3f,%.3f) "
+            "base_goal=(%.3f,%.3f,%.3f,%.2fdeg) error=(%.3fm,%.2fdeg) "
+            "path=%.3f/%.3f active_s=%s motion=(%s,%s,%s,%s,%s)",
+            NODE_NAME,
+            self.state,
+            current.pose.position.x,
+            current.pose.position.y,
+            current.pose.position.z,
+            math.degrees(current_yaw),
+            self.line_tracking_frame,
+            tracking.pose.position.x,
+            tracking.pose.position.y,
+            tracking.pose.position.z,
+            target.x if target is not None else float("nan"),
+            target.y if target is not None else float("nan"),
+            goal.pose.position.x if goal is not None else float("nan"),
+            goal.pose.position.y if goal is not None else float("nan"),
+            goal.pose.position.z if goal is not None else float("nan"),
+            math.degrees(yaw_from_quaternion(goal.pose.orientation))
+            if goal is not None else float("nan"),
+            position_error,
+            yaw_error,
+            self.completed_path_length,
+            self.planned_path_s[-1] if self.planned_path_s else 0.0,
+            "%.3f" % self.active_los_target_s
+            if self.active_los_target_s is not None else "-",
+            motion_state.state if motion_state is not None else "-",
+            motion_state.reason if motion_state is not None else "-",
+            motion_state.tx if motion_state is not None else 0,
+            motion_state.ty if motion_state is not None else 0,
+            motion_state.mz if motion_state is not None else 0,
+        )
 
     def finish(self):
         self.cancel_motion()
@@ -650,7 +809,8 @@ class LosSquareTest:
                 self.rate.sleep()
                 continue
             current = self.get_current_pose()
-            if current is None:
+            tracking = self.get_tracking_pose()
+            if current is None or tracking is None:
                 self.rate.sleep()
                 continue
             if self.motion_failed():
@@ -660,9 +820,10 @@ class LosSquareTest:
                     NODE_NAME,
                     self.latest_motion_state.reason,
                 )
+                self.log_debug_cycle(current, tracking)
                 self.rate.sleep()
                 continue
-            self.record_actual_trajectory(current)
+            self.record_actual_trajectory(tracking)
 
             if self.state == self.WAIT_START:
                 self.publish_dprov(self.start_pose)
@@ -687,15 +848,16 @@ class LosSquareTest:
                     self.state = self.FOLLOW
                     rospy.loginfo("%s: 启动定点完成，开始 LOS 正方形跟踪", NODE_NAME)
             elif self.state == self.FOLLOW:
-                self.run_follow(current)
+                self.run_follow(current, tracking)
             elif self.state == self.HOLD_END:
-                self.run_hold_end(current)
+                self.run_hold_end(current, tracking)
             elif self.state == self.FINISH:
-                self.publish_trajectory_status(current)
+                self.publish_trajectory_status(current, tracking)
                 self.finish()
                 break
 
-            self.publish_trajectory_status(current)
+            self.log_debug_cycle(current, tracking)
+            self.publish_trajectory_status(current, tracking)
             self.rate.sleep()
 
 

@@ -3,6 +3,8 @@
         Task1 巡线单项测试。
         启动前需要先运行真实下位机、TF、motion_supervisor、相机和红线识别节点。
         本节点不会发布 /cmd/pose/ned，motion_supervisor 必须是其唯一发布者。
+        每周期完整诊断使用 rospy.logdebug 并写入节点日志文件；
+        屏幕只显示阶段、节流摘要、警告和错误（INFO 及以上）。
         节点不再接收人工初始航向；启动瞬间 base_link 的实际航向就是搜索航向。
         轨迹一旦锁定，状态机只执行“到起点 -> 定点 -> 对向 -> LOS 巡线 -> 终点确认”，
         不会因为暂时丢失识别消息而退回 SEARCH。识别点先更新实时拟合曲线；
@@ -151,6 +153,9 @@
           type="test_task1_v3_line_follow.py"
           name="test_task1_v3_line_follow"
           output="screen">
+        <!-- 文件记录 DEBUG 及以上，屏幕只显示 INFO 及以上。 -->
+        <env name="ROS_PYTHON_LOG_CONFIG_FILE"
+             value="$(find auv_control)/config/task1_v3_python_logging.conf" />
         <param name="rate" type="double" value="$(arg rate)" />
 
         <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
