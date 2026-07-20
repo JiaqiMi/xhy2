@@ -34,14 +34,14 @@
     搜索方式与图形子任务一致：定点前进后仅用 TY 左右横移。
     重构为“锁线、LOS 到起点、起点定点、对向、LOS 巡线、终点确认”。
     第一条线按短时间窗内最高置信度锁定，锁定后不再返回搜索状态。
-    P1/P2/P3 不再解释为整条线端点，改为三点重排、几何验证和曲线关联。
+    识别点不再解释为整条线端点，改为多点局部验证和曲线关联。
     低于 0.70 置信度且难以拟合的点直接丢弃。
     当前最远点只作为临时巡线目标；连续多帧仍为同一最远点后才形成终点证据。
     原始点集改为滑动窗口；旧点超限后冻结历史曲线，只用远端重叠点和新点拟合后缀。
 2026.7.18
     启动阶段增加可调的 mode=4 定点悬停时间。
     未识别红线时改为定点左转、右转、回到启动航向，再定点前进后循环搜索。
-    轨迹网页增加机器人航向箭头、当前跟踪点和最新识别 P1/P2/P3。
+    轨迹网页增加机器人航向箭头、当前跟踪点和最新多点识别结果。
     将持续更新的拟合曲线与 LOS 当前执行曲线分离；执行曲线走完前不随识别帧改变，
     到达当前曲线末端后才接入已经拟合出的新增路径，避免跟踪点前后跳变。
     取消切入 mode=4 定点前由任务代码逐步卸载 TX，交由新版定点控制器自动刹车。
@@ -59,6 +59,13 @@
 2026.7.20
     每个控制周期的完整位姿、目标、误差、路径和监督器输出改用 logdebug；
     loginfo 只保留阶段变化、航点到达和节流后的测试摘要。
+2026.7.20
+    Web 改为 Reset 原点下的 NED 俯视图，N 向上、E 向右；机器人和实际
+    轨迹统一显示 base_link，base_link 到 camera 的实时 TF 作为航向箭头。
+    LOS 航点改为先保持当前航向到达并定点，再按当前点到下一点的方向对向。
+2026.7.20
+    红线输入由固定三点 TargetDetection3 迁移到多点 LineDetection；逐点过滤
+    point_valid，launch 可限制每帧参与拟合的有效点数量，Web 显示总/有效/使用点数。
 """
 
 import copy
@@ -71,7 +78,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import numpy as np
 import rospy
 import tf
-from auv_control.msg import MotionState, TargetDetection3
+from auv_control.msg import LineDetection, MotionState
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import Empty, String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
@@ -118,27 +125,31 @@ body{margin:0;background:#101820;color:#eef;font-family:Arial,"Microsoft YaHei"}
 header{padding:12px 18px;background:#172630}canvas{display:block;margin:16px auto;background:#f7fbfd;border-radius:8px}
 #s{margin-left:25px;color:#bcd0d8}.legend{font-size:13px;color:#bcd0d8;margin-top:8px}.legend span{margin-right:18px}
 </style></head><body><header><b>Task1 巡线测试轨迹</b><span id="s">等待数据</span>
-<div class="legend"><span>蓝线：双目摄像头实际轨迹</span><span>红线：实时拟合轨迹</span><span>橙线：已确认固定轨迹</span><span>绿线：LOS 当前执行轨迹</span><span>青色箭头：双目位置/机器人航向</span>
-<span>紫点：当前跟踪点</span><span>粉/橙/黄：最新 P1/P2/P3</span></div></header>
+<div class="legend"><span>蓝线：base_link 实际轨迹</span><span>红/橙/绿：base_link 拟合/固定/执行轨迹</span><span>青色圆点→箭头：base_link→camera</span>
+<span>紫点：当前 base_link 目标</span><span>粉点：最新有效识别点</span><span>滚轮缩放，拖动平移</span></div></header>
 <canvas id="c" width="960" height="680"></canvas><script>
-const c=document.getElementById('c'),x=c.getContext('2d'),p=45;let k=1,mx=0,my=0;
-function q(a){return[p+(a[0]-mx)*k,c.height-p-(a[1]-my)*k]}
+const c=document.getElementById('c'),x=c.getContext('2d');let k=70,ox=90,oy=c.height-80,last={};
+function q(a){return[ox+a[1]*k,oy-a[0]*k]}
 function line(a,col,w){if(!a||a.length<2)return;x.beginPath();a.forEach((v,i)=>{let z=q(v);i?x.lineTo(...z):x.moveTo(...z)});x.strokeStyle=col;x.lineWidth=w;x.stroke()}
 function dot(a,col,r){if(!a)return;let z=q(a);x.beginPath();x.arc(z[0],z[1],r,0,7);x.fillStyle=col;x.fill()}
 function tag(a,text,col){if(!a)return;let z=q(a);x.fillStyle=col;x.font='bold 13px Arial';x.fillText(text,z[0]+7,z[1]-7)}
-function arrow(a,yawDeg){if(!a)return;let z=q(a),r=yawDeg*Math.PI/180,L=34,ex=z[0]+L*Math.cos(r),ey=z[1]-L*Math.sin(r),h=9;
-x.beginPath();x.moveTo(z[0],z[1]);x.lineTo(ex,ey);x.strokeStyle='#00a9c7';x.lineWidth=4;x.stroke();
-x.beginPath();x.moveTo(ex,ey);x.lineTo(ex-h*Math.cos(r-.55),ey+h*Math.sin(r-.55));x.moveTo(ex,ey);x.lineTo(ex-h*Math.cos(r+.55),ey+h*Math.sin(r+.55));x.stroke()}
+function nice(v){let p=10**Math.floor(Math.log10(Math.max(v,.01))),n=v/p;return(n<=1?1:n<=2?2:n<=5?5:10)*p}
+function grid(){let minN=(oy-c.height)/k,maxN=oy/k,minE=-ox/k,maxE=(c.width-ox)/k,st=nice(Math.max(maxN-minN,maxE-minE)/8);x.font='11px Arial';x.lineWidth=1;
+for(let n=Math.ceil(minN/st)*st;n<=maxN+1e-9;n+=st){let y=q([n,0])[1];x.strokeStyle=Math.abs(n)<1e-9?'#71848d':'#dce6ea';x.beginPath();x.moveTo(0,y);x.lineTo(c.width,y);x.stroke();x.fillStyle='#52646d';x.fillText(`N ${n.toFixed(1)}`,5,y-4)}
+for(let e=Math.ceil(minE/st)*st;e<=maxE+1e-9;e+=st){let z=q([0,e]);x.strokeStyle=Math.abs(e)<1e-9?'#71848d':'#dce6ea';x.beginPath();x.moveTo(z[0],0);x.lineTo(z[0],c.height);x.stroke();x.fillStyle='#52646d';x.fillText(`E ${e.toFixed(1)}`,z[0]+4,c.height-7)}
+if(ox>=0&&ox<=c.width){x.fillStyle='#263942';x.font='bold 13px Arial';x.fillText('N / North',ox+8,16)}if(oy>=0&&oy<=c.height){x.fillStyle='#263942';x.font='bold 13px Arial';x.fillText('E / East',c.width-68,oy-8)}let o=q([0,0]);if(o[0]>=0&&o[0]<=c.width&&o[1]>=0&&o[1]<=c.height){dot([0,0],'#111',5);tag([0,0],'Reset O(0,0)','#111')}x.fillStyle='#52646d';x.fillText(`${k.toFixed(0)} px/m`,c.width-72,18)}
+function bodyArrow(base,camera){if(!base||!camera)return;let a=q(base),b=q(camera),r=Math.atan2(b[1]-a[1],b[0]-a[0]),h=10;x.strokeStyle='#00a9c7';x.lineWidth=4;x.beginPath();x.moveTo(...a);x.lineTo(...b);x.stroke();x.beginPath();x.moveTo(...b);x.lineTo(b[0]-h*Math.cos(r-.55),b[1]-h*Math.sin(r-.55));x.moveTo(...b);x.lineTo(b[0]-h*Math.cos(r+.55),b[1]-h*Math.sin(r+.55));x.stroke();dot(camera,'#00a9c7',4)}
 function draw(d){let latest=d.latest_line_points||[],a=[...(d.actual_path||[]),...(d.planned_curve||[]),...(d.fixed_curve||[]),...(d.tracking_curve||[]),...(d.raw_line||[]),...latest];
-if(d.robot)a.push(d.robot);if(d.tracking_point)a.push(d.tracking_point);if(d.line_start)a.push(d.line_start);if(d.line_end)a.push(d.line_end);if(d.endpoint_candidate)a.push(d.endpoint_candidate);
-x.clearRect(0,0,c.width,c.height);if(!a.length)return;let xs=a.map(v=>v[0]),ys=a.map(v=>v[1]),xx=Math.max(...xs)+.2,yy=Math.max(...ys)+.2;
-mx=Math.min(...xs)-.2;my=Math.min(...ys)-.2;k=Math.min((c.width-2*p)/Math.max(.5,xx-mx),(c.height-2*p)/Math.max(.5,yy-my));
+last=d;x.clearRect(0,0,c.width,c.height);grid();
 (d.raw_line||[]).forEach(v=>dot(v,'#879aa3',2));line(d.planned_curve,'#e74c3c',3);line(d.fixed_curve,'#f39c12',5);line(d.tracking_curve,'#21a366',4);line(d.actual_path,'#1677ff',3);
-dot(d.line_start,'#21a366',7);dot(d.line_end,'#f39c12',7);dot(d.endpoint_candidate,'#8e44ad',5);dot(d.tracking_point,'#9b2cff',7);tag(d.tracking_point,'跟踪点','#6f13ba');
-['#ff2d91','#ff8c1a','#ffd000'].forEach((col,i)=>{if(latest[i]){dot(latest[i],col,6);tag(latest[i],`P${i+1}`,col)}});
-dot(d.robot,'#00cfe8',8);arrow(d.robot,d.robot_yaw_deg||0);
-document.getElementById('s').textContent=`任务 ${d.state}　监督器 ${d.motion_state??'-'}　航向 ${(d.robot_yaw_deg||0).toFixed(1)}°　锁线 ${d.line_locked?'是':'否'}　固定/拟合 ${d.fixed_length||0}/${d.fitted_length||0} m　执行/固定版本 ${d.tracking_curve_version||0}/${d.fixed_curve_version||0}　确认 ${d.freeze_confirmations||0}/${d.freeze_required||0}　已完成 ${d.completed_length||0} m　终点证据 ${d.endpoint_stable_count||0}/${d.endpoint_stable_required||0}`}
-async function t(){try{draw(await(await fetch('/data',{cache:'no-store'})).json())}catch(e){}setTimeout(t,500)}t();
+dot(d.line_start,'#21a366',7);dot(d.line_end,'#f39c12',7);dot(d.endpoint_candidate,'#8e44ad',5);dot(d.tracking_point,'#9b2cff',7);tag(d.tracking_point,'目标','#6f13ba');
+latest.forEach((v,i)=>{dot(v,'#ff2d91',4);if(i===0||i===latest.length-1||i===Math.floor(latest.length/2))tag(v,`P${i+1}`,'#ff2d91')});
+dot(d.robot,'#00cfe8',8);bodyArrow(d.robot,d.camera);
+document.getElementById('s').textContent=`任务 ${d.state}/${d.los_phase||'-'}　监督器 ${d.motion_state??'-'}　base航向 ${(d.robot_yaw_deg||0).toFixed(1)}°　D(base/camera) ${(d.robot_down??0).toFixed(2)}/${(d.camera_down??0).toFixed(2)} m　识别点 总/有效/使用 ${d.line_input_point_count||0}/${d.line_valid_point_count||0}/${d.line_used_point_count||0}　锁线 ${d.line_locked?'是':'否'}　固定/拟合 ${d.fixed_length||0}/${d.fitted_length||0} m　已完成/投影 ${d.completed_length||0}/${d.projected_length||0} m　终点证据 ${d.endpoint_stable_count||0}/${d.endpoint_stable_required||0}`}
+function pos(e){let r=c.getBoundingClientRect();return[(e.clientX-r.left)*c.width/r.width,(e.clientY-r.top)*c.height/r.height]}
+c.addEventListener('wheel',e=>{e.preventDefault();let m=pos(e),old=k,ne=(m[0]-ox)/old,nn=(oy-m[1])/old;k=Math.max(10,Math.min(500,k*(e.deltaY<0?1.15:1/1.15)));ox=m[0]-ne*k;oy=m[1]+nn*k;draw(last)},{passive:false});
+let drag=false,pm=null;c.addEventListener('mousedown',e=>{drag=true;pm=pos(e)});window.addEventListener('mouseup',()=>drag=false);window.addEventListener('mousemove',e=>{if(!drag)return;let m=pos(e);ox+=m[0]-pm[0];oy+=m[1]-pm[1];pm=m;draw(last)});
+async function t(){try{draw(await(await fetch('/data',{cache:'no-store'})).json())}catch(e){}setTimeout(t,500)}draw({});t();
 </script></body></html>"""
 
 
@@ -191,6 +202,8 @@ class Task1LineFollowTest:
     FOLLOW_LINE = "FOLLOW_LINE"
     HOLD_END = "HOLD_END"
     FINISH = "FINISH"
+    LOS_MOVE = "MOVE_TO_WAYPOINT"
+    LOS_ALIGN = "ALIGN_AT_WAYPOINT"
 
     SEARCH_STATES = {
         SEARCH_LEFT,
@@ -223,6 +236,14 @@ class Task1LineFollowTest:
             float(rospy.get_param("~motion_goal_yaw_tolerance_deg", 3.0)),
         ))
         self.line_topic = rospy.get_param("~line_topic", "/obj/line_message")
+        # 每帧最多使用的有效红线点数；0 表示使用消息中的全部有效点。
+        requested_line_point_count = int(rospy.get_param(
+            "~line_accept_point_count", 20
+        ))
+        self.line_accept_point_count = (
+            0 if requested_line_point_count <= 0
+            else max(2, requested_line_point_count)
+        )
         self.finished_topic = rospy.get_param("~finished_topic", "/finished")
         self.camera_topic = rospy.get_param("~camera_topic", "/left/image_raw")
         self.line_tracking_frame = str(rospy.get_param(
@@ -269,7 +290,7 @@ class Task1LineFollowTest:
             "~transition_hold_seconds", 4.0
         ))
 
-        # 红线首帧选择、局部三点验证和误识别隔离参数。
+        # 红线首帧选择、单帧多点局部验证和误识别隔离参数。
         self.line_classes = class_names("~line_classes", ["line"])
         self.max_camera_distance = float(rospy.get_param(
             "~max_camera_distance", 6.0
@@ -375,6 +396,9 @@ class Task1LineFollowTest:
                 "~los_waypoint_yaw_tolerance_deg", 10.0
             )),
         ))
+        self.los_waypoint_hold_seconds = max(0.0, float(rospy.get_param(
+            "~los_waypoint_hold_seconds", 0.5
+        )))
         self.line_start_hold_seconds = float(rospy.get_param(
             "~line_start_hold_seconds", 4.0
         ))
@@ -489,6 +513,7 @@ class Task1LineFollowTest:
         self.hold_target = None
         self.stable_since = None
         self.current_path_s = 0.0
+        self.projected_path_s = 0.0
         self.completed_path_length = 0.0
         self.endpoint_hold_started = None
         self.endpoint_candidate_point = None
@@ -499,12 +524,18 @@ class Task1LineFollowTest:
         self.active_los_target_s = None
         self.active_los_target = None
         self.active_los_yaw = None
+        self.active_los_move_yaw = None
+        self.active_los_phase = None
+        self.active_los_hold_started = None
         self.latest_line_points = []
+        self.latest_line_input_count = 0
+        self.latest_line_valid_count = 0
+        self.latest_line_used_count = 0
         self.last_trajectory_publish_time = rospy.Time(0)
 
         # 状态字段全部就绪后再订阅，避免构造期间首帧回调访问未初始化字段。
         rospy.Subscriber(
-            self.line_topic, TargetDetection3, self.line_callback, queue_size=10
+            self.line_topic, LineDetection, self.line_callback, queue_size=10
         )
         rospy.Subscriber(
             self.camera_topic, rospy.AnyMsg, self.camera_callback, queue_size=1
@@ -514,6 +545,12 @@ class Task1LineFollowTest:
             MotionState,
             self.motion_state_callback,
             queue_size=1,
+        )
+        rospy.loginfo(
+            "%s: 红线接口=auv_control/LineDetection；每帧拟合点上限=%s",
+            NODE_NAME,
+            "全部有效点" if self.line_accept_point_count == 0
+            else str(self.line_accept_point_count),
         )
 
     def set_state(self, state):
@@ -631,6 +668,13 @@ class Task1LineFollowTest:
 
     def make_tracking_goal(self, camera_point, target_yaw):
         """把 map 下的摄像头 XY 目标补偿为 base_link 控制目标。"""
+        base_point = self.tracking_point_to_base_point(camera_point, target_yaw)
+        if base_point is None:
+            return None
+        return self.make_pose(base_point.x, base_point.y, target_yaw)
+
+    def tracking_point_to_base_point(self, camera_point, target_yaw):
+        """按目标航向将 camera 曲线点换算为 base_link 曲线点。"""
         lever_arm = self.get_tracking_lever_arm()
         if lever_arm is None:
             return None
@@ -638,11 +682,29 @@ class Task1LineFollowTest:
         sine = math.sin(target_yaw)
         offset_x = cosine * lever_arm[0] - sine * lever_arm[1]
         offset_y = sine * lever_arm[0] + cosine * lever_arm[1]
-        return self.make_pose(
+        return Point(
             camera_point.x - offset_x,
             camera_point.y - offset_y,
-            target_yaw,
+            camera_point.z,
         )
+
+    def tracking_curve_to_base_points(self, points):
+        """生成仅供 Web 显示的 base_link 规划轨迹。"""
+        if len(points) < 2:
+            return []
+        converted = []
+        for index, point in enumerate(points):
+            if index < len(points) - 1:
+                other = points[index + 1]
+                yaw = math.atan2(other.y - point.y, other.x - point.x)
+            else:
+                other = points[index - 1]
+                yaw = math.atan2(point.y - other.y, point.x - other.x)
+            base_point = self.tracking_point_to_base_point(point, yaw)
+            if base_point is None:
+                return []
+            converted.append(base_point)
+        return converted
 
     def publish_motion_goal(self, target):
         goal = copy.deepcopy(target)
@@ -778,50 +840,59 @@ class Task1LineFollowTest:
         error = abs(wrap_angle(first - second))
         return min(error, abs(math.pi - error))
 
-    def order_and_validate_triplet(self, poses, reference):
-        """按三点主方向排序；P1 虽通常更远，但三点标签不作为轨迹顺序。"""
+    def order_and_validate_points(self, poses, reference):
+        """验证一帧有序多点，并把靠近当前参考位置的一端作为起点。"""
         points = [copy.deepcopy(pose.pose.position) for pose in poses]
+        if len(points) < 2:
+            return None, None, None, "too_few_valid_points"
         coordinates = np.array([[point.x, point.y] for point in points], dtype=float)
         if not np.isfinite(coordinates).all():
             return None, None, None, "non_finite_point"
-        center = coordinates.mean(axis=0)
-        try:
-            _, _, axes = np.linalg.svd(coordinates - center)
-        except np.linalg.LinAlgError:
-            return None, None, None, "triplet_svd_failed"
-        axis = axes[0]
-        order = np.argsort(np.dot(coordinates - center, axis))
-        ordered = [points[int(index)] for index in order]
+        # lineN 发布端已经按骨架主路径排列。保留该顺序才能描述弯曲管线，
+        # 这里只根据机器人/既有曲线参考点决定正反方向。
+        ordered = points
         if xy_distance(ordered[-1], reference) < xy_distance(ordered[0], reference):
             ordered.reverse()
 
-        first_spacing = xy_distance(ordered[0], ordered[1])
-        second_spacing = xy_distance(ordered[1], ordered[2])
-        if min(first_spacing, second_spacing) < self.line_min_point_spacing:
+        spacings = [
+            xy_distance(ordered[index - 1], ordered[index])
+            for index in range(1, len(ordered))
+        ]
+        if min(spacings) < self.line_min_point_spacing:
             return None, None, None, "point_spacing_too_small"
-        if max(first_spacing, second_spacing) > self.line_max_point_spacing:
+        if max(spacings) > self.line_max_point_spacing:
             return None, None, None, "point_spacing_too_large"
 
-        first_yaw = math.atan2(
-            ordered[1].y - ordered[0].y, ordered[1].x - ordered[0].x
-        )
-        second_yaw = math.atan2(
-            ordered[2].y - ordered[1].y, ordered[2].x - ordered[1].x
-        )
-        bend = self.undirected_angle_error(first_yaw, second_yaw)
-        residual = self.point_to_chord_distance(
-            ordered[1], ordered[0], ordered[2]
-        )
-        if bend > self.line_triplet_max_bend:
-            return None, None, residual, "triplet_bend_too_large"
-        if residual > self.line_triplet_max_residual:
-            return None, None, residual, "triplet_residual_too_large"
+        maximum_bend = 0.0
+        maximum_residual = 0.0
+        for index in range(1, len(ordered) - 1):
+            previous = ordered[index - 1]
+            current = ordered[index]
+            following = ordered[index + 1]
+            first_yaw = math.atan2(
+                current.y - previous.y, current.x - previous.x
+            )
+            second_yaw = math.atan2(
+                following.y - current.y, following.x - current.x
+            )
+            maximum_bend = max(
+                maximum_bend,
+                self.undirected_angle_error(first_yaw, second_yaw),
+            )
+            maximum_residual = max(
+                maximum_residual,
+                self.point_to_chord_distance(current, previous, following),
+            )
+        if maximum_bend > self.line_triplet_max_bend:
+            return None, None, maximum_residual, "local_bend_too_large"
+        if maximum_residual > self.line_triplet_max_residual:
+            return None, None, maximum_residual, "local_residual_too_large"
 
         detected_yaw = math.atan2(
             ordered[-1].y - ordered[0].y,
             ordered[-1].x - ordered[0].x,
         )
-        return ordered, detected_yaw, residual, "valid"
+        return ordered, detected_yaw, maximum_residual, "valid"
 
     def curve_ready(self, points=None, distances=None):
         points = self.line_curve_points if points is None else points
@@ -925,6 +996,9 @@ class Task1LineFollowTest:
         self.active_los_target_s = None
         self.active_los_target = None
         self.active_los_yaw = None
+        self.active_los_move_yaw = None
+        self.active_los_phase = None
+        self.active_los_hold_started = None
 
     def activate_latest_tracking_curve(self, current=None, reset_progress=False):
         """在一个 LOS 固定段走完时，原子地换入最新固定曲线快照。"""
@@ -944,21 +1018,22 @@ class Task1LineFollowTest:
         self.clear_active_los_target()
         if reset_progress:
             self.current_path_s = 0.0
+            self.projected_path_s = 0.0
         elif current is not None:
+            # 新旧曲线都从已锁定起点向前编号。正式进度只由已经完成“移动+对向”
+            # 的航点推进；最近投影只用于 Web 观察，不能跳过尚未完成的航点。
+            self.current_path_s = min(
+                self.completed_path_length, self.tracking_curve_s[-1]
+            )
             projection = self.project_to_curve(
                 current.pose.position,
                 self.tracking_curve_points,
                 self.tracking_curve_s,
             )
-            if projection is not None:
-                # 新旧曲线都从已锁定起点向前编号；即使重拟合让最近投影略向后，
-                # 也不允许 LOS 的路径进度退回到已完成路段。
-                completed_on_new_curve = min(
-                    self.completed_path_length, self.tracking_curve_s[-1]
-                )
-                self.current_path_s = max(
-                    completed_on_new_curve, projection["path_s"]
-                )
+            self.projected_path_s = max(
+                self.current_path_s,
+                projection["path_s"] if projection is not None else 0.0,
+            )
         return True
 
     def line_segment_associated(self, points, detected_yaw, confidence):
@@ -1358,6 +1433,53 @@ class Task1LineFollowTest:
             confidence /= 100.0
         return clamp(confidence, 0.0, 1.0)
 
+    def valid_line_poses(self, message):
+        """从 LineDetection 提取有效点，并按配置等间隔限制参与拟合的数量。"""
+        declared_count = int(message.point_count)
+        positions = list(message.positions)
+        validity = list(message.point_valid)
+        self.latest_line_input_count = declared_count
+        self.latest_line_valid_count = int(message.valid_count)
+        self.latest_line_used_count = 0
+
+        if not message.valid:
+            return None, message.reason or "line_message_invalid"
+        if declared_count <= 0:
+            return None, "empty_line_message"
+        if declared_count != len(positions) or declared_count != len(validity):
+            return None, "line_array_size_mismatch"
+        if not message.header.frame_id:
+            return None, "line_frame_id_empty"
+
+        poses = []
+        for position, point_valid in zip(positions, validity):
+            if not point_valid:
+                continue
+            if (
+                not math.isfinite(position.x)
+                or not math.isfinite(position.y)
+                or not math.isfinite(position.z)
+                or math.sqrt(
+                    position.x ** 2 + position.y ** 2 + position.z ** 2
+                ) > self.max_camera_distance
+            ):
+                continue
+            pose = PoseStamped()
+            pose.header = copy.deepcopy(message.header)
+            pose.pose.position = copy.deepcopy(position)
+            pose.pose.orientation.w = 1.0
+            poses.append(pose)
+
+        if len(poses) < 2:
+            return None, "too_few_usable_points"
+        if self.line_accept_point_count > 0 and len(poses) > self.line_accept_point_count:
+            indices = np.linspace(
+                0, len(poses) - 1, self.line_accept_point_count
+            ).round().astype(int)
+            poses = [poses[int(index)] for index in indices]
+        self.latest_line_used_count = len(poses)
+        return poses, "valid"
+
     def line_callback(self, message):
         if self.state == self.WAIT_CAMERA or not self.camera_ready():
             return
@@ -1366,28 +1488,20 @@ class Task1LineFollowTest:
         if message.class_name and message.class_name not in self.line_classes:
             return
 
-        camera_points = [
-            message.pose1.pose.position,
-            message.pose2.pose.position,
-            message.pose3.pose.position,
-        ]
-        if any(
-            not math.isfinite(point.x)
-            or not math.isfinite(point.y)
-            or not math.isfinite(point.z)
-            or math.sqrt(point.x ** 2 + point.y ** 2 + point.z ** 2)
-            > self.max_camera_distance
-            for point in camera_points
-        ):
+        camera_poses, reason = self.valid_line_poses(message)
+        if camera_poses is None:
+            rospy.loginfo_throttle(
+                3.0, "%s: 红线消息已忽略，原因=%s", NODE_NAME, reason
+            )
             return
 
         transformed = [
             self.transform_pose_to_map(pose)
-            for pose in (message.pose1, message.pose2, message.pose3)
+            for pose in camera_poses
         ]
         if any(pose is None for pose in transformed):
             return
-        # Web 始终显示最近一条可转换到 map 的识别消息，便于观察被后续规则拒绝的三点。
+        # Web 始终显示最近一条可转换到 map 的多点识别消息。
         self.latest_line_points = [
             copy.deepcopy(pose.pose.position) for pose in transformed
         ]
@@ -1401,7 +1515,7 @@ class Task1LineFollowTest:
             if self.line_reference_point is not None
             else tracking.pose.position
         )
-        points, detected_yaw, residual, reason = self.order_and_validate_triplet(
+        points, detected_yaw, residual, reason = self.order_and_validate_points(
             transformed, reference
         )
         if points is None:
@@ -1803,10 +1917,8 @@ class Task1LineFollowTest:
         )
         if projection is None:
             return
-        self.current_path_s = max(self.current_path_s, projection["path_s"])
-        self.completed_path_length = max(
-            self.completed_path_length, self.current_path_s
-        )
+        # 最近投影只用于显示。正式进度必须等当前航点完成“移动、定点、对向”。
+        self.projected_path_s = max(self.current_path_s, projection["path_s"])
         remaining_path = max(
             0.0, self.tracking_curve_s[-1] - self.current_path_s
         )
@@ -1817,7 +1929,8 @@ class Task1LineFollowTest:
         endpoint_yaw_error = abs(wrap_angle(endpoint_yaw - current_yaw))
 
         if (
-            remaining_path <= self.endpoint_path_tolerance
+            self.active_los_target is None
+            and remaining_path <= self.endpoint_path_tolerance
             and endpoint_distance <= self.endpoint_arrival_tolerance
             and endpoint_yaw_error <= self.los_waypoint_yaw_tolerance
         ):
@@ -1847,34 +1960,68 @@ class Task1LineFollowTest:
             self.active_los_yaw = self.tracking_yaw_at_s(
                 self.active_los_target_s
             )
+            # 移动阶段保持进入航点时的航向；位置稳定后才切换到目标切向。
+            self.active_los_move_yaw = current_yaw
+            self.active_los_phase = self.LOS_MOVE
+            self.active_los_hold_started = None
 
         self.current_tracking_point = copy.deepcopy(self.active_los_target)
         position_error = xy_distance(
             tracking.pose.position, self.active_los_target
         )
-        yaw_error = abs(wrap_angle(self.active_los_yaw - current_yaw))
-        commanded_goal = self.publish_los_goal(
-            self.active_los_target, self.active_los_yaw
+        desired_yaw = (
+            self.active_los_move_yaw
+            if self.active_los_phase == self.LOS_MOVE
+            else self.active_los_yaw
         )
+        yaw_error = abs(wrap_angle(desired_yaw - current_yaw))
+        commanded_goal = self.publish_los_goal(self.active_los_target, desired_yaw)
         if commanded_goal is None:
             return
 
-        waypoint_reached = (
+        if self.active_los_phase == self.LOS_MOVE:
+            position_stable = (
+                position_error <= self.position_tolerance
+                and self.motion_arrived(commanded_goal)
+            )
+            if position_stable:
+                if self.active_los_hold_started is None:
+                    self.active_los_hold_started = rospy.Time.now()
+            else:
+                self.active_los_hold_started = None
+            held = (
+                self.active_los_hold_started is not None
+                and (rospy.Time.now() - self.active_los_hold_started).to_sec()
+                >= self.los_waypoint_hold_seconds
+            )
+            if held:
+                self.active_los_phase = self.LOS_ALIGN
+                self.active_los_hold_started = None
+                rospy.loginfo(
+                    "%s: LOS 航点位置已到达并定点；s=%.2f m，开始调整航向 %.1f deg",
+                    NODE_NAME,
+                    self.active_los_target_s,
+                    math.degrees(self.active_los_yaw),
+                )
+        elif (
             position_error <= self.position_tolerance
-            and yaw_error <= self.los_waypoint_yaw_tolerance
-        )
-        if waypoint_reached:
+            and abs(wrap_angle(self.active_los_yaw - current_yaw))
+            <= self.los_waypoint_yaw_tolerance
+            and self.motion_arrived(commanded_goal)
+        ):
             reached_s = self.active_los_target_s
             self.current_path_s = max(self.current_path_s, reached_s)
             self.completed_path_length = max(
                 self.completed_path_length, self.current_path_s
             )
             rospy.loginfo(
-                "%s: LOS 航点已到达；双目位置误差=%.2f m，航向误差=%.1f deg，"
-                "推进到 s=%.2f m",
+                "%s: LOS 航点移动和对向均完成；camera位置误差=%.2f m，"
+                "航向误差=%.1f deg，推进到 s=%.2f m",
                 NODE_NAME,
                 position_error,
-                math.degrees(yaw_error),
+                math.degrees(abs(wrap_angle(
+                    self.active_los_yaw - current_yaw
+                ))),
                 reached_s,
             )
             self.clear_active_los_target()
@@ -1886,11 +2033,14 @@ class Task1LineFollowTest:
         )
         rospy.loginfo_throttle(
             2.0,
-            "%s: LOS 巡线；已完成=%.2f m，已知轨迹=%.2f m，距终点=%.2f m，"
-            "双目目标误差=%.2f m，航向误差=%.1f deg，"
+            "%s: LOS 巡线；阶段=%s，已完成/投影=%.2f/%.2f m，"
+            "已知轨迹=%.2f m，距终点=%.2f m，camera目标误差=%.2f m，"
+            "航向误差=%.1f deg，"
             "base_link目标=(%.2f, %.2f)，motion_state=%s",
             NODE_NAME,
+            self.active_los_phase or "航点完成",
             self.completed_path_length,
+            self.projected_path_s,
             self.tracking_curve_s[-1],
             endpoint_distance,
             position_error,
@@ -1975,12 +2125,12 @@ class Task1LineFollowTest:
             return
         current = self.get_current_pose()
         tracking = self.get_tracking_pose()
-        if tracking is not None and (
+        if current is not None and (
             not self.actual_trajectory
-            or xy_distance(tracking.pose.position, self.actual_trajectory[-1])
+            or xy_distance(current.pose.position, self.actual_trajectory[-1])
             >= self.actual_path_min_spacing
         ):
-            self.actual_trajectory.append(copy.deepcopy(tracking.pose.position))
+            self.actual_trajectory.append(copy.deepcopy(current.pose.position))
             if len(self.actual_trajectory) > self.actual_path_max_points:
                 self.actual_trajectory = self.actual_trajectory[
                     -self.actual_path_max_points:
@@ -1988,6 +2138,29 @@ class Task1LineFollowTest:
 
         def point_data(point):
             return [round(point.x, 3), round(point.y, 3)] if point else None
+
+        planned_base_curve = self.tracking_curve_to_base_points(
+            self.line_curve_points
+        )
+        fixed_base_curve = self.tracking_curve_to_base_points(
+            self.line_committed_curve_points
+        )
+        tracking_base_curve = self.tracking_curve_to_base_points(
+            self.tracking_curve_points
+        )
+        base_target = (
+            self.last_motion_goal.pose.position
+            if self.last_motion_goal is not None else None
+        )
+        endpoint_base_candidate = None
+        if (
+            self.endpoint_candidate_point is not None
+            and len(self.tracking_curve_points) >= 2
+        ):
+            endpoint_base_candidate = self.tracking_point_to_base_point(
+                self.endpoint_candidate_point,
+                self.tracking_yaw_at_s(self.tracking_curve_s[-1]),
+            )
 
         payload = {
             "stamp": round(now.to_sec(), 3),
@@ -2016,35 +2189,44 @@ class Task1LineFollowTest:
                 3,
             ),
             "completed_length": round(self.completed_path_length, 3),
-            "robot": point_data(tracking.pose.position) if tracking else None,
+            "robot": point_data(current.pose.position) if current else None,
+            "camera": point_data(tracking.pose.position) if tracking else None,
+            "robot_down": round(current.pose.position.z, 3) if current else None,
+            "camera_down": round(tracking.pose.position.z, 3) if tracking else None,
             "robot_yaw_deg": round(math.degrees(yaw_from_quaternion(
                 current.pose.orientation
             )), 2) if current else 0.0,
             "tracking_frame": self.line_tracking_frame,
-            "tracking_point": point_data(self.current_tracking_point),
+            "tracking_point": point_data(base_target),
+            "camera_tracking_point": point_data(self.current_tracking_point),
+            "los_phase": self.active_los_phase,
             "tracking_curve_version": self.tracking_curve_version,
             "fixed_curve_version": self.line_version,
             "freeze_confirmations": self.freeze_confirmation_count,
             "freeze_required": self.curve_freeze_required_frames,
             "ignored_fixed_points": self.ignored_fixed_points,
+            "line_input_point_count": self.latest_line_input_count,
+            "line_valid_point_count": self.latest_line_valid_count,
+            "line_used_point_count": self.latest_line_used_count,
             "latest_line_points": [
                 point_data(point) for point in self.latest_line_points
             ],
             "actual_path": [point_data(point) for point in self.actual_trajectory],
-            "planned_curve": [point_data(point) for point in self.line_curve_points],
-            "fixed_curve": [
-                point_data(point) for point in self.line_committed_curve_points
-            ],
-            "tracking_curve": [
-                point_data(point) for point in self.tracking_curve_points
-            ],
+            "planned_curve": [point_data(point) for point in planned_base_curve],
+            "fixed_curve": [point_data(point) for point in fixed_base_curve],
+            "tracking_curve": [point_data(point) for point in tracking_base_curve],
             "raw_line": [point_data(point) for point in self.line_raw_points],
-            "line_start": point_data(self.line_start_point),
-            "line_end": point_data(self.line_end_point),
-            "endpoint_candidate": point_data(self.endpoint_candidate_point),
+            "line_start": point_data(
+                fixed_base_curve[0] if fixed_base_curve else None
+            ),
+            "line_end": point_data(
+                fixed_base_curve[-1] if fixed_base_curve else None
+            ),
+            "endpoint_candidate": point_data(endpoint_base_candidate),
             "endpoint_stable_count": self.endpoint_candidate_count,
             "endpoint_stable_required": self.endpoint_stable_frames,
             "endpoint_confirmed": self.endpoint_confirmed(),
+            "projected_length": round(self.projected_path_s, 3),
         }
         encoded = json.dumps(payload, separators=(",", ":"))
         self.trajectory_pub.publish(String(data=encoded))
@@ -2062,11 +2244,15 @@ class Task1LineFollowTest:
         goal = self.last_motion_goal
         current_yaw = yaw_from_quaternion(current.pose.orientation)
         target_yaw = (
-            self.active_los_yaw
-            if self.active_los_yaw is not None
+            self.active_los_move_yaw
+            if self.active_los_phase == self.LOS_MOVE
             else (
-                yaw_from_quaternion(goal.pose.orientation)
-                if goal is not None else current_yaw
+                self.active_los_yaw
+                if self.active_los_yaw is not None
+                else (
+                    yaw_from_quaternion(goal.pose.orientation)
+                    if goal is not None else current_yaw
+                )
             )
         )
         position_error = (
@@ -2082,7 +2268,8 @@ class Task1LineFollowTest:
             "%s: FULL state=%s base=(%.3f,%.3f,%.3f,%.2fdeg) "
             "%s=(%.3f,%.3f,%.3f) camera_target=(%.3f,%.3f) "
             "base_goal=(%.3f,%.3f,%.3f,%.2fdeg) error=(%.3fm,%.2fdeg) "
-            "path=%.3f/%.3f active_s=%s line=(%s,%.3f,%.3f,%s/%s) "
+            "path=%.3f/%.3f/%.3f active=(%s,%s) "
+            "line=(%s,%.3f,%.3f,%s/%s,points=%d/%d/%d) "
             "motion=(%s,%s,%s,%s,%s)",
             NODE_NAME,
             self.state,
@@ -2104,14 +2291,19 @@ class Task1LineFollowTest:
             position_error,
             yaw_error,
             self.completed_path_length,
+            self.projected_path_s,
             self.tracking_curve_s[-1] if self.tracking_curve_s else 0.0,
             "%.3f" % self.active_los_target_s
             if self.active_los_target_s is not None else "-",
+            self.active_los_phase or "-",
             self.line_locked,
             self.line_lock_confidence,
             self.line_fit_residual,
             self.tracking_curve_version,
             self.line_version,
+            self.latest_line_input_count,
+            self.latest_line_valid_count,
+            self.latest_line_used_count,
             motion_state.state if motion_state is not None else "-",
             motion_state.reason if motion_state is not None else "-",
             motion_state.tx if motion_state is not None else 0,
