@@ -29,7 +29,7 @@
     <arg name="trajectory_topic" default="/task1/v3/los_square/trajectory" />
 
     <!-- 正方形：单边长度和用于 LOS/Web 的轨迹采样间距，单位 m。 -->
-    <arg name="square_side_length" default="1.0" />
+    <arg name="square_side_length" default="0.5" />
     <arg name="path_sample_spacing" default="0.05" />
     <!-- 开始 LOS 前持续提交启动位姿并保持 HOVER 的时间，单位 s。 -->
     <arg name="startup_hold_seconds" default="10.0" />

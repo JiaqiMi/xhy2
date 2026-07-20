@@ -103,7 +103,10 @@
     <arg name="trajectory_web_host" default="192.168.1.117" />
     <!-- 默认访问 http://192.168.1.117:8083。 -->
     <arg name="trajectory_web_port" default="8083" />
-
+    <arg name="start_line_node" default="true" />
+    
+    <include if="$(arg start_line_node)"
+             file="$(find stereo_depth)/launch/test_line_detection_lineN.launch" />
     <node pkg="auv_control"
           type="test_task1_v3_line_fitting.py"
           name="test_task1_v3_line_fitting"
