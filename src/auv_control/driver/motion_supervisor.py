@@ -42,6 +42,7 @@
 from __future__ import division
 
 import csv
+import json
 import math
 import os
 from datetime import datetime
@@ -50,7 +51,7 @@ import rospy
 import tf
 from auv_control.msg import AUVData, MotionState, PoseNEDcmd
 from geometry_msgs.msg import PoseStamped, TwistStamped
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 from motion_supervisor_core import (
@@ -140,13 +141,31 @@ class MotionSupervisorNode(object):
         'filtered_v',
         'filtered_r_deg_s',
         'horizontal_speed',
+        'map_velocity_x',
+        'map_velocity_y',
+        'reference_velocity_x',
+        'reference_velocity_y',
+        'reference_speed',
+        'closing_speed',
+        'xy_stop_distance',
+        'xy_brake_acceleration',
+        'xy_brake_margin',
+        'xy_braking',
+        'yaw_rate_reference_deg_s',
+        'yaw_stop_angle_deg',
+        'yaw_braking',
+        'goal_static_seconds',
+        'goal_static_for_capture',
+        'raw_tx',
+        'raw_ty',
+        'raw_mz',
         'tx',
         'ty',
         'mz',
     )
 
     def __init__(self):
-        self.control_rate_hz = float(rospy.get_param('~control_rate_hz', 5.0))
+        self.control_rate_hz = float(rospy.get_param('~control_rate_hz', 20.0))
         self.feedback_timeout = float(rospy.get_param('~feedback_timeout', 0.5))
         self.velocity_filter_alpha = float(
             rospy.get_param('~velocity_filter_alpha', 0.35))
@@ -239,7 +258,7 @@ class MotionSupervisorNode(object):
             str(rospy.get_param(
                 '~log_directory',
                 '~/.ros/auv_logs/motion_supervisor'))))
-        self.log_flush_every = int(rospy.get_param('~log_flush_every', 5))
+        self.log_flush_every = int(rospy.get_param('~log_flush_every', 20))
         if self.log_flush_every <= 0:
             raise ValueError('log_flush_every 必须大于 0')
         self.log_file = None
@@ -254,6 +273,8 @@ class MotionSupervisorNode(object):
             '/cmd/pose/ned', PoseNEDcmd, queue_size=10)
         self.state_pub = rospy.Publisher(
             '/motion/state', MotionState, queue_size=10)
+        self.diagnostics_pub = rospy.Publisher(
+            '/motion/diagnostics', String, queue_size=10)
         rospy.Subscriber(
             '/cmd/motion/goal', PoseStamped, self.goal_callback, queue_size=1)
         rospy.Subscriber(
@@ -329,6 +350,9 @@ class MotionSupervisorNode(object):
             'yaw_rate_threshold': 'yaw_rate_threshold_deg_s',
             'hover_fault_yaw_rate': 'hover_fault_yaw_rate_deg_s',
             'hover_fault_yaw_error': 'hover_fault_yaw_error_deg',
+            'yaw_max_rate': 'yaw_max_rate_deg_s',
+            'yaw_max_acceleration': 'yaw_max_acceleration_deg_s2',
+            'yaw_max_jerk': 'yaw_max_jerk_deg_s3',
         }
         for name, default in DEFAULT_PARAMETERS.items():
             if name in degree_parameters:
@@ -703,6 +727,32 @@ class MotionSupervisorNode(object):
             'ty': output.ty,
             'mz': output.mz,
         }
+        diagnostics = output.diagnostics
+        row.update({
+            'map_velocity_x': diagnostics.get('map_velocity_x', ''),
+            'map_velocity_y': diagnostics.get('map_velocity_y', ''),
+            'reference_velocity_x': diagnostics.get('reference_velocity_x', ''),
+            'reference_velocity_y': diagnostics.get('reference_velocity_y', ''),
+            'reference_speed': diagnostics.get('reference_speed', ''),
+            'closing_speed': diagnostics.get('closing_speed', ''),
+            'xy_stop_distance': diagnostics.get('xy_stop_distance', ''),
+            'xy_brake_acceleration': diagnostics.get('xy_brake_acceleration', ''),
+            'xy_brake_margin': diagnostics.get('xy_brake_margin', ''),
+            'xy_braking': int(bool(diagnostics.get('xy_braking', False))),
+            'yaw_rate_reference_deg_s': (
+                math.degrees(diagnostics['yaw_rate_reference'])
+                if 'yaw_rate_reference' in diagnostics else ''),
+            'yaw_stop_angle_deg': (
+                math.degrees(diagnostics['yaw_stop_angle'])
+                if 'yaw_stop_angle' in diagnostics else ''),
+            'yaw_braking': int(bool(diagnostics.get('yaw_braking', False))),
+            'goal_static_seconds': diagnostics.get('goal_static_seconds', ''),
+            'goal_static_for_capture': int(bool(
+                diagnostics.get('goal_static_for_capture', False))),
+            'raw_tx': diagnostics.get('raw_tx', ''),
+            'raw_ty': diagnostics.get('raw_ty', ''),
+            'raw_mz': diagnostics.get('raw_mz', ''),
+        })
         try:
             self.log_writer.writerow(row)
             self.log_rows_since_flush += 1
@@ -787,6 +837,23 @@ class MotionSupervisorNode(object):
             else output.reason
         )
         self.state_pub.publish(message)
+
+    def _publish_diagnostics(self, output, now):
+        """发布可供网页与离线工具直接消费的统一控制诊断数据。"""
+        payload = dict(output.diagnostics)
+        payload.update({
+            'stamp_sec': now.to_sec(),
+            'state': STATE_NAMES.get(output.state, str(output.state)),
+            'position_error_m': output.position_error,
+            'yaw_error_rad': output.yaw_error,
+            'horizontal_speed_mps': output.horizontal_speed,
+            'yaw_rate_radps': output.yaw_rate,
+            'tx': output.tx,
+            'ty': output.ty,
+            'mz': output.mz,
+        })
+        self.diagnostics_pub.publish(String(data=json.dumps(
+            payload, separators=(',', ':'), sort_keys=True)))
 
     def _publish_waiting_state(self, now):
         """首帧 TF 到达前以 SAFE 状态保持任务侧 5 Hz 反馈。"""
@@ -892,6 +959,7 @@ class MotionSupervisorNode(object):
                     self.startup_hover_count = 0
             self._publish_command(output, now)
             self._publish_state(output, now)
+            self._publish_diagnostics(output, now)
             self._write_cycle_log(now, vehicle, output)
 
             if output.state != self.last_logged_state:

@@ -44,21 +44,6 @@
     <arg name="control_to_imu_y" default="0.0" />
     <arg name="control_to_imu_z" default="0.0" />
     <!--
-      计划正向 yaw 旋转中心指向 IMU/GNSS 点的前、右、下杆臂，单位 m。
-      一次计划正向转向包含其主动刹转过程，刹车 MZ 反号时不切换中心。
-    -->
-    <arg name="control_to_imu_positive_x" default="0.0" />
-    <arg name="control_to_imu_positive_y" default="0.0" />
-    <arg name="control_to_imu_positive_z" default="0.0" />
-    <!--
-      计划负向 yaw 旋转中心指向 IMU/GNSS 点的前、右、下杆臂，单位 m。
-      标定前保持为 0；标定后填写负向独立结果。
-    -->
-    <arg name="control_to_imu_negative_x" default="0.0" />
-    <arg name="control_to_imu_negative_y" default="0.0" />
-    <arg name="control_to_imu_negative_z" default="0.0" />
-
-    <!--
       是否同时启动相对目标测试节点。
       false：只启动 motion_supervisor，目标由其他节点发布；
       true：启动 motion_goal_test，并自动发布下方参数定义的测试目标。
@@ -130,19 +115,7 @@
         <param name="control_to_imu_x" value="$(arg control_to_imu_x)" />
         <param name="control_to_imu_y" value="$(arg control_to_imu_y)" />
         <param name="control_to_imu_z" value="$(arg control_to_imu_z)" />
-        <!-- motion_supervisor 内部按计划 yaw 方向锁存的两套虚拟旋转中心。 -->
-        <param name="control_to_imu_positive_x"
-               value="$(arg control_to_imu_positive_x)" />
-        <param name="control_to_imu_positive_y"
-               value="$(arg control_to_imu_positive_y)" />
-        <param name="control_to_imu_positive_z"
-               value="$(arg control_to_imu_positive_z)" />
-        <param name="control_to_imu_negative_x"
-               value="$(arg control_to_imu_negative_x)" />
-        <param name="control_to_imu_negative_y"
-               value="$(arg control_to_imu_negative_y)" />
-        <param name="control_to_imu_negative_z"
-               value="$(arg control_to_imu_negative_z)" />
+        <!-- 两套方向旋转中心由 motion_supervisor.yaml 统一加载，launch 不得覆盖。 -->
     </node>
 
     <!--

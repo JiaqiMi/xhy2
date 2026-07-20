@@ -11,6 +11,8 @@
     <arg name="start_state_web" default="true" />
     <arg name="start_fisheye" default="true" />
     <arg name="start_motion_supervisor" default="false" />
+    <!-- debug_driver_v2 向下位机发送完整控制帧的频率，单位 Hz。 -->
+    <arg name="debug_send_rate_hz" default="20.0" />
     <!--
       base_link 原点指向 IMU/GNSS 定位点的前、右、下偏置，单位 m。
       当前 base_link 与 IMU/GNSS 定位点重合，三个默认值均保持为 0。
@@ -22,14 +24,6 @@
     <arg name="control_to_imu_x" default="0.0" />
     <arg name="control_to_imu_y" default="0.0" />
     <arg name="control_to_imu_z" default="0.0" />
-    <!-- motion_supervisor 计划正向 yaw 使用的独立旋转中心到 IMU 杆臂。 -->
-    <arg name="control_to_imu_positive_x" default="0.0" />
-    <arg name="control_to_imu_positive_y" default="0.0" />
-    <arg name="control_to_imu_positive_z" default="0.0" />
-    <!-- motion_supervisor 计划负向 yaw 使用的独立旋转中心到 IMU 杆臂。 -->
-    <arg name="control_to_imu_negative_x" default="0.0" />
-    <arg name="control_to_imu_negative_y" default="0.0" />
-    <arg name="control_to_imu_negative_z" default="0.0" />
     <!-- web 参数 -->    
     <arg name="state_web_host" default="0.0.0.0" />
     <arg name="state_web_port" default="8088" />
@@ -67,6 +61,7 @@
         <param name="save_raw_data" type="bool" value="true" />
         <param name="raw_save_dir" type="string" value="$(arg save_dir)" />
         <param name="raw_flush_every" type="int" value="1" />
+        <param name="send_rate_hz" type="double" value="$(arg debug_send_rate_hz)" />
     </node>
 
     <!-- ===== 坐标变换层 ===== -->
@@ -131,17 +126,5 @@
         <arg name="control_to_imu_x" value="$(arg control_to_imu_x)" />
         <arg name="control_to_imu_y" value="$(arg control_to_imu_y)" />
         <arg name="control_to_imu_z" value="$(arg control_to_imu_z)" />
-        <arg name="control_to_imu_positive_x"
-             value="$(arg control_to_imu_positive_x)" />
-        <arg name="control_to_imu_positive_y"
-             value="$(arg control_to_imu_positive_y)" />
-        <arg name="control_to_imu_positive_z"
-             value="$(arg control_to_imu_positive_z)" />
-        <arg name="control_to_imu_negative_x"
-             value="$(arg control_to_imu_negative_x)" />
-        <arg name="control_to_imu_negative_y"
-             value="$(arg control_to_imu_negative_y)" />
-        <arg name="control_to_imu_negative_z"
-             value="$(arg control_to_imu_negative_z)" />
     </include>
 </launch>

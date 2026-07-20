@@ -271,6 +271,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertAlmostEqual(output.target.z, -0.8)
         self.assertEqual(output.state, TRANSLATE)
 
+    @unittest.skip('统一三轴控制不再采用先平移后转向序列')
     def test_complete_sequence_uses_depth_then_dprov(self):
         self.core.set_goal(MotionGoal(2.0, 0.0, 1.5, 0.0))
 
@@ -299,6 +300,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.mode, MODE_DPROV)
         self.assertEqual(output.reason, '下位机定点接管已确认，目标到达')
 
+    @unittest.skip('统一三轴控制不再使用 ALIGN_FINAL')
     def test_align_final_brakes_translation_and_reacquires_after_drift(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.2)
         self.core.state = ALIGN_FINAL
@@ -315,6 +317,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.state, TRANSLATE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
+    @unittest.skip('统一三轴控制不再使用 ALIGN_FINAL')
     def test_final_alignment_holds_control_center_position(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, math.radians(30.0))
         self.core.state = ALIGN_FINAL
@@ -329,6 +332,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertGreater(output.ty, 0)
         self.assertGreater(output.mz, 0)
 
+    @unittest.skip('统一三轴控制不再使用 ALIGN_FINAL')
     def test_final_alignment_uses_two_dimensional_center_deadband(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, math.radians(30.0))
         self.core.state = ALIGN_FINAL
@@ -348,6 +352,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertGreater(output.tx, output.ty)
         self.assertGreater(output.ty, 0)
 
+    @unittest.skip('统一三轴控制由速度环而非旧位置增益直接输出')
     def test_final_alignment_uses_directional_xy_gains(self):
         core = MotionSupervisorCore({
             'kp_x_positive': 1000.0,
@@ -369,6 +374,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         negative_x = core.step(self.vehicle(x=0.04, y=-0.01, yaw=0.0))
         self.assertEqual((negative_x.tx, negative_x.ty), (-120, 20))
 
+    @unittest.skip('统一三轴控制不再使用 FINAL_BRAKE')
     def test_final_brake_keeps_control_center_hold_active(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = FINAL_BRAKE
@@ -388,6 +394,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.state, TRANSLATE)
         self.assertEqual(output.mode, MODE_DEPTH)
 
+    @unittest.skip('统一三轴控制不再使用 FINAL_BRAKE')
     def test_final_brake_realigns_stopped_yaw_error_outside_tolerance(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = FINAL_BRAKE
@@ -398,6 +405,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.yaw_axis_state, AXIS_TRACK)
         self.assertGreater(output.mz, 0)
 
+    @unittest.skip('统一三轴控制不再使用 FINAL_BRAKE')
     def test_final_brake_keeps_braking_while_yaw_is_still_rotating(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = FINAL_BRAKE
@@ -444,6 +452,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertAlmostEqual(output.target.y, 2.2)
         self.assertAlmostEqual(output.target.z, -0.9)
 
+    @unittest.skip('旧逻辑允许 X/Y 独立刹车，现已由二维统一制动替代')
     def test_x_brakes_while_y_continues_tracking_at_corner(self):
         self.core.goal = MotionGoal(0.05, 1.0, -0.6, 0.0)
         self.core.state = TRANSLATE
@@ -484,6 +493,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
                 else:
                     self.assertGreater(output.ty, output.tx)
 
+    @unittest.skip('统一二维向量限幅不再支持逐轴独立期望')
     def test_directional_motion_gains_and_limits_are_independent(self):
         core = MotionSupervisorCore({
             'kp_x_positive': 1000.0,
@@ -524,6 +534,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertAlmostEqual(output.target.z, -0.8)
         self.assertAlmostEqual(output.target.yaw, math.radians(20.0))
 
+    @unittest.skip('新目标恢复统一三轴闭环，首周期允许平滑输出')
     def test_near_goal_update_leaves_hover_without_braking(self):
         self.core.goal = MotionGoal(0.0, 0.0, -0.6, 0.0)
         self.core.state = HOVER
@@ -544,6 +555,7 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.mode, MODE_DEPTH)
         self.assertGreater(output.mz, 0)
 
+    @unittest.skip('统一三轴控制在平移期间同时跟踪目标 yaw')
     def test_translation_holds_initial_heading_and_uses_tx_ty(self):
         self.core.set_goal(MotionGoal(1.0, 0.0, -0.6, 0.0))
         output = self.core.step(self.vehicle(yaw=math.pi / 2.0))
@@ -552,6 +564,56 @@ class MotionSupervisorCoreTest(unittest.TestCase):
         self.assertEqual(output.tx, 0)
         self.assertLess(output.ty, 0)
         self.assertEqual(output.mz, 0)
+
+    def test_unified_pose_tracks_xy_and_yaw_simultaneously(self):
+        core = MotionSupervisorCore({
+            'xy_max_jerk': 10.0,
+            'yaw_max_jerk': math.radians(1000.0),
+        })
+        core.set_goal(MotionGoal(1.0, 1.0, -0.6, math.radians(45.0)))
+        output = core.step(self.vehicle())
+        self.assertEqual(output.state, TRANSLATE)
+        self.assertGreater(output.tx, 0)
+        self.assertGreater(output.ty, 0)
+        self.assertGreater(output.mz, 0)
+        self.assertGreater(output.diagnostics['reference_speed'], 0.0)
+
+    def test_unified_xy_braking_uses_single_vector_state(self):
+        core = MotionSupervisorCore({
+            'xy_max_jerk': 10.0,
+            'force_slew_per_cycle': 10000.0,
+            'brake_force_slew_per_cycle': 10000.0,
+        })
+        core.set_goal(MotionGoal(0.20, 0.20, -0.6, 0.0))
+        core.step(self.vehicle())
+        output = core.step(self.vehicle(x=0.05, y=0.05, u=0.20, v=0.20))
+        self.assertTrue(output.diagnostics['xy_braking'])
+        self.assertEqual(output.x_axis_state, AXIS_BRAKE)
+        self.assertEqual(output.y_axis_state, AXIS_BRAKE)
+        self.assertLess(output.tx, 0)
+        self.assertLess(output.ty, 0)
+
+    def test_goal_update_resets_capture_static_timer(self):
+        core = MotionSupervisorCore({
+            'stable_frames': 1,
+            'goal_static_capture_seconds': 0.5,
+        })
+        core.set_goal(MotionGoal(0.0, 0.0, -0.6, 0.0))
+        output = core.step(self.vehicle())
+        self.assertFalse(output.diagnostics['goal_static_for_capture'])
+        core.set_goal(MotionGoal(0.1, 0.0, -0.6, 0.0))
+        output = core.step(self.vehicle())
+        self.assertFalse(output.diagnostics['goal_static_for_capture'])
+
+    def test_effectiveness_matrix_compensates_cross_coupling(self):
+        core = MotionSupervisorCore({
+            'xy_max_jerk': 10.0,
+            'effectiveness_x_ty': 0.5,
+        })
+        core.set_goal(MotionGoal(0.0, 1.0, -0.6, 0.0))
+        output = core.step(self.vehicle())
+        self.assertLess(output.diagnostics['raw_tx'], 0.0)
+        self.assertGreater(output.diagnostics['raw_ty'], 0.0)
 
     def test_cancel_brakes_and_hovers_at_current_pose(self):
         self.core.set_goal(MotionGoal(2.0, 0.0, 1.5, 0.0))

@@ -137,6 +137,10 @@ class DebugDriverV2:
     def __init__(self, ip=None, port=None):
         ip = ip or rospy.get_param("~debug_ip", "192.168.1.115")
         port = port or rospy.get_param("~debug_port", 5063)
+        self.send_rate_hz = float(rospy.get_param("~send_rate_hz", 20.0))
+        if self.send_rate_hz <= 0.0:
+            raise ValueError("send_rate_hz 必须大于 0")
+        self.send_period_s = 1.0 / self.send_rate_hz
 
         # 原始报文保存
         self.raw_saving_enable = rospy.get_param("~save_raw_data", False)
@@ -168,7 +172,9 @@ class DebugDriverV2:
         rospy.Subscriber('/cmd/pose/lla', PoseLLAcmd, self.control_cmd_callback)
         self.data_pub = rospy.Publisher('/status/auv', AUVData, queue_size=10)
         self.velocity_pub = rospy.Publisher('/status/vel', TwistStamped, queue_size=10)
-        rospy.loginfo("debug_driver_v2: 已启动, 监听 /cmd/pose/lla")
+        rospy.loginfo(
+            "debug_driver_v2: 已启动，监听 /cmd/pose/lla，下发频率 %.1f Hz",
+            self.send_rate_hz)
 
     def open_raw_save_file(self):
         """打开原始报文保存文件"""
@@ -492,7 +498,8 @@ class DebugDriverV2:
                     )
                 except Exception as e:
                     rospy.logerr(f"debug_driver_v2: 发送扩展指令包错误: {e}")
-            time.sleep(0.2)  # 5Hz
+            # 发送节拍由启动参数控制；每次发送时只取最新完整指令，避免积压旧指令。
+            time.sleep(self.send_period_s)
 
     # ── 回调 ─────────────────────────────────────────────
 
