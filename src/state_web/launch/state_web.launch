@@ -1,0 +1,68 @@
+<launch>
+    <arg name="host" default="0.0.0.0" />
+    <arg name="port" default="8088" />
+
+    <arg name="left_image_topic" default="/left/image_raw" />
+    <arg name="right_image_topic" default="/right/image_raw" />
+    <arg name="fisheye_image_topic" default="/fisheye_camera/image_raw" />
+
+    <arg name="auv_status_topic" default="/status/auv" />
+    <arg name="velocity_topic" default="/status/vel" />
+    <arg name="pose_command_topic" default="/cmd/pose/ned" />
+    <arg name="actuator_command_topic" default="/cmd/actuator" />
+    <arg name="actuator_status_topic" default="/status/actuator" />
+    <arg name="power_topic" default="/status/power" />
+    <arg name="motion_state_topic" default="/motion/state" />
+    <arg name="world_origin_topic" default="/world_origin" />
+
+    <arg name="world_frame" default="map" />
+    <arg name="base_frame" default="base_link" />
+    <arg name="imu_frame" default="imu" />
+    <arg name="camera_frame" default="camera" />
+
+    <arg name="stream_fps" default="8.0" />
+    <arg name="jpeg_quality" default="75" />
+    <arg name="image_max_width" default="960" />
+    <arg name="image_timeout" default="3.0" />
+    <arg name="state_timeout" default="2.0" />
+    <arg name="command_timeout" default="2.0" />
+    <arg name="tf_timeout" default="2.0" />
+    <arg name="tf_poll_hz" default="10.0" />
+
+    <node pkg="state_web"
+          type="state_web_node.py"
+          name="state_web"
+          output="screen"
+          respawn="true"
+          respawn_delay="2.0">
+        <param name="host" value="$(arg host)" />
+        <param name="port" value="$(arg port)" />
+
+        <param name="left_image_topic" value="$(arg left_image_topic)" />
+        <param name="right_image_topic" value="$(arg right_image_topic)" />
+        <param name="fisheye_image_topic" value="$(arg fisheye_image_topic)" />
+
+        <param name="auv_status_topic" value="$(arg auv_status_topic)" />
+        <param name="velocity_topic" value="$(arg velocity_topic)" />
+        <param name="pose_command_topic" value="$(arg pose_command_topic)" />
+        <param name="actuator_command_topic" value="$(arg actuator_command_topic)" />
+        <param name="actuator_status_topic" value="$(arg actuator_status_topic)" />
+        <param name="power_topic" value="$(arg power_topic)" />
+        <param name="motion_state_topic" value="$(arg motion_state_topic)" />
+        <param name="world_origin_topic" value="$(arg world_origin_topic)" />
+
+        <param name="world_frame" value="$(arg world_frame)" />
+        <param name="base_frame" value="$(arg base_frame)" />
+        <param name="imu_frame" value="$(arg imu_frame)" />
+        <param name="camera_frame" value="$(arg camera_frame)" />
+
+        <param name="stream_fps" value="$(arg stream_fps)" />
+        <param name="jpeg_quality" value="$(arg jpeg_quality)" />
+        <param name="image_max_width" value="$(arg image_max_width)" />
+        <param name="image_timeout" value="$(arg image_timeout)" />
+        <param name="state_timeout" value="$(arg state_timeout)" />
+        <param name="command_timeout" value="$(arg command_timeout)" />
+        <param name="tf_timeout" value="$(arg tf_timeout)" />
+        <param name="tf_poll_hz" value="$(arg tf_poll_hz)" />
+    </node>
+</launch>

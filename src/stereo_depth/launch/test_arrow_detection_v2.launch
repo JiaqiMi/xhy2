@@ -1,0 +1,159 @@
+<launch>
+    <!-- 箭头识别：YOLO bbox -> 鲁棒二维方向估计 -> 连续话题 -> Web -->
+
+    <arg name="start_camera" default="false" />
+    <arg name="start_splitter" default="true" />
+    <arg name="start_web" default="true" />
+
+    <arg name="model_path"
+         default="/home/xhy/catkin_ws/models/arrow0717.pt" />
+    <arg name="conf_thre" default="0.2" />
+    <arg name="top_k" default="3" />
+    <arg name="rate" default="5.0" />
+    <arg name="visualization" default="0" />
+    <arg name="web_port" default="8080" />
+
+    <!--
+        1 Hz rosbag回放建议 1.5~2.0 s；
+        5 Hz实时输入可设置 0.8~1.0 s。
+    -->
+    <arg name="bbox_timeout" default="1.5" />
+    <arg name="max_sync_dt" default="1.2" />
+
+    <!-- 相机 -->
+    <node if="$(arg start_camera)"
+          name="usb_cam"
+          pkg="usb_cam"
+          type="usb_cam_node"
+          output="screen"
+          launch-prefix="bash -c 'exec &quot;$0&quot; &quot;$@&quot; 2>/dev/null'">
+        <param name="video_device" value="/dev/video0" />
+        <param name="pixel_format" value="mjpeg" />
+        <param name="image_width" value="1280" />
+        <param name="image_height" value="480" />
+        <param name="framerate" value="30" />
+    </node>
+
+    <node if="$(arg start_splitter)"
+          pkg="stereo_splitter"
+          type="split_stereo_image.py"
+          name="split_stereo_image"
+          output="screen" />
+
+    <!-- YOLO箭头检测：发布bbox -->
+    <node pkg="yolo_bridge"
+          type="yolo_wrapper.sh"
+          name="yolo_unified_detector"
+          output="screen"
+          launch-prefix="bash">
+
+        <env name="NODE_NAME" value="/yolo_unified_detector" />
+
+        <param name="task_mode" value="detect" />
+        <param name="detect_mode" value="4" />
+        <param name="model_path" value="$(arg model_path)" />
+        <param name="top_k" value="$(arg top_k)" />
+        <param name="visualization" value="$(arg visualization)" />
+        <param name="conf_thre" value="$(arg conf_thre)" />
+        <param name="detc_type" value="bbox" />
+        <param name="output_type" value="quartiles" />
+        <param name="infer_rate" value="$(arg rate)" />
+
+        <param name="input_topic" value="/left/image_raw" />
+        <param name="annotated_topic"
+               value="/yolo_unified/annotated_image" />
+        <param name="web_topic"
+               value="/web/detections" />
+        <param name="center_topic"
+               value="/yolo_unified/target_center" />
+        <param name="bbox_topic"
+               value="/yolo_unified/target_bbox" />
+        <param name="line_topic"
+               value="/yolo_unified/line_bbox" />
+    </node>
+
+    <!-- 改进版二维箭头方向节点 -->
+    <node pkg="stereo_depth"
+          type="arrow_direction_node_v2.py"
+          name="arrow_direction_node"
+          output="screen">
+
+        <param name="image_topic"
+               value="/left/image_raw" />
+        <param name="bbox_topic"
+               value="/yolo_unified/target_bbox" />
+        <param name="target_class_name"
+               value="arrow" />
+
+        <param name="annotated_topic"
+               value="/arrow/annotated_image" />
+        <param name="direction_topic"
+               value="/arrow/direction" />
+        <param name="angle_topic"
+               value="/arrow/angle_deg" />
+        <param name="discrete_topic"
+               value="/arrow/discrete_direction" />
+        <param name="vector_topic"
+               value="/arrow/direction_vector" />
+
+        <param name="publish_rate"
+               value="$(arg rate)" />
+        <param name="bbox_timeout"
+               value="$(arg bbox_timeout)" />
+        <param name="max_sync_dt"
+               value="$(arg max_sync_dt)" />
+
+        <param name="bbox_margin_ratio"
+               value="0.08" />
+        <param name="min_bbox_size"
+               value="20" />
+        <param name="min_contour_area"
+               value="30.0" />
+        <param name="min_contour_fill_ratio"
+               value="0.1" />
+        <param name="max_contour_fill_ratio"
+               value="0.90" />
+
+        <!-- 自动在otsu/adaptive/combined/dark中选择最佳轮廓 -->
+        <param name="threshold_mode"
+               value="combined" />
+        <param name="dark_threshold_offset"
+               value="12.0" />
+
+        <!-- 仅在方向证据较弱时抑制随机180度翻转 -->
+        <param name="direction_flip_confidence"
+               value="0.18" />
+        <param name="direction_memory_sec"
+               value="5.0" />
+
+        <param name="visualization"
+               value="$(arg visualization)" />
+    </node>
+
+    <include if="$(arg start_web)"
+             file="$(find vision_web)/launch/vision_web_v2.launch">
+
+        <arg name="port" value="$(arg web_port)" />
+        <arg name="image_topic"
+             value="/arrow/annotated_image" />
+        <arg name="detection_topic"
+             value="/web/detections" />
+        <arg name="pose_topic"
+             value="/web/pose" />
+        <arg name="arrow_topic"
+             value="/arrow/direction" />
+
+        <arg name="stream_fps"
+             value="$(arg rate)" />
+        <arg name="jpeg_quality"
+             value="75" />
+        <arg name="web_width"
+             value="960" />
+        <arg name="detection_timeout"
+             value="2.0" />
+        <arg name="pose_timeout"
+             value="2.0" />
+        <arg name="arrow_timeout"
+             value="2.0" />
+    </include>
+</launch>

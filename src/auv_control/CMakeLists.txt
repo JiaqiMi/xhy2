@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
   geometry_msgs
+  tf
   message_generation
 )
 
@@ -65,6 +66,8 @@ add_message_files(
   TargetDetection3.msg
   PoseNEDcmd.msg
   PoseLLAcmd.msg
+  MotionState.msg
+  LineDetection.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -122,7 +125,7 @@ catkin_package(
 #  LIBRARIES auv_control
 #  CATKIN_DEPENDS roscpp rospy
 #  DEPENDS system_lib
-  CATKIN_DEPENDS message_runtime std_msgs geometry_msgs
+  CATKIN_DEPENDS message_runtime std_msgs geometry_msgs tf
 )
 
 ###########
@@ -132,28 +135,6 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(
-# include
-  scripts/keyboard_control.py
-  scripts/main_driver.py
-  scripts/sensor_driver.py
-  scripts/state_control.py
-  driver/debug_driver.py
-  driver/nav_driver.py
-  scripts/task1_node.py
-  scripts/task2_node.py
-  scripts/task3_node.py
-  scripts/task4_node.py
-  scripts/task5_node.py
-  scripts/auv_tf_handler.py
-  scripts/static_tf_broadcaster.py
-  scripts/map_initer.py
-  test/test_point_control.py
-  test/test1.py
-  test/test_pose_control.py
-  test/test_rotation.py
-  test/test_task2_1.py
-  test/test_targetdetection.py
-  test/test_search2.py
   ${catkin_INCLUDE_DIRS}
 )
 
@@ -197,11 +178,49 @@ include_directories(
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
 catkin_install_python(PROGRAMS
+  driver/auv_tf_handler.py
   driver/debug_driver.py
   driver/debug_driver_v2.py
+  driver/lever_arm.py
+  driver/map_initer.py
+  driver/motion_supervisor.py
+  driver/motion_supervisor_core.py
   driver/nav_driver.py
-  driver/sensor_status_node.py
   driver/sensor_actuator_node.py
+  driver/sensor_status_node.py
+  driver/static_tf_broadcaster.py
+  driver/world_frame.py
+  driver/world_origin_reset.py
+  driver/world_origin_reset_utils.py
+  scripts/data_saver.py
+  scripts/keyboard_control.py
+  scripts/state_control.py
+  scripts/task_v2_common.py
+  scripts/task1_v2.py
+  scripts/task2_v2.py
+  scripts/task3_v2.py
+  scripts/task4_v2.py
+  scripts/vo_nav_fusion.py
+  test/motion_auto_sequence_core.py
+  test/motion_axis_auto_test.py
+  test/motion_goal_test.py
+  test/rotation_center_calibration.py
+  test/rotation_center_continuous_calibration.py
+  test/rotation_center_calibration_core.py
+  test/test_task1_v2_black_marker.py
+  test/test_task1_v2_line_fitting.py
+  test/test_task1_v2_line_follow.py
+  test/test_task1_v2_los_square.py
+  test/test_task1_v2_yellow_marker.py
+  test/test_task1_v3_black_marker.py
+  test/test_task1_v3_line_fitting.py
+  test/test_task1_v3_line_follow.py
+  test/test_task1_v3_los_square.py
+  test/test_task1_v3_yellow_marker.py
+  test/test_task3_1_acquire_area.py
+  test/test_task3_1_acquire_area_motion.py
+  test/test_task3_2_get_task.py
+  test/test_task3_3_inspect_and_drop.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -227,11 +246,9 @@ catkin_install_python(PROGRAMS
 # )
 
 ## Mark other files for installation (e.g. launch and bag files, etc.)
-# install(FILES
-#   # myfile1
-#   # myfile2
-#   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
-# )
+install(DIRECTORY launch config docs
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
 
 #############
 ## Testing ##
@@ -244,4 +261,8 @@ catkin_install_python(PROGRAMS
 # endif()
 
 ## Add folders to be run by python nosetests
-# catkin_add_nosetests(test)
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_motion_auto_sequence_core.py)
+  catkin_add_nosetests(test/test_motion_supervisor_core.py)
+  catkin_add_nosetests(test/test_rotation_center_calibration_core.py)
+endif()

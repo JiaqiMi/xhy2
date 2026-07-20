@@ -1,0 +1,39 @@
+<launch>
+    <!--
+      X 轴前后自动测试：±0.5、±1.0、±1.5 m，每个幅值重复三次。
+      运行前必须单独启动 motion_supervisor，并保证前后方向均不会碰壁。
+    -->
+    <arg name="target_z" default="-0.9" />
+    <arg name="repetitions" default="3" />
+    <arg name="action_timeout" default="120.0" />
+    <arg name="hover_hold_seconds" default="2.0" />
+    <arg name="acceptance_position_tolerance" default="0.10" />
+    <arg name="inter_step_stable_seconds" default="12.0" />
+    <arg name="stable_speed_threshold" default="0.03" />
+    <arg name="stall_detection_seconds" default="2.0" />
+    <arg name="stall_speed_threshold" default="0.03" />
+    <arg name="stall_force_threshold" default="1.0" />
+    <arg name="stop_classification_tolerance" default="0.005" />
+
+    <include file="$(find auv_control)/launch/motion_axis_auto_test.launch">
+        <arg name="axis" value="x" />
+        <arg name="target_z" value="$(arg target_z)" />
+        <arg name="repetitions" value="$(arg repetitions)" />
+        <arg name="action_timeout" value="$(arg action_timeout)" />
+        <arg name="hover_hold_seconds" value="$(arg hover_hold_seconds)" />
+        <arg name="acceptance_position_tolerance"
+             value="$(arg acceptance_position_tolerance)" />
+        <arg name="inter_step_stable_seconds"
+             value="$(arg inter_step_stable_seconds)" />
+        <arg name="stable_speed_threshold"
+             value="$(arg stable_speed_threshold)" />
+        <arg name="stall_detection_seconds"
+             value="$(arg stall_detection_seconds)" />
+        <arg name="stall_speed_threshold"
+             value="$(arg stall_speed_threshold)" />
+        <arg name="stall_force_threshold"
+             value="$(arg stall_force_threshold)" />
+        <arg name="stop_classification_tolerance"
+             value="$(arg stop_classification_tolerance)" />
+    </include>
+</launch>

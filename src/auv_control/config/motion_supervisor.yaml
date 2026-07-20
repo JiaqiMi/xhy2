@@ -1,0 +1,90 @@
+# 运动管理层控制频率与反馈处理
+control_rate_hz: 5.0          # 状态机、控制指令和 /motion/state 的发布频率，单位 Hz
+feedback_timeout: 0.5         # TF 或速度反馈最大允许间隔，单位 s，超时后进入 SAFE
+velocity_filter_alpha: 0.35   # 速度一阶低通新数据权重，范围 (0,1]，越大响应越快
+pitch_offset_deg: 0.0         # 发送目标姿态时附加的固定俯仰角，单位 deg
+startup_hover_frames: 5       # 首帧锁定位姿进入 HOVER 后保持的发布帧数，完成后才执行缓存任务目标
+
+# 计划 yaw 方向对应的两套虚拟旋转中心到 IMU 杆臂，采用前、右、下约定，单位 m
+# 新目标进入最终转向前按 yaw 误差正负选择；ALIGN_FINAL/FINAL_BRAKE 内保持锁存
+# 主动刹转即使 MZ 反号也继续使用原计划方向中心，避免控制参考点发生跳变
+control_to_imu_positive_x: 0.0 # 计划正向 yaw 旋转中心到 IMU 的前向杆臂
+control_to_imu_positive_y: 0.0 # 计划正向 yaw 旋转中心到 IMU 的右向杆臂
+control_to_imu_positive_z: 0.0 # 计划正向 yaw 旋转中心到 IMU 的下向杆臂
+control_to_imu_negative_x: 0.0 # 计划负向 yaw 旋转中心到 IMU 的前向杆臂
+control_to_imu_negative_y: 0.0 # 计划负向 yaw 旋转中心到 IMU 的右向杆臂
+control_to_imu_negative_z: 0.0 # 计划负向 yaw 旋转中心到 IMU 的下向杆臂
+
+# 每个控制周期的完整 CSV 记录；目录中的 ~ 会展开为运行节点用户的主目录
+log_enabled: true             # 是否记录当前/目标位姿、速度、状态、模式和力矩等完整数据
+log_directory: ~/.ros/auv_logs/motion_supervisor # CSV 日志目录，每次启动自动新建带时间戳文件
+log_flush_every: 5            # 每累计多少个控制周期刷新磁盘，5 Hz 下取 5 表示约每秒刷新
+
+# 正常运动限幅；参数后缀表示本周期实际输出力或力矩的正负号
+max_tx_positive: 2000.0       # 正常运动阶段正 TX 最大值
+max_tx_negative: 2000.0       # 正常运动阶段负 TX 绝对值上限
+max_ty_positive: 2000.0       # 正常运动阶段正 TY 最大值
+max_ty_negative: 2000.0       # 正常运动阶段负 TY 绝对值上限
+max_mz_positive: 1000.0       # 正常转向阶段正 MZ 最大值
+max_mz_negative: 1000.0       # 正常转向阶段负 MZ 绝对值上限
+brake_max_tx_positive: 2000.0 # 主动刹车阶段正 TX 最大值
+brake_max_tx_negative: 3000.0 # 主动刹车阶段负 TX 绝对值上限
+brake_max_ty_positive: 2000.0 # 主动刹车阶段正 TY 最大值
+brake_max_ty_negative: 4000.0 # 主动刹车阶段负 TY 绝对值上限
+brake_max_mz_positive: 3000.0 # 主动刹转阶段正 MZ 最大值
+brake_max_mz_negative: 3000.0 # 主动刹转阶段负 MZ 绝对值上限
+force_slew_per_cycle: 10000.0 # 正常运动每控制周期允许的最大力矩变化量
+brake_force_slew_per_cycle: 10000.0 # 刹车每控制周期允许的最大力矩变化量
+
+# 无积分位置和航向增益；positive/negative 按目标误差方向选择
+kp_x_positive: 3000.0        # control_link 前向正误差的 X 比例增益，输出单位/米
+kp_x_negative: 3000.0        # control_link 前向负误差的 X 比例增益，输出单位/米
+kp_y_positive: 4000.0        # control_link 右向正误差的 Y 比例增益，输出单位/米
+kp_y_negative: 4000.0        # control_link 右向负误差的 Y 比例增益，输出单位/米
+kv_x_positive: 1000.0        # X 正向跟踪时的速度阻尼增益，输出单位/(m/s)
+kv_x_negative: 1000.0        # X 负向跟踪时的速度阻尼增益，输出单位/(m/s)
+kv_y_positive: 2000.0        # Y 正向跟踪时的速度阻尼增益，输出单位/(m/s)
+kv_y_negative: 2000.0        # Y 负向跟踪时的速度阻尼增益，输出单位/(m/s)
+kp_yaw_positive: 6000.0      # 正航向误差比例增益，输出单位/rad
+kp_yaw_negative: 6000.0      # 负航向误差比例增益，输出单位/rad
+kr_yaw_positive: -2000.0     # 正航向误差控制时的角速度阻尼，符号适配当前 r 反馈
+kr_yaw_negative: -2000.0     # 负航向误差控制时的角速度阻尼，符号适配当前 r 反馈
+
+# 主动刹车增益；后缀表示最终刹车输出力或力矩的符号
+brake_gain_tx_positive: 30000.0 # 输出正 TX 时的前向主动刹车增益，单位/(m/s)
+brake_gain_tx_negative: 30000.0 # 输出负 TX 时的前向主动刹车增益，单位/(m/s)
+brake_gain_ty_positive: 40000.0 # 输出正 TY 时的横向主动刹车增益，单位/(m/s)
+brake_gain_ty_negative: 40000.0 # 输出负 TY 时的横向主动刹车增益，单位/(m/s)
+brake_gain_mz_positive: -6000.0 # 输出正 MZ 时的主动刹转增益，符号适配当前 r 反馈
+brake_gain_mz_negative: -6000.0 # 输出负 MZ 时的主动刹转增益，符号适配当前 r 反馈
+brake_min_mz: 100.0          # 超过角速度停稳阈值时使用的最小有效 MZ 绝对值
+
+# 各轴独立停车距离模型；后缀表示实际刹车输出力或力矩的符号
+brake_acceleration_tx_positive: 0.04 # 输出正 TX 刹车时的实测有效减速度，单位 m/s²
+brake_acceleration_tx_negative: 0.08 # 输出负 TX 刹车时的实测有效减速度，单位 m/s²
+brake_acceleration_ty_positive: 0.05 # 输出正 TY 刹车时的实测有效减速度，单位 m/s²
+brake_acceleration_ty_negative: 0.05 # 输出负 TY 刹车时的实测有效减速度，单位 m/s²
+angular_brake_acceleration_mz_positive: 0.025 # 输出正 MZ 刹转的保守有效角减速度，来自负向 yaw 试验
+angular_brake_acceleration_mz_negative: 0.04 # 输出负 MZ 刹转的保守有效角减速度，来自正向 yaw 试验
+control_delay: 0.35          # 反馈、计算、通信和执行的综合延迟估计，单位 s
+brake_margin_tx_positive: 0.10 # 输出正 TX 刹车时的附加停车余量，单位 m
+brake_margin_tx_negative: 0.10 # 输出负 TX 刹车时的附加停车余量，单位 m
+brake_margin_ty_positive: 0.14 # 输出正 TY 刹车时的附加停车余量，单位 m；对应 Y 负向运动
+brake_margin_ty_negative: 0.10 # 输出负 TY 刹车时的附加停车余量，单位 m
+yaw_brake_margin_positive_deg: 3.0 # 输出正 MZ 刹转时的附加角度余量，单位 deg
+yaw_brake_margin_negative_deg: 3.0 # 输出负 MZ 刹转时的附加角度余量，单位 deg
+axis_brake_exit_hysteresis: 0.05 # 连续目标远离停车区时由 BRAKE 返回 TRACK 的距离滞环，单位 m
+
+# 捕获、接管和异常回退阈值
+capture_radius: 0.15         # 允许进入最终转向和 mode=4 的水平位置误差，单位 m
+capture_exit_radius: 0.25    # 转向或定点时触发重新接近的水平位置误差，单位 m
+control_center_hold_tolerance: 0.03 # 最终转向时 control_link 旋转中心的二维圆形位置死区，单位 m
+horizontal_speed_threshold: 0.015 # 判定水平停稳的合速度上限，单位 m/s
+yaw_tolerance_deg: 5.0       # 最终航向允许误差，单位 deg
+yaw_rate_threshold_deg_s: 0.3 # 判定转动停稳的角速度上限，单位 deg/s
+stable_frames: 5             # 捕获或停稳条件需要连续满足的控制帧数，5 Hz 下约为 1 s
+hover_fault_position_error: 0.40 # mode=4 接管后才触发回退的水平位置误差，单位 m；必须大于 capture_exit_radius
+hover_fault_speed: 0.15      # mode=4 接管后才触发回退的水平速度，单位 m/s
+hover_fault_yaw_rate_deg_s: 5.0 # mode=4 接管后才触发回退的航向角速度，单位 deg/s
+hover_fault_yaw_error_deg: 20.0 # mode=4 接管后才触发回退的航向误差，单位 deg
+mode_ack_timeout: 1.0        # 接管确认及 HOVER 模式反馈最大允许间隔，单位 s

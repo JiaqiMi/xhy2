@@ -7,11 +7,15 @@
     2. 使用 mock_aruco_id() 示例函数随机生成 1～6 的任务编号；
     3. 根据编号确定管段颜色：1/2 黄色、3/4 绿色、5/6 红色；
     4. 显示对应颜色的灯并移动到目标管段；
-    5. 使用现有 /sensor 舵机接口释放高尔夫球信标。
+    5. 使用 /cmd/actuator 舵机接口释放高尔夫球信标。
 监听：/tf
-发布：/target，/sensor，/finished
+发布：/cmd/pose/ned，/cmd/actuator，/finished
 说明：真实 ArUco 识别不在本节点实现，当前用随机编号跳过识别流程。
       黄色灯由红灯和绿灯同时点亮表示。
+修改记录：
+    2026.7.15：
+        1. 通过 MissionBase 将运动控制迁移到 /cmd/pose/ned。
+        2. 外设控制更新为 /cmd/actuator，并按 mode 分离补光灯与执行器命令。
 """
 
 import random

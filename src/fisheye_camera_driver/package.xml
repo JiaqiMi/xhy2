@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>fisheye_camera_driver</name>
+  <version>0.1.0</version>
+  <description>RTSP fisheye camera driver and Web image test for ROS Melodic.</description>
+
+  <maintainer email="xhy@todo.todo">xhy</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>cv_bridge</depend>
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+
+  <exec_depend>python3-flask</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <export/>
+</package>

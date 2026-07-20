@@ -2,18 +2,20 @@
 """
 名称：task_v2_common.py
 功能：任务节点的公共驱动模块
-状态：暂时弃用。当前阶段只修改各 task 节点本身，暂不继续依赖或扩展本公共模块。
 描述：
     1. 从 TF 树获取 AUV 在 map 坐标系下的当前位姿；
-    2. 将任务目标拆分为带步长限制的中间目标，并发布到 /target；
+    2. 将任务目标拆分为带步长限制的中间目标，并发布到 /cmd/pose/ned；
     3. 通过 /cmd/actuator 控制红绿灯、补光灯和执行器；
     4. 提供定时亮灯、闪灯、往复搜索、原地旋转和接触点计算功能。
 监听：/tf
-发布：/target (PoseStamped)，/cmd/actuator (ActuatorControl)，/finished (String)
+发布：/cmd/pose/ned (PoseNEDcmd)，/cmd/actuator (ActuatorControl)，/finished (String)
 说明：本文件只封装多个任务共同使用的功能，不单独启动 ROS 节点。
 记录：
 2026.7.13
     执行器下行话题调整为 /cmd/actuator。
+2026.7.15
+    运动控制移除 /target 兼容，统一使用 /cmd/pose/ned 整包指令。
+    外设控制拆分为 mode=1 补光灯消息和 mode=2 执行器消息。
 """
 
 import copy
@@ -21,10 +23,13 @@ import math
 
 import rospy
 import tf
-from auv_control.msg import ActuatorControl
+from auv_control.msg import ActuatorControl, PoseNEDcmd
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
+
+
+MODE_DPROV = 4
 
 
 def clamp(value, lower, upper):
@@ -57,7 +62,9 @@ class MissionBase:
     def __init__(self, node_name, rate_hz=5.0):
         """初始化公共话题、TF 监听器和运动控制参数。"""
         self.node_name = node_name
-        self.target_pub = rospy.Publisher('/target', PoseStamped, queue_size=10)
+        self.pose_cmd_pub = rospy.Publisher(
+            '/cmd/pose/ned', PoseNEDcmd, queue_size=10
+        )
         self.finished_pub = rospy.Publisher('/finished', String, queue_size=10)
         self.device_pub = rospy.Publisher(
             '/cmd/actuator', ActuatorControl, queue_size=10
@@ -157,6 +164,15 @@ class MissionBase:
         dz = first.z - second.z
         return math.sqrt(dx * dx + dy * dy + dz * dz)
 
+    def publish_pose_cmd(self, target):
+        """以动力定位模式发布 NED 坐标系整包控制指令。"""
+        command = PoseNEDcmd()
+        command.mode = MODE_DPROV
+        command.target = copy.deepcopy(target)
+        command.target.header.frame_id = 'map'
+        command.target.header.stamp = rospy.Time.now()
+        self.pose_cmd_pub.publish(command)
+
     def move_to_pose(self, target, position_tolerance=None, yaw_tolerance=None):
         """向目标位姿运动一次，并判断是否到达。
 
@@ -188,7 +204,7 @@ class MissionBase:
         if distance <= position_tolerance and yaw_error <= yaw_tolerance:
             final_pose = copy.deepcopy(target)
             final_pose.header.stamp = rospy.Time.now()
-            self.target_pub.publish(final_pose)
+            self.publish_pose_cmd(final_pose)
             return True
 
         dx = target.pose.position.x - current.pose.position.x
@@ -227,7 +243,7 @@ class MissionBase:
             self.pitch_offset,
             next_yaw,
         ))
-        self.target_pub.publish(next_pose)
+        self.publish_pose_cmd(next_pose)
         return False
 
     def hold_position(self):
@@ -236,7 +252,7 @@ class MissionBase:
             self.hold_pose = self.get_current_pose()
         if self.hold_pose is not None:
             self.hold_pose.header.stamp = rospy.Time.now()
-            self.target_pub.publish(self.hold_pose)
+            self.publish_pose_cmd(self.hold_pose)
 
     ############################################### 外设层 ###########################################
     def publish_device(self, red=0, green=0, servo=None, light1=0, light2=0):
@@ -247,17 +263,24 @@ class MissionBase:
             servo: int，可选，开合舵机控制值；None 时使用 /task_v2_clamp_servo。
             light1/light2: int，两路补光灯亮度，取值 0～100。
         """
-        message = ActuatorControl()
-        message.light1 = int(light1)
-        message.light2 = int(light2)
-        message.heading_servo = self.default_heading_servo
-        message.clamp_servo = self.default_clamp_servo if servo is None else int(servo)
-        message.drive_cmd = self.default_drive_cmd
-        message.drive_speed = self.default_drive_speed
-        message.red_light = int(red)
-        message.yellow_light = 0
-        message.green_light = int(green)
-        self.device_pub.publish(message)
+        light_message = ActuatorControl()
+        light_message.mode = 1
+        light_message.light1 = int(light1)
+        light_message.light2 = int(light2)
+        self.device_pub.publish(light_message)
+
+        actuator_message = ActuatorControl()
+        actuator_message.mode = 2
+        actuator_message.heading_servo = self.default_heading_servo
+        actuator_message.clamp_servo = (
+            self.default_clamp_servo if servo is None else int(servo)
+        )
+        actuator_message.drive_cmd = self.default_drive_cmd
+        actuator_message.drive_speed = self.default_drive_speed
+        actuator_message.red_light = int(red)
+        actuator_message.yellow_light = 0
+        actuator_message.green_light = int(green)
+        self.device_pub.publish(actuator_message)
 
     def blink_lights(self, red, green, count, half_period=0.5):
         """非阻塞闪灯；一次亮和一次灭构成一次完整闪烁。
@@ -334,7 +357,7 @@ class MissionBase:
         target.pose.orientation = Quaternion(*quaternion_from_euler(
             0.0, self.pitch_offset, command_yaw
         ))
-        self.target_pub.publish(target)
+        self.publish_pose_cmd(target)
         return False
 
     def sweep_for_target(self, max_angle_deg=30.0, step_deg=2.0):
@@ -369,7 +392,7 @@ class MissionBase:
             self.pitch_offset,
             wrap_angle(current_yaw + state['direction'] * math.radians(step_deg)),
         ))
-        self.target_pub.publish(command)
+        self.publish_pose_cmd(command)
 
     ############################################### 坐标转换层 #######################################
     def contact_pose(self, detection_pose, standoff=0.0):

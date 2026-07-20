@@ -17,6 +17,9 @@
     调整至 driver 目录，归入硬件驱动层
     下行控制话题调整为 /cmd/actuator，上行状态话题调整为 /status/actuator。
     补光灯与执行器命令按实际变化分别发送，增加 ACK 超时重发。
+2026.7.15
+    新增 ActuatorControl.mode 分流：mode=1 仅更新补光灯，mode=2 仅更新执行器。
+    mode=0 和其他值不响应，/status/actuator 状态消息固定使用 mode=0。
 """
 
 import socket
@@ -101,7 +104,7 @@ class SensorActuatorNode:
 
         # --- ROS 接口 ---
         rospy.Subscriber('/cmd/actuator', ActuatorControl, self.actuator_callback)
-        self.status_pub = rospy.Publisher('/status/actuator', ActuatorControl, queue_size=10)
+        self.status_pub = rospy.Publisher('/status/actuator', ActuatorControl, queue_size=10) 
 
         self.connect()
         rospy.loginfo("sensor_actuator: 已启动（执行器控制+反馈模式）")
@@ -291,6 +294,8 @@ class SensorActuatorNode:
         """根据反馈缓存和命令缓存组装 ActuatorControl 并发布"""
         with self.lock:
             msg = ActuatorControl()
+            # 状态消息不作为控制命令，mode 固定为 0。
+            msg.mode = 0
             # 补光灯：来自最后命令值（CAMERA_LIGHT 无硬件反馈）
             msg.light1 = self.light1
             msg.light2 = self.light2
@@ -310,54 +315,77 @@ class SensorActuatorNode:
     # ============================================================
 
     def actuator_callback(self, msg):
-        """接收 /cmd/actuator 控制指令，更新缓存并置脏标志"""
+        """按 mode 更新补光灯或执行器缓存，并置对应的脏标志。"""
         try:
-            new_light1 = max(0, min(100, msg.light1))
-            new_light2 = max(0, min(100, msg.light2))
-            new_heading = max(0, min(255, msg.heading_servo))
-            new_clamp = max(0, min(255, msg.clamp_servo))
-            new_drive_cmd = msg.drive_cmd if msg.drive_cmd in (0, 1, 2) else 0
-            new_drive_speed = max(0, min(254, msg.drive_speed))
-            new_red = 1 if msg.red_light else 0
-            new_yellow = 1 if msg.yellow_light else 0
-            new_green = 1 if msg.green_light else 0
+            if msg.mode == 1:
+                new_light1 = max(0, min(100, msg.light1))
+                new_light2 = max(0, min(100, msg.light2))
+                with self.lock:
+                    camera_light_changed = (
+                        new_light1 != self.light1 or
+                        new_light2 != self.light2
+                    )
+                    self.light1 = new_light1
+                    self.light2 = new_light2
+                    if camera_light_changed:
+                        self.camera_light_changed = True
 
-            with self.lock:
-                camera_light_changed = (
-                    new_light1 != self.light1 or
-                    new_light2 != self.light2
-                )
-                actuator_changed = (
-                    new_heading != self.heading_servo or
-                    new_clamp != self.clamp_servo or
-                    new_drive_cmd != self.drive_cmd or
-                    new_drive_speed != self.drive_speed or
-                    new_red != self.red_light or
-                    new_yellow != self.yellow_light or
-                    new_green != self.green_light
-                )
-                self.light1 = new_light1
-                self.light2 = new_light2
-                self.heading_servo = new_heading
-                self.clamp_servo = new_clamp
-                self.drive_cmd = new_drive_cmd
-                self.drive_speed = new_drive_speed
-                self.red_light = new_red
-                self.yellow_light = new_yellow
-                self.green_light = new_green
                 if camera_light_changed:
-                    self.camera_light_changed = True
-                if actuator_changed:
-                    self.actuator_changed = True
+                    rospy.loginfo(
+                        "sensor_actuator: 补光灯控制更新 light=(%3d,%3d)",
+                        self.light1,
+                        self.light2,
+                    )
+                return
 
-            if camera_light_changed or actuator_changed:
+            if msg.mode == 2:
+                new_heading = max(0, min(255, msg.heading_servo))
+                new_clamp = max(0, min(255, msg.clamp_servo))
+                new_drive_cmd = msg.drive_cmd if msg.drive_cmd in (0, 1, 2) else 0
+                new_drive_speed = max(0, min(254, msg.drive_speed))
+                new_red = 1 if msg.red_light else 0
+                new_yellow = 1 if msg.yellow_light else 0
+                new_green = 1 if msg.green_light else 0
+
+                with self.lock:
+                    actuator_changed = (
+                        new_heading != self.heading_servo or
+                        new_clamp != self.clamp_servo or
+                        new_drive_cmd != self.drive_cmd or
+                        new_drive_speed != self.drive_speed or
+                        new_red != self.red_light or
+                        new_yellow != self.yellow_light or
+                        new_green != self.green_light
+                    )
+                    self.heading_servo = new_heading
+                    self.clamp_servo = new_clamp
+                    self.drive_cmd = new_drive_cmd
+                    self.drive_speed = new_drive_speed
+                    self.red_light = new_red
+                    self.yellow_light = new_yellow
+                    self.green_light = new_green
+                    if actuator_changed:
+                        self.actuator_changed = True
+
+                if actuator_changed:
+                    rospy.loginfo(
+                        "sensor_actuator: 执行器控制更新 heading=%3d clamp=%3d "
+                        "drive=(%d,%3d) led=(%d,%d,%d)",
+                        self.heading_servo,
+                        self.clamp_servo,
+                        self.drive_cmd,
+                        self.drive_speed,
+                        self.red_light,
+                        self.yellow_light,
+                        self.green_light,
+                    )
+                return
+
+            # mode=0 及其他值均不响应。
+            if msg.mode != 0:
                 rospy.loginfo(
-                    "sensor_actuator: 执行器控制更新 light=(%3d,%3d) heading=%3d clamp=%3d "
-                    "drive=(%d,%3d) led=(%d,%d,%d)",
-                    self.light1, self.light2,
-                    self.heading_servo, self.clamp_servo,
-                    self.drive_cmd, self.drive_speed,
-                    self.red_light, self.yellow_light, self.green_light
+                    "sensor_actuator: 忽略不支持的执行器控制模式 mode=%d",
+                    msg.mode,
                 )
         except Exception as e:
             rospy.logerr(f"sensor_actuator: 执行器控制回调失败: {e}")

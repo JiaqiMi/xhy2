@@ -1,0 +1,236 @@
+<launch>
+    <!--
+        Task1 巡线单项测试。
+        启动前需要先运行真实下位机、TF、motion_supervisor、相机和红线识别节点。
+        本节点不会发布 /cmd/pose/ned，motion_supervisor 必须是其唯一发布者。
+        每周期完整诊断使用 rospy.logdebug 并写入节点日志文件；
+        屏幕只显示阶段、节流摘要、警告和错误（INFO 及以上）。
+        节点不再接收人工初始航向；启动瞬间 base_link 的实际航向就是搜索航向。
+        轨迹一旦锁定，状态机只执行“到起点 -> 定点 -> 对向 -> LOS 巡线 -> 终点确认”，
+        不会因为暂时丢失识别消息而退回 SEARCH。识别点先更新实时拟合曲线；
+        经后续合理帧确认后才形成固定曲线，LOS 走完当前固定段后才接入新固定段。
+    -->
+
+    <!-- 基础：主循环频率，单位 Hz。 -->
+    <arg name="rate" default="5.0" />
+
+    <!-- motion_supervisor 接口：绝对目标、取消、状态反馈及目标匹配容差。 -->
+    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
+    <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
+    <arg name="motion_state_topic" default="/motion/state" />
+    <arg name="motion_state_timeout" default="5" />
+    <arg name="motion_goal_position_tolerance" default="0.05" />
+    <arg name="motion_goal_yaw_tolerance_deg" default="3.0" />
+
+    <!-- 红线识别、任务完成、相机和轨迹 JSON。 -->
+    <arg name="line_topic" default="/obj/line_message" />
+    <arg name="finished_topic" default="/finished" />
+    <arg name="camera_topic" default="/left/image_raw" />
+    <!-- 巡线定位参考坐标系；拟合曲线由该双目摄像头的 XY 位置跟踪。 -->
+    <arg name="line_tracking_frame" default="camera" />
+    <arg name="trajectory_topic" default="/task1/v3/trajectory" />
+
+    <!-- 未识别红线：左右转并回到启动航向后，提交前方绝对目标的距离，单位 m。 -->
+    <arg name="search_forward_distance" default="0.5" />
+    <!-- 搜索旋转：相对启动航向左右旋转角度、航向容差（deg）。
+         NED 中默认正航向向右，search_yaw_sign=1；实机方向相反时改为 -1。 -->
+    <arg name="search_yaw_angle_deg" default="30.0" />
+    <arg name="search_yaw_sign" default="1.0" />
+    <arg name="search_yaw_tolerance_deg" default="5.0" />
+    <!-- 到达左/右观察航向、返回启动航向、前进目标后持续静止的时间，单位 s。 -->
+    <arg name="search_yaw_hold_seconds" default="2.0" />
+    <arg name="search_return_hold_seconds" default="2.0" />
+    <arg name="search_forward_hold_seconds" default="4.0" />
+    <!-- 搜索和定点阶段用于附加几何检查的水平距离容差，单位 m。 -->
+    <arg name="position_tolerance" default="0.15" />
+
+    <!-- 节点启动后提交初始位姿并等待 HOVER/识别模块的时间，单位 s。 -->
+    <arg name="startup_hold_seconds" default="10.0" />
+    <!-- 相机消息超过该时间未更新则认为相机未就绪，单位 s。 -->
+    <arg name="camera_message_timeout" default="2.0" />
+    <!-- 终点 HOVER 后要求持续保持的时间，单位 s。 -->
+    <arg name="transition_hold_seconds" default="4.0" />
+
+    <!-- 可接受的红线类别名，多个名称使用英文逗号分隔。 -->
+    <arg name="line_classes" default="line" />
+    <!-- 相机坐标中任一红线点允许的最大三维距离，单位 m。 -->
+    <arg name="max_camera_distance" default="6.0" />
+    <!-- 首次见线后的候选窗口，窗口内选择置信度最高的红线并永久锁定，单位 s。 -->
+    <arg name="line_lock_window_seconds" default="0.3" />
+    <!-- 低置信阈值；低于该值的新点使用更严格的拟合关联条件。 -->
+    <arg name="line_low_confidence_threshold" default="0.50" />
+
+    <!-- 局部三点中相邻点允许的最小间距，单位 m。 -->
+    <arg name="line_min_point_spacing" default="0.005" />
+    <!-- 局部三点中相邻点允许的最大间距，单位 m。 -->
+    <arg name="line_max_point_spacing" default="4.0" />
+    <!-- 局部三点中间点偏离首尾弦线的最大距离，单位 m。 -->
+    <arg name="line_triplet_max_residual" default="0.35" />
+    <!-- 局部三点两段方向允许的最大夹角，单位 deg。 -->
+    <arg name="line_triplet_max_bend_deg" default="60.0" />
+
+    <!-- 低置信新线段到已锁曲线的最大关联距离，单位 m。 -->
+    <arg name="line_association_distance" default="0.35" />
+    <!-- 高置信新线段到已锁曲线的最大关联距离，单位 m。 -->
+    <arg name="line_high_confidence_association_distance" default="0.50" />
+    <!-- 低置信新线段与已锁曲线切向的最大方向差，单位 deg。 -->
+    <arg name="line_association_angle_deg" default="35.0" />
+    <!-- 高置信新线段与已锁曲线切向的最大方向差，单位 deg。 -->
+    <arg name="line_high_confidence_association_angle_deg" default="45.0" />
+    <!-- 允许新线段从当前曲线端部向外延伸的最大间隔，单位 m。 -->
+    <arg name="line_extension_max_gap" default="1.0" />
+
+    <!-- 新点与已有点距离小于该值时做平滑融合，不重复增加点，单位 m。 -->
+    <arg name="line_point_merge_distance" default="0.12" />
+    <!-- 合并重复点时新识别值的权重，范围 0~1；越小越平滑，越大越跟随新观测。 -->
+    <arg name="line_point_update_alpha" default="0.20" />
+    <!-- 当前活动拟合窗口的原始点安全上限；正常冻结由后续帧确认触发，超限只裁剪旧活动点。 -->
+    <arg name="line_curve_max_points" default="200" />
+    <!-- 活动点超限裁剪后保留在远端的点数，用于固定曲线与新曲线平滑衔接。 -->
+    <arg name="line_curve_overlap_points" default="40" />
+    <!-- 历史曲线末端之后允许新活动点向后重叠的最大路径距离，单位 m。 -->
+    <arg name="line_window_backtrack_distance" default="1.0" />
+    <!-- 实时拟合曲线及 LOS 执行曲线快照的采样点数。 -->
+    <arg name="line_curve_sample_count" default="100" />
+    <!-- 平滑曲线的多项式拟合阶数。 -->
+    <arg name="line_curve_degree" default="3" />
+    <!-- 允许锁定并使用的最短拟合曲线长度，单位 m。 -->
+    <arg name="line_curve_min_length" default="0.15" />
+    <!-- 在线冻结：连续多少个合理拟合帧后，把当前曲线立即固定。默认 2 帧以降低等待。 -->
+    <arg name="curve_freeze_required_frames" default="2" />
+    <!-- 首段固定所需最短长度、后续每次固定所需最小增长，单位 m。 -->
+    <arg name="curve_freeze_min_length" default="0.15" />
+    <arg name="curve_freeze_min_advance" default="0.10" />
+    <!-- 新点距固定曲线小于该值时视为重复点并忽略，单位 m。 -->
+    <arg name="curve_freeze_ignore_distance" default="0.12" />
+    <!-- 固定末端向前超过该距离才视为新延伸点，单位 m。 -->
+    <arg name="curve_freeze_endpoint_guard" default="0.05" />
+    <!-- 每次固定后保留在固定末端附近的原始衔接点范围，单位 m。 -->
+    <arg name="curve_freeze_overlap_distance" default="0.25" />
+    <!-- 最远点相对固定参考点至少增加该距离，才记为一次有效轨迹增长，单位 m。 -->
+    <arg name="endpoint_growth_tolerance" default="0.08" />
+
+    <!-- LOS 曲线前视距离，单位 m。 -->
+    <arg name="los_lookahead_distance" default="0.6" />
+    <!-- 连续 LOS 目标单周期最大位置（m）和 yaw（deg）变化，均低于监督器抢占阈值。 -->
+    <arg name="los_goal_max_step" default="0.20" />
+    <arg name="los_goal_max_yaw_step_deg" default="20.0" />
+    <!-- 摄像头到达当前 LOS 航点后，切换下一航点允许的最大航向误差，单位 deg。 -->
+    <arg name="los_waypoint_yaw_tolerance_deg" default="10.0" />
+
+    <!-- 到达起点并进入 HOVER 后持续确认的时间，单位 s。 -->
+    <arg name="line_start_hold_seconds" default="4.0" />
+    <!-- 起点对向满足航向和静止条件后持续确认的时间，单位 s。 -->
+    <arg name="line_alignment_hold_seconds" default="2.0" />
+
+    <!-- 机器人到当前最远点小于该距离时可进入终点定点，单位 m。 -->
+    <arg name="endpoint_arrival_tolerance" default="0.18" />
+    <!-- 已知曲线剩余长度小于该值时可进入终点定点，单位 m。 -->
+    <arg name="endpoint_path_tolerance" default="0.25" />
+    <!-- 进入终点定点后，曲线在该时间内不再增长才结束任务，单位 s。 -->
+    <arg name="endpoint_confirm_seconds" default="5.0" />
+    <!-- 同一最远点必须被连续观测的帧数；达到后才形成真实终点证据。 -->
+    <arg name="endpoint_stable_frames" default="8" />
+    <!-- 多帧最远点视为同一位置的最大坐标偏差，单位 m。 -->
+    <arg name="endpoint_stable_position_tolerance" default="0.12" />
+    <!-- 双目摄像头距当前最远点小于该值后才累计终点重复观测，避免把初始视野边缘当作终点，单位 m。 -->
+    <arg name="endpoint_evidence_robot_distance" default="0.8" />
+
+    <!-- 轨迹 JSON 和网页数据刷新周期，单位 s。 -->
+    <arg name="trajectory_publish_period" default="0.5" />
+    <!-- Web 实际运动轨迹相邻记录点最小间距（m）和最大保存点数。 -->
+    <arg name="actual_path_min_spacing" default="0.03" />
+    <arg name="actual_path_max_points" default="2000" />
+    <!-- 是否启动巡线轨迹网页。 -->
+    <arg name="trajectory_web_enabled" default="true" />
+    <!-- 网页绑定的机器人本机网卡地址。 -->
+    <arg name="trajectory_web_host" default="192.168.1.117" />
+    <!-- 网页端口；默认访问 http://192.168.1.117:8083。 -->
+    <arg name="trajectory_web_port" default="8083" />
+
+
+    <node pkg="auv_control"
+          type="test_task1_v3_line_follow.py"
+          name="test_task1_v3_line_follow"
+          output="screen">
+        <!-- 文件记录 DEBUG 及以上，屏幕只显示 INFO 及以上。 -->
+        <env name="ROS_PYTHON_LOG_CONFIG_FILE"
+             value="$(find auv_control)/config/task1_v3_python_logging.conf" />
+        <param name="rate" type="double" value="$(arg rate)" />
+
+        <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
+        <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
+        <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />
+        <param name="motion_state_timeout" type="double" value="$(arg motion_state_timeout)" />
+        <param name="motion_goal_position_tolerance" type="double" value="$(arg motion_goal_position_tolerance)" />
+        <param name="motion_goal_yaw_tolerance_deg" type="double" value="$(arg motion_goal_yaw_tolerance_deg)" />
+        <param name="line_topic" type="string" value="$(arg line_topic)" />
+        <param name="finished_topic" type="string" value="$(arg finished_topic)" />
+        <param name="camera_topic" type="string" value="$(arg camera_topic)" />
+        <param name="line_tracking_frame" type="string" value="$(arg line_tracking_frame)" />
+        <param name="trajectory_topic" type="string" value="$(arg trajectory_topic)" />
+
+        <param name="search_forward_distance" type="double" value="$(arg search_forward_distance)" />
+        <param name="search_yaw_angle_deg" type="double" value="$(arg search_yaw_angle_deg)" />
+        <param name="search_yaw_sign" type="double" value="$(arg search_yaw_sign)" />
+        <param name="search_yaw_tolerance_deg" type="double" value="$(arg search_yaw_tolerance_deg)" />
+        <param name="search_yaw_hold_seconds" type="double" value="$(arg search_yaw_hold_seconds)" />
+        <param name="search_return_hold_seconds" type="double" value="$(arg search_return_hold_seconds)" />
+        <param name="search_forward_hold_seconds" type="double" value="$(arg search_forward_hold_seconds)" />
+        <param name="position_tolerance" type="double" value="$(arg position_tolerance)" />
+
+        <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
+        <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
+        <param name="transition_hold_seconds" type="double" value="$(arg transition_hold_seconds)" />
+
+        <param name="line_classes" type="string" value="$(arg line_classes)" />
+        <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
+        <param name="line_lock_window_seconds" type="double" value="$(arg line_lock_window_seconds)" />
+        <param name="line_low_confidence_threshold" type="double" value="$(arg line_low_confidence_threshold)" />
+        <param name="line_min_point_spacing" type="double" value="$(arg line_min_point_spacing)" />
+        <param name="line_max_point_spacing" type="double" value="$(arg line_max_point_spacing)" />
+        <param name="line_triplet_max_residual" type="double" value="$(arg line_triplet_max_residual)" />
+        <param name="line_triplet_max_bend_deg" type="double" value="$(arg line_triplet_max_bend_deg)" />
+        <param name="line_association_distance" type="double" value="$(arg line_association_distance)" />
+        <param name="line_high_confidence_association_distance" type="double" value="$(arg line_high_confidence_association_distance)" />
+        <param name="line_association_angle_deg" type="double" value="$(arg line_association_angle_deg)" />
+        <param name="line_high_confidence_association_angle_deg" type="double" value="$(arg line_high_confidence_association_angle_deg)" />
+        <param name="line_extension_max_gap" type="double" value="$(arg line_extension_max_gap)" />
+
+        <param name="line_point_merge_distance" type="double" value="$(arg line_point_merge_distance)" />
+        <param name="line_point_update_alpha" type="double" value="$(arg line_point_update_alpha)" />
+        <param name="line_curve_max_points" type="int" value="$(arg line_curve_max_points)" />
+        <param name="line_curve_overlap_points" type="int" value="$(arg line_curve_overlap_points)" />
+        <param name="line_window_backtrack_distance" type="double" value="$(arg line_window_backtrack_distance)" />
+        <param name="line_curve_sample_count" type="int" value="$(arg line_curve_sample_count)" />
+        <param name="line_curve_degree" type="int" value="$(arg line_curve_degree)" />
+        <param name="line_curve_min_length" type="double" value="$(arg line_curve_min_length)" />
+        <param name="curve_freeze_required_frames" type="int" value="$(arg curve_freeze_required_frames)" />
+        <param name="curve_freeze_min_length" type="double" value="$(arg curve_freeze_min_length)" />
+        <param name="curve_freeze_min_advance" type="double" value="$(arg curve_freeze_min_advance)" />
+        <param name="curve_freeze_ignore_distance" type="double" value="$(arg curve_freeze_ignore_distance)" />
+        <param name="curve_freeze_endpoint_guard" type="double" value="$(arg curve_freeze_endpoint_guard)" />
+        <param name="curve_freeze_overlap_distance" type="double" value="$(arg curve_freeze_overlap_distance)" />
+        <param name="endpoint_growth_tolerance" type="double" value="$(arg endpoint_growth_tolerance)" />
+
+        <param name="los_lookahead_distance" type="double" value="$(arg los_lookahead_distance)" />
+        <param name="los_goal_max_step" type="double" value="$(arg los_goal_max_step)" />
+        <param name="los_goal_max_yaw_step_deg" type="double" value="$(arg los_goal_max_yaw_step_deg)" />
+        <param name="los_waypoint_yaw_tolerance_deg" type="double" value="$(arg los_waypoint_yaw_tolerance_deg)" />
+        <param name="line_start_hold_seconds" type="double" value="$(arg line_start_hold_seconds)" />
+        <param name="line_alignment_hold_seconds" type="double" value="$(arg line_alignment_hold_seconds)" />
+        <param name="endpoint_arrival_tolerance" type="double" value="$(arg endpoint_arrival_tolerance)" />
+        <param name="endpoint_path_tolerance" type="double" value="$(arg endpoint_path_tolerance)" />
+        <param name="endpoint_confirm_seconds" type="double" value="$(arg endpoint_confirm_seconds)" />
+        <param name="endpoint_stable_frames" type="int" value="$(arg endpoint_stable_frames)" />
+        <param name="endpoint_stable_position_tolerance" type="double" value="$(arg endpoint_stable_position_tolerance)" />
+        <param name="endpoint_evidence_robot_distance" type="double" value="$(arg endpoint_evidence_robot_distance)" />
+
+        <param name="trajectory_publish_period" type="double" value="$(arg trajectory_publish_period)" />
+        <param name="actual_path_min_spacing" type="double" value="$(arg actual_path_min_spacing)" />
+        <param name="actual_path_max_points" type="int" value="$(arg actual_path_max_points)" />
+        <param name="trajectory_web_enabled" type="bool" value="$(arg trajectory_web_enabled)" />
+        <param name="trajectory_web_host" type="string" value="$(arg trajectory_web_host)" />
+        <param name="trajectory_web_port" type="int" value="$(arg trajectory_web_port)" />
+    </node>
+</launch>

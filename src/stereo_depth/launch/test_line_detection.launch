@@ -1,8 +1,8 @@
 <launch>
     <!-- Shapes识别：检测框中心 -> 单点三维坐标 -> Web -->
 
-    <arg name="start_camera" default="true" />
-    <arg name="start_splitter" default="true" />
+    <arg name="start_camera" default="false" />
+    <arg name="start_splitter" default="false" />
     <arg name="start_web" default="true" />
 
     <!-- <arg name="model_path"
@@ -17,28 +17,17 @@
     <arg name="visualization" default="0" />
     <arg name="web_port" default="8080" />
 
-    <!-- <node if="$(arg start_camera)"
-          pkg="usb_cam"
-          type="usb_cam_node"
-          name="usb_cam"
-          output="screen">
-        <param name="video_device" value="/dev/video0" />
-        <param name="pixel_format" value="mjpeg" />
-        <param name="image_width" value="1280" />
-        <param name="image_height" value="480" />
-        <param name="framerate" value="30" />
-    </node> -->
+    <node if="$(arg start_camera)"
+        name="usb_cam"
+        pkg="usb_cam"
+        type="usb_cam_node"
+        launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
 
-    <!-- <node if="$(arg start_splitter)"
+    <node if="$(arg start_splitter)"
           pkg="stereo_splitter"
           type="split_stereo_image.py"
           name="split_stereo_image"
-          output="screen" /> -->
-    <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
-
-    <!-- 图像左右分割节点 -->
-    <node pkg="stereo_splitter" type="split_stereo_image.py" name="split_stereo_image" output="screen" />
-    
+          output="screen" />
 
     <node pkg="yolo_bridge"
           type="yolo_wrapper.sh"

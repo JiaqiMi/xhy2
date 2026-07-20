@@ -1,0 +1,98 @@
+<launch>
+    <!-- RTSP鱼眼相机 -> 畸变校正 -> ArUco检测/位姿 -> Web -->
+
+    <!-- 鱼眼相机驱动 -->
+    <arg name="start_driver" default="false" />
+    <arg name="camera_host" default="192.168.1.122" />
+    <arg name="camera_port" default="554" />
+    <arg name="username" default="admin" />
+    <arg name="password" default="admin" />
+    <arg name="channel" default="1" />
+    <arg name="subtype" default="0" />
+    <arg name="image_topic" default="/fisheye_camera/image_raw" />
+
+    <!-- ArUco -->
+    <arg name="marker_length" default="0.20" />
+    <arg name="dictionary" default="DICT_4X4_1000" />
+    <arg name="infer_rate" default="5.0" />
+    <arg name="processing_width" default="1280" />
+    <arg name="visualization" default="0" />
+
+    <!-- 相机模型与标定 -->
+    <arg name="calibration_file"
+         default="/home/xhy/catkin_ws/camera/fisheye.yaml" />
+
+    <!-- 标定参数填写正确后改成 true -->
+    <arg name="enable_pose" default="false" />
+
+    <!-- 只识别ID且没有真实标定参数时保持 false -->
+    <arg name="undistort_before_detection" default="false" />
+
+    <arg name="camera_model" default="fisheye" />
+    <arg name="fisheye_balance" default="0.25" />
+
+    <!-- 输出 -->
+    <arg name="pose_topic" default="/aruco/pose" />
+    <arg name="annotated_topic" default="/aruco/annotated_image" />
+    <arg name="rectified_topic" default="/fisheye_camera/image_rect" />
+    <arg name="web_detection_topic" default="/web/detections" />
+    <arg name="web_pose_topic" default="/web/pose" />
+
+    <!-- 避免与test_web.launch的8081冲突 -->
+    <arg name="start_web" default="true" />
+    <arg name="web_port" default="8082" />
+
+    <include if="$(arg start_driver)"
+             file="$(find fisheye_camera_driver)/launch/driver.launch">
+        <arg name="host" value="$(arg camera_host)" />
+        <arg name="port" value="$(arg camera_port)" />
+        <arg name="username" value="$(arg username)" />
+        <arg name="password" value="$(arg password)" />
+        <arg name="channel" value="$(arg channel)" />
+        <arg name="subtype" value="$(arg subtype)" />
+        <arg name="image_topic" value="$(arg image_topic)" />
+    </include>
+
+    <node pkg="stereo_depth"
+          type="aruco_fisheye_node.py"
+          name="fisheye_aruco_node"
+          output="screen">
+
+        <rosparam command="load" file="$(arg calibration_file)" />
+
+        <param name="image_topic" value="$(arg image_topic)" />
+        <param name="camera_model" value="$(arg camera_model)" />
+        <param name="enable_pose" value="$(arg enable_pose)" />
+        <param name="undistort_before_detection"
+               value="$(arg undistort_before_detection)" />
+        <param name="fisheye_balance" value="$(arg fisheye_balance)" />
+        <param name="processing_width" value="$(arg processing_width)" />
+        <param name="marker_length" value="$(arg marker_length)" />
+        <param name="dictionary" value="$(arg dictionary)" />
+        <param name="infer_rate" value="$(arg infer_rate)" />
+        <param name="visualization" value="$(arg visualization)" />
+        <param name="camera_frame" value="fisheye_camera" />
+        <param name="primary_marker_policy" value="nearest" />
+
+        <param name="pose_topic" value="$(arg pose_topic)" />
+        <param name="annotated_topic" value="$(arg annotated_topic)" />
+        <param name="rectified_topic" value="$(arg rectified_topic)" />
+        <param name="web_detection_topic"
+               value="$(arg web_detection_topic)" />
+        <param name="web_pose_topic" value="$(arg web_pose_topic)" />
+    </node>
+
+    <include if="$(arg start_web)"
+             file="$(find vision_web)/launch/vision_web.launch">
+        <arg name="port" value="$(arg web_port)" />
+        <arg name="image_topic" value="$(arg annotated_topic)" />
+        <arg name="detection_topic"
+             value="$(arg web_detection_topic)" />
+        <arg name="pose_topic" value="$(arg web_pose_topic)" />
+        <arg name="stream_fps" value="$(arg infer_rate)" />
+        <arg name="jpeg_quality" value="75" />
+        <arg name="web_width" value="1280" />
+        <arg name="detection_timeout" value="2.0" />
+        <arg name="pose_timeout" value="2.0" />
+    </include>
+</launch>

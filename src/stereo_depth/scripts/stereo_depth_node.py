@@ -38,7 +38,7 @@ class UnifiedStereoDepthNode:
         self.conf_thre = float(rospy.get_param("~conf_thre", 0.2))
         self.rate = rospy.Rate(max(0.5, float(rospy.get_param("~rate", 5.0))))
 
-        self.window_size = int(rospy.get_param("~window_size", 11))
+        self.window_size = int(rospy.get_param("~window_size", 25))
         self.min_depth = float(rospy.get_param("~min_depth", 0.5))
         self.max_depth = float(rospy.get_param("~max_depth", 2.0))
         self.min_valid_pixels = int(rospy.get_param("~min_valid_pixels", 3))

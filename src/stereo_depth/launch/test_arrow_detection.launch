@@ -1,12 +1,12 @@
 <launch>
     <!-- 箭头识别：YOLO bbox -> 二维方向估计 -> 连续话题 -> Web -->
 
-    <arg name="start_camera" default="true" />
+    <arg name="start_camera" default="false" />
     <arg name="start_splitter" default="true" />
     <arg name="start_web" default="true" />
 
     <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/arrow0709.pt" />
+         default="/home/xhy/catkin_ws/models/arrow0717.pt" />
     <arg name="conf_thre" default="0.2" />
     <arg name="top_k" default="3" />
     <arg name="rate" default="5.0" />
@@ -15,13 +15,11 @@
 
     <!-- 相机 -->
     <node if="$(arg start_camera)"
-          name="usb_cam"
-          pkg="usb_cam"
-          type="usb_cam_node"
-          output="screen"
-          launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
+        name="usb_cam"
+        pkg="usb_cam"
+        type="usb_cam_node"
+        launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
 
-    <!-- 双目拼接图拆分为左右图 -->
     <node if="$(arg start_splitter)"
           pkg="stereo_splitter"
           type="split_stereo_image.py"
@@ -87,9 +85,9 @@
         <param name="publish_rate"
                value="$(arg rate)" />
         <param name="bbox_timeout"
-               value="0.6" />
+               value="1.5" />
         <param name="max_sync_dt"
-               value="0.35" />
+               value="1.2" />
         <param name="bbox_margin_ratio"
                value="0.10" />
         <param name="min_bbox_size"

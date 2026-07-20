@@ -1,0 +1,152 @@
+<launch>
+    <!--
+        Task1 黑色方形单项测试。
+        使用前请先启动真实下位机链路、TF 链路和图形识别节点。
+
+        用法示例：
+        roslaunch auv_control task1_v2_test_black_marker.launch
+    -->
+
+    <!-- 基础：控制循环频率（Hz）。搜索方向采用节点启动时读取的机器人当前航向。 -->
+    <arg name="rate" default="5.0" />
+
+    <!-- 话题：运动指令、图形识别、外设控制、完成消息、相机和速度反馈。 -->
+    <arg name="cmd_topic" default="/cmd/pose/ned" />
+    <arg name="target_topic" default="/obj/target_message" />
+    <arg name="actuator_topic" default="/cmd/actuator" />
+    <arg name="finished_topic" default="/finished" />
+    <arg name="camera_topic" default="/left/image_raw" />
+    <arg name="velocity_topic" default="/status/vel" />
+
+    <!-- 搜索前进：左右转搜索并回到启动航向后，以 mode=4 定点前进的距离（m）。 -->
+    <arg name="search_forward_distance" default="0.5" />
+
+    <!-- 搜索旋转：相对启动航向左右旋转角度、航向容差（deg）。
+         NED 中默认正航向向右，search_yaw_sign=1；实机方向相反时改为 -1。 -->
+    <arg name="search_yaw_angle_deg" default="30.0" />
+    <arg name="search_yaw_sign" default="1.0" />
+    <arg name="search_yaw_tolerance_deg" default="5.0" />
+
+    <!-- 搜索停留：到达左/右观察航向、返回启动航向、前进目标后持续静止的时间（s）。 -->
+    <arg name="search_yaw_hold_seconds" default="2.0" />
+    <arg name="search_return_hold_seconds" default="2.0" />
+    <arg name="search_forward_hold_seconds" default="4.0" />
+
+    <!-- 到达判断：定点前进和前往黑色方形共用的水平位置容差（m）。 -->
+    <arg name="position_tolerance" default="0.15" />
+
+    <!-- 黑色方形过滤：最近 marker_window_size 条目标识别输出中，至少
+         marker_required_valid 条 rectangle 达到置信度和位置聚类要求。
+         当前 TargetDetection 不发布逐图像帧的“未检出”消息，因此窗口按识别输出计数。 -->
+    <arg name="black_classes" default="rectangle" />
+    <arg name="black_min_confidence" default="0.30" />
+    <arg name="marker_window_size" default="10" />
+    <arg name="marker_required_valid" default="3" />
+    <arg name="marker_sample_timeout" default="1.0" />
+    <arg name="marker_cluster_distance" default="0.25" />
+    <arg name="max_camera_distance" default="5.0" />
+
+    <!-- 启动与消息有效期：启动后先锁定初始位姿悬停；相机/速度反馈超时单位均为 s。 -->
+    <arg name="startup_hold_seconds" default="10.0" />
+    <arg name="camera_message_timeout" default="2.0" />
+    <arg name="velocity_message_timeout" default="1.0" />
+
+    <!-- 静止判据：最大水平线速度（m/s）和航向角速度（deg/s）。 -->
+    <arg name="stable_linear_speed" default="0.05" />
+    <arg name="stable_angular_speed_deg" default="3.0" />
+
+    <!-- 黑色灯光动作：每次绿灯时长、间隔（s）和亮灯次数。 -->
+    <arg name="light_seconds" default="3.0" />
+    <arg name="gap_seconds" default="0.5" />
+    <arg name="black_light_count" default="2" />
+
+    <!-- 黑色旋转动作：累计角度（720度=两圈）；到达提前撤力角后将正向MZ清零。
+         提前撤力角需要根据实机惯性调整，例如700度撤力后靠惯性超过720度。 -->
+    <arg name="black_rotation_angle_deg" default="720.0" />
+    <arg name="black_rotation_drive_stop_angle_deg" default="700.0" />
+
+    <!-- 旋转力矩：正常MZ、旋转方向（1/-1）和每周期MZ变化步长。 -->
+    <arg name="black_rotation_mz" default="3000.0" />
+    <arg name="black_rotation_direction" default="1.0" />
+    <arg name="black_rotation_mz_step" default="500.0" />
+
+    <!-- 旋转减速：剩余角度进入该范围后改用较小MZ。 -->
+    <arg name="black_rotation_slow_angle_deg" default="30.0" />
+    <arg name="black_rotation_slow_mz" default="1000.0" />
+
+    <!-- 提前撤力后的反向制动力矩；0表示只清零MZ并靠惯性滑行。
+         如需主动制动，设置正数，代码会按旋转反方向输出该MZ。 -->
+    <arg name="black_rotation_brake_mz" default="0.0" />
+
+    <!-- 航向反馈过滤：小变化死区和单帧异常跳变阈值（deg）。 -->
+    <arg name="rotation_feedback_deadband_deg" default="0.05" />
+    <arg name="rotation_feedback_max_delta_deg" default="45.0" />
+
+    <!-- 超过目标累计角后返回旋转前航向；设置航向容差和稳定保持时间。 -->
+    <arg name="black_return_yaw_tolerance_deg" default="5.0" />
+    <arg name="black_return_hold_seconds" default="2.0" />
+
+    <!-- 外设默认值：照明灯、航向/夹爪舵机以及推拉杆命令/速度。 -->
+    <arg name="light1" default="0" />
+    <arg name="light2" default="0" />
+    <arg name="heading_servo" default="128" />
+    <arg name="clamp_servo" default="0" />
+    <arg name="drive_cmd" default="0" />
+    <arg name="drive_speed" default="0" />
+
+    <include file="$(find stereo_depth)/launch/test_shapes_detection.launch" />
+
+    <node pkg="auv_control"
+          type="test_task1_v2_black_marker.py"
+          name="test_task1_v2_black_marker"
+          output="screen">
+        <param name="rate" type="double" value="$(arg rate)" />
+        <param name="cmd_topic" type="string" value="$(arg cmd_topic)" />
+        <param name="target_topic" type="string" value="$(arg target_topic)" />
+        <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
+        <param name="finished_topic" type="string" value="$(arg finished_topic)" />
+        <param name="camera_topic" type="string" value="$(arg camera_topic)" />
+        <param name="velocity_topic" type="string" value="$(arg velocity_topic)" />
+        <param name="search_forward_distance" type="double" value="$(arg search_forward_distance)" />
+        <param name="search_yaw_angle_deg" type="double" value="$(arg search_yaw_angle_deg)" />
+        <param name="search_yaw_sign" type="double" value="$(arg search_yaw_sign)" />
+        <param name="search_yaw_tolerance_deg" type="double" value="$(arg search_yaw_tolerance_deg)" />
+        <param name="search_yaw_hold_seconds" type="double" value="$(arg search_yaw_hold_seconds)" />
+        <param name="search_return_hold_seconds" type="double" value="$(arg search_return_hold_seconds)" />
+        <param name="search_forward_hold_seconds" type="double" value="$(arg search_forward_hold_seconds)" />
+        <param name="position_tolerance" type="double" value="$(arg position_tolerance)" />
+        <param name="black_classes" type="string" value="$(arg black_classes)" />
+        <param name="black_min_confidence" type="double" value="$(arg black_min_confidence)" />
+        <param name="marker_window_size" type="int" value="$(arg marker_window_size)" />
+        <param name="marker_required_valid" type="int" value="$(arg marker_required_valid)" />
+        <param name="marker_sample_timeout" type="double" value="$(arg marker_sample_timeout)" />
+        <param name="marker_cluster_distance" type="double" value="$(arg marker_cluster_distance)" />
+        <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
+        <param name="startup_hold_seconds" type="double" value="$(arg startup_hold_seconds)" />
+        <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />
+        <param name="velocity_message_timeout" type="double" value="$(arg velocity_message_timeout)" />
+        <param name="stable_linear_speed" type="double" value="$(arg stable_linear_speed)" />
+        <param name="stable_angular_speed_deg" type="double" value="$(arg stable_angular_speed_deg)" />
+        <param name="light_seconds" type="double" value="$(arg light_seconds)" />
+        <param name="gap_seconds" type="double" value="$(arg gap_seconds)" />
+        <param name="black_light_count" type="int" value="$(arg black_light_count)" />
+        <param name="black_rotation_angle_deg" type="double" value="$(arg black_rotation_angle_deg)" />
+        <param name="black_rotation_drive_stop_angle_deg" type="double" value="$(arg black_rotation_drive_stop_angle_deg)" />
+        <param name="black_rotation_mz" type="double" value="$(arg black_rotation_mz)" />
+        <param name="black_rotation_direction" type="double" value="$(arg black_rotation_direction)" />
+        <param name="black_rotation_mz_step" type="double" value="$(arg black_rotation_mz_step)" />
+        <param name="black_rotation_slow_angle_deg" type="double" value="$(arg black_rotation_slow_angle_deg)" />
+        <param name="black_rotation_slow_mz" type="double" value="$(arg black_rotation_slow_mz)" />
+        <param name="black_rotation_brake_mz" type="double" value="$(arg black_rotation_brake_mz)" />
+        <param name="rotation_feedback_deadband_deg" type="double" value="$(arg rotation_feedback_deadband_deg)" />
+        <param name="rotation_feedback_max_delta_deg" type="double" value="$(arg rotation_feedback_max_delta_deg)" />
+        <param name="black_return_yaw_tolerance_deg" type="double" value="$(arg black_return_yaw_tolerance_deg)" />
+        <param name="black_return_hold_seconds" type="double" value="$(arg black_return_hold_seconds)" />
+        <param name="light1" type="int" value="$(arg light1)" />
+        <param name="light2" type="int" value="$(arg light2)" />
+        <param name="heading_servo" type="int" value="$(arg heading_servo)" />
+        <param name="clamp_servo" type="int" value="$(arg clamp_servo)" />
+        <param name="drive_cmd" type="int" value="$(arg drive_cmd)" />
+        <param name="drive_speed" type="int" value="$(arg drive_speed)" />
+    </node>
+</launch>

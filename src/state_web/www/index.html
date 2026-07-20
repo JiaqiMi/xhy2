@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AUV 运行状态监控</title>
+    <link rel="stylesheet" href="/assets/dashboard.css">
+</head>
+<body>
+<div class="app-shell">
+    <header class="topbar">
+        <div class="title-block">
+            <h1>AUV 运行状态监控</h1>
+            <div id="server-time" class="server-time">等待 Web 状态数据</div>
+        </div>
+        <div id="global-badges" class="global-badges"></div>
+    </header>
+
+    <main class="dashboard-grid">
+        <section class="panel stereo-panel">
+            <div class="panel-title">
+                <div>
+                    <h2>双目相机原始画面</h2>
+                    <span class="subtitle">Left / Right raw image</span>
+                </div>
+            </div>
+            <div class="stereo-grid">
+                <article class="camera-card" data-camera="left">
+                    <div class="camera-heading">
+                        <strong>左目</strong>
+                        <span id="camera-left-state" class="camera-state offline">离线</span>
+                    </div>
+                    <div class="camera-viewport">
+                        <div class="camera-placeholder">等待 /left/image_raw</div>
+                        <img id="camera-left-image"
+                             src="/stream/left"
+                             alt="左目原始画面">
+                    </div>
+                    <div id="camera-left-meta" class="camera-meta">--</div>
+                </article>
+
+                <article class="camera-card" data-camera="right">
+                    <div class="camera-heading">
+                        <strong>右目</strong>
+                        <span id="camera-right-state" class="camera-state offline">离线</span>
+                    </div>
+                    <div class="camera-viewport">
+                        <div class="camera-placeholder">等待 /right/image_raw</div>
+                        <img id="camera-right-image"
+                             src="/stream/right"
+                             alt="右目原始画面">
+                    </div>
+                    <div id="camera-right-meta" class="camera-meta">--</div>
+                </article>
+            </div>
+        </section>
+
+        <section class="panel fisheye-panel">
+            <div class="panel-title">
+                <div>
+                    <h2>鱼眼相机原始画面</h2>
+                    <span class="subtitle">Fisheye raw image</span>
+                </div>
+                <span id="camera-fisheye-state" class="camera-state offline">离线</span>
+            </div>
+            <div class="camera-viewport fisheye-viewport">
+                <div class="camera-placeholder">
+                    等待 /fisheye_camera/image_raw
+                </div>
+                <img id="camera-fisheye-image"
+                     src="/stream/fisheye"
+                     alt="鱼眼相机原始画面">
+            </div>
+            <div id="camera-fisheye-meta" class="camera-meta">--</div>
+        </section>
+
+        <section class="panel navigation-panel">
+            <div class="panel-title navigation-title">
+                <div>
+                    <h2>NED 实际与目标位姿</h2>
+                    <span class="subtitle">X/North 向上，Y/East 向右，Z/Down 向下</span>
+                </div>
+                <div class="map-controls">
+                    <span class="map-legend actual">实际 TF：base_link → camera</span>
+                    <span class="map-legend target">目标 cmdned：base_link</span>
+                    <button id="reset-map"
+                            type="button"
+                            title="重置 2D 位置图和深度图">
+                        回到原点
+                    </button>
+                </div>
+            </div>
+
+            <div class="navigation-layout">
+                <div class="canvas-card xy-card">
+                    <canvas id="xy-canvas"></canvas>
+                    <div id="map-hint" class="canvas-hint">
+                        滚轮缩放 · 拖拽平移
+                    </div>
+                </div>
+
+                <div class="canvas-card z-card">
+                    <canvas id="z-canvas"></canvas>
+                    <div class="canvas-hint z-canvas-hint">
+                        滚轮缩放 · 上下拖动
+                    </div>
+                </div>
+
+                <div class="attitude-stack">
+                    <div class="instrument-card">
+                        <div class="instrument-title">航向图</div>
+                        <canvas id="heading-canvas"></canvas>
+                        <div id="heading-readout" class="instrument-readout">
+                            TF Heading --
+                        </div>
+                    </div>
+
+                    <div class="instrument-card">
+                        <div class="instrument-title">人工地平图</div>
+                        <canvas id="horizon-canvas"></canvas>
+                        <div id="horizon-readout" class="instrument-readout">
+                            Roll -- · Pitch --
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel status-panel">
+            <div class="panel-title">
+                <div>
+                    <h2>运行、控制与设备状态</h2>
+                    <span class="subtitle">实际位姿取 TF，目标位姿取 cmdned；状态年龄按 Web 接收时间计算</span>
+                </div>
+                <span id="status-ready" class="ready-label offline">坐标系未就绪</span>
+            </div>
+
+            <div class="status-scroll">
+                <details class="core-status-panel" open>
+                    <summary>核心运行状态</summary>
+                    <div id="core-status" class="axis-status"></div>
+                </details>
+
+                <details>
+                    <summary>运动状态机</summary>
+                    <div id="motion-status" class="data-grid"></div>
+                </details>
+
+                <details>
+                    <summary>执行器指令与反馈</summary>
+                    <div id="actuator-status" class="data-grid"></div>
+                </details>
+
+                <details>
+                    <summary>电源与舱内状态</summary>
+                    <div id="power-status" class="data-grid"></div>
+                </details>
+
+                <details>
+                    <summary>坐标系与话题健康</summary>
+                    <div id="system-status" class="data-grid"></div>
+                </details>
+            </div>
+        </section>
+    </main>
+</div>
+
+<script src="/assets/dashboard.js"></script>
+</body>
+</html>

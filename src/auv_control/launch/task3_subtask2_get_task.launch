@@ -1,20 +1,37 @@
 <launch>
-    <!-- 2026.7.13：执行器下行话题调整为 /cmd/actuator。 -->
-    <!-- Task 3 subtask 2: read an ArUco id and show the corresponding light.
-         Uses the new /cmd/actuator interface only. -->
+    <!-- 任务3子任务2：人工停到目标正前方，mode=4定点，识别后亮灯。 -->
 
     <arg name="rate" default="10.0" />
-    <arg name="actuator_topic" default="/cmd/actuator" />
 
-    <!-- Use mock now. Switch to topic after the ArUco model is ready. -->
-    <arg name="input_mode" default="mock" />
-    <arg name="mock_aruco_ids" default="[1, 3, 5, 2, 4, 6]" />
-    <arg name="aruco_topic" default="/task3/aruco_id" />
-    <arg name="max_topic_markers" default="1" />
+    <!-- mode=4 动力定位：记录启动时 map -> base_link 并持续发布固定目标。 -->
+    <arg name="pose_cmd_topic" default="/cmd/pose/ned" />
+    <arg name="hold_map_frame" default="map" />
+    <arg name="hold_base_frame" default="base_link" />
+    <arg name="initial_hover_seconds" default="10.0" />
+    <arg name="hold_pose_timeout" default="5.0" />
 
+    <!-- 默认由本launch启动鱼眼摄像头、ArUco节点和Web。
+         任务节点设置required=true，成功或60秒超时退出时会关闭整条launch链路。 -->
+    <arg name="start_aruco_model" default="true" />
+
+    <!-- 识别判定：最近10个模型帧构成滑动循环队列。
+         同一个ID在窗口内出现3次立即成功，不要求连续，也不等待10帧填满。 -->
+    <arg name="input_mode" default="topic" />
+    <arg name="aruco_topic" default="/obj/target_message" />
+    <arg name="min_confidence" default="0.5" />
+    <arg name="recognition_window_size" default="10" />
+    <arg name="required_match_count" default="3" />
+    <arg name="recognition_timeout" default="60.0" />
+
+    <!-- mock中第1、3、7帧均为ID 1，-1表示空帧。 -->
+    <arg name="mock_aruco_ids" default="[1, -1, 1, 2, -1, -1, 1]" />
+    <arg name="mock_frame_interval" default="0.2" />
+
+    <!-- 识别成功后亮对应颜色灯3秒。 -->
     <arg name="light_seconds" default="3.0" />
     <arg name="gap_seconds" default="0.5" />
-
+    <arg name="actuator_topic" default="/cmd/actuator" />
+    <arg name="actuator_mode" default="2" />
     <arg name="light1" default="0" />
     <arg name="light2" default="0" />
     <arg name="heading_servo" default="128" />
@@ -22,18 +39,35 @@
     <arg name="drive_cmd" default="0" />
     <arg name="drive_speed" default="0" />
 
+    <include if="$(arg start_aruco_model)"
+             file="$(find stereo_depth)/launch/test_aruco_detection_fisheye.launch" />
+
+    <!-- required=true：任务成功或超时退出后，roslaunch关闭摄像头、识别和Web。 -->
     <node pkg="auv_control"
           type="test_task3_2_get_task.py"
           name="test_task3_2_get_task"
-          output="screen">
+          output="screen"
+          required="true">
         <param name="rate" type="double" value="$(arg rate)" />
-        <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
+        <param name="pose_cmd_topic" type="string" value="$(arg pose_cmd_topic)" />
+        <param name="hold_map_frame" type="string" value="$(arg hold_map_frame)" />
+        <param name="hold_base_frame" type="string" value="$(arg hold_base_frame)" />
+        <param name="initial_hover_seconds" type="double" value="$(arg initial_hover_seconds)" />
+        <param name="hold_pose_timeout" type="double" value="$(arg hold_pose_timeout)" />
+
         <param name="input_mode" type="string" value="$(arg input_mode)" />
-        <param name="mock_aruco_ids" type="yaml" value="$(arg mock_aruco_ids)" />
         <param name="aruco_topic" type="string" value="$(arg aruco_topic)" />
-        <param name="max_topic_markers" type="int" value="$(arg max_topic_markers)" />
+        <param name="min_confidence" type="double" value="$(arg min_confidence)" />
+        <param name="recognition_window_size" type="int" value="$(arg recognition_window_size)" />
+        <param name="required_match_count" type="int" value="$(arg required_match_count)" />
+        <param name="recognition_timeout" type="double" value="$(arg recognition_timeout)" />
+        <param name="mock_aruco_ids" type="yaml" value="$(arg mock_aruco_ids)" />
+        <param name="mock_frame_interval" type="double" value="$(arg mock_frame_interval)" />
+
         <param name="light_seconds" type="double" value="$(arg light_seconds)" />
         <param name="gap_seconds" type="double" value="$(arg gap_seconds)" />
+        <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
+        <param name="actuator_mode" type="int" value="$(arg actuator_mode)" />
         <param name="light1" type="int" value="$(arg light1)" />
         <param name="light2" type="int" value="$(arg light2)" />
         <param name="heading_servo" type="int" value="$(arg heading_servo)" />
