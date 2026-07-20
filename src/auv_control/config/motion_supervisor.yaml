@@ -5,15 +5,6 @@ velocity_filter_alpha: 0.35   # 速度一阶低通新数据权重，范围 (0,1]
 pitch_offset_deg: 0.0         # 发送目标姿态时附加的固定俯仰角，单位 deg
 startup_hover_frames: 5       # 首帧锁定位姿进入 HOVER 后保持的发布帧数，完成后才执行缓存任务目标
 
-# 两套固定控制中心到 IMU 的杆臂，采用前、右、下约定，单位 m
-# 新动作按计划 yaw 误差正负选择一次；同一目标重复发布不会改变已锁存中心
-control_to_imu_positive_x: 0.083212 # control_link_positive 到 IMU 的前向杆臂
-control_to_imu_positive_y: -0.090422 # control_link_positive 到 IMU 的右向杆臂
-control_to_imu_positive_z: 0.0 # control_link_positive 到 IMU 的下向杆臂
-control_to_imu_negative_x: -0.131981 # control_link_negative 到 IMU 的前向杆臂
-control_to_imu_negative_y: -0.058350 # control_link_negative 到 IMU 的右向杆臂
-control_to_imu_negative_z: 0.0 # control_link_negative 到 IMU 的下向杆臂
-
 # 每个控制周期的完整 CSV 记录；目录中的 ~ 会展开为运行节点用户的主目录
 log_enabled: true             # 是否记录当前/目标位姿、速度、状态、模式和力矩等完整数据
 log_directory: ~/.ros/auv_logs/motion_supervisor # CSV 日志目录，每次启动自动新建带时间戳文件
@@ -92,6 +83,9 @@ yaw_position_gain: 1.50
 yaw_max_acceleration_deg_s2: 20.0
 yaw_max_jerk_deg_s3: 60.0
 goal_static_capture_seconds: 0.80
+# 目标仍然逐帧更新；仅超过以下阈值才重置速度/角速度参考和捕获计时。
+goal_replan_position_threshold: 0.10 # 水平目标变化的重规划阈值，单位 m
+goal_replan_yaw_threshold_deg: 5.0 # 目标航向变化的重规划阈值，单位 deg
 control_dt_min: 0.02
 control_dt_max: 0.20
 

@@ -24,7 +24,7 @@
     <arg name="initial_hover_seconds" default="10.0" />
     <arg name="search_forward_force" default="100.0" />
     <arg name="max_search_distance" default="1.0" />
-    <!-- begin.launch中的static_tf_broadcaster发布base_link -> camera。 -->
+    <!-- begin.launch 中的 auv_tf_handler 发布 base_link -> camera。 -->
     <arg name="camera_frame" default="camera" />
 
     <!-- 第一次看到箭头后，连续3帧的中心和角度稳定才进入细对准。 -->

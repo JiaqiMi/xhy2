@@ -79,7 +79,7 @@ force = TX TY 0 0 0 0
 
 水平细对准参考子任务3：图像垂直误差控制前后推力 `TX`，图像水平误差控制左右推力 `TY`；同时使用 `/status/auv.linear_velocity` 施加反向速度阻尼。首次靠近阶段固定发现箭头时的航向，只做前后和左右居中。居中停稳后重新确认方向连续3帧，之后目标航向从当前值逐帧逼近箭头航向；转向阶段同时保留视觉中心修正。
 
-箭头在图像中心只表示“摄像头位于箭头正上方”，不能直接说明机器人本体中心也在箭头上方。`driver/static_tf_broadcaster.py` 已发布 `base_link -> camera` 静态变换，当前下视左相机相对本体约为前方 `0.658m`、右方 `-0.030m`。代码在航向重合、摄像头居中并停稳后读取 `map -> camera`，把此时的相机 `map` 坐标作为箭头位置，再调用 `driver/motion_supervisor_core.py` 的 `map_error_to_body()` 将 `map` 位置误差转换为本体前/右误差，控制 `base_link` 移到箭头位置。最终机器人航向与箭头一致，且机器人本体中心位于箭头正上方。
+箭头在图像中心只表示“摄像头位于箭头正上方”，不能直接说明机器人本体中心也在箭头上方。`driver/auv_tf_handler.py` 按 `config/auv_tf.yaml` 发布 `base_link -> camera` 静态变换，当前下视左相机相对本体约为前方 `0.658m`、右方 `-0.030m`。代码在航向重合、摄像头居中并停稳后读取 `map -> camera`，把此时的相机 `map` 坐标作为箭头位置，再调用 `driver/motion_supervisor_core.py` 的 `map_error_to_body()` 将 `map` 位置误差转换为本体前/右误差，控制 `base_link` 移到箭头位置。最终机器人航向与箭头一致，且机器人本体中心位于箭头正上方。
 
 高度保持启动深度。若 `/status/auv.pose.altitude` 有效且低于 `0.40m`，代码只把目标深度向上修正，不会继续靠近地面；高度为0或无效时会打印警告并保持启动深度。
 
@@ -595,7 +595,7 @@ roslaunch stereo_depth test_arrow_detection.launch
 roslaunch auv_control task3_subtask1_acquire_area.launch start_arrow_model:=false
 ```
 
-第一次运动测试建议先观察默认的 `search_forward_force=80`、`max_forward_force=100`、`max_lateral_force=100` 和 `hold_max_force=100`。搜索或靠近太快时继续减小对应推力；前后或左右运动方向相反时分别修改 `tx_sign`、`ty_sign`；机器人航向转动方向与箭头相反时修改 `yaw_correction_sign`。运行前必须确认 `begin.launch` 中的 `static_tf_broadcaster.py` 正在发布 `base_link -> camera`。
+第一次运动测试建议先观察默认的 `search_forward_force=80`、`max_forward_force=100`、`max_lateral_force=100` 和 `hold_max_force=100`。搜索或靠近太快时继续减小对应推力；前后或左右运动方向相反时分别修改 `tx_sign`、`ty_sign`；机器人航向转动方向与箭头相反时修改 `yaw_correction_sign`。运行前必须确认 `begin.launch` 中的 `auv_tf_handler.py` 正在发布 `base_link -> camera`。
 
 ### 5. 子任务 2 操作
 

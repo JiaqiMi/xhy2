@@ -262,8 +262,8 @@ angular_brake_acceleration_mz_negative: 0.040
 | 90° | 0.495 m |
 
 60° 和 90° 已超过或明显接近 `capture_exit_radius=0.25 m`，会触发状态机
-退出最终转向并重新平移。现在统一使用 launch 中的
-`base_to_imu_x/y/z`：
+退出最终转向并重新平移。现在统一使用 `config/auv_tf.yaml` 中的
+`static_transforms.imu.translation`：
 
 - 状态链路：由 IMU/GNSS NED 位置减去旋转后的 `base_link -> imu`
   杆臂，得到真实 `map -> base_link`；

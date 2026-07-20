@@ -190,7 +190,6 @@ catkin_install_python(PROGRAMS
   driver/nav_driver.py
   driver/sensor_actuator_node.py
   driver/sensor_status_node.py
-  driver/static_tf_broadcaster.py
   driver/world_frame.py
   driver/world_origin_reset.py
   driver/world_origin_reset_utils.py

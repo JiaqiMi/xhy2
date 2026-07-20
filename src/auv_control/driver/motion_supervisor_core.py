@@ -137,21 +137,6 @@ def relative_target_xy(
     return initial_x + delta_x, initial_y + delta_y
 
 
-def select_planned_rotation_direction(
-        yaw_error, current_direction=1, direction_locked=False,
-        deadband=0.0):
-    """按计划 yaw 误差选择正负方向；锁存或死区内保持当前方向。"""
-    values = (yaw_error, current_direction, deadband)
-    if not all(math.isfinite(float(value)) for value in values):
-        raise ValueError('计划旋转方向参数必须为有限值')
-    if float(deadband) < 0.0:
-        raise ValueError('计划旋转方向死区不能为负数')
-    current_direction = 1 if float(current_direction) >= 0.0 else -1
-    if direction_locked or abs(float(yaw_error)) <= float(deadband):
-        return current_direction
-    return 1 if float(yaw_error) > 0.0 else -1
-
-
 def goals_equal(first, second, tolerance=1e-6):
     """判断两个位姿目标在给定容差内是否相同。"""
     if first is None or second is None:
@@ -318,6 +303,8 @@ DEFAULT_PARAMETERS = {
     'yaw_max_acceleration': math.radians(20.0),
     'yaw_max_jerk': math.radians(60.0),
     'goal_static_capture_seconds': 0.80,
+    'goal_replan_position_threshold': 0.10,
+    'goal_replan_yaw_threshold': math.radians(5.0),
     'control_dt_min': 0.02,
     'control_dt_max': 0.20,
     # 推进器有效性矩阵。默认单位阵，标定后填写交叉项以补偿 TX/TY/MZ 耦合。
@@ -399,7 +386,9 @@ class MotionSupervisorCore(object):
             'xy_max_speed', 'xy_position_gain', 'xy_max_acceleration',
             'xy_max_jerk', 'yaw_max_rate', 'yaw_position_gain',
             'yaw_max_acceleration', 'yaw_max_jerk',
-            'goal_static_capture_seconds', 'control_dt_min',
+            'goal_static_capture_seconds',
+            'goal_replan_position_threshold', 'goal_replan_yaw_threshold',
+            'control_dt_min',
             'control_dt_max', 'effectiveness_min_determinant',
         )
         for name in positive_names:
@@ -471,13 +460,28 @@ class MotionSupervisorCore(object):
     def goal_active(self):
         return self.goal is not None or self.pending_goal is not None
 
+    def _goal_requires_replan(self, previous, current):
+        """判断是否需要为新目标重置轨迹参考。"""
+        if previous is None:
+            return True
+        position_delta = math.sqrt(
+            (current.x - previous.x) ** 2
+            + (current.y - previous.y) ** 2
+            + (current.z - previous.z) ** 2
+        )
+        yaw_delta = abs(wrap_angle(current.yaw - previous.yaw))
+        return (
+            position_delta >= self.parameters['goal_replan_position_threshold']
+            or yaw_delta >= self.parameters['goal_replan_yaw_threshold']
+        )
+
     def set_goal(self, goal):
-        """采用最新目标；相同目标不会重置捕获计时和轨迹参考。"""
+        """采用最新目标；只有超过重规划阈值才重置捕获计时和轨迹参考。"""
         if not isinstance(goal, MotionGoal):
             raise TypeError('goal 必须是 MotionGoal')
 
         if self.goal is None:
-            changed = not goals_equal(goal, self.pending_goal)
+            changed = self._goal_requires_replan(self.pending_goal, goal)
             self.pending_goal = goal
             if changed:
                 self.goal_changed_pending = True
@@ -485,7 +489,7 @@ class MotionSupervisorCore(object):
                 self.reason = '收到首个目标'
             return changed
 
-        changed = not goals_equal(goal, self.goal)
+        changed = self._goal_requires_replan(self.goal, goal)
         self.goal = goal
         self.pending_goal = None
         self.cancel_requested = False
