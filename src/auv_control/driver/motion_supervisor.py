@@ -136,14 +136,25 @@ class MotionSupervisorNode(object):
         'xy_brake_acceleration',
         'xy_brake_margin',
         'xy_brake_entry',
+        'xy_brake_entered',
+        'xy_brake_released',
+        'xy_brake_entry_count',
+        'xy_brake_exit_count',
+        'xy_brake_release_wait_s',
         'xy_brake_latched',
         'xy_braking',
         'yaw_rate_reference_deg_s',
         'map_yaw_rate_deg_s',
         'yaw_stop_angle_deg',
         'yaw_brake_entry',
+        'yaw_brake_entered',
+        'yaw_brake_released',
+        'yaw_brake_entry_count',
+        'yaw_brake_exit_count',
+        'yaw_brake_release_wait_s',
         'yaw_brake_latched',
         'yaw_braking',
+        'brake_axes',
         'goal_static_seconds',
         'goal_static_for_capture',
         'raw_tx',
@@ -208,9 +219,11 @@ class MotionSupervisorNode(object):
         self.log_file = None
         self.log_writer = None
         self.log_path = ''
+        self.parameter_snapshot_path = ''
         self.log_rows_since_flush = 0
         self.log_started_at = rospy.Time.now()
         self._open_data_log()
+        self._write_parameter_snapshot()
         rospy.on_shutdown(self._close_data_log)
 
         self.command_pub = rospy.Publisher(
@@ -236,6 +249,10 @@ class MotionSupervisorNode(object):
             rospy.loginfo(
                 'motion_supervisor: 完整 CSV 数据日志: %s',
                 self.log_path)
+        if self.parameter_snapshot_path:
+            rospy.loginfo(
+                'motion_supervisor: 生效参数快照: %s',
+                self.parameter_snapshot_path)
 
     def _open_data_log(self):
         """创建本次节点运行对应的 CSV 数据文件。"""
@@ -263,6 +280,35 @@ class MotionSupervisorNode(object):
             rospy.logerr(
                 'motion_supervisor: 无法创建 CSV 数据日志，将继续控制: %s',
                 error)
+
+    def _write_parameter_snapshot(self):
+        """保存本次运行实际读取的 ROS 参数，保证 CSV 可被独立复现。"""
+        if not self.log_enabled:
+            return
+        try:
+            if not os.path.isdir(self.log_directory):
+                os.makedirs(self.log_directory)
+            filename = 'motion_supervisor_parameters_{0}.json'.format(
+                datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+            self.parameter_snapshot_path = os.path.join(
+                self.log_directory, filename)
+            payload = {
+                'saved_at_local': datetime.now().isoformat(),
+                'control_rate_hz': self.control_rate_hz,
+                'feedback_timeout_s': self.feedback_timeout,
+                'velocity_filter_alpha': self.velocity_filter_alpha,
+                'base_to_imu_m': self.base_to_imu,
+                'ros_parameters': self.loaded_core_parameters,
+                'core_parameters_internal': self.core.parameters,
+                'internal_angle_units': 'radian',
+            }
+            with open(self.parameter_snapshot_path, 'w', encoding='utf-8') as handle:
+                json.dump(payload, handle, ensure_ascii=False,
+                          indent=2, sort_keys=True)
+        except (OSError, IOError, TypeError, ValueError) as error:
+            self.parameter_snapshot_path = ''
+            rospy.logerr(
+                'motion_supervisor: 无法保存参数快照，将继续控制: %s', error)
 
     def _close_data_log(self):
         """刷新并关闭 CSV 数据文件。"""
@@ -308,6 +354,7 @@ class MotionSupervisorNode(object):
 
     def _load_core_parameters(self):
         parameters = {}
+        self.loaded_core_parameters = {}
         degree_parameters = {
             'yaw_brake_margin_positive': 'yaw_brake_margin_positive_deg',
             'yaw_brake_margin_negative': 'yaw_brake_margin_negative_deg',
@@ -325,12 +372,18 @@ class MotionSupervisorNode(object):
         for name, default in DEFAULT_PARAMETERS.items():
             if name in degree_parameters:
                 default_degrees = math.degrees(default)
-                parameters[name] = math.radians(float(self._parameter(
-                    degree_parameters[name], default_degrees)))
+                loaded = self._parameter(
+                    degree_parameters[name], default_degrees)
+                self.loaded_core_parameters[degree_parameters[name]] = loaded
+                parameters[name] = math.radians(float(loaded))
             elif name == 'stable_frames':
-                parameters[name] = int(self._parameter(name, default))
+                loaded = self._parameter(name, default)
+                self.loaded_core_parameters[name] = loaded
+                parameters[name] = int(loaded)
             else:
-                parameters[name] = float(self._parameter(name, default))
+                loaded = self._parameter(name, default)
+                self.loaded_core_parameters[name] = loaded
+                parameters[name] = float(loaded)
         return parameters
 
     def goal_callback(self, message):
@@ -604,6 +657,16 @@ class MotionSupervisorNode(object):
             'xy_brake_margin': diagnostics.get('xy_brake_margin', ''),
             'xy_brake_entry': int(bool(
                 diagnostics.get('xy_brake_entry', False))),
+            'xy_brake_entered': int(bool(
+                diagnostics.get('xy_brake_entered', False))),
+            'xy_brake_released': int(bool(
+                diagnostics.get('xy_brake_released', False))),
+            'xy_brake_entry_count': diagnostics.get(
+                'xy_brake_entry_count', ''),
+            'xy_brake_exit_count': diagnostics.get(
+                'xy_brake_exit_count', ''),
+            'xy_brake_release_wait_s': diagnostics.get(
+                'xy_brake_release_wait_s', ''),
             'xy_brake_latched': int(bool(
                 diagnostics.get('xy_brake_latched', False))),
             'xy_braking': int(bool(diagnostics.get('xy_braking', False))),
@@ -618,9 +681,20 @@ class MotionSupervisorNode(object):
                 if 'yaw_stop_angle' in diagnostics else ''),
             'yaw_brake_entry': int(bool(
                 diagnostics.get('yaw_brake_entry', False))),
+            'yaw_brake_entered': int(bool(
+                diagnostics.get('yaw_brake_entered', False))),
+            'yaw_brake_released': int(bool(
+                diagnostics.get('yaw_brake_released', False))),
+            'yaw_brake_entry_count': diagnostics.get(
+                'yaw_brake_entry_count', ''),
+            'yaw_brake_exit_count': diagnostics.get(
+                'yaw_brake_exit_count', ''),
+            'yaw_brake_release_wait_s': diagnostics.get(
+                'yaw_brake_release_wait_s', ''),
             'yaw_brake_latched': int(bool(
                 diagnostics.get('yaw_brake_latched', False))),
             'yaw_braking': int(bool(diagnostics.get('yaw_braking', False))),
+            'brake_axes': diagnostics.get('brake_axes', ''),
             'goal_static_seconds': diagnostics.get('goal_static_seconds', ''),
             'goal_static_for_capture': int(bool(
                 diagnostics.get('goal_static_for_capture', False))),

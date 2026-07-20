@@ -26,6 +26,7 @@ from __future__ import division
 
 import copy
 import csv
+import json
 import math
 import os
 import sys
@@ -36,7 +37,7 @@ import rospy
 import tf
 from geometry_msgs.msg import PoseStamped
 from rosgraph.masterapi import ROSMasterException
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 from auv_control.msg import MotionState
@@ -79,12 +80,15 @@ class MotionAxisAutoTest(object):
         'duration_s',
         'acceptance_position_tolerance',
         'stable_speed_threshold',
+        'acceptance_yaw_tolerance_deg',
+        'stable_yaw_rate_threshold_deg_s',
         'required_stable_seconds',
         'peak_position_error',
         'peak_base_position_error',
         'peak_yaw_error_deg',
         'peak_horizontal_speed',
         'peak_yaw_rate_deg_s',
+        'peak_map_yaw_rate_deg_s',
         'peak_abs_tx',
         'peak_abs_ty',
         'peak_abs_mz',
@@ -94,11 +98,21 @@ class MotionAxisAutoTest(object):
         'final_position_error',
         'final_base_position_error',
         'final_horizontal_speed',
+        'final_yaw_error_deg',
+        'final_yaw_rate_deg_s',
+        'final_map_yaw_rate_deg_s',
         'final_axis_position',
         'signed_axis_stop_error',
         'stop_classification',
         'ever_crossed_target',
         'axis_position_unit',
+        'xy_brake_entry_count',
+        'xy_brake_exit_count',
+        'xy_brake_latched_seconds',
+        'yaw_brake_entry_count',
+        'yaw_brake_exit_count',
+        'yaw_brake_latched_seconds',
+        'diagnostic_state_transition_count',
         'result',
         'reason',
     )
@@ -130,6 +144,10 @@ class MotionAxisAutoTest(object):
             rospy.get_param('~inter_step_stable_seconds', 12.0))
         self.stable_speed_threshold = float(
             rospy.get_param('~stable_speed_threshold', 0.03))
+        self.acceptance_yaw_tolerance = math.radians(float(
+            rospy.get_param('~acceptance_yaw_tolerance_deg', 5.0)))
+        self.stable_yaw_rate_threshold = math.radians(float(
+            rospy.get_param('~stable_yaw_rate_threshold_deg_s', 1.0)))
         self.stall_detection_seconds = float(
             rospy.get_param('~stall_detection_seconds', 2.0))
         self.stall_speed_threshold = float(
@@ -169,6 +187,8 @@ class MotionAxisAutoTest(object):
             self.acceptance_position_tolerance,
             self.inter_step_stable_seconds,
             self.stable_speed_threshold,
+            self.acceptance_yaw_tolerance,
+            self.stable_yaw_rate_threshold,
             self.stall_detection_seconds,
             self.stall_speed_threshold,
             self.stall_force_threshold,
@@ -184,6 +204,8 @@ class MotionAxisAutoTest(object):
                 or self.feedback_timeout <= 0.0
                 or self.acceptance_position_tolerance <= 0.0
                 or self.stable_speed_threshold <= 0.0
+                or self.acceptance_yaw_tolerance <= 0.0
+                or self.stable_yaw_rate_threshold <= 0.0
                 or self.stall_detection_seconds <= 0.0
                 or self.stall_speed_threshold <= 0.0
                 or self.stall_force_threshold < 0.0
@@ -204,6 +226,10 @@ class MotionAxisAutoTest(object):
         self.tf_listener = tf.TransformListener()
         self.latest_state = None
         self.latest_state_received_at = None
+        self.latest_diagnostics = None
+        self.latest_diagnostics_received_at = None
+        self.active_step_peaks = None
+        self.active_step_started_at = None
         self._assert_no_other_goal_publisher(before_start=True)
         self.goal_pub = rospy.Publisher(
             '/cmd/motion/goal', PoseStamped, queue_size=1)
@@ -214,6 +240,12 @@ class MotionAxisAutoTest(object):
             MotionState,
             self.motion_state_callback,
             queue_size=10,
+        )
+        rospy.Subscriber(
+            '/motion/diagnostics',
+            String,
+            self.diagnostics_callback,
+            queue_size=50,
         )
         self.start_pose = None
         self.start_yaw = None
@@ -275,6 +307,52 @@ class MotionAxisAutoTest(object):
     def motion_state_callback(self, message):
         self.latest_state = copy.deepcopy(message)
         self.latest_state_received_at = rospy.Time.now()
+
+    def diagnostics_callback(self, message):
+        """记录控制器逐周期刹车事件，摘要 CSV 无需再靠状态名推断。"""
+        try:
+            diagnostics = json.loads(message.data)
+            stamp = float(diagnostics['stamp_sec'])
+        except (TypeError, ValueError, KeyError):
+            return
+        if not isinstance(diagnostics, dict) or not math.isfinite(stamp):
+            return
+        self.latest_diagnostics = diagnostics
+        self.latest_diagnostics_received_at = rospy.Time.now()
+        peaks = self.active_step_peaks
+        if peaks is None or self.active_step_started_at is None:
+            return
+        if stamp < self.active_step_started_at:
+            return
+        last_stamp = peaks['last_diagnostic_stamp']
+        if last_stamp is not None and stamp <= last_stamp:
+            return
+        if last_stamp is not None:
+            elapsed = min(stamp - last_stamp, self.feedback_timeout)
+            if diagnostics.get('xy_brake_latched', False):
+                peaks['xy_brake_latched_seconds'] += elapsed
+            if diagnostics.get('yaw_brake_latched', False):
+                peaks['yaw_brake_latched_seconds'] += elapsed
+        if diagnostics.get('xy_brake_entered', False):
+            peaks['xy_brake_entry_count'] += 1
+        if diagnostics.get('xy_brake_released', False):
+            peaks['xy_brake_exit_count'] += 1
+        if diagnostics.get('yaw_brake_entered', False):
+            peaks['yaw_brake_entry_count'] += 1
+        if diagnostics.get('yaw_brake_released', False):
+            peaks['yaw_brake_exit_count'] += 1
+        state = diagnostics.get('state', '')
+        if peaks['last_diagnostic_state'] and (
+                state != peaks['last_diagnostic_state']):
+            peaks['diagnostic_state_transition_count'] += 1
+        peaks['last_diagnostic_state'] = state
+        peaks['last_diagnostic_stamp'] = stamp
+        try:
+            peaks['map_yaw_rate'] = max(
+                peaks['map_yaw_rate'],
+                abs(float(diagnostics.get('map_yaw_rate', 0.0))))
+        except (TypeError, ValueError):
+            pass
 
     def _state_fresh(self):
         if self.latest_state_received_at is None:
@@ -375,12 +453,22 @@ class MotionAxisAutoTest(object):
             'yaw_error': 0.0,
             'horizontal_speed': 0.0,
             'yaw_rate': 0.0,
+            'map_yaw_rate': 0.0,
             'tx': 0,
             'ty': 0,
             'mz': 0,
             'axis_minimum': None,
             'axis_maximum': None,
             'target_overshoot': 0.0,
+            'xy_brake_entry_count': 0,
+            'xy_brake_exit_count': 0,
+            'xy_brake_latched_seconds': 0.0,
+            'yaw_brake_entry_count': 0,
+            'yaw_brake_exit_count': 0,
+            'yaw_brake_latched_seconds': 0.0,
+            'diagnostic_state_transition_count': 0,
+            'last_diagnostic_stamp': None,
+            'last_diagnostic_state': '',
         }
 
     def _current_axis_position(self):
@@ -454,6 +542,7 @@ class MotionAxisAutoTest(object):
             self, step, target, started_at, finished_at,
             peaks, result, reason):
         state = self.latest_state
+        diagnostics = self.latest_diagnostics or {}
         final_axis_position = (
             self._current_axis_position()
             if self.axis in ('x', 'y')
@@ -504,12 +593,22 @@ class MotionAxisAutoTest(object):
                 if self.axis in ('x', 'y')
                 else ''
             ),
+            'acceptance_yaw_tolerance_deg': (
+                math.degrees(self.acceptance_yaw_tolerance)
+                if self.axis == 'yaw' else ''
+            ),
+            'stable_yaw_rate_threshold_deg_s': (
+                math.degrees(self.stable_yaw_rate_threshold)
+                if self.axis == 'yaw' else ''
+            ),
             'required_stable_seconds': self.required_stable_seconds,
             'peak_position_error': peaks['position_error'],
             'peak_base_position_error': peaks['base_position_error'],
             'peak_yaw_error_deg': math.degrees(peaks['yaw_error']),
             'peak_horizontal_speed': peaks['horizontal_speed'],
             'peak_yaw_rate_deg_s': math.degrees(peaks['yaw_rate']),
+            'peak_map_yaw_rate_deg_s': math.degrees(
+                peaks['map_yaw_rate']),
             'peak_abs_tx': peaks['tx'],
             'peak_abs_ty': peaks['ty'],
             'peak_abs_mz': peaks['mz'],
@@ -542,6 +641,13 @@ class MotionAxisAutoTest(object):
                 '' if state is None else state.base_position_error),
             'final_horizontal_speed': (
                 '' if state is None else state.horizontal_speed),
+            'final_yaw_error_deg': (
+                '' if state is None else math.degrees(state.yaw_error)),
+            'final_yaw_rate_deg_s': (
+                '' if state is None else math.degrees(state.yaw_rate)),
+            'final_map_yaw_rate_deg_s': (
+                '' if 'map_yaw_rate' not in diagnostics else math.degrees(
+                    float(diagnostics['map_yaw_rate']))),
             'final_axis_position': (
                 '' if final_axis_position is None else final_axis_position),
             'signed_axis_stop_error': (
@@ -559,6 +665,16 @@ class MotionAxisAutoTest(object):
             ),
             'axis_position_unit': (
                 'deg' if self.axis == 'yaw' else 'm'),
+            'xy_brake_entry_count': peaks['xy_brake_entry_count'],
+            'xy_brake_exit_count': peaks['xy_brake_exit_count'],
+            'xy_brake_latched_seconds': peaks[
+                'xy_brake_latched_seconds'],
+            'yaw_brake_entry_count': peaks['yaw_brake_entry_count'],
+            'yaw_brake_exit_count': peaks['yaw_brake_exit_count'],
+            'yaw_brake_latched_seconds': peaks[
+                'yaw_brake_latched_seconds'],
+            'diagnostic_state_transition_count': peaks[
+                'diagnostic_state_transition_count'],
             'result': result,
             'reason': reason,
         })
@@ -571,6 +687,8 @@ class MotionAxisAutoTest(object):
         stable_started_at = None
         stall_started_at = None
         peaks = self._new_peaks()
+        self.active_step_peaks = peaks
+        self.active_step_started_at = started_at.to_sec()
         rate = rospy.Rate(self.publish_rate_hz)
         rospy.loginfo(
             '%s: [%d/%d] %s 幅值=%.2f%s，第 %d 次，动作=%s',
@@ -610,6 +728,12 @@ class MotionAxisAutoTest(object):
                     self.acceptance_position_tolerance,
                     self.stable_speed_threshold,
                 )
+            elif arrived and self.axis == 'yaw':
+                arrived = (
+                    abs(state.yaw_error) <= self.acceptance_yaw_tolerance
+                    and abs(state.yaw_rate)
+                    <= self.stable_yaw_rate_threshold
+                )
             if arrived:
                 if stable_started_at is None:
                     stable_started_at = now
@@ -624,11 +748,13 @@ class MotionAxisAutoTest(object):
                         peaks,
                         'PASS',
                         (
-                            '实际位置与速度达标，连续稳定保持 '
+                            '实际位姿与速度达标，连续稳定保持 '
                             '{:.1f} s 完成'.format(
                                 self.required_stable_seconds)
                         ),
                     )
+                    self.active_step_peaks = None
+                    self.active_step_started_at = None
                     return True
             else:
                 stable_started_at = None
@@ -711,6 +837,8 @@ class MotionAxisAutoTest(object):
                         reason,
                     )
                     rospy.logerr('%s: %s', NODE_NAME, reason)
+                    self.active_step_peaks = None
+                    self.active_step_started_at = None
                     return False
             else:
                 stall_started_at = None
@@ -733,6 +861,8 @@ class MotionAxisAutoTest(object):
                     reason,
                 )
                 rospy.logerr('%s: %s', NODE_NAME, reason)
+                self.active_step_peaks = None
+                self.active_step_started_at = None
                 return False
             rospy.loginfo_throttle(
                 2.0,
@@ -750,6 +880,8 @@ class MotionAxisAutoTest(object):
                 0.0 if state is None else math.degrees(state.yaw_error),
             )
             rate.sleep()
+        self.active_step_peaks = None
+        self.active_step_started_at = None
         return False
 
     def _cancel(self):
@@ -780,6 +912,15 @@ class MotionAxisAutoTest(object):
                 NODE_NAME,
                 self.acceptance_position_tolerance,
                 self.stable_speed_threshold,
+                self.required_stable_seconds,
+            )
+        else:
+            rospy.loginfo(
+                '%s: Yaw 验收误差≤%.1f deg、稳定角速度≤%.1f deg/s，'
+                '连续稳定保持 %.1f s',
+                NODE_NAME,
+                math.degrees(self.acceptance_yaw_tolerance),
+                math.degrees(self.stable_yaw_rate_threshold),
                 self.required_stable_seconds,
             )
         if not self._wait_for_supervisor():

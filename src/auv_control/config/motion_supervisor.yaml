@@ -90,6 +90,8 @@ yaw_max_jerk_deg_s3: 60.0
 # 航向刹停迟滞；高于 0.6 deg/s 才进入，低于 0.2 deg/s 才退出。
 yaw_brake_enter_rate_deg_s: 0.6
 yaw_brake_exit_rate_deg_s: 0.2
+# 速度反馈实测约 7 Hz；退出刹车前连续低速保持 0.40 s，防止低速采样抖动反复进出刹车。
+brake_release_hold_seconds: 0.40
 goal_static_capture_seconds: 0.80
 # 目标仍然逐帧更新；仅超过以下阈值才重置速度/角速度参考和捕获计时。
 goal_replan_position_threshold: 0.10 # 位置目标变化的重规划阈值，单位 m
