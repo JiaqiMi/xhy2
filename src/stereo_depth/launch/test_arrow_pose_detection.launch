@@ -1,0 +1,163 @@
+<launch>
+    <!--
+        YOLO Pose箭头识别：
+        左图 -> Pose模型 -> tip/tail_left/tail_right
+             -> 直接计算二维方向 -> 连续话题 -> Web
+
+        本launch不使用阈值分割、形态学、轮廓或PCA。
+    -->
+
+    <arg name="start_camera" default="false" />
+    <arg name="start_splitter" default="true" />
+    <arg name="start_web" default="true" />
+
+    <!-- 请将训练得到的best.pt复制并重命名到该位置 -->
+    <arg name="model_path"
+         default="/home/xhy/catkin_ws/models/arrow_pose0720.pt" />
+    <arg name="conf_thre" default="0.10" />
+    <arg name="keypoint_conf_thre" default="0.1" />
+    <arg name="top_k" default="3" />
+    <arg name="rate" default="5.0" />
+    <arg name="imgsz" default="640" />
+    <arg name="device" default="0" />
+    <arg name="visualization" default="0" />
+    <arg name="web_port" default="8080" />
+
+    <!-- 1 Hz rosbag建议1.5~2.0；实时5 Hz可设0.8~1.0 -->
+    <arg name="keypoint_timeout" default="1.5" />
+    <arg name="max_sync_dt" default="1.2" />
+    <arg name="min_direction_length_px" default="15.0" />
+
+    <arg name="input_topic" default="/left/image_raw" />
+
+    <!-- ================= 相机 ================= -->
+
+    <node if="$(arg start_camera)"
+          name="usb_cam"
+          pkg="usb_cam"
+          type="usb_cam_node"
+          output="screen"
+          launch-prefix="bash -c 'exec &quot;$0&quot; &quot;$@&quot; 2>/dev/null'">
+
+        <param name="video_device" value="/dev/video0" />
+        <param name="pixel_format" value="mjpeg" />
+        <param name="image_width" value="1280" />
+        <param name="image_height" value="480" />
+        <param name="framerate" value="30" />
+    </node>
+
+    <node if="$(arg start_splitter)"
+          pkg="stereo_splitter"
+          type="split_stereo_image.py"
+          name="split_stereo_image"
+          output="screen" />
+
+    <!-- ================= YOLO Pose ================= -->
+
+    <node pkg="yolo_bridge"
+          type="yolo_pose_arrow_wrapper.sh"
+          name="yolo_arrow_pose_detector"
+          output="screen"
+          launch-prefix="bash">
+
+        <env name="NODE_NAME"
+             value="/yolo_arrow_pose_detector" />
+
+        <param name="model_path"
+               value="$(arg model_path)" />
+        <param name="top_k"
+               value="$(arg top_k)" />
+        <param name="visualization"
+               value="$(arg visualization)" />
+        <param name="conf_thre"
+               value="$(arg conf_thre)" />
+        <param name="keypoint_conf_thre"
+               value="$(arg keypoint_conf_thre)" />
+        <param name="infer_rate"
+               value="$(arg rate)" />
+        <param name="imgsz"
+               value="$(arg imgsz)" />
+        <param name="device"
+               value="$(arg device)" />
+
+        <param name="input_topic"
+               value="$(arg input_topic)" />
+        <param name="annotated_topic"
+               value="/yolo_unified/annotated_image" />
+        <param name="web_topic"
+               value="/web/detections" />
+        <param name="keypoint_topic"
+               value="/yolo_unified/arrow_keypoints" />
+        <param name="bbox_topic"
+               value="/yolo_unified/target_bbox" />
+    </node>
+
+    <!-- ================= 三关键点方向计算 ================= -->
+
+    <node pkg="stereo_depth"
+          type="arrow_pose_direction_node.py"
+          name="arrow_pose_direction_node"
+          output="screen">
+
+        <param name="image_topic"
+               value="$(arg input_topic)" />
+        <param name="keypoint_topic"
+               value="/yolo_unified/arrow_keypoints" />
+        <param name="target_class_name"
+               value="arrow" />
+
+        <param name="annotated_topic"
+               value="/arrow/annotated_image" />
+        <param name="direction_topic"
+               value="/arrow/direction" />
+        <param name="angle_topic"
+               value="/arrow/angle_deg" />
+        <param name="discrete_topic"
+               value="/arrow/discrete_direction" />
+        <param name="vector_topic"
+               value="/arrow/direction_vector" />
+
+        <param name="publish_rate"
+               value="$(arg rate)" />
+        <param name="keypoint_timeout"
+               value="$(arg keypoint_timeout)" />
+        <param name="max_sync_dt"
+               value="$(arg max_sync_dt)" />
+        <param name="min_keypoint_confidence"
+               value="$(arg keypoint_conf_thre)" />
+        <param name="min_direction_length_px"
+               value="$(arg min_direction_length_px)" />
+        <param name="visualization"
+               value="$(arg visualization)" />
+    </node>
+
+    <!-- ================= Web ================= -->
+
+    <include if="$(arg start_web)"
+             file="$(find vision_web)/launch/vision_web_v2.launch">
+
+        <arg name="port"
+             value="$(arg web_port)" />
+        <arg name="image_topic"
+             value="/arrow/annotated_image" />
+        <arg name="detection_topic"
+             value="/web/detections" />
+        <arg name="pose_topic"
+             value="/web/pose" />
+        <arg name="arrow_topic"
+             value="/arrow/direction" />
+
+        <arg name="stream_fps"
+             value="$(arg rate)" />
+        <arg name="jpeg_quality"
+             value="75" />
+        <arg name="web_width"
+             value="960" />
+        <arg name="detection_timeout"
+             value="2.0" />
+        <arg name="pose_timeout"
+             value="2.0" />
+        <arg name="arrow_timeout"
+             value="2.0" />
+    </include>
+</launch>

@@ -60,6 +60,7 @@ add_message_files(
     LineBox.msg
     LinePixels.msg
     LineDetection.msg
+    ArrowKeypoints.msg
 )
 
 ## Generate services in the 'srv' folder

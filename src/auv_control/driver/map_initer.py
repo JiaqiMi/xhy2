@@ -55,7 +55,9 @@ class MapIniter:
         with self.lock:
             if self.initialized:
                 return
-            if (msg.sensor.sensor_valid >> 6) == 0:
+            # if (msg.sensor.sensor_valid >> 6) == 0:
+            required = (1 << 0) | (1 << 1)
+            if (msg.sensor.sensor_valid & required) != required:
                 rospy.loginfo_throttle(2, "map_initer: 惯导数据无效，等待有效数据...")
                 return
 

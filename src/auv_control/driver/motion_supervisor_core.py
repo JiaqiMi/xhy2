@@ -950,6 +950,11 @@ class MotionSupervisorCore(object):
             self.parameters['yaw_rate_to_map_sign'] * vehicle.yaw_rate)
         # 刹车 MZ 与 map 航向角速度反向，按最终刹车 MZ 的符号选择模型。
         yaw_brake_mz_direction = -map_yaw_rate
+        # 位置误差和期望角速度属于 map 航向约定；原始 r 与其方向相反。
+        map_yaw_rate = (
+            self.parameters['yaw_rate_to_map_sign'] * vehicle.yaw_rate)
+        # 刹车 MZ 与 map 航向角速度反向，按最终刹车 MZ 的符号选择模型。
+        yaw_brake_mz_direction = -map_yaw_rate
         yaw_brake_acceleration = self._directional_parameter(
             'angular_brake_acceleration_mz', yaw_brake_mz_direction)
         yaw_margin = self._directional_parameter(
@@ -1034,6 +1039,7 @@ class MotionSupervisorCore(object):
                 'xy_brake_latched': self.xy_brake_latched,
                 'xy_braking': braking_xy,
                 'yaw_rate_reference': reference_yaw_rate,
+                'map_yaw_rate': map_yaw_rate,
                 'map_yaw_rate': map_yaw_rate,
                 'yaw_stop_angle': yaw_stop_angle,
                 'yaw_brake_entry': yaw_brake_entry,
