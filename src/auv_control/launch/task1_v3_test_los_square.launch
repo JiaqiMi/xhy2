@@ -27,6 +27,9 @@
     <!-- 任务完成和网页使用的轨迹 JSON。 -->
     <arg name="finished_topic" default="/finished" />
     <arg name="trajectory_topic" default="/task1/v3/los_square/trajectory" />
+    <!-- 每次启动新建带时间戳的 YAML 分析数据文件。 -->
+    <arg name="log_directory"
+         default="$(env HOME)/.ros/auv_logs/task1" />
 
     <!-- 正方形：单边长度和用于 LOS/Web 的轨迹采样间距，单位 m。 -->
     <arg name="square_side_length" default="1.0" />
@@ -81,6 +84,7 @@
         <param name="motion_goal_yaw_tolerance_deg" type="double" value="$(arg motion_goal_yaw_tolerance_deg)" />
         <param name="finished_topic" type="string" value="$(arg finished_topic)" />
         <param name="trajectory_topic" type="string" value="$(arg trajectory_topic)" />
+        <param name="log_directory" type="string" value="$(arg log_directory)" />
 
         <param name="square_side_length" type="double" value="$(arg square_side_length)" />
         <param name="path_sample_spacing" type="double" value="$(arg path_sample_spacing)" />
