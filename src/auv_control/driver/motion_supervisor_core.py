@@ -302,6 +302,9 @@ DEFAULT_PARAMETERS = {
     'yaw_position_gain': 1.50,
     'yaw_max_acceleration': math.radians(20.0),
     'yaw_max_jerk': math.radians(60.0),
+    # 原始 /status/vel.r 到 map 航向角速度的符号转换。
+    # 当前下位机约定：MZ 与 r 方向相反，故 map 航向角速度 = -r。
+    'yaw_rate_to_map_sign': -1.0,
     'goal_static_capture_seconds': 0.80,
     'goal_replan_position_threshold': 0.10,
     'goal_replan_yaw_threshold': math.radians(5.0),
@@ -397,6 +400,8 @@ class MotionSupervisorCore(object):
         for name, value in self.parameters.items():
             if not math.isfinite(float(value)):
                 raise ValueError('{} 必须为有限值'.format(name))
+        if abs(abs(self.parameters['yaw_rate_to_map_sign']) - 1.0) > 1e-9:
+            raise ValueError('yaw_rate_to_map_sign 必须为 +1 或 -1')
         for name in (
                 'brake_gain_mz_positive', 'brake_gain_mz_negative'):
             if self.parameters[name] == 0:
@@ -909,20 +914,23 @@ class MotionSupervisorCore(object):
         tx = self._motion_parameter('kv_x', velocity_error_x) * velocity_error_x
         ty = self._motion_parameter('kv_y', velocity_error_y) * velocity_error_y
 
+        # 位置误差和期望角速度属于 map 航向约定；原始 r 与其方向相反。
+        map_yaw_rate = (
+            self.parameters['yaw_rate_to_map_sign'] * vehicle.yaw_rate)
+        # 刹车 MZ 与 map 航向角速度反向，按最终刹车 MZ 的符号选择模型。
+        yaw_brake_mz_direction = -map_yaw_rate
         yaw_brake_acceleration = self._directional_parameter(
-            'angular_brake_acceleration_mz',
-            -vehicle.yaw_rate,
-        )
+            'angular_brake_acceleration_mz', yaw_brake_mz_direction)
         yaw_margin = self._directional_parameter(
-            'yaw_brake_margin', -vehicle.yaw_rate)
+            'yaw_brake_margin', yaw_brake_mz_direction)
         yaw_stop_angle = stopping_distance(
-            abs(vehicle.yaw_rate),
+            abs(map_yaw_rate),
             yaw_brake_acceleration,
             self.parameters['control_delay'],
             yaw_margin,
         )
         braking_yaw = (
-            abs(vehicle.yaw_rate) > self.parameters['yaw_rate_threshold']
+            abs(map_yaw_rate) > self.parameters['yaw_rate_threshold']
             and abs(yaw_error) <= yaw_stop_angle
         )
         yaw_stopping_rate = math.sqrt(
@@ -941,7 +949,7 @@ class MotionSupervisorCore(object):
         ) if abs(yaw_error) > 1e-9 else 0.0
         reference_yaw_rate = self._slew_yaw_rate_reference(
             desired_yaw_rate, dt)
-        yaw_rate_error = reference_yaw_rate - vehicle.yaw_rate
+        yaw_rate_error = reference_yaw_rate - map_yaw_rate
         mz = self._motion_parameter('kp_yaw', yaw_rate_error) * yaw_rate_error
 
         tx, ty, mz = self._compensate_effectiveness(tx, ty, mz)
@@ -985,6 +993,7 @@ class MotionSupervisorCore(object):
                 'xy_brake_margin': brake_margin,
                 'xy_braking': braking_xy,
                 'yaw_rate_reference': reference_yaw_rate,
+                'map_yaw_rate': map_yaw_rate,
                 'yaw_stop_angle': yaw_stop_angle,
                 'yaw_braking': braking_yaw,
                 'goal_static_seconds': self._goal_static_seconds(vehicle.now),

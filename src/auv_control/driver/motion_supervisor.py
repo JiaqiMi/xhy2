@@ -137,6 +137,7 @@ class MotionSupervisorNode(object):
         'xy_brake_margin',
         'xy_braking',
         'yaw_rate_reference_deg_s',
+        'map_yaw_rate_deg_s',
         'yaw_stop_angle_deg',
         'yaw_braking',
         'goal_static_seconds',
@@ -599,6 +600,9 @@ class MotionSupervisorNode(object):
             'yaw_rate_reference_deg_s': (
                 math.degrees(diagnostics['yaw_rate_reference'])
                 if 'yaw_rate_reference' in diagnostics else ''),
+            'map_yaw_rate_deg_s': (
+                math.degrees(diagnostics['map_yaw_rate'])
+                if 'map_yaw_rate' in diagnostics else ''),
             'yaw_stop_angle_deg': (
                 math.degrees(diagnostics['yaw_stop_angle'])
                 if 'yaw_stop_angle' in diagnostics else ''),
