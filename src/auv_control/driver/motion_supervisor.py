@@ -28,44 +28,39 @@
     增加每控制周期 CSV 完整数据日志，便于水池试验复盘和参数标定。
 2026.7.18
     状态反馈固定随控制循环发布，TF 查询改为非阻塞并在首帧前发布 SAFE。
-2026.7.18
+2026.7.20
     启动后锁定第一帧完整有效位姿并先完成定点接管，期间缓存最新任务目标。
-    控制位姿改用 control_link，任务目标仍保持 base_link 最终位姿语义。
-2026.7.18
-    base_link 恢复与 IMU/GNSS 定位点重合，默认 base_link 到 IMU 杆臂归零；
-    control_link 仍作为可独立标定的水平旋转中心。
-2026.7.19
-    增加正、负计划旋转方向两套虚拟控制中心；一次转向动作按计划 yaw 方向
-    锁存中心，主动刹转 MZ 反号时不切换。
+    正、负计划旋转方向分别使用固定 TF；任务目标保持 base_link 最终位姿语义。
+    一次动作按计划 yaw 方向锁存中心，主动刹转 MZ 反号时不切换。
 """
 
 from __future__ import division
 
 import csv
+import json
 import math
 import os
+import threading
 from datetime import datetime
 
 import rospy
 import tf
 from auv_control.msg import AUVData, MotionState, PoseNEDcmd
 from geometry_msgs.msg import PoseStamped, TwistStamped
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 from motion_supervisor_core import (
     AXIS_STATE_NAMES,
-    ALIGN_FINAL,
     CAPTURE,
     DEFAULT_PARAMETERS,
-    FINAL_BRAKE,
     HOVER,
-    MODE_DPROV,
     MotionGoal,
     MotionSupervisorCore,
     STATE_NAMES,
     SAFE,
     VehicleState,
+    goals_equal,
     map_error_to_body,
     select_planned_rotation_direction,
     wrap_angle,
@@ -97,6 +92,7 @@ class MotionSupervisorNode(object):
         'goal_active',
         'pending_goal_active',
         'planned_rotation_direction',
+        'control_frame',
         'control_to_imu_x',
         'control_to_imu_y',
         'control_to_imu_z',
@@ -140,13 +136,31 @@ class MotionSupervisorNode(object):
         'filtered_v',
         'filtered_r_deg_s',
         'horizontal_speed',
+        'map_velocity_x',
+        'map_velocity_y',
+        'reference_velocity_x',
+        'reference_velocity_y',
+        'reference_speed',
+        'closing_speed',
+        'xy_stop_distance',
+        'xy_brake_acceleration',
+        'xy_brake_margin',
+        'xy_braking',
+        'yaw_rate_reference_deg_s',
+        'yaw_stop_angle_deg',
+        'yaw_braking',
+        'goal_static_seconds',
+        'goal_static_for_capture',
+        'raw_tx',
+        'raw_ty',
+        'raw_mz',
         'tx',
         'ty',
         'mz',
     )
 
     def __init__(self):
-        self.control_rate_hz = float(rospy.get_param('~control_rate_hz', 5.0))
+        self.control_rate_hz = float(rospy.get_param('~control_rate_hz', 20.0))
         self.feedback_timeout = float(rospy.get_param('~feedback_timeout', 0.5))
         self.velocity_filter_alpha = float(
             rospy.get_param('~velocity_filter_alpha', 0.35))
@@ -157,34 +171,27 @@ class MotionSupervisorNode(object):
             float(rospy.get_param('~base_to_imu_y', 0.0)),
             float(rospy.get_param('~base_to_imu_z', 0.0)),
         )
-        legacy_control_to_imu = (
-            float(rospy.get_param('~control_to_imu_x', 0.0)),
-            float(rospy.get_param('~control_to_imu_y', 0.0)),
-            float(rospy.get_param('~control_to_imu_z', 0.0)),
-        )
         self.control_to_imu_by_direction = {
             1: (
                 float(rospy.get_param(
-                    '~control_to_imu_positive_x',
-                    legacy_control_to_imu[0])),
+                    '~control_to_imu_positive_x', 0.0)),
                 float(rospy.get_param(
-                    '~control_to_imu_positive_y',
-                    legacy_control_to_imu[1])),
+                    '~control_to_imu_positive_y', 0.0)),
                 float(rospy.get_param(
-                    '~control_to_imu_positive_z',
-                    legacy_control_to_imu[2])),
+                    '~control_to_imu_positive_z', 0.0)),
             ),
             -1: (
                 float(rospy.get_param(
-                    '~control_to_imu_negative_x',
-                    legacy_control_to_imu[0])),
+                    '~control_to_imu_negative_x', 0.0)),
                 float(rospy.get_param(
-                    '~control_to_imu_negative_y',
-                    legacy_control_to_imu[1])),
+                    '~control_to_imu_negative_y', 0.0)),
                 float(rospy.get_param(
-                    '~control_to_imu_negative_z',
-                    legacy_control_to_imu[2])),
+                    '~control_to_imu_negative_z', 0.0)),
             ),
+        }
+        self.control_frame_by_direction = {
+            1: 'control_link_positive',
+            -1: 'control_link_negative',
         }
         self.control_to_base_by_direction = {
             direction: offset_between_origins(
@@ -195,6 +202,7 @@ class MotionSupervisorNode(object):
             in self.control_to_imu_by_direction.items()
         }
         self.planned_rotation_direction = 1
+        self.control_frame = self.control_frame_by_direction[1]
         self.control_to_imu = self.control_to_imu_by_direction[1]
         self.control_to_base = self.control_to_base_by_direction[1]
         self.startup_hover_frames = int(
@@ -217,8 +225,10 @@ class MotionSupervisorNode(object):
                 'base_link、正负计划方向控制中心到 IMU 的杆臂必须为有限值')
 
         self.core = MotionSupervisorCore(self._load_core_parameters())
+        self.state_lock = threading.RLock()
         self.tf_listener = tf.TransformListener()
         self.last_pose = None
+        self.last_pose_frame = None
         self.last_base_pose = None
         self.last_pose_stamp = None
         self.raw_velocity = None
@@ -228,6 +238,7 @@ class MotionSupervisorNode(object):
         self.reported_mode = None
         self.last_status_stamp = None
         self.goal_sequence = 0
+        self.base_goal = None
         self.last_goal_stamp = None
         self.startup_latched = False
         self.startup_complete = False
@@ -239,7 +250,7 @@ class MotionSupervisorNode(object):
             str(rospy.get_param(
                 '~log_directory',
                 '~/.ros/auv_logs/motion_supervisor'))))
-        self.log_flush_every = int(rospy.get_param('~log_flush_every', 5))
+        self.log_flush_every = int(rospy.get_param('~log_flush_every', 20))
         if self.log_flush_every <= 0:
             raise ValueError('log_flush_every 必须大于 0')
         self.log_file = None
@@ -254,6 +265,8 @@ class MotionSupervisorNode(object):
             '/cmd/pose/ned', PoseNEDcmd, queue_size=10)
         self.state_pub = rospy.Publisher(
             '/motion/state', MotionState, queue_size=10)
+        self.diagnostics_pub = rospy.Publisher(
+            '/motion/diagnostics', String, queue_size=10)
         rospy.Subscriber(
             '/cmd/motion/goal', PoseStamped, self.goal_callback, queue_size=1)
         rospy.Subscriber(
@@ -266,8 +279,8 @@ class MotionSupervisorNode(object):
         rospy.loginfo(
             'motion_supervisor: 已启动，控制频率 %.1f Hz，'
             '目标深度跟随 /cmd/motion/goal，等待首帧有效反馈；'
-            '计划正向 control_link -> IMU=(%.3f, %.3f, %.3f) m，'
-            '计划负向=(%.3f, %.3f, %.3f) m',
+            '正中心 -> IMU=(%.3f, %.3f, %.3f) m，'
+            '负中心 -> IMU=(%.3f, %.3f, %.3f) m',
             self.control_rate_hz,
             *(self.control_to_imu_by_direction[1]
               + self.control_to_imu_by_direction[-1]))
@@ -305,16 +318,18 @@ class MotionSupervisorNode(object):
 
     def _close_data_log(self):
         """刷新并关闭 CSV 数据文件。"""
-        if self.log_file is None:
-            return
-        try:
-            self.log_file.flush()
-            self.log_file.close()
-        except (OSError, IOError) as error:
-            rospy.logerr('motion_supervisor: 关闭 CSV 数据日志失败: %s', error)
-        finally:
-            self.log_file = None
-            self.log_writer = None
+        with self.state_lock:
+            if self.log_file is None:
+                return
+            try:
+                self.log_file.flush()
+                self.log_file.close()
+            except (OSError, IOError) as error:
+                rospy.logerr(
+                    'motion_supervisor: 关闭 CSV 数据日志失败: %s', error)
+            finally:
+                self.log_file = None
+                self.log_writer = None
 
     @staticmethod
     def _parameter(name, default):
@@ -329,6 +344,9 @@ class MotionSupervisorNode(object):
             'yaw_rate_threshold': 'yaw_rate_threshold_deg_s',
             'hover_fault_yaw_rate': 'hover_fault_yaw_rate_deg_s',
             'hover_fault_yaw_error': 'hover_fault_yaw_error_deg',
+            'yaw_max_rate': 'yaw_max_rate_deg_s',
+            'yaw_max_acceleration': 'yaw_max_acceleration_deg_s2',
+            'yaw_max_jerk': 'yaw_max_jerk_deg_s3',
         }
         for name, default in DEFAULT_PARAMETERS.items():
             if name in degree_parameters:
@@ -374,14 +392,17 @@ class MotionSupervisorNode(object):
         )
 
     def _set_planned_rotation_direction(self, direction):
-        """锁存计划旋转方向，并同步该方向对应的虚拟控制中心。"""
+        """锁存计划旋转方向，并选择对应的固定控制中心 TF。"""
         direction = 1 if int(direction) >= 0 else -1
         if direction == self.planned_rotation_direction:
             return
         self.planned_rotation_direction = direction
+        self.control_frame = self.control_frame_by_direction[direction]
         self.control_to_imu = self.control_to_imu_by_direction[direction]
         self.control_to_base = self.control_to_base_by_direction[direction]
-        self._refresh_control_pose_from_base()
+        # 上一控制中心的位姿不能作为新中心的有效反馈；保留数值仅用于
+        # SAFE 零力输出，直到新固定坐标系查询成功。
+        self.last_pose_frame = None
         if self.raw_imu_velocity is not None:
             control_u, control_v = planar_origin_velocity_from_point(
                 self.raw_imu_velocity[0],
@@ -398,33 +419,14 @@ class MotionSupervisorNode(object):
             self.filtered_velocity = list(self.raw_velocity)
         rospy.loginfo(
             'motion_supervisor: 计划旋转方向锁存为%s，'
-            'control_link -> IMU=(%.3f, %.3f, %.3f) m',
+            '控制中心=%s，中心 -> IMU=(%.3f, %.3f, %.3f) m',
             '正向' if direction > 0 else '负向',
+            self.control_frame,
             *self.control_to_imu)
 
-    def _refresh_control_pose_from_base(self):
-        """由最新 base_link 位姿刷新当前计划方向的虚拟控制中心位姿。"""
-        if self.last_base_pose is None:
-            return
-        orientation = quaternion_from_euler(
-            0.0, self.pitch_offset, self.last_base_pose[3])
-        control_position = origin_from_offset_point(
-            self.last_base_pose[0:3],
-            orientation,
-            self.control_to_base,
-        )
-        self.last_pose = (
-            control_position[0],
-            control_position[1],
-            control_position[2],
-            self.last_base_pose[3],
-        )
-
     def _direction_for_base_goal(self, base_goal):
-        """根据计划 yaw 方向选择中心；最终转向和刹转期间保持锁存。"""
-        if (
-                self.core.goal_active
-                and self.core.state in (ALIGN_FINAL, FINAL_BRAKE)):
+        """相同动作保持方向，新动作按计划 yaw 误差选择一次。"""
+        if goals_equal(base_goal, self.base_goal):
             return self.planned_rotation_direction
         current_yaw = (
             self.last_base_pose[3]
@@ -435,17 +437,19 @@ class MotionSupervisorNode(object):
         return select_planned_rotation_direction(
             yaw_error,
             current_direction=self.planned_rotation_direction,
-            direction_locked=(
-                self.core.goal_active
-                and self.core.state in (ALIGN_FINAL, FINAL_BRAKE)),
+            direction_locked=False,
             deadband=self.core.parameters['yaw_tolerance'],
         )
 
     def _set_base_goal(self, base_goal):
         """选择并锁存计划方向后，把任务目标交给纯算法核心。"""
-        self._set_planned_rotation_direction(
-            self._direction_for_base_goal(base_goal))
+        changed = not goals_equal(base_goal, self.base_goal)
+        if changed:
+            self._set_planned_rotation_direction(
+                self._direction_for_base_goal(base_goal))
+            self.base_goal = base_goal
         self.core.set_goal(self._base_goal_to_control(base_goal))
+        return changed
 
     def goal_callback(self, message):
         """接收 map 坐标系最终目标。"""
@@ -479,12 +483,14 @@ class MotionSupervisorNode(object):
         except ValueError as error:
             rospy.logwarn('motion_supervisor: 拒绝无效目标: %s', error)
             return
-        if self.startup_complete:
-            self._set_base_goal(base_goal)
-        else:
-            self.startup_pending_goal = base_goal
-        self.goal_sequence += 1
-        self.last_goal_stamp = rospy.Time.now()
+        with self.state_lock:
+            if self.startup_complete:
+                self._set_base_goal(base_goal)
+            else:
+                self.startup_pending_goal = base_goal
+            self.goal_sequence += 1
+            self.last_goal_stamp = rospy.Time.now()
+            startup_complete = self.startup_complete
         rospy.loginfo_throttle(
             1.0,
             'motion_supervisor: 收到 base_link 目标 '
@@ -495,16 +501,18 @@ class MotionSupervisorNode(object):
             math.degrees(base_goal.yaw),
             (
                 '已交给三轴控制器'
-                if self.startup_complete
+                if startup_complete
                 else '启动定点完成前缓存最新值'
             ))
 
     def cancel_callback(self, unused_message):
         """停止当前运动并在停稳位置悬停。"""
         del unused_message
-        self.startup_pending_goal = None
-        if self.startup_complete:
-            self.core.cancel()
+        with self.state_lock:
+            self.startup_pending_goal = None
+            self.base_goal = None
+            if self.startup_complete:
+                self.core.cancel()
         rospy.logwarn('motion_supervisor: 收到取消指令')
 
     def velocity_callback(self, message):
@@ -517,50 +525,74 @@ class MotionSupervisorNode(object):
         if not all(math.isfinite(value) for value in raw_imu):
             rospy.logwarn_throttle(1.0, 'motion_supervisor: 忽略非有限速度反馈')
             return
-        control_u, control_v = planar_origin_velocity_from_point(
-            raw_imu[0],
-            raw_imu[1],
-            raw_imu[2],
-            self.control_to_imu,
-        )
-        raw = (control_u, control_v, raw_imu[2])
-        self.raw_imu_velocity = raw_imu
-        self.raw_velocity = raw
-        if self.filtered_velocity is None:
-            self.filtered_velocity = list(raw)
-        else:
-            alpha = self.velocity_filter_alpha
-            for index, value in enumerate(raw):
-                self.filtered_velocity[index] = (
-                    alpha * value
-                    + (1.0 - alpha) * self.filtered_velocity[index])
-        self.last_velocity_stamp = rospy.Time.now()
+        with self.state_lock:
+            control_u, control_v = planar_origin_velocity_from_point(
+                raw_imu[0],
+                raw_imu[1],
+                raw_imu[2],
+                self.control_to_imu,
+            )
+            raw = (control_u, control_v, raw_imu[2])
+            self.raw_imu_velocity = raw_imu
+            self.raw_velocity = raw
+            if self.filtered_velocity is None:
+                self.filtered_velocity = list(raw)
+            else:
+                alpha = self.velocity_filter_alpha
+                for index, value in enumerate(raw):
+                    self.filtered_velocity[index] = (
+                        alpha * value
+                        + (1.0 - alpha) * self.filtered_velocity[index])
+            self.last_velocity_stamp = rospy.Time.now()
 
     def status_callback(self, message):
         """记录下位机实际运行模式，用于定点接管确认。"""
-        self.reported_mode = int(message.control_mode)
-        self.last_status_stamp = rospy.Time.now()
+        with self.state_lock:
+            self.reported_mode = int(message.control_mode)
+            self.last_status_stamp = rospy.Time.now()
 
     def _update_pose(self, now):
         try:
             # Time(0) 读取最新可用变换；这里不能阻塞等待，否则 TF 异常时
             # /motion/state 无法保持控制频率发布。
-            translation, rotation = self.tf_listener.lookupTransform(
+            base_translation, base_rotation = self.tf_listener.lookupTransform(
                 'map', 'base_link', rospy.Time(0))
-            yaw = euler_from_quaternion(rotation)[2]
-            values = (translation[0], translation[1], translation[2], yaw)
-            if not all(math.isfinite(value) for value in values):
+            control_translation, control_rotation = (
+                self.tf_listener.lookupTransform(
+                    'map', self.control_frame, rospy.Time(0)))
+            base_yaw = euler_from_quaternion(base_rotation)[2]
+            control_yaw = euler_from_quaternion(control_rotation)[2]
+            base_values = (
+                base_translation[0],
+                base_translation[1],
+                base_translation[2],
+                base_yaw,
+            )
+            control_values = (
+                control_translation[0],
+                control_translation[1],
+                control_translation[2],
+                control_yaw,
+            )
+            if not all(math.isfinite(value) for value in (
+                    base_values + control_values)):
                 raise ValueError('TF 包含非有限值')
-            self.last_base_pose = values
-            self._refresh_control_pose_from_base()
+            self.last_base_pose = base_values
+            self.last_pose = control_values
+            self.last_pose_frame = self.control_frame
             # 查询仍使用 Time(0) 获取最新位姿，但反馈年龄必须使用 TF
             # 缓冲区中的真实最新时间，不能使用本次查询时刻代替。
-            latest_tf_stamp = self.tf_listener.getLatestCommonTime(
+            base_stamp = self.tf_listener.getLatestCommonTime(
                 'map', 'base_link')
+            control_stamp = self.tf_listener.getLatestCommonTime(
+                'map', self.control_frame)
+            nonzero_stamps = [
+                stamp for stamp in (base_stamp, control_stamp)
+                if stamp != rospy.Time(0)
+            ]
             self.last_pose_stamp = (
-                latest_tf_stamp
-                if latest_tf_stamp != rospy.Time(0)
-                else now)
+                min(nonzero_stamps, key=lambda stamp: stamp.to_sec())
+                if nonzero_stamps else now)
         except (tf.Exception, ValueError) as error:
             rospy.logwarn_throttle(
                 2.0, 'motion_supervisor: 无法更新 AUV 位姿: %s', error)
@@ -568,6 +600,7 @@ class MotionSupervisorNode(object):
     def _feedback_is_fresh(self, now):
         if (
                 self.last_pose is None
+                or self.last_pose_frame != self.control_frame
                 or self.last_pose_stamp is None
                 or self.filtered_velocity is None
                 or self.last_velocity_stamp is None):
@@ -611,13 +644,7 @@ class MotionSupervisorNode(object):
             return
         control_target = output.target
         target = self._control_goal_to_base(control_target)
-        current_orientation = quaternion_from_euler(
-            0.0, self.pitch_offset, vehicle.yaw)
-        current_base_position = offset_point_from_origin(
-            (vehicle.x, vehicle.y, vehicle.z),
-            current_orientation,
-            self.control_to_base,
-        )
+        current_base_position = self.last_base_pose[0:3]
         error_north = target.x - current_base_position[0]
         error_east = target.y - current_base_position[1]
         error_body_x, error_body_y = map_error_to_body(
@@ -648,6 +675,7 @@ class MotionSupervisorNode(object):
                 self.core.pending_goal is not None
                 or self.startup_pending_goal is not None),
             'planned_rotation_direction': self.planned_rotation_direction,
+            'control_frame': self.control_frame,
             'control_to_imu_x': self.control_to_imu[0],
             'control_to_imu_y': self.control_to_imu[1],
             'control_to_imu_z': self.control_to_imu[2],
@@ -703,6 +731,32 @@ class MotionSupervisorNode(object):
             'ty': output.ty,
             'mz': output.mz,
         }
+        diagnostics = output.diagnostics
+        row.update({
+            'map_velocity_x': diagnostics.get('map_velocity_x', ''),
+            'map_velocity_y': diagnostics.get('map_velocity_y', ''),
+            'reference_velocity_x': diagnostics.get('reference_velocity_x', ''),
+            'reference_velocity_y': diagnostics.get('reference_velocity_y', ''),
+            'reference_speed': diagnostics.get('reference_speed', ''),
+            'closing_speed': diagnostics.get('closing_speed', ''),
+            'xy_stop_distance': diagnostics.get('xy_stop_distance', ''),
+            'xy_brake_acceleration': diagnostics.get('xy_brake_acceleration', ''),
+            'xy_brake_margin': diagnostics.get('xy_brake_margin', ''),
+            'xy_braking': int(bool(diagnostics.get('xy_braking', False))),
+            'yaw_rate_reference_deg_s': (
+                math.degrees(diagnostics['yaw_rate_reference'])
+                if 'yaw_rate_reference' in diagnostics else ''),
+            'yaw_stop_angle_deg': (
+                math.degrees(diagnostics['yaw_stop_angle'])
+                if 'yaw_stop_angle' in diagnostics else ''),
+            'yaw_braking': int(bool(diagnostics.get('yaw_braking', False))),
+            'goal_static_seconds': diagnostics.get('goal_static_seconds', ''),
+            'goal_static_for_capture': int(bool(
+                diagnostics.get('goal_static_for_capture', False))),
+            'raw_tx': diagnostics.get('raw_tx', ''),
+            'raw_ty': diagnostics.get('raw_ty', ''),
+            'raw_mz': diagnostics.get('raw_mz', ''),
+        })
         try:
             self.log_writer.writerow(row)
             self.log_rows_since_flush += 1
@@ -754,14 +808,8 @@ class MotionSupervisorNode(object):
         message.goal_active = output.goal_active
         message.goal = self._target_pose(output.target, now, self.pitch_offset)
         message.position_error = output.position_error
-        if self.last_pose is not None:
-            current_orientation = quaternion_from_euler(
-                0.0, self.pitch_offset, self.last_pose[3])
-            current_base = offset_point_from_origin(
-                self.last_pose[0:3],
-                current_orientation,
-                self.control_to_base,
-            )
+        if self.last_base_pose is not None:
+            current_base = self.last_base_pose[0:3]
             base_goal = self._control_goal_to_base(output.target)
             message.base_position_error = math.hypot(
                 base_goal.x - current_base[0],
@@ -788,8 +836,27 @@ class MotionSupervisorNode(object):
         )
         self.state_pub.publish(message)
 
+    def _publish_diagnostics(self, output, now):
+        """发布可供网页与离线工具直接消费的统一控制诊断数据。"""
+        payload = dict(output.diagnostics)
+        payload.update({
+            'stamp_sec': now.to_sec(),
+            'state': STATE_NAMES.get(output.state, str(output.state)),
+            'control_frame': self.control_frame,
+            'planned_rotation_direction': self.planned_rotation_direction,
+            'position_error_m': output.position_error,
+            'yaw_error_rad': output.yaw_error,
+            'horizontal_speed_mps': output.horizontal_speed,
+            'yaw_rate_radps': output.yaw_rate,
+            'tx': output.tx,
+            'ty': output.ty,
+            'mz': output.mz,
+        })
+        self.diagnostics_pub.publish(String(data=json.dumps(
+            payload, separators=(',', ':'), sort_keys=True)))
+
     def _publish_waiting_state(self, now):
-        """首帧 TF 到达前以 SAFE 状态保持任务侧 5 Hz 反馈。"""
+        """首帧 TF 到达前以 SAFE 状态保持任务侧周期反馈。"""
         message = MotionState()
         message.header.stamp = now
         message.header.frame_id = 'map'
@@ -828,90 +895,93 @@ class MotionSupervisorNode(object):
         message.reason = '等待首帧完整有效的 base_link TF 和 IMU 点速度'
         self.state_pub.publish(message)
 
+    def _run_control_cycle(self, now):
+        """在同一锁内完成反馈快照、状态推进和指令发布。"""
+        self._update_pose(now)
+
+        # 首次获得位姿前不能构造可靠的定深安全指令，因此只发布状态。
+        if self.last_pose is None:
+            self._publish_waiting_state(now)
+            rospy.logwarn_throttle(2.0, 'motion_supervisor: 等待首帧 TF')
+            return
+
+        feedback_fresh = self._feedback_is_fresh(now)
+        if not self.startup_latched and not feedback_fresh:
+            self._publish_waiting_state(now)
+            rospy.logwarn_throttle(
+                2.0,
+                'motion_supervisor: 等待首帧完整有效的 TF 和速度反馈')
+            return
+        vehicle = self._build_vehicle_state(now, feedback_fresh)
+        if not self.startup_latched:
+            self.core.set_goal(MotionGoal(
+                vehicle.x,
+                vehicle.y,
+                vehicle.z,
+                vehicle.yaw,
+            ))
+            self.startup_latched = True
+            rospy.loginfo(
+                'motion_supervisor: 已锁定首帧 %s 位姿 '
+                '(%.3f, %.3f, %.3f, %.1fdeg)，开始刹停并定点',
+                self.control_frame,
+                vehicle.x,
+                vehicle.y,
+                vehicle.z,
+                math.degrees(vehicle.yaw),
+            )
+        output = self.core.step(vehicle)
+        if not self.startup_complete:
+            if output.state == HOVER:
+                self.startup_hover_count += 1
+                if self.startup_hover_count >= self.startup_hover_frames:
+                    self.startup_complete = True
+                    rospy.loginfo(
+                        'motion_supervisor: 首帧锁定位姿已完成 mode=4 接管')
+                    if self.startup_pending_goal is not None:
+                        pending = self.startup_pending_goal
+                        self.startup_pending_goal = None
+                        self._set_base_goal(pending)
+                        # 方向切换后重新查询对应固定控制中心，避免混用两个参考点。
+                        self._update_pose(now)
+                        vehicle = self._build_vehicle_state(
+                            now, self._feedback_is_fresh(now))
+                        rospy.loginfo(
+                            'motion_supervisor: 启动完成，执行缓存的最新任务目标')
+                        output = self.core.step(vehicle)
+            else:
+                self.startup_hover_count = 0
+        self._publish_command(output, now)
+        self._publish_state(output, now)
+        self._publish_diagnostics(output, now)
+        self._write_cycle_log(now, vehicle, output)
+
+        if output.state != self.last_logged_state:
+            rospy.loginfo(
+                'motion_supervisor: 状态 -> %s，原因: %s',
+                STATE_NAMES.get(output.state, str(output.state)), output.reason)
+            self.last_logged_state = output.state
+        rospy.loginfo_throttle(
+            1.0,
+            'motion_supervisor: state=%s center=%s error=%.2fm/%.1fdeg '
+            'speed=%.3fm/s yaw_rate=%.2fdeg/s force=(%d,%d,%d)',
+            STATE_NAMES.get(output.state, str(output.state)),
+            self.control_frame,
+            output.position_error,
+            math.degrees(output.yaw_error),
+            output.horizontal_speed,
+            math.degrees(output.yaw_rate),
+            output.tx,
+            output.ty,
+            output.mz,
+        )
+
     def run(self):
         rate = rospy.Rate(self.control_rate_hz)
         while not rospy.is_shutdown():
             now = rospy.Time.now()
-            self._update_pose(now)
-
-            # 首次获得位姿前不能构造可靠的定深安全指令，因此只发布诊断日志。
-            if self.last_pose is None:
-                self._publish_waiting_state(now)
-                rospy.logwarn_throttle(2.0, 'motion_supervisor: 等待首帧 TF')
-                rate.sleep()
-                continue
-
-            feedback_fresh = self._feedback_is_fresh(now)
-            if not self.startup_latched and not feedback_fresh:
-                self._publish_waiting_state(now)
-                rospy.logwarn_throttle(
-                    2.0,
-                    'motion_supervisor: 等待首帧完整有效的 TF 和速度反馈')
-                rate.sleep()
-                continue
-            vehicle = self._build_vehicle_state(now, feedback_fresh)
-            if not self.startup_latched:
-                self.core.set_goal(MotionGoal(
-                    vehicle.x,
-                    vehicle.y,
-                    vehicle.z,
-                    vehicle.yaw,
-                ))
-                self.startup_latched = True
-                rospy.loginfo(
-                    'motion_supervisor: 已锁定首帧计划方向控制中心位姿 '
-                    '(%.3f, %.3f, %.3f, %.1fdeg)，开始刹停并定点',
-                    vehicle.x,
-                    vehicle.y,
-                    vehicle.z,
-                    math.degrees(vehicle.yaw),
-                )
-            output = self.core.step(vehicle)
-            if not self.startup_complete:
-                if output.state == HOVER:
-                    self.startup_hover_count += 1
-                    if self.startup_hover_count >= self.startup_hover_frames:
-                        self.startup_complete = True
-                        rospy.loginfo(
-                            'motion_supervisor: 首帧锁定位姿已完成 mode=4 接管')
-                        if self.startup_pending_goal is not None:
-                            pending = self.startup_pending_goal
-                            self.startup_pending_goal = None
-                            self._set_base_goal(pending)
-                            # 计划方向可能改变；立即按新虚拟中心重建本周期
-                            # VehicleState，避免首个任务周期混用旧中心。
-                            self._update_pose(now)
-                            vehicle = self._build_vehicle_state(
-                                now, self._feedback_is_fresh(now))
-                            rospy.loginfo(
-                                'motion_supervisor: 启动完成，执行缓存的最新任务目标')
-                            # 本周期立即推进到缓存目标，避免对外短暂发布
-                            # “启动锁定点已到达”的 HOVER，误导任务节点。
-                            output = self.core.step(vehicle)
-                else:
-                    self.startup_hover_count = 0
-            self._publish_command(output, now)
-            self._publish_state(output, now)
-            self._write_cycle_log(now, vehicle, output)
-
-            if output.state != self.last_logged_state:
-                rospy.loginfo(
-                    'motion_supervisor: 状态 -> %s，原因: %s',
-                    STATE_NAMES.get(output.state, str(output.state)), output.reason)
-                self.last_logged_state = output.state
-            rospy.loginfo_throttle(
-                1.0,
-                'motion_supervisor: state=%s error=%.2fm/%.1fdeg '
-                'speed=%.3fm/s yaw_rate=%.2fdeg/s force=(%d,%d,%d)',
-                STATE_NAMES.get(output.state, str(output.state)),
-                output.position_error,
-                math.degrees(output.yaw_error),
-                output.horizontal_speed,
-                math.degrees(output.yaw_rate),
-                output.tx,
-                output.ty,
-                output.mz,
-            )
+            with self.state_lock:
+                self._run_control_cycle(now)
             rate.sleep()
 
 

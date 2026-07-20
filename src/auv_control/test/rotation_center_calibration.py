@@ -1165,7 +1165,7 @@ class RotationCenterCalibration(object):
         negative_result = profile_results[
             recommended_negative_profile]['negative']
         rospy.loginfo(
-            '%s: 三档标定完成；推荐正向=%s档，control_link -> imu='
+            '%s: 三档标定完成；推荐正向=%s档，方向控制中心 -> imu='
             '(%.4f, %.4f, %.4f) m，RMS=%.4f m；'
             '推荐负向=%s档，中心=(%.4f, %.4f, %.4f) m，RMS=%.4f m',
             NODE_NAME,

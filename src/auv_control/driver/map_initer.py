@@ -59,11 +59,24 @@ class MapIniter:
                 rospy.loginfo_throttle(2, "map_initer: 惯导数据无效，等待有效数据...")
                 return
 
+            values = (
+                msg.pose.latitude,
+                msg.pose.longitude,
+                msg.pose.depth,
+            )
+            if (
+                    not np.all(np.isfinite(values))
+                    or not -90.0 <= values[0] <= 90.0
+                    or not -180.0 <= values[1] <= 180.0):
+                rospy.logwarn_throttle(
+                    2, 'map_initer: 忽略非有限或超出范围的经纬深数据')
+                return
+
             rospy.loginfo_throttle(2, "map_initer: 惯导数据有效")
             if len(self.init_lon_list) < 50:
-                self.init_lat_list.append(msg.pose.latitude)
-                self.init_lon_list.append(msg.pose.longitude)
-                self.init_dep_list.append(msg.pose.depth)
+                self.init_lat_list.append(values[0])
+                self.init_lon_list.append(values[1])
+                self.init_dep_list.append(values[2])
             if len(self.init_lon_list) != 50:
                 return
 

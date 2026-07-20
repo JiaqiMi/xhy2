@@ -11,6 +11,10 @@
     <arg name="start_state_web" default="true" />
     <arg name="start_fisheye" default="true" />
     <arg name="start_motion_supervisor" default="false" />
+    <arg name="motion_supervisor_config_file"
+         default="$(find auv_control)/config/motion_supervisor.yaml" />
+    <!-- debug_driver_v2 向下位机发送完整控制帧的频率，单位 Hz。 -->
+    <arg name="debug_send_rate_hz" default="20.0" />
     <!--
       base_link 原点指向 IMU/GNSS 定位点的前、右、下偏置，单位 m。
       当前 base_link 与 IMU/GNSS 定位点重合，三个默认值均保持为 0。
@@ -18,18 +22,6 @@
     <arg name="base_to_imu_x" default="0.0" />
     <arg name="base_to_imu_y" default="0.0" />
     <arg name="base_to_imu_z" default="0.0" />
-    <!-- control_link 旋转中心指向 IMU/GNSS 点的前、右、下偏置；标定前默认与 IMU 重合。 -->
-    <arg name="control_to_imu_x" default="0.0" />
-    <arg name="control_to_imu_y" default="0.0" />
-    <arg name="control_to_imu_z" default="0.0" />
-    <!-- motion_supervisor 计划正向 yaw 使用的独立旋转中心到 IMU 杆臂。 -->
-    <arg name="control_to_imu_positive_x" default="0.0" />
-    <arg name="control_to_imu_positive_y" default="0.0" />
-    <arg name="control_to_imu_positive_z" default="0.0" />
-    <!-- motion_supervisor 计划负向 yaw 使用的独立旋转中心到 IMU 杆臂。 -->
-    <arg name="control_to_imu_negative_x" default="0.0" />
-    <arg name="control_to_imu_negative_y" default="0.0" />
-    <arg name="control_to_imu_negative_z" default="0.0" />
     <!-- web 参数 -->    
     <arg name="state_web_host" default="0.0.0.0" />
     <arg name="state_web_port" default="8088" />
@@ -67,6 +59,7 @@
         <param name="save_raw_data" type="bool" value="true" />
         <param name="raw_save_dir" type="string" value="$(arg save_dir)" />
         <param name="raw_flush_every" type="int" value="1" />
+        <param name="send_rate_hz" type="double" value="$(arg debug_send_rate_hz)" />
     </node>
 
     <!-- ===== 坐标变换层 ===== -->
@@ -74,15 +67,14 @@
     <!-- 地图原点初始化 -->
     <node pkg="auv_control" type="map_initer.py" name="map_initer" output="screen"/>
 
-    <!-- 静态 TF 广播 (base_link → imu/hand/camera) -->
+    <!-- 静态 TF 广播（base_link → 正/负控制中心、imu、hand、camera） -->
     <node pkg="auv_control" type="static_tf_broadcaster.py" name="static_tf_broadcaster" output="screen">
-        <!-- 静态 base_link -> imu 与导航杆臂补偿必须使用同一组参数。 -->
+        <!-- 两套控制中心与运动管理器共用同一配置源。 -->
+        <rosparam command="load" file="$(arg motion_supervisor_config_file)" />
+        <!-- 静态 base_link -> imu 与导航杆臂补偿使用同一组参数。 -->
         <param name="base_to_imu_x" value="$(arg base_to_imu_x)" />
         <param name="base_to_imu_y" value="$(arg base_to_imu_y)" />
         <param name="base_to_imu_z" value="$(arg base_to_imu_z)" />
-        <param name="control_to_imu_x" value="$(arg control_to_imu_x)" />
-        <param name="control_to_imu_y" value="$(arg control_to_imu_y)" />
-        <param name="control_to_imu_z" value="$(arg control_to_imu_z)" />
     </node>
 
     <!-- TF 坐标变换（/cmd/pose/ned NED 整包消息转换为 /cmd/pose/lla LLA 整包消息） -->
@@ -91,9 +83,6 @@
         <param name="base_to_imu_x" value="$(arg base_to_imu_x)" />
         <param name="base_to_imu_y" value="$(arg base_to_imu_y)" />
         <param name="base_to_imu_z" value="$(arg base_to_imu_z)" />
-        <param name="control_to_imu_x" value="$(arg control_to_imu_x)" />
-        <param name="control_to_imu_y" value="$(arg control_to_imu_y)" />
-        <param name="control_to_imu_z" value="$(arg control_to_imu_z)" />
     </node>
 
     <!-- 运行状态 Web：声明在坐标系节点之后，自行等待 /world_origin 和 map -> base_link TF 就绪 -->
@@ -125,23 +114,9 @@
     <include if="$(arg start_motion_supervisor)"
              file="$(find auv_control)/launch/motion_supervisor_prototype.launch">
         <arg name="start_goal_test" value="false" />
+        <arg name="config_file" value="$(arg motion_supervisor_config_file)" />
         <arg name="base_to_imu_x" value="$(arg base_to_imu_x)" />
         <arg name="base_to_imu_y" value="$(arg base_to_imu_y)" />
         <arg name="base_to_imu_z" value="$(arg base_to_imu_z)" />
-        <arg name="control_to_imu_x" value="$(arg control_to_imu_x)" />
-        <arg name="control_to_imu_y" value="$(arg control_to_imu_y)" />
-        <arg name="control_to_imu_z" value="$(arg control_to_imu_z)" />
-        <arg name="control_to_imu_positive_x"
-             value="$(arg control_to_imu_positive_x)" />
-        <arg name="control_to_imu_positive_y"
-             value="$(arg control_to_imu_positive_y)" />
-        <arg name="control_to_imu_positive_z"
-             value="$(arg control_to_imu_positive_z)" />
-        <arg name="control_to_imu_negative_x"
-             value="$(arg control_to_imu_negative_x)" />
-        <arg name="control_to_imu_negative_y"
-             value="$(arg control_to_imu_negative_y)" />
-        <arg name="control_to_imu_negative_z"
-             value="$(arg control_to_imu_negative_z)" />
     </include>
 </launch>
