@@ -13,7 +13,7 @@
     <arg name="exp_env" default="water" />
     <arg name="conf_thre" default="0.2" />
     <arg name="top_k" default="3" />
-    <arg name="rate" default="5.0" />
+    <arg name="rate" default="10.0" />
     <arg name="visualization" default="0" />
     <arg name="web_port" default="8080" />
 
