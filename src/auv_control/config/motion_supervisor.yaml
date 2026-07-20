@@ -2,6 +2,8 @@
 control_rate_hz: 20.0         # 统一三轴速度闭环频率；目标可保持 5 Hz 发布
 feedback_timeout: 0.5         # TF 或速度反馈最大允许间隔，单位 s，超时后进入 SAFE
 velocity_filter_alpha: 0.35   # 速度一阶低通新数据权重，范围 (0,1]，越大响应越快
+# 原始 /status/vel.r 到 map 航向角速度的符号；当前 MZ 与 r 方向相反，取 -1。
+yaw_rate_to_map_sign: -1.0
 pitch_offset_deg: 0.0         # 发送目标姿态时附加的固定俯仰角，单位 deg
 startup_hover_frames: 5       # 首帧锁定位姿进入 HOVER 后保持的发布帧数，完成后才执行缓存任务目标
 
@@ -26,13 +28,13 @@ brake_max_mz_negative: 3000.0 # 主动刹转阶段负 MZ 绝对值上限
 force_slew_per_cycle: 1000.0 # 正常运动每控制周期允许的最大力矩变化量
 brake_force_slew_per_cycle: 10000.0 # 刹车每控制周期允许的最大力矩变化量
 
-# 统一三轴速度环增益；positive/negative 按速度误差方向选择
-kv_x_positive: 700.0        # X 正向跟踪时的速度阻尼增益，输出单位/(m/s)
-kv_x_negative: 1000.0        # X 负向跟踪时的速度阻尼增益，输出单位/(m/s)
-kv_y_positive: 1200.0        # Y 正向跟踪时的速度阻尼增益，输出单位/(m/s)
-kv_y_negative: 2000.0        # Y 负向跟踪时的速度阻尼增益，输出单位/(m/s)
-kp_yaw_positive: 4500.0      # 正角速度误差比例增益，输出单位/(rad/s)
-kp_yaw_negative: 6000.0      # 负角速度误差比例增益，输出单位/(rad/s)
+# 统一三轴速度环增益；yaw 的正负按 map 航向角速度误差选择，对应最终 MZ 正负。
+kv_x_positive: 6400.0       # 700 / 0.11；0.5 m 阶跃可触发正 TX 正常限幅
+kv_x_negative: 9100.0       # 1000 / 0.11；0.5 m 阶跃可触发负 TX 正常限幅
+kv_y_positive: 30000.0      # 1200 / 0.04；按右移 +1000 对应 0.04 m/s 的保守数据取值
+kv_y_negative: 40000.0      # 2000 / 0.05；按左移 -2000 对应 0.05 m/s 取值
+kp_yaw_positive: 7500.0     # 60 deg 阶跃静态控制核验证可触发正 MZ 正常限幅
+kp_yaw_negative: 11200.0    # 60 deg 阶跃静态控制核验证可触发负 MZ 正常限幅
 
 # 主动刹车增益；后缀表示最终刹车输出力或力矩的符号
 brake_gain_tx_positive: 20000.0 # 输出正 TX 时的前向主动刹车增益，单位/(m/s)
@@ -78,13 +80,19 @@ xy_max_speed: 0.30
 xy_position_gain: 1.00
 xy_max_acceleration: 0.20
 xy_max_jerk: 0.40
+# 预测停车距离内且合速度达到进入阈值时锁存刹停；低于退出阈值才恢复跟踪。
+xy_brake_enter_speed: 0.020
+xy_brake_exit_speed: 0.012
 yaw_max_rate_deg_s: 25.0
 yaw_position_gain: 1.50
 yaw_max_acceleration_deg_s2: 20.0
 yaw_max_jerk_deg_s3: 60.0
+# 航向刹停迟滞；高于 0.6 deg/s 才进入，低于 0.2 deg/s 才退出。
+yaw_brake_enter_rate_deg_s: 0.6
+yaw_brake_exit_rate_deg_s: 0.2
 goal_static_capture_seconds: 0.80
 # 目标仍然逐帧更新；仅超过以下阈值才重置速度/角速度参考和捕获计时。
-goal_replan_position_threshold: 0.10 # 水平目标变化的重规划阈值，单位 m
+goal_replan_position_threshold: 0.10 # 位置目标变化的重规划阈值，单位 m
 goal_replan_yaw_threshold_deg: 5.0 # 目标航向变化的重规划阈值，单位 deg
 control_dt_min: 0.02
 control_dt_max: 0.20

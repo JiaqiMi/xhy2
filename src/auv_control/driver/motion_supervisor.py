@@ -135,9 +135,14 @@ class MotionSupervisorNode(object):
         'xy_stop_distance',
         'xy_brake_acceleration',
         'xy_brake_margin',
+        'xy_brake_entry',
+        'xy_brake_latched',
         'xy_braking',
         'yaw_rate_reference_deg_s',
+        'map_yaw_rate_deg_s',
         'yaw_stop_angle_deg',
+        'yaw_brake_entry',
+        'yaw_brake_latched',
         'yaw_braking',
         'goal_static_seconds',
         'goal_static_for_capture',
@@ -313,6 +318,8 @@ class MotionSupervisorNode(object):
             'yaw_max_rate': 'yaw_max_rate_deg_s',
             'yaw_max_acceleration': 'yaw_max_acceleration_deg_s2',
             'yaw_max_jerk': 'yaw_max_jerk_deg_s3',
+            'yaw_brake_enter_rate': 'yaw_brake_enter_rate_deg_s',
+            'yaw_brake_exit_rate': 'yaw_brake_exit_rate_deg_s',
             'goal_replan_yaw_threshold': 'goal_replan_yaw_threshold_deg',
         }
         for name, default in DEFAULT_PARAMETERS.items():
@@ -595,13 +602,24 @@ class MotionSupervisorNode(object):
             'xy_stop_distance': diagnostics.get('xy_stop_distance', ''),
             'xy_brake_acceleration': diagnostics.get('xy_brake_acceleration', ''),
             'xy_brake_margin': diagnostics.get('xy_brake_margin', ''),
+            'xy_brake_entry': int(bool(
+                diagnostics.get('xy_brake_entry', False))),
+            'xy_brake_latched': int(bool(
+                diagnostics.get('xy_brake_latched', False))),
             'xy_braking': int(bool(diagnostics.get('xy_braking', False))),
             'yaw_rate_reference_deg_s': (
                 math.degrees(diagnostics['yaw_rate_reference'])
                 if 'yaw_rate_reference' in diagnostics else ''),
+            'map_yaw_rate_deg_s': (
+                math.degrees(diagnostics['map_yaw_rate'])
+                if 'map_yaw_rate' in diagnostics else ''),
             'yaw_stop_angle_deg': (
                 math.degrees(diagnostics['yaw_stop_angle'])
                 if 'yaw_stop_angle' in diagnostics else ''),
+            'yaw_brake_entry': int(bool(
+                diagnostics.get('yaw_brake_entry', False))),
+            'yaw_brake_latched': int(bool(
+                diagnostics.get('yaw_brake_latched', False))),
             'yaw_braking': int(bool(diagnostics.get('yaw_braking', False))),
             'goal_static_seconds': diagnostics.get('goal_static_seconds', ''),
             'goal_static_for_capture': int(bool(

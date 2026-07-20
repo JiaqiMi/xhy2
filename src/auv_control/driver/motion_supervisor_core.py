@@ -298,10 +298,19 @@ DEFAULT_PARAMETERS = {
     'xy_position_gain': 1.00,
     'xy_max_acceleration': 0.20,
     'xy_max_jerk': 0.40,
+    # 预测到停车距离后进入刹停；速度降至退出阈值后才恢复位置跟踪。
+    'xy_brake_enter_speed': 0.020,
+    'xy_brake_exit_speed': 0.012,
     'yaw_max_rate': math.radians(25.0),
     'yaw_position_gain': 1.50,
     'yaw_max_acceleration': math.radians(20.0),
     'yaw_max_jerk': math.radians(60.0),
+    # 航向刹停使用独立迟滞，避免 r 在停稳阈值附近抖动。
+    'yaw_brake_enter_rate': math.radians(0.6),
+    'yaw_brake_exit_rate': math.radians(0.2),
+    # 原始 /status/vel.r 到 map 航向角速度的符号转换。
+    # 当前下位机约定：MZ 与 r 方向相反，故 map 航向角速度 = -r。
+    'yaw_rate_to_map_sign': -1.0,
     'goal_static_capture_seconds': 0.80,
     'goal_replan_position_threshold': 0.10,
     'goal_replan_yaw_threshold': math.radians(5.0),
@@ -349,6 +358,8 @@ class MotionSupervisorCore(object):
         self.last_velocity_acceleration = (0.0, 0.0)
         self.last_yaw_rate_reference = 0.0
         self.last_yaw_acceleration = 0.0
+        self.xy_brake_latched = False
+        self.yaw_brake_latched = False
         self.reference_reset_pending = True
         self.goal_changed_pending = False
         self.goal_changed_at = None
@@ -384,8 +395,10 @@ class MotionSupervisorCore(object):
             'brake_margin_ty_positive', 'brake_margin_ty_negative',
             'yaw_brake_margin_positive', 'yaw_brake_margin_negative',
             'xy_max_speed', 'xy_position_gain', 'xy_max_acceleration',
-            'xy_max_jerk', 'yaw_max_rate', 'yaw_position_gain',
+            'xy_max_jerk', 'xy_brake_enter_speed', 'xy_brake_exit_speed',
+            'yaw_max_rate', 'yaw_position_gain',
             'yaw_max_acceleration', 'yaw_max_jerk',
+            'yaw_brake_enter_rate', 'yaw_brake_exit_rate',
             'goal_static_capture_seconds',
             'goal_replan_position_threshold', 'goal_replan_yaw_threshold',
             'control_dt_min',
@@ -397,6 +410,14 @@ class MotionSupervisorCore(object):
         for name, value in self.parameters.items():
             if not math.isfinite(float(value)):
                 raise ValueError('{} 必须为有限值'.format(name))
+        if abs(abs(self.parameters['yaw_rate_to_map_sign']) - 1.0) > 1e-9:
+            raise ValueError('yaw_rate_to_map_sign 必须为 +1 或 -1')
+        if (self.parameters['xy_brake_exit_speed'] >=
+                self.parameters['xy_brake_enter_speed']):
+            raise ValueError('xy_brake_exit_speed 必须小于 xy_brake_enter_speed')
+        if (self.parameters['yaw_brake_exit_rate'] >=
+                self.parameters['yaw_brake_enter_rate']):
+            raise ValueError('yaw_brake_exit_rate 必须小于 yaw_brake_enter_rate')
         for name in (
                 'brake_gain_mz_positive', 'brake_gain_mz_negative'):
             if self.parameters[name] == 0:
@@ -635,6 +656,8 @@ class MotionSupervisorCore(object):
         self.last_velocity_acceleration = (0.0, 0.0)
         self.last_yaw_rate_reference = 0.0
         self.last_yaw_acceleration = 0.0
+        self.xy_brake_latched = False
+        self.yaw_brake_latched = False
         self.reference_reset_pending = True
 
     def _initialize_motion_references(self, vehicle, map_vx, map_vy):
@@ -647,7 +670,7 @@ class MotionSupervisorCore(object):
         self.last_velocity_reference = (reference_vx, reference_vy)
         self.last_velocity_acceleration = (0.0, 0.0)
         self.last_yaw_rate_reference = clamp(
-            vehicle.yaw_rate,
+            self.parameters['yaw_rate_to_map_sign'] * vehicle.yaw_rate,
             -self.parameters['yaw_max_rate'],
             self.parameters['yaw_max_rate'],
         )
@@ -886,7 +909,16 @@ class MotionSupervisorCore(object):
             self.parameters['control_delay'],
             brake_margin,
         )
-        braking_xy = closing_speed > 0.0 and distance <= stop_distance
+        xy_brake_entry = (
+            closing_speed >= self.parameters['xy_brake_enter_speed']
+            and distance <= stop_distance)
+        if xy_brake_entry:
+            self.xy_brake_latched = True
+        elif (self.xy_brake_latched and
+              math.hypot(map_vx, map_vy) <=
+              self.parameters['xy_brake_exit_speed']):
+            self.xy_brake_latched = False
+        braking_xy = self.xy_brake_latched
         position_speed = self.parameters['xy_position_gain'] * distance
         stopping_speed = math.sqrt(
             2.0 * brake_acceleration * max(distance - brake_margin, 0.0)
@@ -900,6 +932,10 @@ class MotionSupervisorCore(object):
         )
         desired_vx = desired_speed * direction_x
         desired_vy = desired_speed * direction_y
+        if braking_xy:
+            # 锁存刹停期间始终把速度参考收敛到零，避免越过目标后立即恢复加速。
+            desired_vx = 0.0
+            desired_vy = 0.0
         reference_vx, reference_vy = self._slew_velocity_reference(
             desired_vx, desired_vy, dt)
         reference_body_x, reference_body_y = map_vector_to_body(
@@ -909,22 +945,30 @@ class MotionSupervisorCore(object):
         tx = self._motion_parameter('kv_x', velocity_error_x) * velocity_error_x
         ty = self._motion_parameter('kv_y', velocity_error_y) * velocity_error_y
 
+        # 位置误差和期望角速度属于 map 航向约定；原始 r 与其方向相反。
+        map_yaw_rate = (
+            self.parameters['yaw_rate_to_map_sign'] * vehicle.yaw_rate)
+        # 刹车 MZ 与 map 航向角速度反向，按最终刹车 MZ 的符号选择模型。
+        yaw_brake_mz_direction = -map_yaw_rate
         yaw_brake_acceleration = self._directional_parameter(
-            'angular_brake_acceleration_mz',
-            -vehicle.yaw_rate,
-        )
+            'angular_brake_acceleration_mz', yaw_brake_mz_direction)
         yaw_margin = self._directional_parameter(
-            'yaw_brake_margin', -vehicle.yaw_rate)
+            'yaw_brake_margin', yaw_brake_mz_direction)
         yaw_stop_angle = stopping_distance(
-            abs(vehicle.yaw_rate),
+            abs(map_yaw_rate),
             yaw_brake_acceleration,
             self.parameters['control_delay'],
             yaw_margin,
         )
-        braking_yaw = (
-            abs(vehicle.yaw_rate) > self.parameters['yaw_rate_threshold']
-            and abs(yaw_error) <= yaw_stop_angle
-        )
+        yaw_brake_entry = (
+            abs(map_yaw_rate) >= self.parameters['yaw_brake_enter_rate']
+            and abs(yaw_error) <= yaw_stop_angle)
+        if yaw_brake_entry:
+            self.yaw_brake_latched = True
+        elif (self.yaw_brake_latched and
+              abs(map_yaw_rate) <= self.parameters['yaw_brake_exit_rate']):
+            self.yaw_brake_latched = False
+        braking_yaw = self.yaw_brake_latched
         yaw_stopping_rate = math.sqrt(
             2.0 * yaw_brake_acceleration * max(
                 abs(yaw_error) - yaw_margin, 0.0)
@@ -939,9 +983,12 @@ class MotionSupervisorCore(object):
             ),
             yaw_error,
         ) if abs(yaw_error) > 1e-9 else 0.0
+        if braking_yaw:
+            # 锁存刹转期间将 map 航向角速度参考置零，持续施加反向阻尼。
+            desired_yaw_rate = 0.0
         reference_yaw_rate = self._slew_yaw_rate_reference(
             desired_yaw_rate, dt)
-        yaw_rate_error = reference_yaw_rate - vehicle.yaw_rate
+        yaw_rate_error = reference_yaw_rate - map_yaw_rate
         mz = self._motion_parameter('kp_yaw', yaw_rate_error) * yaw_rate_error
 
         tx, ty, mz = self._compensate_effectiveness(tx, ty, mz)
@@ -983,9 +1030,14 @@ class MotionSupervisorCore(object):
                 'xy_stop_distance': stop_distance,
                 'xy_brake_acceleration': brake_acceleration,
                 'xy_brake_margin': brake_margin,
+                'xy_brake_entry': xy_brake_entry,
+                'xy_brake_latched': self.xy_brake_latched,
                 'xy_braking': braking_xy,
                 'yaw_rate_reference': reference_yaw_rate,
+                'map_yaw_rate': map_yaw_rate,
                 'yaw_stop_angle': yaw_stop_angle,
+                'yaw_brake_entry': yaw_brake_entry,
+                'yaw_brake_latched': self.yaw_brake_latched,
                 'yaw_braking': braking_yaw,
                 'goal_static_seconds': self._goal_static_seconds(vehicle.now),
                 'goal_static_for_capture': (

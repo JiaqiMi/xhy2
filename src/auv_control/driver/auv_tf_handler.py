@@ -70,12 +70,14 @@ class AUVTfHandler:
         )
 
     @staticmethod
-    def _vector_from_config(config, field_name):
+    def _vector_from_config(config, field_name, axes=('x', 'y', 'z')):
         """读取三维向量配置并校验其数值有效性。"""
         try:
-            vector = tuple(float(config[axis]) for axis in ('x', 'y', 'z'))
+            vector = tuple(float(config[axis]) for axis in axes)
         except (KeyError, TypeError, ValueError):
-            raise ValueError('%s 必须包含可转换为浮点数的 x、y、z' % field_name)
+            raise ValueError(
+                '%s 必须包含可转换为浮点数的 %s'
+                % (field_name, '、'.join(axes)))
         if not np.all(np.isfinite(vector)):
             raise ValueError('%s 必须全部为有限值' % field_name)
         return vector
@@ -104,7 +106,8 @@ class AUVTfHandler:
             translation = self._vector_from_config(
                 config.get('translation'), '%s.translation' % name)
             rotation_rpy_deg = self._vector_from_config(
-                config.get('rotation_rpy_deg'), '%s.rotation_rpy_deg' % name)
+                config.get('rotation_rpy_deg'), '%s.rotation_rpy_deg' % name,
+                ('roll', 'pitch', 'yaw'))
             rotation = transformations.quaternion_from_euler(
                 *np.radians(rotation_rpy_deg))
             transforms.append({
