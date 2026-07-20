@@ -2,7 +2,7 @@
     <!-- 线分割 -> 骨架主路径 -> N个等弧长像素点 -> N个三维点 -->
 
     <arg name="start_camera" default="false" />
-    <arg name="start_splitter" default="true" />
+    <arg name="start_splitter" default="false" />
     <arg name="start_web" default="true" />
 
     <arg name="model_path"
