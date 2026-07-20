@@ -21,14 +21,9 @@
     <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
     <arg name="motion_state_topic" default="/motion/state" />
     <arg name="motion_state_timeout" default="5" />
-    <arg name="motion_goal_position_tolerance" default="0.2" />
-    <!-- 2026年7月20日：测试改为0.2m容忍度 -->
-    <arg name="motion_goal_yaw_tolerance_deg" default="5.0" />
 
     <!-- 红线识别、任务完成、相机和轨迹 JSON。 -->
     <arg name="line_topic" default="/obj/line_message" />
-    <!-- 每帧最多取多少个有效识别点参与拟合；0 表示使用消息中的全部有效点。 -->
-    <arg name="line_accept_point_count" default="20" />
     <arg name="finished_topic" default="/finished" />
     <arg name="camera_topic" default="/left/image_raw" />
     <!-- 双目坐标系仅用于 Web 航向箭头和日志；巡线控制固定使用 base_link。 -->
@@ -46,81 +41,41 @@
     <arg name="search_yaw_sign" default="1.0" />
 
     <!-- 节点启动后提交初始位姿并等待 HOVER/识别模块的时间，单位 s。 -->
-    <arg name="startup_hold_seconds" default="30.0" />
+    <arg name="startup_hold_seconds" default="10.0" />
     <!-- 相机消息超过该时间未更新则认为相机未就绪，单位 s。 -->
     <arg name="camera_message_timeout" default="2.0" />
     <!-- 每帧红线只等待一次原时间戳 TF；超过该时间仍不可用则丢弃整帧，单位 s。 -->
-    <arg name="tf_timeout_seconds" default="0.1" />
-    <!-- 红线消息允许的最大年龄；过期帧不参与锁线、关联或拟合，单位 s。 -->
-    <arg name="line_message_max_age_seconds" default="0.5" />
+    <arg name="tf_timeout_seconds" default="1" />
+    <!-- 红线消息允许的最大年龄；过期帧不参与锁线或拟合，单位 s。 -->
+    <arg name="line_message_max_age_seconds" default="5" />
 
     <!-- 可接受的红线类别名，多个名称使用英文逗号分隔。 -->
     <arg name="line_classes" default="line" />
-    <!-- 相机坐标中任一红线点允许的最大三维距离，单位 m。 -->
-    <arg name="max_camera_distance" default="6.0" />
-    <!-- 首次见线后的候选窗口，窗口内选择置信度最高的红线并永久锁定，单位 s。 -->
+    <!-- 首次见线后的候选窗口，窗口内累计所有高置信 positions 点，单位 s。 -->
     <arg name="line_lock_window_seconds" default="0.3" />
     <!-- 红线置信度硬下限；低于该值的整帧识别直接丢弃，不参与锁线和曲线拟合。 -->
     <arg name="line_min_confidence" default="0.70" />
-    <!-- 低置信阈值；低于该值的新点使用更严格的拟合关联条件。 -->
-    <arg name="line_low_confidence_threshold" default="0.50" />
+    <!-- 达到置信度下限后，positions 数组全部识别点直接进入拟合；
+         关联距离、方向、内点比例、延伸间隔和回折门槛均已停用。 -->
 
-    <!-- 单帧有序多点中相邻点允许的最小间距，单位 m。 -->
-    <arg name="line_min_point_spacing" default="0.005" />
-    <!-- 单帧有序多点中相邻点允许的最大间距，单位 m。 -->
-    <arg name="line_max_point_spacing" default="4.0" />
-    <!-- 每个局部三点中间点偏离前后点弦线的最大距离，单位 m。 -->
-    <arg name="line_triplet_max_residual" default="0.35" />
-    <!-- 每个局部三点相邻两段方向允许的最大夹角，单位 deg。 -->
-    <arg name="line_triplet_max_bend_deg" default="60.0" />
-
-    <!-- 低置信新线段到已锁曲线的最大关联距离，单位 m。 -->
-    <arg name="line_association_distance" default="0.35" />
-    <!-- 高置信新线段到已锁曲线的最大关联距离，单位 m。 -->
-    <arg name="line_high_confidence_association_distance" default="0.50" />
-    <!-- 低置信新线段与已锁曲线切向的最大方向差，单位 deg。 -->
-    <arg name="line_association_angle_deg" default="35.0" />
-    <!-- 高置信新线段与已锁曲线切向的最大方向差，单位 deg。 -->
-    <arg name="line_high_confidence_association_angle_deg" default="45.0" />
-    <!-- 允许新线段从当前曲线端部向外延伸的最大间隔，单位 m。 -->
-    <arg name="line_extension_max_gap" default="1.0" />
-    <!-- 整帧至少有该比例的点同时满足距离和局部方向要求，才允许进入拟合。 -->
-    <arg name="line_association_min_inlier_ratio" default="0.60" />
-    <!-- 任一点允许的硬距离上限=当前关联距离×该倍数，防止远端异常点随整帧进入。 -->
-    <arg name="line_association_max_distance_factor" default="2.0" />
-    <!-- 末端延伸至少需要的点数，以及延伸候选占非关联点的最低比例。 -->
-    <arg name="line_extension_min_points" default="2" />
-    <arg name="line_extension_min_inlier_ratio" default="0.60" />
-
-    <!-- 新点与已有点距离小于该值时做平滑融合，不重复增加点，单位 m。 -->
-    <arg name="line_point_merge_distance" default="0.12" />
+    <!-- 新点与已有点距离小于该值时做平滑融合，不重复增加点，单位 m。
+         高密度识别默认设为 0，仅合并完全重合点，避免正常近邻点被压缩。 -->
+    <arg name="line_point_merge_distance" default="0.0" />
     <!-- 合并重复点时新识别值的权重，范围 0~1；越小越平滑，越大越跟随新观测。 -->
     <arg name="line_point_update_alpha" default="0.20" />
     <!-- 当前活动拟合窗口的原始点安全上限；正常冻结由后续帧确认触发，超限只裁剪旧活动点。 -->
     <arg name="line_curve_max_points" default="200" />
     <!-- 活动点超限裁剪后保留在远端的点数，用于固定曲线与新曲线平滑衔接。 -->
     <arg name="line_curve_overlap_points" default="40" />
-    <!-- 历史曲线末端之后允许新活动点向后重叠的最大路径距离，单位 m。 -->
-    <arg name="line_window_backtrack_distance" default="1.0" />
     <!-- 实时拟合曲线及 LOS 执行曲线快照的采样点数。 -->
     <arg name="line_curve_sample_count" default="100" />
     <!-- 平滑曲线的多项式拟合阶数。 -->
     <arg name="line_curve_degree" default="3" />
-    <!-- 允许锁定并使用的最短拟合曲线长度，单位 m。 -->
-    <arg name="line_curve_min_length" default="0.15" />
-    <!-- 拟合曲线相邻采样段允许的最大转角、最大间距和沿主轴反向容差。 -->
-    <arg name="line_curve_max_turn_deg" default="75.0" />
-    <arg name="line_curve_max_sample_gap" default="0.20" />
-    <arg name="line_curve_backtrack_tolerance" default="0.01" />
-    <!-- 在线冻结：连续多少个合理拟合帧后，把当前曲线立即固定。默认 2 帧以降低等待。 -->
+    <!-- 在线冻结：连续多少个高置信拟合帧后，把当前曲线立即固定。默认 2 帧。 -->
     <arg name="curve_freeze_required_frames" default="2" />
     <!-- 首段固定所需最短长度、后续每次固定所需最小增长，单位 m。 -->
     <arg name="curve_freeze_min_length" default="0.15" />
     <arg name="curve_freeze_min_advance" default="0.10" />
-    <!-- 新点距固定曲线小于该值时视为重复点并忽略，单位 m。 -->
-    <arg name="curve_freeze_ignore_distance" default="0.12" />
-    <!-- 固定末端向前超过该距离才视为新延伸点，单位 m。 -->
-    <arg name="curve_freeze_endpoint_guard" default="0.05" />
     <!-- 每次固定后保留在固定末端附近的原始衔接点范围，单位 m。 -->
     <arg name="curve_freeze_overlap_distance" default="0.25" />
     <!-- 最远点相对固定参考点至少增加该距离，才记为一次有效轨迹增长，单位 m。 -->
@@ -149,15 +104,20 @@
     <!-- Web 实际运动轨迹相邻记录点最小间距（m）和最大保存点数。 -->
     <arg name="actual_path_min_spacing" default="0.03" />
     <arg name="actual_path_max_points" default="2000" />
+    <!-- Web 历史有效识别点的显示合并距离，单位 m；只减少重叠绘制，不参与拟合。
+         高密度点建议保持 0.01；设为 0 时保留每个有效点。 -->
+    <arg name="web_valid_point_merge_distance" default="0.01" />
+    <!-- Web 历史有效识别点的最大保存数量；到达上限后淘汰最早的显示点。 -->
+    <arg name="web_valid_point_max_count" default="20000" />
     <!-- 是否启动巡线轨迹网页。 -->
     <arg name="trajectory_web_enabled" default="true" />
     <!-- 网页绑定的机器人本机网卡地址。 -->
     <arg name="trajectory_web_host" default="192.168.1.117" />
     <!-- 网页端口；默认访问 http://192.168.1.117:8083。 -->
     <arg name="trajectory_web_port" default="8083" />
-    <arg name="start_line_node" default="true" />
-    
-    <include if="$(arg start_line_node)"
+<arg name="start_line_node" default="false" />
+
+<include if="$(arg start_line_node)"
              file="$(find stereo_depth)/launch/test_line_detection_lineN.launch" />
     <node pkg="auv_control"
           type="test_task1_v3_line_follow.py"
@@ -174,7 +134,6 @@
         <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />
         <param name="motion_state_timeout" type="double" value="$(arg motion_state_timeout)" />
         <param name="line_topic" type="string" value="$(arg line_topic)" />
-        <param name="line_accept_point_count" type="int" value="$(arg line_accept_point_count)" />
         <param name="finished_topic" type="string" value="$(arg finished_topic)" />
         <param name="camera_topic" type="string" value="$(arg camera_topic)" />
         <param name="line_tracking_frame" type="string" value="$(arg line_tracking_frame)" />
@@ -191,40 +150,18 @@
         <param name="line_message_max_age_seconds" type="double" value="$(arg line_message_max_age_seconds)" />
 
         <param name="line_classes" type="string" value="$(arg line_classes)" />
-        <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
         <param name="line_lock_window_seconds" type="double" value="$(arg line_lock_window_seconds)" />
         <param name="line_min_confidence" type="double" value="$(arg line_min_confidence)" />
-        <param name="line_low_confidence_threshold" type="double" value="$(arg line_low_confidence_threshold)" />
-        <param name="line_min_point_spacing" type="double" value="$(arg line_min_point_spacing)" />
-        <param name="line_max_point_spacing" type="double" value="$(arg line_max_point_spacing)" />
-        <param name="line_triplet_max_residual" type="double" value="$(arg line_triplet_max_residual)" />
-        <param name="line_triplet_max_bend_deg" type="double" value="$(arg line_triplet_max_bend_deg)" />
-        <param name="line_association_distance" type="double" value="$(arg line_association_distance)" />
-        <param name="line_high_confidence_association_distance" type="double" value="$(arg line_high_confidence_association_distance)" />
-        <param name="line_association_angle_deg" type="double" value="$(arg line_association_angle_deg)" />
-        <param name="line_high_confidence_association_angle_deg" type="double" value="$(arg line_high_confidence_association_angle_deg)" />
-        <param name="line_extension_max_gap" type="double" value="$(arg line_extension_max_gap)" />
-        <param name="line_association_min_inlier_ratio" type="double" value="$(arg line_association_min_inlier_ratio)" />
-        <param name="line_association_max_distance_factor" type="double" value="$(arg line_association_max_distance_factor)" />
-        <param name="line_extension_min_points" type="int" value="$(arg line_extension_min_points)" />
-        <param name="line_extension_min_inlier_ratio" type="double" value="$(arg line_extension_min_inlier_ratio)" />
 
         <param name="line_point_merge_distance" type="double" value="$(arg line_point_merge_distance)" />
         <param name="line_point_update_alpha" type="double" value="$(arg line_point_update_alpha)" />
         <param name="line_curve_max_points" type="int" value="$(arg line_curve_max_points)" />
         <param name="line_curve_overlap_points" type="int" value="$(arg line_curve_overlap_points)" />
-        <param name="line_window_backtrack_distance" type="double" value="$(arg line_window_backtrack_distance)" />
         <param name="line_curve_sample_count" type="int" value="$(arg line_curve_sample_count)" />
         <param name="line_curve_degree" type="int" value="$(arg line_curve_degree)" />
-        <param name="line_curve_min_length" type="double" value="$(arg line_curve_min_length)" />
-        <param name="line_curve_max_turn_deg" type="double" value="$(arg line_curve_max_turn_deg)" />
-        <param name="line_curve_max_sample_gap" type="double" value="$(arg line_curve_max_sample_gap)" />
-        <param name="line_curve_backtrack_tolerance" type="double" value="$(arg line_curve_backtrack_tolerance)" />
         <param name="curve_freeze_required_frames" type="int" value="$(arg curve_freeze_required_frames)" />
         <param name="curve_freeze_min_length" type="double" value="$(arg curve_freeze_min_length)" />
         <param name="curve_freeze_min_advance" type="double" value="$(arg curve_freeze_min_advance)" />
-        <param name="curve_freeze_ignore_distance" type="double" value="$(arg curve_freeze_ignore_distance)" />
-        <param name="curve_freeze_endpoint_guard" type="double" value="$(arg curve_freeze_endpoint_guard)" />
         <param name="curve_freeze_overlap_distance" type="double" value="$(arg curve_freeze_overlap_distance)" />
         <param name="endpoint_growth_tolerance" type="double" value="$(arg endpoint_growth_tolerance)" />
 
@@ -240,6 +177,8 @@
         <param name="trajectory_publish_period" type="double" value="$(arg trajectory_publish_period)" />
         <param name="actual_path_min_spacing" type="double" value="$(arg actual_path_min_spacing)" />
         <param name="actual_path_max_points" type="int" value="$(arg actual_path_max_points)" />
+        <param name="web_valid_point_merge_distance" type="double" value="$(arg web_valid_point_merge_distance)" />
+        <param name="web_valid_point_max_count" type="int" value="$(arg web_valid_point_max_count)" />
         <param name="trajectory_web_enabled" type="bool" value="$(arg trajectory_web_enabled)" />
         <param name="trajectory_web_host" type="string" value="$(arg trajectory_web_host)" />
         <param name="trajectory_web_port" type="int" value="$(arg trajectory_web_port)" />
