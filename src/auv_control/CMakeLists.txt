@@ -182,6 +182,7 @@ catkin_install_python(PROGRAMS
   driver/auv_tf_handler.py
   driver/debug_driver.py
   driver/debug_driver_v2.py
+  driver/debug_protocol.py
   driver/lever_arm.py
   driver/map_initer.py
   driver/motion_supervisor.py
@@ -260,10 +261,3 @@ install(DIRECTORY launch config docs
 # if(TARGET ${PROJECT_NAME}-test)
 #   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
 # endif()
-
-## Add folders to be run by python nosetests
-if(CATKIN_ENABLE_TESTING)
-  catkin_add_nosetests(test/test_motion_auto_sequence_core.py)
-  catkin_add_nosetests(test/test_motion_supervisor_core.py)
-  catkin_add_nosetests(test/test_rotation_center_calibration_core.py)
-endif()

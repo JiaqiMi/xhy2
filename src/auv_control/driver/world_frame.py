@@ -18,9 +18,8 @@ class WorldFrameManager:
     """维护一个以经纬深为原点的北东地（NED）坐标系。"""
 
     def __init__(self, init_lat, init_lon, init_depth):
-        self.init_lat = float(init_lat)
-        self.init_lon = float(init_lon)
-        self.init_depth = float(init_depth)
+        self.init_lat, self.init_lon, self.init_depth = self._validated_lld(
+            init_lat, init_lon, init_depth, '世界原点')
         self.a = 6378137.0
         self.f = 1 / 298.257223563
         self.e_sq = self.f * (2 - self.f)
@@ -35,9 +34,10 @@ class WorldFrameManager:
 
     def lld_to_ecef(self, lat, lon, depth):
         """将纬度、经度、深度转换为 ECEF 坐标。"""
+        lat, lon, depth = self._validated_lld(
+            lat, lon, depth, '经纬深输入')
         lat_rad = np.radians(lat)
         lon_rad = np.radians(lon)
-        depth = float(depth)
         radius = self.a / np.sqrt(1 - self.e_sq * np.sin(lat_rad) ** 2)
         x = (radius - depth) * np.cos(lat_rad) * np.cos(lon_rad)
         y = (radius - depth) * np.cos(lat_rad) * np.sin(lon_rad)
@@ -55,6 +55,8 @@ class WorldFrameManager:
 
     def ned_to_lld(self, north, east, down):
         """将相对原点的 NED 坐标转换为纬度、经度、深度。"""
+        if not np.all(np.isfinite([north, east, down])):
+            raise ValueError('NED 输入必须为有限值')
         x0, y0, z0 = self.lld_to_ecef(
             self.init_lat, self.init_lon, self.init_depth
         )
@@ -66,6 +68,8 @@ class WorldFrameManager:
 
     def ecef_to_lld(self, x, y, z):
         """将 ECEF 坐标转换为纬度、经度、深度。"""
+        if not np.all(np.isfinite([x, y, z])):
+            raise ValueError('ECEF 输入必须为有限值')
         lon_rad = np.arctan2(y, x)
         horizontal_distance = np.sqrt(x ** 2 + y ** 2)
         lat_rad = np.arctan2(z, horizontal_distance * (1 - self.e_sq))
@@ -85,6 +89,18 @@ class WorldFrameManager:
         radius = self.a / np.sqrt(1 - self.e_sq * np.sin(lat_rad) ** 2)
         depth = radius - horizontal_distance / np.cos(lat_rad)
         return lat_rad, lon_rad, depth
+
+    @staticmethod
+    def _validated_lld(lat, lon, depth, name):
+        """校验经纬深有限性和经纬度物理范围。"""
+        values = tuple(float(value) for value in (lat, lon, depth))
+        if not np.all(np.isfinite(values)):
+            raise ValueError('{}必须为有限值'.format(name))
+        if not -90.0 <= values[0] <= 90.0:
+            raise ValueError('{}纬度必须位于 [-90, 90]'.format(name))
+        if not -180.0 <= values[1] <= 180.0:
+            raise ValueError('{}经度必须位于 [-180, 180]'.format(name))
+        return values
 
     def _ecef_to_ned_rotation(self):
         """构造从 ECEF 到当前原点 NED 的标准旋转矩阵。"""

@@ -216,8 +216,11 @@ brake_min_mz: 100.0
 时增加以下保护：
 
 - 进入定点前必须位于 `capture_radius` 内；
-- 定点后位置误差超过 `capture_exit_radius` 时退回刹停；
-- 定点后航向误差超过 `10°` 或角速度超过 `2 deg/s` 时退回刹停；
+- 等待定点接管确认时，位置误差超过 `capture_exit_radius` 才恢复三轴跟踪，
+  在进入与退出半径之间形成滞环；
+- 定点接管后的位置、航向和速度回退阈值分别使用
+  `hover_fault_position_error`、`hover_fault_yaw_error`、
+  `hover_fault_speed` 和 `hover_fault_yaw_rate`；
 - 角速度超过停稳阈值时，航向刹车力矩绝对值不低于 `100`。
 
 ## 2026-07-18 旋转试验与杆臂修正
@@ -231,7 +234,7 @@ brake_min_mz: 100.0
   `0.043～0.057 rad/s²`；
 - 负向 yaw 使用正 MZ 刹车，实测有效角减速度约
   `0.030～0.058 rad/s²`；
-- 旧配置 `0.10 rad/s²` 高估刹转能力，导致进入 `FINAL_BRAKE` 过晚。
+- 旧配置 `0.10 rad/s²` 高估刹转能力，导致刹转介入过晚。
 - CSV 中可识别的 11 段旋转累计出现约 `151.6 s TRANSLATE` 和
   `63.4 s TRANSLATE_BRAKE`，纯旋转被杆臂误差反复打断。
 
@@ -273,31 +276,30 @@ angular_brake_acceleration_mz_negative: 0.040
 
 即使 `base_link` 已恢复与 IMU/GNSS 定位点重合，IMU 也不一定处于实际
 水平旋转中心。两个侧推正反桨差动转向后，计划正向和负向的等效旋转中心
-可以不同，因此状态机内部保留两套虚拟旋转中心。
+可以不同，因此 TF 树固定提供两套方向控制中心。
 
 ```text
-真实 TF 输入：map -> base_link -> imu
-状态机内部：base_link 位姿 + 计划方向杆臂 -> 当前虚拟旋转中心
+map -> base_link -> imu
+                -> control_link_positive
+                -> control_link_negative
 ```
 
-- `map -> base_link` 始终是外部 TF 的真实输入，不在 TF 树中动态切换
-  正负旋转中心；
+- `map -> base_link` 是唯一动态艇体 TF，两个方向控制中心都是其固定子坐标系；
 - 当前 `base_link -> imu=(0,0,0)`，状态机根据计划方向对应的
-  `control_to_imu_positive_*` 或 `control_to_imu_negative_*`
-  在内部计算虚拟旋转中心位姿和速度；
+  `control_to_imu_positive_*` 和 `control_to_imu_negative_*`
+  生成两套固定 TF，状态机直接查询已锁存的中心；
 - 任务目标仍表示最终 `base_link` 位姿，内部按最终 yaw 换算成
   当前虚拟旋转中心目标；
 - 计划方向由归一化后的最终 yaw 误差符号确定：正误差使用正向中心，
   负误差使用负向中心；
-- `ALIGN_FINAL` 和 `FINAL_BRAKE` 内保持该方向锁存。主动刹转时即使
-  实际 `MZ` 与计划方向相反，也继续使用同一中心；
+- 同一几何目标重复发布时保持该方向锁存。主动刹转时即使实际 `MZ`
+  与计划方向相反，也继续使用同一中心；
 - 最终转向固定当前虚拟旋转中心；若实际旋转中心与 IMU 存在杆臂，
   `base_link` 与 IMU 会按刚体关系沿圆弧运动；
 - `/status/vel` 视为 IMU 点速度，使用 `v_control = v_imu - ω×r`
   换算为当前计划方向旋转中心速度；
-- 新目标在平移阶段允许重新计算计划方向；进入最终转向后，5 Hz 重复发布
-  同一动作目标不会改变本次锁存方向。若新目标使状态机重新进入平移，
-  后续控制周期再按新动作的最终 yaw 选择方向。
+- 新几何目标按当时最终 yaw 误差重新选择方向；5 Hz 重复发布同一动作目标
+  不会改变本次锁存方向。
 
 旋转中心尚未标定时使用：
 

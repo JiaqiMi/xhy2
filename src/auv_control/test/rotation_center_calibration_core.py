@@ -8,7 +8,7 @@
 发布：无
 说明：
     每个自由旋转段允许具有不同的 map 圆心；同一计划方向的各段共享一个
-    control_link -> imu 机体系杆臂，正、负计划方向分别拟合，从而同时排除
+    控制中心 -> imu 机体系杆臂，正、负计划方向分别拟合，从而同时排除
     段间 mode=4 接管平移和正反桨差异的影响。
 记录：
 2026.7.18
@@ -537,7 +537,7 @@ def fit_segmented_rotation_center(samples, outlier_sigma=3.5):
 
 def fit_planned_direction_centers(
         positive_samples, negative_samples, outlier_sigma=3.5):
-    """分别拟合正向和负向计划旋转对应的 control_link -> imu 杆臂。"""
+    """分别拟合正向和负向计划旋转对应的控制中心 -> imu 杆臂。"""
     return {
         'positive': fit_segmented_rotation_center(
             positive_samples, outlier_sigma=outlier_sigma),
