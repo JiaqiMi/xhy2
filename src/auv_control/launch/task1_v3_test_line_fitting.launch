@@ -11,9 +11,13 @@
     <arg name="rate" default="5.0" />
     <arg name="map_frame" default="map" />
     <arg name="robot_frame" default="base_link" />
+    <!-- Web 航向箭头终点和 base_link 规划轨迹杆臂补偿使用的双目坐标系。 -->
+    <arg name="line_tracking_frame" default="camera" />
 
     <!-- 话题：红线识别、相机状态和拟合调试 JSON；不存在运动控制话题。 -->
     <arg name="line_topic" default="/obj/line_message" />
+    <!-- 每帧最多取多少个有效识别点参与拟合；0 表示使用消息中的全部有效点。 -->
+    <arg name="line_accept_point_count" default="20" />
     <arg name="camera_topic" default="/left/image_raw" />
     <arg name="trajectory_topic" default="/task1/v3/line_fitting/trajectory" />
     <!-- 单次 TF 等待超时和相机消息就绪超时，单位 s。相机状态只显示，不阻止拟合。 -->
@@ -31,10 +35,10 @@
     <!-- 低于该置信度的新点使用更严格的曲线关联门槛。 -->
     <arg name="line_low_confidence_threshold" default="0.50" />
 
-    <!-- 单帧三点相邻间距允许范围，单位 m。 -->
+    <!-- 单帧有序多点的相邻间距允许范围，单位 m。 -->
     <arg name="line_min_point_spacing" default="0.005" />
     <arg name="line_max_point_spacing" default="4.0" />
-    <!-- 三点中间点偏离首尾弦线的最大距离，单位 m；最大局部弯折角单位 deg。 -->
+    <!-- 每个局部三点的弦线残差上限（m）和弯折角上限（deg）。 -->
     <arg name="line_triplet_max_residual" default="0.35" />
     <arg name="line_triplet_max_bend_deg" default="60.0" />
 
@@ -91,8 +95,10 @@
         <param name="rate" type="double" value="$(arg rate)" />
         <param name="map_frame" type="string" value="$(arg map_frame)" />
         <param name="robot_frame" type="string" value="$(arg robot_frame)" />
+        <param name="line_tracking_frame" type="string" value="$(arg line_tracking_frame)" />
 
         <param name="line_topic" type="string" value="$(arg line_topic)" />
+        <param name="line_accept_point_count" type="int" value="$(arg line_accept_point_count)" />
         <param name="camera_topic" type="string" value="$(arg camera_topic)" />
         <param name="trajectory_topic" type="string" value="$(arg trajectory_topic)" />
         <param name="tf_timeout_seconds" type="double" value="$(arg tf_timeout_seconds)" />

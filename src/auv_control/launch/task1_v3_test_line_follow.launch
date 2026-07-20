@@ -24,6 +24,8 @@
 
     <!-- 红线识别、任务完成、相机和轨迹 JSON。 -->
     <arg name="line_topic" default="/obj/line_message" />
+    <!-- 每帧最多取多少个有效识别点参与拟合；0 表示使用消息中的全部有效点。 -->
+    <arg name="line_accept_point_count" default="20" />
     <arg name="finished_topic" default="/finished" />
     <arg name="camera_topic" default="/left/image_raw" />
     <!-- 巡线定位参考坐标系；拟合曲线由该双目摄像头的 XY 位置跟踪。 -->
@@ -60,13 +62,13 @@
     <!-- 低置信阈值；低于该值的新点使用更严格的拟合关联条件。 -->
     <arg name="line_low_confidence_threshold" default="0.50" />
 
-    <!-- 局部三点中相邻点允许的最小间距，单位 m。 -->
+    <!-- 单帧有序多点中相邻点允许的最小间距，单位 m。 -->
     <arg name="line_min_point_spacing" default="0.005" />
-    <!-- 局部三点中相邻点允许的最大间距，单位 m。 -->
+    <!-- 单帧有序多点中相邻点允许的最大间距，单位 m。 -->
     <arg name="line_max_point_spacing" default="4.0" />
-    <!-- 局部三点中间点偏离首尾弦线的最大距离，单位 m。 -->
+    <!-- 每个局部三点中间点偏离前后点弦线的最大距离，单位 m。 -->
     <arg name="line_triplet_max_residual" default="0.35" />
-    <!-- 局部三点两段方向允许的最大夹角，单位 deg。 -->
+    <!-- 每个局部三点相邻两段方向允许的最大夹角，单位 deg。 -->
     <arg name="line_triplet_max_bend_deg" default="60.0" />
 
     <!-- 低置信新线段到已锁曲线的最大关联距离，单位 m。 -->
@@ -117,6 +119,8 @@
     <arg name="los_goal_max_yaw_step_deg" default="20.0" />
     <!-- 摄像头到达当前 LOS 航点后，切换下一航点允许的最大航向误差，单位 deg。 -->
     <arg name="los_waypoint_yaw_tolerance_deg" default="10.0" />
+    <!-- camera 到达航点且监督器进入 HOVER 后，开始对向前的定点时间，单位 s。 -->
+    <arg name="los_waypoint_hold_seconds" default="0.5" />
 
     <!-- 到达起点并进入 HOVER 后持续确认的时间，单位 s。 -->
     <arg name="line_start_hold_seconds" default="4.0" />
@@ -165,6 +169,7 @@
         <param name="motion_goal_position_tolerance" type="double" value="$(arg motion_goal_position_tolerance)" />
         <param name="motion_goal_yaw_tolerance_deg" type="double" value="$(arg motion_goal_yaw_tolerance_deg)" />
         <param name="line_topic" type="string" value="$(arg line_topic)" />
+        <param name="line_accept_point_count" type="int" value="$(arg line_accept_point_count)" />
         <param name="finished_topic" type="string" value="$(arg finished_topic)" />
         <param name="camera_topic" type="string" value="$(arg camera_topic)" />
         <param name="line_tracking_frame" type="string" value="$(arg line_tracking_frame)" />
@@ -217,6 +222,7 @@
         <param name="los_goal_max_step" type="double" value="$(arg los_goal_max_step)" />
         <param name="los_goal_max_yaw_step_deg" type="double" value="$(arg los_goal_max_yaw_step_deg)" />
         <param name="los_waypoint_yaw_tolerance_deg" type="double" value="$(arg los_waypoint_yaw_tolerance_deg)" />
+        <param name="los_waypoint_hold_seconds" type="double" value="$(arg los_waypoint_hold_seconds)" />
         <param name="line_start_hold_seconds" type="double" value="$(arg line_start_hold_seconds)" />
         <param name="line_alignment_hold_seconds" type="double" value="$(arg line_alignment_hold_seconds)" />
         <param name="endpoint_arrival_tolerance" type="double" value="$(arg endpoint_arrival_tolerance)" />
