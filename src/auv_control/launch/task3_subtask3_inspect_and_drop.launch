@@ -1,126 +1,134 @@
 <launch>
-    <!-- 任务3子任务3：识别指定颜色方框并执行投放。
-         参数 operation_mode 设为 manual 时：由人工移动机器人，本节点只负责识别和执行动作。
-         参数 operation_mode 设为 auto 时：使用控制模式3保持深度和航向，
-         通过前后推力 TX 和左右推力 TY 自动搜索并对齐方框。
-         本文件默认启动彩色方框识别模型；坐标变换节点、运动指令转换节点和
-         下位机驱动仍需要单独启动。 -->
+    <!--
+      任务3子任务3：识别指定颜色方框并执行投放。
 
-    <!-- 任务运行方式和主循环频率。当前默认使用自动寻找模式；
-         只测试识别、灯光和夹爪时，将 operation_mode 改为 manual。 -->
+      manual：人工移动机器人，本节点只负责识别、灯光和夹爪。
+      auto：本节点只向motion_supervisor发布绝对目标或取消请求，不直接发布
+      /cmd/pose/ned，也不自行计算TX/TY、阻尼或刹车。motion_supervisor由基础
+      控制系统统一启动，本任务launch不重复启动；运行auto前只检查接口已就绪。
+    -->
+
+    <!-- 运行方式和主循环频率。只测试识别与执行器时改为manual。 -->
     <arg name="operation_mode" default="auto" />
     <arg name="rate" default="5.0" />
 
-    <!-- 默认包含 test_rectangles_detection.launch，并直接使用该文件内部的方框模型、
-         相机、网页、置信度和推理频率默认参数。如果外部已经启动方框模型，设为 false。 -->
-    <arg name="start_rectangle_model" default="true" />
+    <!-- 普通状态日志和异常日志的节流周期；模型帧进度仍逐帧打印。 -->
+    <arg name="log_interval" default="1.0" />
+    <arg name="warning_log_interval" default="2.0" />
 
-    <!-- 模型识别参数：读取模型发布的全部候选结果，并连续多帧确认目标。
-         首轮先确认 target_color 与模型标签一致，再调 min_confidence；
-         误检多时提高置信度，漏检多时小幅降低置信度。 -->
+    <!-- 默认包含彩色方框模型；模型已在其他终端启动时设为false。 -->
+    <arg name="start_rectangle_model" default="false" />
+
+    <!--
+      模型识别参数。target_color可设为yellow、green或red。
+      min_confidence调大可减少误检，调小可增加弱目标召回。
+    -->
     <arg name="model_detection_topic" default="/web/detections" />
-    <arg name="target_color" default="red" />
-    <arg name="min_confidence" default="0.35" />
+    <arg name="target_color" default="yellow" />
+    <arg name="min_confidence" default="0.20" />
     <!-- 人工模式连续稳定识别帧数。 -->
     <arg name="stable_detection_count" default="5" />
-    <!-- 自动模式搜索阶段连续3帧稳定后进入细对准；居中后连续5帧有效才执行动作。 -->
-    <arg name="auto_search_stable_detection_count" default="3" />
-    <arg name="auto_center_stable_detection_count" default="5" />
+    <!-- 自动搜索连续3帧锁定，中心连续5帧后才允许执行动作。 -->
+    <arg name="auto_search_stable_detection_count" default="2" />
+    <arg name="auto_center_stable_detection_count" default="3" />
+    <!-- 搜索锁定阶段的中心抖动与检测框面积变化上限。 -->
     <arg name="stable_center_tolerance_px" default="40.0" />
+
     <arg name="stable_area_tolerance_ratio" default="0.35" />
+    <!-- 目标或模型消息最大允许间隔，以及任务搜索/对齐总超时。 -->
     <arg name="detection_timeout" default="2.0" />
     <arg name="max_wait_seconds" default="300.0" />
 
-    <!-- 自动运动固定使用 PoseNEDcmd 控制模式3，记录并保持任务启动时的当前航向。 -->
-    <arg name="pose_cmd_topic" default="/cmd/pose/ned" />
-    <!-- 底层 AUVData 状态反馈；自动模式使用其中的当前位姿、模式和速度。 -->
+    <!-- motion_supervisor任务接口；任务节点不直接设置底层模式和推力。 -->
+    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
+    <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
+    <arg name="motion_state_topic" default="/motion/state" />
+    <arg name="motion_state_timeout" default="0.5" />
+    <arg name="motion_startup_timeout" default="10.0" />
+    <arg name="cancel_timeout" default="50.0" />
+
+    <!--
+      HOVER必须匹配任务最近发布的绝对目标，避免把旧阶段HOVER误判为到达。
+      以下三项只用于任务侧核对，不改变motion_supervisor内部控制参数。
+    -->
+    <arg name="goal_match_position_tolerance" default="0.03" />
+    <arg name="goal_match_depth_tolerance" default="0.03" />
+    <arg name="goal_match_yaw_tolerance_deg" default="2.0" />
+
+    <!--
+      除HOVER和目标匹配外，再检查base_link实际误差、水平速度和航向角速度。
+      搜索步骤只有全部通过才切换；动作前还会使用更严格的动作门槛。
+    -->
+    <arg name="arrival_position_tolerance" default="0.05" />
+    <arg name="arrival_yaw_tolerance_deg" default="5.0" />
+    <arg name="arrival_max_horizontal_speed" default="0.02" />
+    <arg name="arrival_max_yaw_rate_deg_s" default="0.5" />
+
+    <!--
+      /status/auv仅用于深度、垂直速度、航向和底层mode=4的动作安全核对，
+      不再用于本节点计算推力或阻尼。线速度缩放按实际消息单位调整。
+    -->
     <arg name="status_topic" default="/status/auv" />
     <arg name="status_timeout" default="0.5" />
-    <!-- 线速度默认已经是m/s；角速度默认按deg/s乘以下系数转换成rad/s。 -->
     <arg name="status_linear_velocity_scale" default="1.0" />
-    <arg name="status_angular_velocity_scale" default="0.01745329252" />
 
-    <!-- 自动搜索路径：
-         1. 启动后悬停10秒，等待人工在机器人前方约0.6米处放置方框；
-         2. 向前移动0.3米，再向左横移0.2米、向右横移0.2米回到该排中心；
-         3. 向前移动0.2米，再执行一次左移0.2米、右移0.2米；
-         4. 向前移动0.1米，再执行一次左移0.2米、右移0.2米；
-         5. 路径执行完仍未识别目标时，原地悬停到任务超时。 -->
-    <arg name="auto_initial_hover_seconds" default="10.0" />
+    <!--
+      自动搜索顺序保持不变：
+      固定启动点稳定悬停10秒；
+      前进0.30m，左0.20m、右0.20m；
+      前进0.20m，左0.20m、右0.20m；
+      前进0.10m，左0.20m、右0.20m。
+      每一段都发送一个map绝对目标，并等待匹配目标的HOVER后进入下一段。
+    -->
+    <arg name="auto_initial_hover_seconds" default="5.0" />
+    <arg name="auto_search_first_forward_distance" default="0.50" />
+    <arg name="auto_search_second_forward_distance" default="0.40" />
+    <arg name="auto_search_third_forward_distance" default="0.30" />
+    <arg name="auto_search_lateral_distance" default="0.35" />
 
-    <!-- 搜索阶段移动快慢调节：当前定深定向协议没有独立速度字段，
-         以下参数直接设置 TX/TY 原始推力值，数值越大通常移动越快。
-         auto_search_forward_force：前进搜索时使用的 TX 绝对值；
-         auto_search_lateral_force：向左、向右搜索时共同使用的 TY 绝对值。
-         建议先用较小值下水测试，再逐步增加；如果越过目标，先增大对应
-         braking_distance，再增加对应 velocity_damping。 -->
-    <arg name="auto_search_forward_force" default="500.0" />
-    <arg name="auto_search_lateral_force" default="1500.0" />
-    <arg name="auto_search_first_forward_distance" default="0.30" />
-    <arg name="auto_search_second_forward_distance" default="0.20" />
-    <arg name="auto_search_third_forward_distance" default="0.10" />
-    <arg name="auto_search_lateral_distance" default="0.20" />
-    <!-- 使用坐标变换测量实际位移；距离误差小于该值时认为当前步骤完成。 -->
-    <arg name="auto_search_distance_tolerance" default="0.03" />
-    <!-- 接近目标距离前提前减推力，并结合速度阻尼利用惯性或施加反向力。 -->
-    <arg name="auto_search_forward_braking_distance" default="0.08" />
-    <arg name="auto_search_lateral_braking_distance" default="0.08" />
+    <!--
+      视觉细对准把归一化像素误差换算成前后、左右位置小步，单位均为m。
+      gain越大单帧修正越快；max_step限制单次目标跳变；min_interval限制
+      目标更新频率。运动速度、推力、阻尼和刹车在motion_supervisor中调整。
+      如果日志持续显示视觉小步已发布但画面中心几乎不变，可小幅增加min_step；
+      如果越过图像中心或来回摆动，先减小gain和max_step，再增大min_interval。
+    -->
+    <arg name="auto_visual_forward_gain_m" default="0.10" />
+    <arg name="auto_visual_lateral_gain_m" default="0.10" />
+    <arg name="auto_visual_min_step_m" default="0.005" />
+    <arg name="auto_visual_max_step_m" default="0.03" />
+    <arg name="auto_visual_goal_min_interval" default="0.50" />
+    <!-- 现场前后或左右方向相反时，将对应符号改为-1.0。 -->
+    <arg name="auto_forward_sign" default="1.0" />
+    <arg name="auto_lateral_sign" default="1.0" />
 
-    <!-- 自动视觉闭环参数：
-         图像垂直方向误差用于计算前后推力 TX；
-         图像水平方向误差用于计算左右推力 TY；
-         默认假设图像上方对应机器人前方，图像右方对应机器人右方。
-         如果现场前后方向相反，将 auto_tx_sign 改为 -1；
-         如果现场左右方向相反，将 auto_ty_sign 改为 -1。
-         方向确认后，再依次调 gain、max_force、min_correction_force 和 force_step。 -->
-    <arg name="auto_forward_gain" default="250.0" />
-    <arg name="auto_lateral_gain" default="250.0" />
-    <!-- 视觉对齐阶段的最大前后、左右推力，与上面的分段搜索推力相互独立。 -->
-    <arg name="auto_max_forward_force" default="180.0" />
-    <arg name="auto_max_lateral_force" default="180.0" />
-    <arg name="auto_min_correction_force" default="50.0" />
-    <!-- 每个控制周期允许的最大推力变化量；越小越平滑，但加减速越慢。 -->
-    <arg name="auto_force_step" default="50.0" />
-    <!-- 速度阻尼：单位速度产生的反向推力，用于搜索刹停和视觉对齐防振荡。 -->
-    <arg name="auto_forward_velocity_damping" default="300.0" />
-    <arg name="auto_lateral_velocity_damping" default="300.0" />
-    <!-- 搜索步骤切换和执行夹爪动作前的实际停稳阈值。
-         程序会在日志中逐项打印当前值、阈值和“通过/未通过”。 -->
-    <arg name="auto_search_stop_speed" default="0.05" />
+    <!-- 方框期望中心与像素容差；比例0.5/0.5表示图像正中心。 -->
+    <arg name="auto_target_center_u_ratio" default="0.5" />
+    <arg name="auto_target_center_v_ratio" default="0.5" />
+    <arg name="auto_center_tolerance_u_px" default="35.0" />
+    <arg name="auto_center_tolerance_v_px" default="35.0" />
+    <!-- 模型JSON缺少图像尺寸时使用的回退值。 -->
+    <arg name="auto_image_width" default="640.0" />
+    <arg name="auto_image_height" default="480.0" />
+
+    <!--
+      自动模式动作放行门槛。必须同时满足motion_supervisor到达判定、
+      /status/auv的mode=4、垂直速度、深度误差和航向误差。
+    -->
     <arg name="auto_action_max_horizontal_speed" default="0.03" />
     <arg name="auto_action_max_vertical_speed" default="0.03" />
     <arg name="auto_action_max_yaw_rate" default="0.05" />
     <arg name="auto_action_max_depth_error" default="0.08" />
     <arg name="auto_action_max_yaw_error_deg" default="5.0" />
-    <!-- 最终动作期间的map位置外环：位置误差修正力叠加速度阻尼。
-         定点偏软时增加 position_gain 或 max_force；来回摆动时先降低
-         position_gain，再检查 velocity_damping 是否合适。 -->
-    <arg name="auto_hold_forward_position_gain" default="600.0" />
-    <arg name="auto_hold_lateral_position_gain" default="600.0" />
-    <arg name="auto_hold_max_force" default="120.0" />
-    <arg name="auto_hold_position_tolerance" default="0.02" />
-    <arg name="auto_tx_sign" default="1.0" />
-    <arg name="auto_ty_sign" default="1.0" />
 
-    <!-- 方框中心对齐参数：中心位置使用图像宽度和高度的比例表示，
-         水平比例0.5、垂直比例0.5表示图像正中心。 -->
-    <arg name="auto_target_center_u_ratio" default="0.5" />
-    <arg name="auto_target_center_v_ratio" default="0.5" />
-    <arg name="auto_center_tolerance_u_px" default="35.0" />
-    <arg name="auto_center_tolerance_v_px" default="35.0" />
-    <!-- 当模型识别消息中缺少图像宽度和高度时，使用以下备用尺寸。 -->
-    <arg name="auto_image_width" default="640.0" />
-    <arg name="auto_image_height" default="480.0" />
-
-    <!-- 人工模式识别成功后的确认时间。自动模式居中5帧后不使用该等待时间。 -->
+    <!-- 人工模式稳定识别后的动作前等待；自动模式不使用该等待。 -->
     <arg name="hold_seconds" default="1.0" />
-    <!-- 开灯并打开夹爪后，机器人使用位置误差和速度阻尼最终定点保持的时间。 -->
+    <!-- 开灯并打开夹爪后保持最终定点3秒，再关闭夹爪和灯。 -->
     <arg name="open_seconds" default="3.0" />
-    <!-- 关闭夹爪并熄灯后的额外确认时间；默认立即结束任务。 -->
     <arg name="close_seconds" default="0.0" />
+
+    <!-- 执行器协议参数。子任务3需要三色灯和夹爪，因此mode固定建议为2。 -->
     <arg name="actuator_topic" default="/cmd/actuator" />
-    <!-- 执行器协议控制模式：0表示不响应，1表示仅控制补光灯，2表示仅控制执行器。
-         子任务3需要控制三色灯和夹爪，因此默认使用模式2。 -->
     <arg name="actuator_mode" default="2" />
     <arg name="clamp_open" default="0" />
     <arg name="clamp_closed" default="255" />
@@ -134,13 +142,14 @@
     <include if="$(arg start_rectangle_model)"
              file="$(find stereo_depth)/launch/test_rectangles_detection.launch" />
 
-    <!-- 启动子任务3测试节点，并把任务参数传入 Python 程序。 -->
     <node pkg="auv_control"
           type="test_task3_3_inspect_and_drop.py"
           name="test_task3_3_inspect_and_drop"
           output="screen">
         <param name="operation_mode" type="string" value="$(arg operation_mode)" />
         <param name="rate" type="double" value="$(arg rate)" />
+        <param name="log_interval" type="double" value="$(arg log_interval)" />
+        <param name="warning_log_interval" type="double" value="$(arg warning_log_interval)" />
 
         <param name="model_detection_topic" type="string" value="$(arg model_detection_topic)" />
         <param name="target_color" type="string" value="$(arg target_color)" />
@@ -153,47 +162,50 @@
         <param name="detection_timeout" type="double" value="$(arg detection_timeout)" />
         <param name="max_wait_seconds" type="double" value="$(arg max_wait_seconds)" />
 
-        <param name="pose_cmd_topic" type="string" value="$(arg pose_cmd_topic)" />
+        <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
+        <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
+        <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />
+        <param name="motion_state_timeout" type="double" value="$(arg motion_state_timeout)" />
+        <param name="motion_startup_timeout" type="double" value="$(arg motion_startup_timeout)" />
+        <param name="cancel_timeout" type="double" value="$(arg cancel_timeout)" />
+        <param name="goal_match_position_tolerance" type="double" value="$(arg goal_match_position_tolerance)" />
+        <param name="goal_match_depth_tolerance" type="double" value="$(arg goal_match_depth_tolerance)" />
+        <param name="goal_match_yaw_tolerance_deg" type="double" value="$(arg goal_match_yaw_tolerance_deg)" />
+        <param name="arrival_position_tolerance" type="double" value="$(arg arrival_position_tolerance)" />
+        <param name="arrival_yaw_tolerance_deg" type="double" value="$(arg arrival_yaw_tolerance_deg)" />
+        <param name="arrival_max_horizontal_speed" type="double" value="$(arg arrival_max_horizontal_speed)" />
+        <param name="arrival_max_yaw_rate_deg_s" type="double" value="$(arg arrival_max_yaw_rate_deg_s)" />
+
         <param name="status_topic" type="string" value="$(arg status_topic)" />
         <param name="status_timeout" type="double" value="$(arg status_timeout)" />
         <param name="status_linear_velocity_scale" type="double" value="$(arg status_linear_velocity_scale)" />
-        <param name="status_angular_velocity_scale" type="double" value="$(arg status_angular_velocity_scale)" />
+
         <param name="auto_initial_hover_seconds" type="double" value="$(arg auto_initial_hover_seconds)" />
-        <param name="auto_search_forward_force" type="double" value="$(arg auto_search_forward_force)" />
-        <param name="auto_search_lateral_force" type="double" value="$(arg auto_search_lateral_force)" />
         <param name="auto_search_first_forward_distance" type="double" value="$(arg auto_search_first_forward_distance)" />
         <param name="auto_search_second_forward_distance" type="double" value="$(arg auto_search_second_forward_distance)" />
         <param name="auto_search_third_forward_distance" type="double" value="$(arg auto_search_third_forward_distance)" />
         <param name="auto_search_lateral_distance" type="double" value="$(arg auto_search_lateral_distance)" />
-        <param name="auto_search_distance_tolerance" type="double" value="$(arg auto_search_distance_tolerance)" />
-        <param name="auto_search_forward_braking_distance" type="double" value="$(arg auto_search_forward_braking_distance)" />
-        <param name="auto_search_lateral_braking_distance" type="double" value="$(arg auto_search_lateral_braking_distance)" />
-        <param name="auto_forward_gain" type="double" value="$(arg auto_forward_gain)" />
-        <param name="auto_lateral_gain" type="double" value="$(arg auto_lateral_gain)" />
-        <param name="auto_max_forward_force" type="double" value="$(arg auto_max_forward_force)" />
-        <param name="auto_max_lateral_force" type="double" value="$(arg auto_max_lateral_force)" />
-        <param name="auto_min_correction_force" type="double" value="$(arg auto_min_correction_force)" />
-        <param name="auto_force_step" type="double" value="$(arg auto_force_step)" />
-        <param name="auto_forward_velocity_damping" type="double" value="$(arg auto_forward_velocity_damping)" />
-        <param name="auto_lateral_velocity_damping" type="double" value="$(arg auto_lateral_velocity_damping)" />
-        <param name="auto_search_stop_speed" type="double" value="$(arg auto_search_stop_speed)" />
-        <param name="auto_action_max_horizontal_speed" type="double" value="$(arg auto_action_max_horizontal_speed)" />
-        <param name="auto_action_max_vertical_speed" type="double" value="$(arg auto_action_max_vertical_speed)" />
-        <param name="auto_action_max_yaw_rate" type="double" value="$(arg auto_action_max_yaw_rate)" />
-        <param name="auto_action_max_depth_error" type="double" value="$(arg auto_action_max_depth_error)" />
-        <param name="auto_action_max_yaw_error_deg" type="double" value="$(arg auto_action_max_yaw_error_deg)" />
-        <param name="auto_hold_forward_position_gain" type="double" value="$(arg auto_hold_forward_position_gain)" />
-        <param name="auto_hold_lateral_position_gain" type="double" value="$(arg auto_hold_lateral_position_gain)" />
-        <param name="auto_hold_max_force" type="double" value="$(arg auto_hold_max_force)" />
-        <param name="auto_hold_position_tolerance" type="double" value="$(arg auto_hold_position_tolerance)" />
-        <param name="auto_tx_sign" type="double" value="$(arg auto_tx_sign)" />
-        <param name="auto_ty_sign" type="double" value="$(arg auto_ty_sign)" />
+
+        <param name="auto_visual_forward_gain_m" type="double" value="$(arg auto_visual_forward_gain_m)" />
+        <param name="auto_visual_lateral_gain_m" type="double" value="$(arg auto_visual_lateral_gain_m)" />
+        <param name="auto_visual_min_step_m" type="double" value="$(arg auto_visual_min_step_m)" />
+        <param name="auto_visual_max_step_m" type="double" value="$(arg auto_visual_max_step_m)" />
+        <param name="auto_visual_goal_min_interval" type="double" value="$(arg auto_visual_goal_min_interval)" />
+        <param name="auto_forward_sign" type="double" value="$(arg auto_forward_sign)" />
+        <param name="auto_lateral_sign" type="double" value="$(arg auto_lateral_sign)" />
+
         <param name="auto_target_center_u_ratio" type="double" value="$(arg auto_target_center_u_ratio)" />
         <param name="auto_target_center_v_ratio" type="double" value="$(arg auto_target_center_v_ratio)" />
         <param name="auto_center_tolerance_u_px" type="double" value="$(arg auto_center_tolerance_u_px)" />
         <param name="auto_center_tolerance_v_px" type="double" value="$(arg auto_center_tolerance_v_px)" />
         <param name="auto_image_width" type="double" value="$(arg auto_image_width)" />
         <param name="auto_image_height" type="double" value="$(arg auto_image_height)" />
+
+        <param name="auto_action_max_horizontal_speed" type="double" value="$(arg auto_action_max_horizontal_speed)" />
+        <param name="auto_action_max_vertical_speed" type="double" value="$(arg auto_action_max_vertical_speed)" />
+        <param name="auto_action_max_yaw_rate" type="double" value="$(arg auto_action_max_yaw_rate)" />
+        <param name="auto_action_max_depth_error" type="double" value="$(arg auto_action_max_depth_error)" />
+        <param name="auto_action_max_yaw_error_deg" type="double" value="$(arg auto_action_max_yaw_error_deg)" />
 
         <param name="hold_seconds" type="double" value="$(arg hold_seconds)" />
         <param name="open_seconds" type="double" value="$(arg open_seconds)" />

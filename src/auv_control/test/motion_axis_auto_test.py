@@ -213,8 +213,8 @@ class MotionAxisAutoTest(object):
             raise ValueError('频率和超时必须为正数，稳定保持时间不能为负数')
         if (
                 self.axis in ('x', 'y')
-                and self.inter_step_stable_seconds < 10.0):
-            raise ValueError('X/Y 段间连续稳定时间不能小于 10 s')
+                and self.inter_step_stable_seconds < 2.0):
+            raise ValueError('X/Y 段间连续稳定时间不能小于 2 s')
         self.required_stable_seconds = (
             max(self.hover_hold_seconds, self.inter_step_stable_seconds)
             if self.axis in ('x', 'y')

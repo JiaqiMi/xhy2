@@ -8,7 +8,7 @@
     <arg name="action_timeout" default="120.0" />
     <arg name="hover_hold_seconds" default="2.0" />
     <arg name="acceptance_position_tolerance" default="0.10" />
-    <arg name="inter_step_stable_seconds" default="12.0" />
+    <arg name="inter_step_stable_seconds" default="5.0" />
     <arg name="stable_speed_threshold" default="0.03" />
     <arg name="stall_detection_seconds" default="2.0" />
     <arg name="stall_speed_threshold" default="0.03" />

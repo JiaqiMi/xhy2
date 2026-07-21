@@ -15,8 +15,8 @@ log_flush_every: 20           # 每累计多少个控制周期刷新磁盘，20 
 # 正常运动限幅；参数后缀表示本周期实际输出力或力矩的正负号
 max_tx_positive: 700.0       # 正常运动阶段正 TX 最大值
 max_tx_negative: 1000.0       # 正常运动阶段负 TX 绝对值上限
-max_ty_positive: 1200.0       # 正常运动阶段正 TY 最大值
-max_ty_negative: 2000.0       # 正常运动阶段负 TY 绝对值上限
+max_ty_positive: 2000.0       # 正常运动阶段正 TY 最大值 对应0.1m/s
+max_ty_negative: 4000.0       # 正常运动阶段负 TY 绝对值上限 对应0.1m/s
 max_mz_positive: 2000.0       # 正常转向阶段正 MZ 最大值
 max_mz_negative: 3000.0       # 正常转向阶段负 MZ 绝对值上限
 brake_max_tx_positive: 2000.0 # 主动刹车阶段正 TX 最大值
