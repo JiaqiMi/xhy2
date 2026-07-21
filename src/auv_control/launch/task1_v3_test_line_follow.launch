@@ -21,9 +21,6 @@
     <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
     <arg name="motion_state_topic" default="/motion/state" />
     <arg name="motion_state_timeout" default="5" />
-    <arg name="motion_goal_position_tolerance" default="0.2" />
-    <!-- 2026年7月20日：测试改为0.2m容忍度 -->
-    <arg name="motion_goal_yaw_tolerance_deg" default="5.0" />
 
     <!-- 红线识别、任务完成、相机和轨迹 JSON。 -->
     <arg name="line_topic" default="/obj/line_message" />
@@ -44,13 +41,13 @@
     <arg name="search_yaw_sign" default="1.0" />
 
     <!-- 节点启动后提交初始位姿并等待 HOVER/识别模块的时间，单位 s。 -->
-    <arg name="startup_hold_seconds" default="30.0" />
+    <arg name="startup_hold_seconds" default="10.0" />
     <!-- 相机消息超过该时间未更新则认为相机未就绪，单位 s。 -->
     <arg name="camera_message_timeout" default="2.0" />
     <!-- 每帧红线只等待一次原时间戳 TF；超过该时间仍不可用则丢弃整帧，单位 s。 -->
-    <arg name="tf_timeout_seconds" default="0.1" />
+    <arg name="tf_timeout_seconds" default="1" />
     <!-- 红线消息允许的最大年龄；过期帧不参与锁线或拟合，单位 s。 -->
-    <arg name="line_message_max_age_seconds" default="0.5" />
+    <arg name="line_message_max_age_seconds" default="5" />
 
     <!-- 可接受的红线类别名，多个名称使用英文逗号分隔。 -->
     <arg name="line_classes" default="line" />
@@ -120,9 +117,9 @@
     <arg name="trajectory_web_host" default="192.168.1.117" />
     <!-- 网页端口；默认访问 http://192.168.1.117:8083。 -->
     <arg name="trajectory_web_port" default="8083" />
-    <arg name="start_line_node" default="true" />
-    
-    <include if="$(arg start_line_node)"
+<arg name="start_line_node" default="false" />
+
+<include if="$(arg start_line_node)"
              file="$(find stereo_depth)/launch/test_line_detection_lineN.launch" />
     <node pkg="auv_control"
           type="test_task1_v3_line_follow.py"

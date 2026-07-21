@@ -22,9 +22,9 @@
     <arg name="log_directory"
          default="$(env HOME)/.ros/auv_logs/task1" />
     <!-- 每帧红线只等待一次原时间戳 TF；超过该时间仍不可用则丢弃整帧，单位 s。 -->
-    <arg name="tf_timeout_seconds" default="0.1" />
+    <arg name="tf_timeout_seconds" default="1" />
     <!-- 红线消息允许的最大年龄；过期帧不参与锁线或拟合，单位 s。 -->
-    <arg name="line_message_max_age_seconds" default="0.5" />
+    <arg name="line_message_max_age_seconds" default="5" />
     <!-- 相机消息就绪超时，单位 s。相机状态只显示，不阻止拟合。 -->
     <arg name="camera_message_timeout" default="2.0" />
     <!-- 终端状态输出节流周期，单位 s。 -->
@@ -74,9 +74,9 @@
     <arg name="trajectory_web_host" default="192.168.1.117" />
     <!-- 默认访问 http://192.168.1.117:8083。 -->
     <arg name="trajectory_web_port" default="8083" />
-    <arg name="start_line_node" default="true" />
-    
-    <include if="$(arg start_line_node)"
+<arg name="start_line_node" default="false" />
+
+<include if="$(arg start_line_node)"
              file="$(find stereo_depth)/launch/test_line_detection_lineN.launch" />
     <node pkg="auv_control"
           type="test_task1_v3_line_fitting.py"

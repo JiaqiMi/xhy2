@@ -12,6 +12,7 @@
       捕获阈值和反馈超时等控制参数。
     -->
     <arg name="config_file" default="$(find auv_control)/config/motion_supervisor.yaml" />
+    <arg name="tf_config_file" default="$(find auv_control)/config/auv_tf.yaml" />
 
     <!--
       是否启用 motion_supervisor 每控制周期 CSV 完整数据日志。
@@ -27,36 +28,6 @@
     -->
     <arg name="log_directory"
          default="$(env HOME)/.ros/auv_logs/motion_supervisor" />
-
-    <!--
-      base_link 原点指向 IMU/GNSS 定位点的前、右、下偏置，单位 m。
-      当前 base_link 与 IMU/GNSS 定位点重合，三个默认值均保持为 0。
-    -->
-    <arg name="base_to_imu_x" default="0.0" />
-    <arg name="base_to_imu_y" default="0.0" />
-    <arg name="base_to_imu_z" default="0.0" />
-
-    <!--
-      control_link 水平旋转中心指向 IMU/GNSS 点的前、右、下偏置，单位 m。
-      未完成原地旋转标定前默认与 IMU 重合；标定后覆盖 x/y。
-    -->
-    <arg name="control_to_imu_x" default="0.0" />
-    <arg name="control_to_imu_y" default="0.0" />
-    <arg name="control_to_imu_z" default="0.0" />
-    <!--
-      计划正向 yaw 旋转中心指向 IMU/GNSS 点的前、右、下杆臂，单位 m。
-      一次计划正向转向包含其主动刹转过程，刹车 MZ 反号时不切换中心。
-    -->
-    <arg name="control_to_imu_positive_x" default="0.0" />
-    <arg name="control_to_imu_positive_y" default="0.0" />
-    <arg name="control_to_imu_positive_z" default="0.0" />
-    <!--
-      计划负向 yaw 旋转中心指向 IMU/GNSS 点的前、右、下杆臂，单位 m。
-      标定前保持为 0；标定后填写负向独立结果。
-    -->
-    <arg name="control_to_imu_negative_x" default="0.0" />
-    <arg name="control_to_imu_negative_y" default="0.0" />
-    <arg name="control_to_imu_negative_z" default="0.0" />
 
     <!--
       是否同时启动相对目标测试节点。
@@ -119,30 +90,12 @@
           name="motion_supervisor" output="screen" required="true">
         <!-- 将 config_file 中的参数加载到 motion_supervisor 私有命名空间。 -->
         <rosparam command="load" file="$(arg config_file)" />
+        <!-- 从同一文件加载 base_link 到 IMU 的杆臂参数。 -->
+        <rosparam command="load" file="$(arg tf_config_file)" />
         <!-- 是否启用每控制周期 CSV 完整数据日志。 -->
         <param name="log_enabled" value="$(arg log_enabled)" />
         <!-- CSV 完整数据日志目录；此 launch 参数覆盖 YAML 中的默认目录。 -->
         <param name="log_directory" value="$(arg log_directory)" />
-        <!-- base_link 和兼容单中心 TF 使用的杆臂。 -->
-        <param name="base_to_imu_x" value="$(arg base_to_imu_x)" />
-        <param name="base_to_imu_y" value="$(arg base_to_imu_y)" />
-        <param name="base_to_imu_z" value="$(arg base_to_imu_z)" />
-        <param name="control_to_imu_x" value="$(arg control_to_imu_x)" />
-        <param name="control_to_imu_y" value="$(arg control_to_imu_y)" />
-        <param name="control_to_imu_z" value="$(arg control_to_imu_z)" />
-        <!-- motion_supervisor 内部按计划 yaw 方向锁存的两套虚拟旋转中心。 -->
-        <param name="control_to_imu_positive_x"
-               value="$(arg control_to_imu_positive_x)" />
-        <param name="control_to_imu_positive_y"
-               value="$(arg control_to_imu_positive_y)" />
-        <param name="control_to_imu_positive_z"
-               value="$(arg control_to_imu_positive_z)" />
-        <param name="control_to_imu_negative_x"
-               value="$(arg control_to_imu_negative_x)" />
-        <param name="control_to_imu_negative_y"
-               value="$(arg control_to_imu_negative_y)" />
-        <param name="control_to_imu_negative_z"
-               value="$(arg control_to_imu_negative_z)" />
     </node>
 
     <!--

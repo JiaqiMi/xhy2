@@ -1,0 +1,47 @@
+# AUV 坐标系静态变换配置。
+# 平移单位：m；旋转单位：deg；坐标方向遵循 AUV 的前、右、下约定。
+static_transforms:
+  imu:
+    parent_frame: base_link
+    child_frame: imu
+    translation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+    rotation_rpy_deg:
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
+  hand:
+    parent_frame: base_link
+    child_frame: hand
+    translation:
+      x: 0.632
+      y: 0.0
+      z: 0.068
+    rotation_rpy_deg:
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
+  camera:
+    parent_frame: base_link
+    child_frame: camera
+    translation:
+      x: 0.658
+      y: -0.03
+      z: -0.21
+    rotation_rpy_deg:
+      roll: 0.0
+      pitch: 0.0
+      yaw: 90.0
+  camera_front:
+    parent_frame: base_link
+    child_frame: camera_front
+    translation:
+      x: 0.703
+      y: 0.0
+      z: -0.36
+    rotation_rpy_deg:
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
