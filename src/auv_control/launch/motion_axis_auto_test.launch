@@ -23,6 +23,9 @@
     <arg name="inter_step_stable_seconds" default="12.0" />
     <!-- X/Y 连续稳定等待的水平速度阈值，单位 m/s。 -->
     <arg name="stable_speed_threshold" default="0.03" />
+    <!-- Yaw 独立验收：实际航向误差与原始 r 绝对值须连续满足，避免仅依赖 HOVER 状态。 -->
+    <arg name="acceptance_yaw_tolerance_deg" default="5.0" />
+    <arg name="stable_yaw_rate_threshold_deg_s" default="1.0" />
     <!-- X/Y 零输出停滞必须连续满足的时间，单位 s。 -->
     <arg name="stall_detection_seconds" default="2.0" />
     <!-- X/Y 停滞诊断的水平速度阈值，单位 m/s。 -->
@@ -64,6 +67,10 @@
                value="$(arg inter_step_stable_seconds)" />
         <param name="stable_speed_threshold"
                value="$(arg stable_speed_threshold)" />
+        <param name="acceptance_yaw_tolerance_deg"
+               value="$(arg acceptance_yaw_tolerance_deg)" />
+        <param name="stable_yaw_rate_threshold_deg_s"
+               value="$(arg stable_yaw_rate_threshold_deg_s)" />
         <param name="stall_detection_seconds"
                value="$(arg stall_detection_seconds)" />
         <param name="stall_speed_threshold"

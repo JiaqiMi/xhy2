@@ -1,176 +1,260 @@
 <launch>
-    <!-- 任务3子任务1：机器人放在箭头后方约0.5米。启动后先mode3悬停10秒，
-         再低速直行搜索；稳定识别后先保持原航向让箭头居中并悬停，
-         稳定确认方向后再小步调整航向，最后通过camera与base_link的TF
-         补偿把机器人本体移动到箭头正上方。
-         底层驱动、TF和运动指令转换节点需要单独启动。 -->
+    <!--
+      任务3子任务1：识别箭头并通过motion_supervisor完成运动控制。
 
-    <!-- 主控制循环频率；提高后推力变化更新更快，但日志和控制指令也更密集。 -->
-    <arg name="rate" default="10.0" />
+      本任务节点只发布 /cmd/motion/goal 和 /cmd/motion/cancel，不发布
+      /cmd/pose/ned。motion_supervisor由基础控制系统统一启动，本任务launch
+      不重复启动；运行前只检查它已就绪且是/cmd/pose/ned的唯一发布者。
+    -->
 
-    <!-- 默认启动真正的箭头识别链路，发布 /arrow/direction JSON。
-         如果外部已经单独启动 test_arrow_detection.launch，可设为false。
-         首轮先在网页画面和逐帧日志中确认中心、角度与标签正确，再调置信度。 -->
+    <!-- rate：任务循环和绝对目标重复发布频率。调大只提高任务刷新率，不提高底层控制频率。 -->
+    <arg name="rate" default="5.0" />
+
+    <!--
+      log_interval：普通状态日志节流周期；调小可更密集观察运动状态。
+      warning_log_interval：TF、模型或反馈异常日志节流周期；调小便于短时排错。
+      每个模型有效/无效帧和连续帧进度不受这两个周期限制，会逐帧打印。
+    -->
+    <arg name="log_interval" default="1.0" />
+    <arg name="warning_log_interval" default="2.0" />
+
+    <!--
+      start_arrow_model：默认包含最新YOLO Pose箭头模型。
+      模型已在其他终端启动时设为false，避免重复启动。
+      相机和左右分割统一复用基础系统中的节点，不在这里重复创建。
+    -->
     <arg name="start_arrow_model" default="true" />
+    <!--
+      arrow_topic：Pose箭头方向JSON，需包含valid、confidence、center、bbox和angle_deg；
+      新模型还会提供tip、tail_left、tail_right和direction_confidence，当前任务无需额外解析。
+    -->
     <arg name="arrow_topic" default="/arrow/direction" />
+    <!--
+      min_confidence：Pose方向JSON中的confidence下限；该值是检测框与三个关键点
+      置信度的最小值。调大可减少不可靠方向，调小可增加弱目标召回。
+    -->
     <arg name="min_confidence" default="0.35" />
+    <!-- detection_timeout：普通位置帧最长允许间隔，也用于定点方向复核超时。 -->
     <arg name="detection_timeout" default="1.0" />
-    <!-- 无论处于等待识别还是细对准，超过5分钟仍未完成就失败退出。 -->
+    <!-- visual_loss_cancel_seconds：运动中完整箭头丢失达到该时间就cancel；必须不大于detection_timeout。 -->
+    <arg name="visual_loss_cancel_seconds" default="0.5" />
+    <!-- stable_detection_count：搜索停止后，重新锁定箭头位置需要的连续有效帧数。 -->
+    <arg name="stable_detection_count" default="3" />
+    <!-- stable_center_tolerance_px：上述连续位置帧相对平均中心允许的最大二维抖动。 -->
+    <arg name="stable_center_tolerance_px" default="40.0" />
+    <!-- stable_angle_tolerance_deg：方向连续帧相对平均角度允许的最大抖动。 -->
+    <arg name="stable_angle_tolerance_deg" default="12.0" />
+    <!-- center_stable_detection_count：粗居中、最终居中和base_link前移跟踪共用的连续帧数。 -->
+    <arg name="center_stable_detection_count" default="5" />
+    <!-- 只有完整箭头的方向连续稳定3帧，才允许从粗对准进入细对准。 -->
+    <arg name="heading_stable_detection_count" default="3" />
+    <!-- 细对准第一段中，航向和左右位置连续通过该帧数后才开放前后移动。 -->
+    <arg name="heading_aligned_detection_count" default="3" />
+
+    <!-- motion_supervisor任务接口。只在控制话题改名时修改；任务不直接设置TX/TY/MZ。 -->
+    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
+    <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
+    <arg name="motion_state_topic" default="/motion/state" />
+    <!-- motion_state_timeout：运动反馈最大允许年龄；超时后任务失败退出。 -->
+    <arg name="motion_state_timeout" default="0.5" />
+    <!-- motion_startup_timeout：启动后等待第一份有效运动反馈的最长时间。 -->
+    <arg name="motion_startup_timeout" default="10.0" />
+    <!-- cancel_timeout：发出cancel后等待刹停、模式4接管并进入HOVER的最长时间。 -->
+    <arg name="cancel_timeout" default="15.0" />
+
+    <!--
+      HOVER必须对应任务最近发布的目标，避免误用上一阶段遗留HOVER。
+      三项参数依次是MotionState.goal与最新任务目标允许的水平、深度、航向差；
+      只用于防止旧HOVER误判，不改变motion_supervisor内部控制精度。
+    -->
+    <arg name="goal_match_position_tolerance" default="0.03" />
+    <arg name="goal_match_depth_tolerance" default="0.03" />
+    <arg name="goal_match_yaw_tolerance_deg" default="2.0" />
+
+    <!-- initial_hover_seconds：固定启动点满足真实到达门槛后，需要连续保持的时间。 -->
+    <arg name="initial_hover_seconds" default="10.0" />
+    <!--
+      固定点悬停完成后的绝对路径：前0.5m，第一层左右各0.2m并回中，
+      再前0.3m，第二层左右各0.2m。任意一帧位置有效就立即cancel退出搜索。
+      三个距离依次控制第一层前进量、每层左右距离和第二次追加前进量。
+    -->
+    <arg name="search_initial_forward_distance" default="0.50" />
+    <arg name="search_lateral_distance" default="0.20" />
+    <arg name="search_second_forward_distance" default="0.30" />
+    <!-- max_wait_seconds：除最终悬停外，搜索与对准全过程的总超时。 -->
     <arg name="max_wait_seconds" default="300.0" />
 
-    <!-- 启动和搜索：先悬停10秒，再保持当时航向向前移动。
-         search_forward_force越小搜索越慢；达到1.2米仍未识别则安全失败。
-         现场先用较小前进力确认TX方向，避免识别尚未稳定时移动过快。 -->
-    <arg name="initial_hover_seconds" default="10.0" />
-    <arg name="search_forward_force" default="100.0" />
-    <arg name="max_search_distance" default="1.0" />
-    <!-- begin.launch中的static_tf_broadcaster发布base_link -> camera。 -->
-    <arg name="camera_frame" default="camera" />
-
-    <!-- 第一次看到箭头后，连续3帧的中心和角度稳定才进入细对准。 -->
-    <arg name="stable_detection_count" default="3" />
-    <arg name="stable_center_tolerance_px" default="30.0" />
-    <arg name="stable_angle_tolerance_deg" default="10.0" />
-
-    <!-- 图像中心参数。箭头模型使用左目640x480图像；目标中心比例0.5/0.5
-         表示先让下视摄像头位于箭头正上方，随后再补偿到机器人本体。 -->
+    <!--
+      粗对准只使用u误差生成左右横移目标并锁定航向；只有bbox完整留在画面内、
+      左右位置稳定且方向连续稳定后才进入细对准。细对准先禁用前后移动，
+      按实时箭头位置和方向慢速横移、转向；航向稳定后才使用v误差慢速前后居中。
+    -->
+    <!-- image_width/image_height：必须与箭头方向节点实际输入的单目图像尺寸一致。 -->
     <arg name="image_width" default="640.0" />
     <arg name="image_height" default="480.0" />
+    <!--
+      完整箭头判定：bbox四边都要留在图像内，并保留一定边缘距离；
+      bbox过小即使有角度也不用于细对准。现场箭头较大时优先调小边缘留白，
+      远距离框较小时再调小最小宽高；最小宽高加两侧留白必须能放入图像。
+    -->
+    <arg name="full_arrow_edge_margin_px" default="15.0" />
+    <arg name="full_arrow_min_bbox_width_px" default="30.0" />
+    <arg name="full_arrow_min_bbox_height_px" default="30.0" />
+    <!-- target_center_u/v_ratio：期望箭头中心占图像宽/高的比例，0.5/0.5表示正中心。 -->
     <arg name="target_center_u_ratio" default="0.5" />
     <arg name="target_center_v_ratio" default="0.5" />
+    <!-- center_tolerance_u/v_px：中心误差容差；调小更准但更容易反复修正。 -->
     <arg name="center_tolerance_u_px" default="35.0" />
     <arg name="center_tolerance_v_px" default="35.0" />
-    <!-- 中心和航向同时进入容差后，需要连续5帧有效。 -->
-    <arg name="center_stable_detection_count" default="3" />
-    <!-- 直行停止后先单独确认航向连续3帧，再开始视觉靠近。 -->
-    <arg name="heading_stable_detection_count" default="3" />
 
-    <!-- 箭头角度协议：图像右方=0度、上方=90度。默认相机图像上方对应
-         机器人前方，因此 camera_forward_angle_deg=90。
-         如果现场机器人转向与箭头相反，将 yaw_correction_sign 改为-1。 -->
+    <!--
+      粗对准只使用u误差生成左右横移小步，并等待每一步真实到达后再发下一步。
+      visual_lateral_gain_m调大响应更快；visual_min/max_step_m限制非零步长范围；
+      visual_goal_min_interval限制发目标频率；左右方向相反时只改visual_lateral_sign。
+    -->
+    <arg name="visual_lateral_gain_m" default="0.20" />
+    <arg name="visual_max_step_m" default="0.08" />
+    <arg name="visual_min_step_m" default="0.01" />
+    <!-- 限制视觉目标更新速度，防止按每一帧当前位置连续累加偏置。 -->
+    <arg name="visual_goal_min_interval" default="1.0" />
+    <!-- visual_forward_sign仅作用于细对准的v误差；前后方向相反时改为-1。 -->
+    <arg name="visual_forward_sign" default="1.0" />
+    <!-- visual_lateral_sign同时作用于粗对准、细对准和最终前移；左右相反时改为-1。 -->
+    <arg name="visual_lateral_sign" default="1.0" />
+
+    <!--
+      细对准慢速参数。fine_forward/lateral_gain_m是归一化v/u误差到米的增益；
+      fine_visual_min/max_step_m限制每次平移；fine_yaw_max_step_deg限制每次转向；
+      fine_goal_min_interval限制实时目标刷新。航向稳定前前后步长始终为0。
+      这些小目标仍统一交给motion_supervisor执行，任务节点不直接计算推力。
+    -->
+    <arg name="fine_forward_gain_m" default="0.10" />
+    <arg name="fine_lateral_gain_m" default="0.10" />
+    <arg name="fine_visual_max_step_m" default="0.03" />
+    <arg name="fine_visual_min_step_m" default="0.005" />
+    <arg name="fine_yaw_max_step_deg" default="3.0" />
+    <arg name="fine_goal_min_interval" default="0.5" />
+
+    <!--
+      camera_forward_angle_deg：图像中机器人正前方对应的箭头角度，当前协议默认90度。
+      yaw_correction_sign：机器人转向与图像角误差相反时改为-1。
+      yaw_tolerance_deg：箭头方向误差进入稳定计数的容差，默认正负10度。
+    -->
     <arg name="camera_forward_angle_deg" default="90.0" />
     <arg name="yaw_correction_sign" default="1.0" />
     <arg name="yaw_tolerance_deg" default="10.0" />
-    <!-- 航向目标从当前航向逐帧逼近。alpha越小越平滑；max_step限制每个
-         新识别帧的目标航向变化，默认3度，避免锁定后突然大角度转向。
-         转向方向错误只改yaw_correction_sign；方向正确后再调alpha和max_step。 -->
-    <arg name="yaw_target_filter_alpha" default="0.35" />
-    <arg name="yaw_target_max_step_deg" default="3.0" />
 
-    <!-- 模式3控制话题与/status/auv反馈。线速度按m/s使用；AUVData里的
-         角速度按deg/s乘0.01745329252转换为rad/s。任务接管控制后若状态或
-         TF反馈中断，会立即发布六轴附加力/力矩全0的mode3安全指令。 -->
-    <arg name="pose_cmd_topic" default="/cmd/pose/ned" />
+    <!--
+      细对准完成后，沿机器人当前前方计算0.35米的map绝对目标，使base_link
+      移动到箭头上方。前移期间仍持续读取完整箭头的位置和方向，只对最终目标
+      做慢速左右和航向修正；该偏置需按相机与base_link实际安装位置现场标定。
+    -->
+    <arg name="base_link_forward_offset" default="0.35" />
+
+    <!-- status_topic/status_timeout：深度、高度和姿态反馈话题及最大允许接收间隔。 -->
     <arg name="status_topic" default="/status/auv" />
     <arg name="status_timeout" default="0.5" />
-    <arg name="status_linear_velocity_scale" default="1.0" />
-    <arg name="status_angular_velocity_scale" default="0.01745329252" />
-
-    <!-- 视觉中心细对准：图像v误差控制前后TX，u误差控制左右TY。
-         如果现场前后移动相反，修改tx_sign；左右相反则修改ty_sign。
-         方向正确后再依次调gain、max_force、min_correction_force和force_step。 -->
-    <arg name="forward_gain" default="160.0" />
-    <arg name="lateral_gain" default="160.0" />
-    <arg name="max_forward_force" default="100.0" />
-    <arg name="max_lateral_force" default="100.0" />
-    <arg name="min_correction_force" default="35.0" />
-    <!-- 每个控制周期最大推力变化量，越小越平滑但响应越慢。 -->
-    <arg name="force_step" default="10.0" />
-    <!-- 根据实际速度施加反向力，抑制惯性和来回振荡。 -->
-    <arg name="forward_velocity_damping" default="200.0" />
-    <arg name="lateral_velocity_damping" default="200.0" />
-    <arg name="speed_deadband" default="0.03" />
-    <arg name="tx_sign" default="1.0" />
-    <arg name="ty_sign" default="1.0" />
-
-    <!-- 等待箭头和最终定点阶段的位置外环参数。
-         定点偏软时增加position_gain或hold_max_force；来回振荡时降低增益。 -->
-    <arg name="hold_forward_position_gain" default="600.0" />
-    <arg name="hold_lateral_position_gain" default="600.0" />
-    <arg name="hold_max_force" default="100.0" />
-    <arg name="hold_position_tolerance" default="0.02" />
-    <arg name="final_position_tolerance" default="0.05" />
-
-    <!-- 中心和航向达到5帧后，还必须满足以下实际停稳条件。
-         程序会逐项打印当前值、限制值和“通过/未通过”。 -->
-    <arg name="max_horizontal_speed" default="0.03" />
-    <arg name="max_vertical_speed" default="0.03" />
-    <arg name="max_yaw_rate" default="0.05" />
+    <!-- max_depth_error：任务判定真实到达和最终悬停时允许的最大深度误差。 -->
     <arg name="max_depth_error" default="0.08" />
-    <!-- 高度有效且低于0.40m时，目标只向上修正，不会继续靠近地面。 -->
+    <!-- min_ground_clearance：最低对地距离，低于该值时只向上修正目标z。 -->
     <arg name="min_ground_clearance" default="0.40" />
-
-    <!-- base_link到达箭头map坐标后连续稳定悬停10秒；30秒内无法稳定则失败。 -->
+    <!-- 候选安全z与当前目标z相差达到该值才改写目标，避免传感器噪声频繁抢占。 -->
+    <arg name="ground_clearance_goal_update_threshold" default="0.01" />
+    <!--
+      HOVER只表示控制器已完成mode4接管；任务继续检查机器人真实误差。
+      四项门槛依次是base_link水平误差、航向误差、水平速度和航向角速度上限；
+      调小判定更严格，但不会修改motion_supervisor内部控制参数。
+    -->
+    <arg name="arrival_position_tolerance" default="0.05" />
+    <arg name="arrival_yaw_tolerance_deg" default="5.0" />
+    <arg name="arrival_max_horizontal_speed" default="0.02" />
+    <arg name="arrival_max_yaw_rate_deg_s" default="0.5" />
+    <!-- final_hold_seconds：最终目标真实稳定后需要连续悬停的时间。 -->
     <arg name="final_hold_seconds" default="10.0" />
+    <!-- final_hold_timeout：进入最终悬停阶段后允许完成上述连续保持的最长时间。 -->
     <arg name="final_hold_timeout" default="30.0" />
 
-    <!-- <include if="$(arg start_arrow_model)"
-             file="$(find stereo_depth)/launch/test_arrow_detection.launch" /> -->
+    <include if="$(arg start_arrow_model)"
+             file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
+        <arg name="start_camera" value="false" />
+        <arg name="start_splitter" value="false" />
+    </include>
 
-    <!-- required=true使任务节点成功或失败退出后，同一launch启动的相机、
-         箭头模型和网页节点一起关闭。 -->
+    <!--
+      required=true保证任务成功或失败退出后关闭本launch内的箭头模型。
+      motion_supervisor由外部单独启动，因此任务退出前会先发布cancel。
+    -->
     <node pkg="auv_control"
           type="test_task3_1_acquire_area.py"
           name="test_task3_1_acquire_area"
           output="screen"
           required="true">
         <param name="rate" type="double" value="$(arg rate)" />
+        <param name="log_interval" type="double" value="$(arg log_interval)" />
+        <param name="warning_log_interval" type="double" value="$(arg warning_log_interval)" />
         <param name="arrow_topic" type="string" value="$(arg arrow_topic)" />
         <param name="min_confidence" type="double" value="$(arg min_confidence)" />
         <param name="detection_timeout" type="double" value="$(arg detection_timeout)" />
-        <param name="max_wait_seconds" type="double" value="$(arg max_wait_seconds)" />
-        <param name="initial_hover_seconds" type="double" value="$(arg initial_hover_seconds)" />
-        <param name="search_forward_force" type="double" value="$(arg search_forward_force)" />
-        <param name="max_search_distance" type="double" value="$(arg max_search_distance)" />
-        <param name="camera_frame" type="string" value="$(arg camera_frame)" />
-
+        <param name="visual_loss_cancel_seconds" type="double" value="$(arg visual_loss_cancel_seconds)" />
         <param name="stable_detection_count" type="int" value="$(arg stable_detection_count)" />
         <param name="stable_center_tolerance_px" type="double" value="$(arg stable_center_tolerance_px)" />
         <param name="stable_angle_tolerance_deg" type="double" value="$(arg stable_angle_tolerance_deg)" />
+        <param name="center_stable_detection_count" type="int" value="$(arg center_stable_detection_count)" />
+        <param name="heading_stable_detection_count" type="int" value="$(arg heading_stable_detection_count)" />
+        <param name="heading_aligned_detection_count" type="int" value="$(arg heading_aligned_detection_count)" />
+
+        <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
+        <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
+        <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />
+        <param name="motion_state_timeout" type="double" value="$(arg motion_state_timeout)" />
+        <param name="motion_startup_timeout" type="double" value="$(arg motion_startup_timeout)" />
+        <param name="cancel_timeout" type="double" value="$(arg cancel_timeout)" />
+        <param name="goal_match_position_tolerance" type="double" value="$(arg goal_match_position_tolerance)" />
+        <param name="goal_match_depth_tolerance" type="double" value="$(arg goal_match_depth_tolerance)" />
+        <param name="goal_match_yaw_tolerance_deg" type="double" value="$(arg goal_match_yaw_tolerance_deg)" />
+
+        <param name="initial_hover_seconds" type="double" value="$(arg initial_hover_seconds)" />
+        <param name="search_initial_forward_distance" type="double" value="$(arg search_initial_forward_distance)" />
+        <param name="search_lateral_distance" type="double" value="$(arg search_lateral_distance)" />
+        <param name="search_second_forward_distance" type="double" value="$(arg search_second_forward_distance)" />
+        <param name="max_wait_seconds" type="double" value="$(arg max_wait_seconds)" />
 
         <param name="image_width" type="double" value="$(arg image_width)" />
         <param name="image_height" type="double" value="$(arg image_height)" />
+        <param name="full_arrow_edge_margin_px" type="double" value="$(arg full_arrow_edge_margin_px)" />
+        <param name="full_arrow_min_bbox_width_px" type="double" value="$(arg full_arrow_min_bbox_width_px)" />
+        <param name="full_arrow_min_bbox_height_px" type="double" value="$(arg full_arrow_min_bbox_height_px)" />
         <param name="target_center_u_ratio" type="double" value="$(arg target_center_u_ratio)" />
         <param name="target_center_v_ratio" type="double" value="$(arg target_center_v_ratio)" />
         <param name="center_tolerance_u_px" type="double" value="$(arg center_tolerance_u_px)" />
         <param name="center_tolerance_v_px" type="double" value="$(arg center_tolerance_v_px)" />
-        <param name="center_stable_detection_count" type="int" value="$(arg center_stable_detection_count)" />
-        <param name="heading_stable_detection_count" type="int" value="$(arg heading_stable_detection_count)" />
+        <param name="visual_lateral_gain_m" type="double" value="$(arg visual_lateral_gain_m)" />
+        <param name="visual_max_step_m" type="double" value="$(arg visual_max_step_m)" />
+        <param name="visual_min_step_m" type="double" value="$(arg visual_min_step_m)" />
+        <param name="visual_goal_min_interval" type="double" value="$(arg visual_goal_min_interval)" />
+        <param name="visual_forward_sign" type="double" value="$(arg visual_forward_sign)" />
+        <param name="visual_lateral_sign" type="double" value="$(arg visual_lateral_sign)" />
+        <param name="fine_forward_gain_m" type="double" value="$(arg fine_forward_gain_m)" />
+        <param name="fine_lateral_gain_m" type="double" value="$(arg fine_lateral_gain_m)" />
+        <param name="fine_visual_max_step_m" type="double" value="$(arg fine_visual_max_step_m)" />
+        <param name="fine_visual_min_step_m" type="double" value="$(arg fine_visual_min_step_m)" />
+        <param name="fine_yaw_max_step_deg" type="double" value="$(arg fine_yaw_max_step_deg)" />
+        <param name="fine_goal_min_interval" type="double" value="$(arg fine_goal_min_interval)" />
+
         <param name="camera_forward_angle_deg" type="double" value="$(arg camera_forward_angle_deg)" />
         <param name="yaw_correction_sign" type="double" value="$(arg yaw_correction_sign)" />
         <param name="yaw_tolerance_deg" type="double" value="$(arg yaw_tolerance_deg)" />
-        <param name="yaw_target_filter_alpha" type="double" value="$(arg yaw_target_filter_alpha)" />
-        <param name="yaw_target_max_step_deg" type="double" value="$(arg yaw_target_max_step_deg)" />
+        <param name="base_link_forward_offset" type="double" value="$(arg base_link_forward_offset)" />
 
-        <param name="pose_cmd_topic" type="string" value="$(arg pose_cmd_topic)" />
         <param name="status_topic" type="string" value="$(arg status_topic)" />
         <param name="status_timeout" type="double" value="$(arg status_timeout)" />
-        <param name="status_linear_velocity_scale" type="double" value="$(arg status_linear_velocity_scale)" />
-        <param name="status_angular_velocity_scale" type="double" value="$(arg status_angular_velocity_scale)" />
-
-        <param name="forward_gain" type="double" value="$(arg forward_gain)" />
-        <param name="lateral_gain" type="double" value="$(arg lateral_gain)" />
-        <param name="max_forward_force" type="double" value="$(arg max_forward_force)" />
-        <param name="max_lateral_force" type="double" value="$(arg max_lateral_force)" />
-        <param name="min_correction_force" type="double" value="$(arg min_correction_force)" />
-        <param name="force_step" type="double" value="$(arg force_step)" />
-        <param name="forward_velocity_damping" type="double" value="$(arg forward_velocity_damping)" />
-        <param name="lateral_velocity_damping" type="double" value="$(arg lateral_velocity_damping)" />
-        <param name="speed_deadband" type="double" value="$(arg speed_deadband)" />
-        <param name="tx_sign" type="double" value="$(arg tx_sign)" />
-        <param name="ty_sign" type="double" value="$(arg ty_sign)" />
-
-        <param name="hold_forward_position_gain" type="double" value="$(arg hold_forward_position_gain)" />
-        <param name="hold_lateral_position_gain" type="double" value="$(arg hold_lateral_position_gain)" />
-        <param name="hold_max_force" type="double" value="$(arg hold_max_force)" />
-        <param name="hold_position_tolerance" type="double" value="$(arg hold_position_tolerance)" />
-        <param name="final_position_tolerance" type="double" value="$(arg final_position_tolerance)" />
-
-        <param name="max_horizontal_speed" type="double" value="$(arg max_horizontal_speed)" />
-        <param name="max_vertical_speed" type="double" value="$(arg max_vertical_speed)" />
-        <param name="max_yaw_rate" type="double" value="$(arg max_yaw_rate)" />
         <param name="max_depth_error" type="double" value="$(arg max_depth_error)" />
         <param name="min_ground_clearance" type="double" value="$(arg min_ground_clearance)" />
+        <param name="ground_clearance_goal_update_threshold" type="double" value="$(arg ground_clearance_goal_update_threshold)" />
+        <param name="arrival_position_tolerance" type="double" value="$(arg arrival_position_tolerance)" />
+        <param name="arrival_yaw_tolerance_deg" type="double" value="$(arg arrival_yaw_tolerance_deg)" />
+        <param name="arrival_max_horizontal_speed" type="double" value="$(arg arrival_max_horizontal_speed)" />
+        <param name="arrival_max_yaw_rate_deg_s" type="double" value="$(arg arrival_max_yaw_rate_deg_s)" />
         <param name="final_hold_seconds" type="double" value="$(arg final_hold_seconds)" />
         <param name="final_hold_timeout" type="double" value="$(arg final_hold_timeout)" />
     </node>

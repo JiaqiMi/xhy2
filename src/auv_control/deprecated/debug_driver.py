@@ -42,9 +42,17 @@ import threading
 import time
 from auv_control.msg import AUVData, AUVPose
 from functools import reduce
+from debug_protocol import (
+    DebugFrameBuffer,
+    LowPassFilter,
+    MovingAverageFilter,
+    decode_status_words,
+    require_finite,
+)
 
-class target:
-    # 用这个结构体来记录目标位置
+class ControlTarget(object):
+    """记录旧版定点控制目标。"""
+
     def __init__(self):
         self.valid = False
         self.longitude = 0.0
@@ -55,32 +63,6 @@ class target:
         self.yaw = 0.0
         self.speed = 0.0
 
-
-class LowPassFilter:
-    """一阶低通滤波器"""
-    def __init__(self, alpha=0.1):
-        self.alpha = alpha
-        self.last_value = None
-    
-    def update(self, value):
-        if self.last_value is None:
-            self.last_value = value
-            return value
-        filtered = self.alpha * value + (1 - self.alpha) * self.last_value
-        self.last_value = filtered
-        return filtered
-
-class MovingAverageFilter:
-    """移动平均滤波器"""
-    def __init__(self, window_size=5):
-        self.window_size = window_size
-        self.values = []
-    
-    def update(self, value):
-        self.values.append(value)
-        if len(self.values) > self.window_size:
-            self.values.pop(0)
-        return sum(self.values) / len(self.values)
 
 class DebugDataPacket:
     # 110字节调试协议解析结构体
@@ -115,17 +97,14 @@ class DebugDataPacket:
         self.checksum = 0               # 校验和
 
 
-class debugdriver:
-    """
-    调试串口驱动类
-    """
+class DebugDriver(object):
+    """旧版调试口驱动。"""
+
     def __init__(self, ip=None, port=None):
         # 获取参数服务器的IP和端口，默认192.168.1.115:5063
         ip = ip or rospy.get_param("~debug_ip", "192.168.1.115")
         port = port or rospy.get_param("~debug_port", 5063)
 
-        # self.saving_enable = rospy.get_param("~save_data", True)  # 是否保存数据
-        # self.saving_path = rospy.get_param("~save_path", "/home/xhy/debug_data.csv")
         self.raw_saving_enable = rospy.get_param("~save_raw_data", False)
         self.raw_save_dir = os.path.expanduser(rospy.get_param("~raw_save_dir", "~/.ros/auv_logs"))
         self.raw_save_file_name = rospy.get_param("~raw_save_file", "")
@@ -134,12 +113,12 @@ class debugdriver:
         self.raw_save_file = None
         self.server_address = (ip, port)
         self.tcp_sock = None
-        # 初始化接收缓冲区
-        self.buffer = bytearray()
         self.latest_debug_data = None
 
         self.lock = threading.Lock()
-        self.target = target()
+        self.socket_lock = threading.RLock()
+        self.connect_lock = threading.Lock()
+        self.target = ControlTarget()
         self.last_control_time = 0
         self.send_thread = None
         self.recv_thread = None
@@ -147,36 +126,13 @@ class debugdriver:
         # 初始化深度滤波器
         self.depth_lpf = LowPassFilter(alpha=0.2)  # 低通滤波器
         self.depth_ma = MovingAverageFilter(window_size=5)  # 移动平均滤波器
-        # rospy.loginfo("debug_driver: 数据保存 %s", self.saving_enable)
-        # 打开数据保存文件
-        # if self.saving_enable:
-        #     try:
-        #         self.save_file = open(self.saving_path, 'w')
-        #         # 修改CSV表头，增加滤波后的深度字段
-        #         header = "pc_timestamp,mode,temperature,control_voltage,power_current,water_leak,"
-        #         header += "sensor_status,sensor_update,fault_status,power_status,"
-        #         header += "force_cmd1,force_cmd2,force_cmd3,force_cmd4,force_cmd5,force_cmd6,"
-        #         header += "roll,pitch,yaw,"
-        #         header += "angular_vel_x,angular_vel_y,angular_vel_z,"
-        #         header += "linear_vel_x,linear_vel_y,linear_vel_z,"
-        #         header += "longitude,latitude,depth_raw,depth_lpf,depth_ma,altitude,"  # 增加滤波深度
-        #         header += "target_longitude,target_latitude,target_depth,"
-        #         header += "target_roll,target_pitch,target_yaw,"
-        #         header += "target_altitude,target_speed,"
-        #         header += "utc_year,utc_month,utc_day,utc_hour,utc_minute,utc_second\n"
-        #         self.save_file.write(header)
-        #         rospy.loginfo(f"debug_driver: 数据将保存到 {self.saving_path}")
-        #     except Exception as e:
-        #         rospy.logerr(f"debug_driver: 打开保存文件失败: {e}")
-        #         self.save_file = None
-
         if self.raw_saving_enable:
             self.open_raw_save_file()
 
         rospy.Subscriber('/auv_control', AUVPose, self.control_callback)
         self.data_pub = rospy.Publisher('/status/auv', AUVData, queue_size=10)
         self.rate = rospy.Rate(10)
-        rospy.loginfo(f"debug_driver: 已启动")
+        rospy.loginfo("debug_driver: 已启动")
 
     def open_raw_save_file(self):
         if not self.raw_save_file_name:
@@ -219,10 +175,12 @@ class debugdriver:
             data.control_voltage = struct.unpack('>h', packet[5:7])[0] / 100.0
             data.power_current = struct.unpack('>h', packet[7:9])[0] / 100.0
             data.water_leak = packet[9]
-            data.sensor_status = f"{packet[10]:08b}"[::-1][:7]
-            data.sensor_update = f"{packet[11]:08b}"[::-1][:5]
-            data.fault_status = f"{struct.unpack('>h', packet[12:14])[0]:016b}"[::-1][:9]
-            data.power_status = struct.unpack('>h', packet[14:16])[0]
+            (
+                data.sensor_status,
+                data.sensor_update,
+                data.fault_status,
+                data.power_status,
+            ) = decode_status_words(packet)
             data.force_commands = list(struct.unpack('>6h', packet[16:28]))
             data.euler_angles = [x / 100.0 for x in struct.unpack('>3h', packet[28:34])]
             data.angular_velocity = [x / 100.0 for x in struct.unpack('>3h', packet[34:40])]
@@ -231,8 +189,6 @@ class debugdriver:
             # 深度滤波处理
             raw_depth = struct.unpack('<f', packet[54:58])[0]
             data.depth = raw_depth  # 保存原始深度
-            data.depth_filtered = self.depth_lpf.update(raw_depth)  # 低通滤波
-            data.depth_ma = self.depth_ma.update(raw_depth)  # 移动平均滤波
             data.altitude = struct.unpack('<f', packet[58:62])[0]
             # data.collision_avoidance = [x / 100.0 for x in struct.unpack('>2h', packet[62:66])]
             data.target_longitude = struct.unpack('<i', packet[66:70])[0] / 10000000.0
@@ -247,42 +203,35 @@ class debugdriver:
             data.utc_time = list(packet[90:95])  # 5字节
             data.utc_time.append(struct.unpack('<f', packet[95:99])[0])  # 秒为float
             data.checksum = packet[107]
-            
-            # 保存所有解析到的数据
-            # if self.saving_enable and self.save_file:
-            #     try:
-            #         pc_time = time.time()
-            #         # 构造完整的CSV行，包含所有字段
-            #         csv_line = f"{pc_time:.6f},"  # PC时间戳
-            #         csv_line += f"{data.mode},"  # 运行模式
-            #         csv_line += f"{data.temperature:.2f},{data.control_voltage:.2f},{data.power_current:.2f},"  # 温度电压电流
-            #         csv_line += f"{data.water_leak},"  # 漏水检测
-            #         csv_line += f"{data.sensor_status},{data.sensor_update},{data.fault_status},{data.power_status},"  # 状态字
-            #         # 力和力矩
-            #         csv_line += ",".join(f"{x}" for x in data.force_commands) + ","
-            #         # 欧拉角
-            #         csv_line += f"{data.euler_angles[0]:.2f},{data.euler_angles[1]:.2f},{data.euler_angles[2]:.2f},"
-            #         # 角速度
-            #         csv_line += ",".join(f"{x:.2f}" for x in data.angular_velocity) + ","
-            #         # 线速度
-            #         csv_line += ",".join(f"{x:.2f}" for x in data.linear_velocity) + ","
-            #         # 导航坐标和深度高度（增加滤波深度）
-            #         csv_line += f"{data.navigation_coords[0]:.7f},{data.navigation_coords[1]:.7f},"
-            #         csv_line += f"{data.depth:.3f},{data.depth_filtered:.3f},{data.depth_ma:.3f},{data.altitude:.3f},"
-            #         # 目标位置和姿态
-            #         csv_line += f"{data.target_longitude:.7f},{data.target_latitude:.7f},{data.target_depth:.3f},"
-            #         csv_line += f"{data.target_roll:.2f},{data.target_pitch:.2f},{data.target_yaw:.2f},"
-            #         csv_line += f"{data.target_altitude:.3f},{data.target_speed:.2f},"
-            #         # UTC时间
-            #         csv_line += ",".join(f"{x}" for x in data.utc_time) + "\n"
-                    
-            #         self.save_file.write(csv_line)
-            #         self.save_file.flush()  # 立即写入文件
-            #     except Exception as e:
-            #         rospy.logerr(f"debug_driver: 保存数据失败: {e}")
-                    
+            require_finite(
+                (
+                    data.temperature,
+                    data.control_voltage,
+                    data.power_current,
+                    *data.euler_angles,
+                    *data.angular_velocity,
+                    *data.linear_velocity,
+                    *data.navigation_coords,
+                    data.depth,
+                    data.altitude,
+                    data.target_longitude,
+                    data.target_latitude,
+                    data.target_depth,
+                    data.target_roll,
+                    data.target_pitch,
+                    data.target_yaw,
+                    data.target_altitude,
+                    data.target_speed,
+                    data.utc_time[5],
+                ),
+                '调试报文',
+            )
+            # 仅在整包有效时推进滤波状态。
+            data.depth_filtered = self.depth_lpf.update(raw_depth)
+            data.depth_ma = self.depth_ma.update(raw_depth)
         except Exception as e:
             rospy.logerr(f"debug_driver: 数据解析错误: {e}")
+            return None
         return data
 
     def build_54_packet_from_control(self):
@@ -306,7 +255,6 @@ class debugdriver:
         # 12-15: 期望纬度，扩大1e7
         lat = int(self.target.latitude* 1e7)
         packet[12:16] = struct.pack('<i', lat)
-        # rospy.loginfo(f"{lon},{lat}")
         # 16-19: 期望深度 float32
         packet[16:20] = struct.pack('<f', self.target.depth)
         # 20-23: 期望横滚角 float32
@@ -333,109 +281,153 @@ class debugdriver:
         packet[52:54] = b'\xFD\xFD'
         return packet
 
-    def connect(self):
-        while not rospy.is_shutdown():
-            try:
-                self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.tcp_sock.connect(self.server_address)
-                self.tcp_sock.settimeout(1)
-                rospy.loginfo(f"debug_driver: TCP连接成功 {self.server_address}")
+    def _disconnect_socket(self, expected_socket=None):
+        """原子摘除并关闭当前连接；旧线程不得关闭新连接。"""
+        with self.socket_lock:
+            if (
+                    expected_socket is not None
+                    and self.tcp_sock is not expected_socket):
                 return
-            except Exception as e:
-                rospy.logwarn(f"debug_driver: TCP连接失败 {self.server_address}: {e}, 2秒后重试...")
-                rospy.sleep(2)
+            sock = self.tcp_sock
+            self.tcp_sock = None
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def connect(self):
+        with self.connect_lock:
+            while not rospy.is_shutdown():
+                with self.socket_lock:
+                    if self.tcp_sock is not None:
+                        return
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    sock.settimeout(3.0)
+                    sock.connect(self.server_address)
+                    sock.settimeout(1)
+                    if rospy.is_shutdown():
+                        sock.close()
+                        return
+                    with self.socket_lock:
+                        self.tcp_sock = sock
+                    rospy.loginfo(
+                        f"debug_driver: TCP连接成功 {self.server_address}")
+                    return
+                except Exception as e:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+                    rospy.logwarn(
+                        f"debug_driver: TCP连接失败 {self.server_address}: "
+                        f"{e}, 2秒后重试...")
+                    rospy.sleep(2)
 
     def recv_loop(self):
         # 接收循环，子线程
+        active_socket = None
+        frame_buffer = DebugFrameBuffer()
         while not rospy.is_shutdown():
+            with self.socket_lock:
+                sock = self.tcp_sock
+            if sock is None:
+                self.connect()
+                continue
+            if sock is not active_socket:
+                active_socket = sock
+                frame_buffer = DebugFrameBuffer()
             try:
-                data = self.tcp_sock.recv(512)
-                if data:
-                    self.buffer += data
-                    while len(self.buffer) >= 110:
-                        start = self.buffer.find(b'\xFE\xEF')
-                        if start == -1 or len(self.buffer) - start < 110:
-                            break
-                        if self.buffer[start+108:start+110] == b'\xFA\xAF':
-                            packet = self.buffer[start:start+110]
-                            self.buffer = self.buffer[start+110:]
-                            checksum_ok = self.calc_debug_checksum(packet) == packet[107]
-                            self.save_raw_packet(packet, checksum_ok)
-                            if checksum_ok:
-                                parsed = self.parse_debug_packet(packet)
-                                with self.lock:
-                                    self.latest_debug_data = parsed
-                                msg = AUVData()
-                                msg.header.stamp = rospy.Time.now()
-                                msg.control_mode = parsed.mode
-                                msg.pose.latitude = parsed.navigation_coords[1]
-                                msg.pose.longitude = parsed.navigation_coords[0]
-                                msg.pose.depth = parsed.depth_filtered  # 使用低通滤波后的深度
-                                msg.pose.altitude = parsed.altitude
-                                msg.pose.roll = parsed.euler_angles[0]
-                                msg.pose.pitch = parsed.euler_angles[1]
-                                msg.pose.yaw = parsed.euler_angles[2]
-                                msg.pose.speed = parsed.linear_velocity[0]
-                                msg.motor_force.TX = parsed.force_commands[0]
-                                msg.motor_force.TY = parsed.force_commands[1]
-                                msg.motor_force.TZ = parsed.force_commands[2]
-                                msg.motor_force.MX = parsed.force_commands[3]
-                                msg.motor_force.MY = parsed.force_commands[4]
-                                msg.motor_force.MZ = parsed.force_commands[5]
-                                msg.linear_velocity = parsed.linear_velocity
-                                msg.angular_velocity = parsed.angular_velocity
-                                msg.sensor.temperature = parsed.temperature
-                                msg.sensor.voltage = parsed.control_voltage
-                                msg.sensor.current = parsed.power_current
-                                msg.sensor.battery = 0
-                                msg.sensor.leak_alarm = bool(parsed.water_leak)
-                                msg.sensor.sensor_valid = int(parsed.sensor_status, 2)
-                                msg.sensor.sensor_updated = int(parsed.sensor_update, 2)
-                                msg.sensor.fault_status = int(parsed.fault_status, 2)
-                                msg.sensor.power_status = int(parsed.power_status)
-                                msg.time.year = parsed.utc_time[0]
-                                msg.time.month = parsed.utc_time[1]
-                                msg.time.day = parsed.utc_time[2]
-                                msg.time.hour = parsed.utc_time[3]
-                                msg.time.minute = parsed.utc_time[4]
-                                msg.time.second = parsed.utc_time[5]
-                                self.data_pub.publish(msg)
-                                # rospy.loginfo_throttle(2, f"DebugData published: {msg}")
-                            else:
-                                rospy.logwarn("debug_driver: 校验和错误")
-                        else:
-                            self.buffer = self.buffer[start+2:]
+                data = sock.recv(512)
+                if not data:
+                    raise ConnectionError('对端已关闭 TCP 连接')
+                with self.socket_lock:
+                    if self.tcp_sock is not sock:
+                        continue
+                for packet in frame_buffer.feed(data):
+                    checksum_ok = self.calc_debug_checksum(packet) == packet[107]
+                    self.save_raw_packet(packet, checksum_ok)
+                    if not checksum_ok:
+                        rospy.logwarn("debug_driver: 校验和错误")
+                        continue
+                    parsed = self.parse_debug_packet(packet)
+                    if parsed is None:
+                        continue
+                    with self.lock:
+                        self.latest_debug_data = parsed
+                    msg = AUVData()
+                    msg.header.stamp = rospy.Time.now()
+                    msg.control_mode = parsed.mode
+                    msg.pose.latitude = parsed.navigation_coords[1]
+                    msg.pose.longitude = parsed.navigation_coords[0]
+                    msg.pose.depth = parsed.depth_filtered
+                    msg.pose.altitude = parsed.altitude
+                    msg.pose.roll = parsed.euler_angles[0]
+                    msg.pose.pitch = parsed.euler_angles[1]
+                    msg.pose.yaw = parsed.euler_angles[2]
+                    msg.pose.speed = parsed.linear_velocity[0]
+                    msg.motor_force.TX = parsed.force_commands[0]
+                    msg.motor_force.TY = parsed.force_commands[1]
+                    msg.motor_force.TZ = parsed.force_commands[2]
+                    msg.motor_force.MX = parsed.force_commands[3]
+                    msg.motor_force.MY = parsed.force_commands[4]
+                    msg.motor_force.MZ = parsed.force_commands[5]
+                    msg.linear_velocity = parsed.linear_velocity
+                    msg.angular_velocity = parsed.angular_velocity
+                    msg.sensor.temperature = parsed.temperature
+                    msg.sensor.voltage = parsed.control_voltage
+                    msg.sensor.current = parsed.power_current
+                    msg.sensor.battery = 0
+                    msg.sensor.leak_alarm = bool(parsed.water_leak)
+                    msg.sensor.sensor_valid = parsed.sensor_status
+                    msg.sensor.sensor_updated = parsed.sensor_update
+                    msg.sensor.fault_status = parsed.fault_status
+                    msg.sensor.power_status = parsed.power_status
+                    msg.time.year = parsed.utc_time[0]
+                    msg.time.month = parsed.utc_time[1]
+                    msg.time.day = parsed.utc_time[2]
+                    msg.time.hour = parsed.utc_time[3]
+                    msg.time.minute = parsed.utc_time[4]
+                    msg.time.second = parsed.utc_time[5]
+                    self.data_pub.publish(msg)
+            except socket.timeout:
+                continue
             except Exception as e:
                 rospy.logwarn(f"debug_driver: TCP连接错误: {e}, 重连中...")
-                try:
-                    if self.tcp_sock:
-                        self.tcp_sock.close()
-                except Exception:
-                    pass
+                self._disconnect_socket(sock)
+                active_socket = None
+                frame_buffer = DebugFrameBuffer()
                 self.connect()
 
-    def control_callback(self, msg:AUVPose):
-        """
-        收到Control消息时的回调函数,将消息存储到target结构体当中
-        """
+    def control_callback(self, msg: AUVPose):
+        """原子更新旧版定点控制目标。"""
         try:
-            # 更新target结构体
-            self.target.longitude = getattr(msg, 'longitude', 0.0)
-            self.target.latitude = getattr(msg, 'latitude', 0.0)
-            self.target.depth = getattr(msg, 'depth', 0.0)
-            self.target.roll = getattr(msg, 'roll', 0.0)
-            self.target.pitch = getattr(msg, 'pitch', 0.0)
-            self.target.yaw = getattr(msg, 'yaw', 0.0)
-            self.target.speed = getattr(msg, 'speed', 0.0)
-            self.target.valid = True
-            self.last_control_time = time.time()
+            values = require_finite((
+                getattr(msg, 'longitude', 0.0),
+                getattr(msg, 'latitude', 0.0),
+                getattr(msg, 'depth', 0.0),
+                getattr(msg, 'roll', 0.0),
+                getattr(msg, 'pitch', 0.0),
+                getattr(msg, 'yaw', 0.0),
+                getattr(msg, 'speed', 0.0),
+            ), '控制目标')
+            with self.lock:
+                (
+                    self.target.longitude,
+                    self.target.latitude,
+                    self.target.depth,
+                    self.target.roll,
+                    self.target.pitch,
+                    self.target.yaw,
+                    self.target.speed,
+                ) = values
+                self.target.valid = True
+                self.last_control_time = time.time()
             rospy.loginfo_throttle(5,
                 "debug_driver: 接收到控制消息 lon=%12.7f lat=%12.7f depth=%7.2f "
                 "roll=%6.1f pitch=%6.1f yaw=%6.1f speed=%5.2f",
-                self.target.longitude, self.target.latitude,
-                self.target.depth,
-                self.target.roll, self.target.pitch, self.target.yaw,
-                self.target.speed
+                *values
             )
         except Exception as e:
             rospy.logerr(f"debug_driver: 控制消息接收错误: {e}")
@@ -444,33 +436,53 @@ class debugdriver:
         # 发送循环，子线程
         while not rospy.is_shutdown():
             now = time.time()
-            # 超过5秒未收到有效Control消息，停止发送
-            if self.target.valid and (now - self.last_control_time > 5):
-                self.target.valid = False
+            packet = None
+            target_snapshot = None
+            timed_out = False
+            with self.lock:
+                if self.target.valid and (now - self.last_control_time > 5):
+                    self.target.valid = False
+                    timed_out = True
+                if self.target.valid:
+                    packet = self.build_54_packet_from_control()
+                    target_snapshot = (
+                        self.target.longitude,
+                        self.target.latitude,
+                        self.target.depth,
+                        self.target.roll,
+                        self.target.pitch,
+                        self.target.yaw,
+                        self.target.speed,
+                    )
+            if timed_out:
                 rospy.loginfo("debug_driver: 5s未收到控制消息，停止发送！")
 
-            if self.target.valid:
-                # 构造虚拟Control.msg用于build_54_packet_from_control
+            if packet is not None:
+                sock = None
                 try:
-                    packet = self.build_54_packet_from_control()
-                    self.tcp_sock.sendall(packet)
+                    with self.socket_lock:
+                        sock = self.tcp_sock
+                    if sock is None:
+                        time.sleep(0.2)
+                        continue
+                    sock.sendall(packet)
                     rospy.loginfo_throttle(2,
                         "debug_driver: 发送扩展控制指令 lon=%12.7f lat=%12.7f depth=%7.2f "
                         "roll=%6.1f pitch=%6.1f yaw=%6.1f speed=%5.2f",
-                        self.target.longitude, self.target.latitude,
-                        self.target.depth,
-                        self.target.roll, self.target.pitch, self.target.yaw,
-                        self.target.speed
+                        *target_snapshot
                     )
                 except Exception as e:
                     rospy.logerr(f"debug_driver: 发送扩展指令包错误: {e}")
+                    self._disconnect_socket(sock)
             time.sleep(0.2)  # 5Hz
 
     def run(self):
         # 主线程，主循环
         while not rospy.is_shutdown():
             try:
-                if not self.tcp_sock:
+                with self.socket_lock:
+                    connected = self.tcp_sock is not None
+                if not connected:
                     self.connect()
                     time.sleep(2)
                     continue
@@ -489,16 +501,11 @@ class debugdriver:
                 
             except Exception as e:
                 rospy.logerr(f"debug_driver: 运行错误: {e}")
-                # 关闭现有连接
-                if self.tcp_sock:
-                    try:
-                        self.tcp_sock.close()
-                    except:
-                        pass
-                    self.tcp_sock = None
+                self._disconnect_socket()
                 time.sleep(2)
 
-        # 关闭接收和发送线程
+        # 先关闭套接字唤醒阻塞中的 recv，再等待线程退出。
+        self._disconnect_socket()
         if self.recv_thread and self.recv_thread.is_alive():
             rospy.loginfo("debug_driver: 正在关闭接收线程")
             self.recv_thread.join(timeout=1)
@@ -506,14 +513,7 @@ class debugdriver:
             rospy.loginfo("debug_driver: 正在关闭发送线程")
             self.send_thread.join(timeout=1)
         rospy.signal_shutdown("debug_driver: 节点已关闭")
-
-        # 关闭文件
-        # if self.saving_enable and self.save_file:
-        #     try:
-        #         self.save_file.close()
-        #         rospy.loginfo("debug_driver: 数据文件已保存并关闭")
-        #     except Exception as e:
-        #         rospy.logerr(f"debug_driver: 关闭数据文件失败: {e}")
+        self._disconnect_socket()
 
         if self.raw_saving_enable and self.raw_save_file:
             try:
@@ -525,7 +525,7 @@ class debugdriver:
 if __name__ == "__main__":
     try:
         rospy.init_node('debug_driver', anonymous=True)
-        handler = debugdriver()
+        handler = DebugDriver()
         handler.run()
     except rospy.ROSInterruptException:
         pass

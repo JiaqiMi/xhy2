@@ -9,6 +9,7 @@
 """
 
 import copy
+import json
 import logging
 import os
 import threading
@@ -29,6 +30,7 @@ from cv_bridge import CvBridge, CvBridgeError
 from flask import Flask, Response, abort, jsonify, send_from_directory
 from geometry_msgs.msg import TwistStamped
 from sensor_msgs.msg import Image, NavSatFix
+from std_msgs.msg import String
 
 from state_web_core import (
     ACTUATOR_MODE_NAMES,
@@ -285,6 +287,9 @@ class StateWebNode:
             "motion_state": rospy.get_param(
                 "~motion_state_topic", "/motion/state"
             ),
+            "motion_diagnostics": rospy.get_param(
+                "~motion_diagnostics_topic", "/motion/diagnostics"
+            ),
             "origin": rospy.get_param(
                 "~world_origin_topic", "/world_origin"
             ),
@@ -340,7 +345,7 @@ class StateWebNode:
         for key in (
                 "left", "right", "fisheye", "feedback", "velocity",
                 "pose_command", "actuator_command", "actuator_feedback",
-                "power", "motion_state", "origin"):
+                "power", "motion_state", "motion_diagnostics", "origin"):
             rospy.loginfo("state_web: %s 话题 %s", key, self.topics[key])
 
     def _create_subscribers(self):
@@ -394,6 +399,12 @@ class StateWebNode:
             self.topics["motion_state"],
             MotionState,
             self._motion_state_callback,
+            queue_size=1,
+        )
+        rospy.Subscriber(
+            self.topics["motion_diagnostics"],
+            String,
+            self._motion_diagnostics_callback,
             queue_size=1,
         )
         rospy.Subscriber(
@@ -556,6 +567,19 @@ class StateWebNode:
             data,
             ros_stamp=ros_stamp_sec(message.header),
         )
+
+    def _motion_diagnostics_callback(self, message):
+        """接收统一三轴控制器的 JSON 诊断快照。"""
+        try:
+            data = json.loads(message.data)
+        except (TypeError, ValueError) as error:
+            rospy.logwarn_throttle(
+                2.0, "state_web: 运动控制诊断 JSON 无效: %s", error)
+            return
+        if not isinstance(data, dict):
+            rospy.logwarn_throttle(2.0, "state_web: 运动控制诊断不是对象")
+            return
+        self._store("motion_diagnostics", data)
 
     def _origin_callback(self, message):
         """接收锁存世界原点并维护版本号。"""
@@ -754,6 +778,9 @@ class StateWebNode:
         motion_state = self._snapshot(
             "motion_state", self.state_timeout, now
         )
+        motion_diagnostics = self._snapshot(
+            "motion_diagnostics", self.state_timeout, now
+        )
         origin = self._snapshot(
             "origin", None, now, persistent=True
         )
@@ -772,6 +799,7 @@ class StateWebNode:
             "actuator_feedback": actuator_feedback,
             "power": power,
             "motion_state": motion_state,
+            "motion_diagnostics": motion_diagnostics,
             "origin": origin,
             "tf": tf_pose,
         }
@@ -808,6 +836,7 @@ class StateWebNode:
             "actuator_feedback": actuator_feedback,
             "power": power,
             "motion_state": motion_state,
+            "motion_diagnostics": motion_diagnostics,
             "origin": origin,
             "attitude": attitude,
             "topic_health": topic_health,

@@ -216,8 +216,11 @@ brake_min_mz: 100.0
 时增加以下保护：
 
 - 进入定点前必须位于 `capture_radius` 内；
-- 定点后位置误差超过 `capture_exit_radius` 时退回刹停；
-- 定点后航向误差超过 `10°` 或角速度超过 `2 deg/s` 时退回刹停；
+- 等待定点接管确认时，位置误差超过 `capture_exit_radius` 才恢复三轴跟踪，
+  在进入与退出半径之间形成滞环；
+- 定点接管后的位置、航向和速度回退阈值分别使用
+  `hover_fault_position_error`、`hover_fault_yaw_error`、
+  `hover_fault_speed` 和 `hover_fault_yaw_rate`；
 - 角速度超过停稳阈值时，航向刹车力矩绝对值不低于 `100`。
 
 ## 2026-07-18 旋转试验与杆臂修正
@@ -231,7 +234,7 @@ brake_min_mz: 100.0
   `0.043～0.057 rad/s²`；
 - 负向 yaw 使用正 MZ 刹车，实测有效角减速度约
   `0.030～0.058 rad/s²`；
-- 旧配置 `0.10 rad/s²` 高估刹转能力，导致进入 `FINAL_BRAKE` 过晚。
+- 旧配置 `0.10 rad/s²` 高估刹转能力，导致刹转介入过晚。
 - CSV 中可识别的 11 段旋转累计出现约 `151.6 s TRANSLATE` 和
   `63.4 s TRANSLATE_BRAKE`，纯旋转被杆臂误差反复打断。
 
@@ -259,8 +262,8 @@ angular_brake_acceleration_mz_negative: 0.040
 | 90° | 0.495 m |
 
 60° 和 90° 已超过或明显接近 `capture_exit_radius=0.25 m`，会触发状态机
-退出最终转向并重新平移。现在统一使用 launch 中的
-`base_to_imu_x/y/z`：
+退出最终转向并重新平移。现在统一使用 `config/auv_tf.yaml` 中的
+`static_transforms.imu.translation`：
 
 - 状态链路：由 IMU/GNSS NED 位置减去旋转后的 `base_link -> imu`
   杆臂，得到真实 `map -> base_link`；
@@ -273,124 +276,50 @@ angular_brake_acceleration_mz_negative: 0.040
 
 即使 `base_link` 已恢复与 IMU/GNSS 定位点重合，IMU 也不一定处于实际
 水平旋转中心。两个侧推正反桨差动转向后，计划正向和负向的等效旋转中心
-可以不同，因此状态机内部保留两套虚拟旋转中心。
+可以不同，因此 TF 树固定提供两套方向控制中心。
 
 ```text
-真实 TF 输入：map -> base_link -> imu
-状态机内部：base_link 位姿 + 计划方向杆臂 -> 当前虚拟旋转中心
+map -> base_link -> imu
+                -> control_link_positive
+                -> control_link_negative
 ```
 
-- `map -> base_link` 始终是外部 TF 的真实输入，不在 TF 树中动态切换
-  正负旋转中心；
+- `map -> base_link` 是唯一动态艇体 TF，两个方向控制中心都是其固定子坐标系；
 - 当前 `base_link -> imu=(0,0,0)`，状态机根据计划方向对应的
-  `control_to_imu_positive_*` 或 `control_to_imu_negative_*`
-  在内部计算虚拟旋转中心位姿和速度；
+  `control_to_imu_positive_*` 和 `control_to_imu_negative_*`
+  生成两套固定 TF，状态机直接查询已锁存的中心；
 - 任务目标仍表示最终 `base_link` 位姿，内部按最终 yaw 换算成
   当前虚拟旋转中心目标；
 - 计划方向由归一化后的最终 yaw 误差符号确定：正误差使用正向中心，
   负误差使用负向中心；
-- `ALIGN_FINAL` 和 `FINAL_BRAKE` 内保持该方向锁存。主动刹转时即使
-  实际 `MZ` 与计划方向相反，也继续使用同一中心；
+- 同一几何目标重复发布时保持该方向锁存。主动刹转时即使实际 `MZ`
+  与计划方向相反，也继续使用同一中心；
 - 最终转向固定当前虚拟旋转中心；若实际旋转中心与 IMU 存在杆臂，
   `base_link` 与 IMU 会按刚体关系沿圆弧运动；
 - `/status/vel` 视为 IMU 点速度，使用 `v_control = v_imu - ω×r`
   换算为当前计划方向旋转中心速度；
-- 新目标在平移阶段允许重新计算计划方向；进入最终转向后，5 Hz 重复发布
-  同一动作目标不会改变本次锁存方向。若新目标使状态机重新进入平移，
-  后续控制周期再按新动作的最终 yaw 选择方向。
+- 新几何目标按当时最终 yaw 误差重新选择方向；5 Hz 重复发布同一动作目标
+  不会改变本次锁存方向。
 
-旋转中心尚未标定时使用：
+### 连续多圈航向控制测试
 
-```yaml
-control_to_imu_positive_x: 0.0
-control_to_imu_positive_y: 0.0
-control_to_imu_positive_z: 0.0
-control_to_imu_negative_x: 0.0
-control_to_imu_negative_y: 0.0
-control_to_imu_negative_z: 0.0
-```
+`motion_yaw_continuous_test.launch` 只通过 `motion_supervisor` 发布
+`/cmd/motion/goal`，不直接下发 `TX/TY/MZ`。启动时锁定当前 `base_link` 的
+X/Y 和航向；滚动阶段每周期将目标航向设置为“当前航向 + 固定前视偏置”。
+累计完成指定圈数后，目标回到起始航向，并要求控制器进入 `HOVER` 且持续稳定。
 
-原地旋转标定时记录未补偿 IMU NED 位置和 yaw，拟合：
-
-```text
-p_imu(k) = p_control + R(yaw(k)) * r_control_to_imu
-```
-
-正、负计划方向各自拟合固定旋转中心 `p_control` 和水平杆臂
-`r_control_to_imu=(x,y)`。每个方向至少三圈，只使用对应方向的
-`TRACK` 样本，主动刹转样本不参与拟合。结果分别写入
-`control_to_imu_positive_*` 和 `control_to_imu_negative_*` 参数；
-两方向中心差异是物理标定结果，不再作为标定失败条件。
-
-### 低、中、高三档旋转中心自动标定
-
-标定程序按以下默认档位自动执行。`TRACK` 阶段使用表中固定 MZ，
-进入停车距离后再切换为速度反馈主动刹转：
-
-| 档位 | 正向 TRACK MZ | 负向 TRACK MZ |
-|---|---:|---:|
-| `low` | `+1000` | `-1500` |
-| `medium` | `+2000` | `-3000` |
-| `high` | `+3000` | `-4500` |
-
-负向绝对值默认为同档正向值的 `1.5` 倍。每档均按以下顺序运行：
-
-```text
-正向3圈，每90°主动刹停并回锁定初始位置
-→ 负向3圈，每90°主动刹停并回锁定初始位置
-→ 下一力矩档位
-```
-
-三档合计 `3×2×3×4=72` 个90°旋转段。每段结束必须同时满足：
-
-- 下位机反馈 `mode=4`；
-- 回到程序启动时锁定的同一个水平位置；
-- 航向到达该段目标；
-- 水平速度和角速度连续满足稳定帧数。
-
-启动命令：
+`lookahead_yaw_offset_deg` 的绝对值是前视偏置，符号表示 map 航向方向；不限定为
+90°。例如使用 +45° 偏置正向连续 3 圈：
 
 ```bash
-roslaunch auv_control rotation_center_calibration.launch \
-  target_z:=-0.9 \
-  positive_mz_levels:="[1000.0, 2000.0, 3000.0]" \
-  negative_mz_scale:=1.5
+roslaunch auv_control motion_yaw_continuous_test.launch \
+  target_z:=-0.9 turns:=3 lookahead_yaw_offset_deg:=45
 ```
 
-运行前必须停止 `motion_supervisor` 和其他 `/cmd/pose/ned` 发布者。
-正负方向的主动刹转仍使用独立刹车限幅；某段刹车时 `MZ` 反号不会改变该段
-所属的计划方向，且 `BRAKE` 样本不参与旋转中心拟合。
-
-原始 CSV 新增以下字段：
-
-- `torque_profile`：`low/medium/high`；
-- `track_mz_positive_limit`、`track_mz_negative_limit`；
-- 每周期计划方向、实际 `command_mz`、角速度、水平速度和漂移。
-
-结果 YAML 同时包含：
-
-- 三个档位各自的正、负旋转中心；
-- 每档正负方向的平均/峰值角速度、水平速度和最大漂移；
-- RMS、最大残差和质量评分；
-- 每个方向最终推荐采用的档位；
-- 顶层可直接配置给 `motion_supervisor` 的六个
-  `control_to_imu_positive/negative_*` 参数。
-
-推荐策略分别对正、负方向执行。默认优先采用 `medium`；质量评分定义为：
-
-```text
-quality_score = rms_residual + 0.25 × max_residual
-```
-
-只有当中速评分明显差于最佳档位，即超过：
-
-```text
-best_score × recommendation_degradation_ratio + recommendation_degradation_margin
-```
-
-才自动选择评分最低的档位。默认倍率为 `1.5`、绝对余量为 `0.01m`。
-低速旋转更容易受水流和推力死区影响产生漂动，因此低速结果主要用于对比，
-不会仅因偶然取得略小残差就替代中速推荐值。
+运行前 `motion_supervisor` 必须已经稳定在 `HOVER`，且不得有其他
+`/cmd/motion/goal` 发布者。测试输出 CSV 和 JSON 汇总保存至
+`~/.ros/auv_logs/motion_yaw_continuous_test`，包括航向累计量、锁定位置漂移、
+`TX/TY/MZ`、反馈角速度、控制状态和最终结果。
 
 连续目标控制不再使用整艇远近抢占。X/Y 每轴独立运行：
 

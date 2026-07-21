@@ -68,6 +68,7 @@ add_message_files(
   PoseLLAcmd.msg
   MotionState.msg
   LineDetection.msg
+  ArrowKeypoints.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -179,8 +180,9 @@ include_directories(
 ## in contrast to setup.py, you can choose the destination
 catkin_install_python(PROGRAMS
   driver/auv_tf_handler.py
-  driver/debug_driver.py
+#  driver/debug_driver.py
   driver/debug_driver_v2.py
+  driver/debug_protocol.py
   driver/lever_arm.py
   driver/map_initer.py
   driver/motion_supervisor.py
@@ -188,7 +190,6 @@ catkin_install_python(PROGRAMS
   driver/nav_driver.py
   driver/sensor_actuator_node.py
   driver/sensor_status_node.py
-  driver/static_tf_broadcaster.py
   driver/world_frame.py
   driver/world_origin_reset.py
   driver/world_origin_reset_utils.py
@@ -204,9 +205,8 @@ catkin_install_python(PROGRAMS
   test/motion_auto_sequence_core.py
   test/motion_axis_auto_test.py
   test/motion_goal_test.py
-  test/rotation_center_calibration.py
-  test/rotation_center_continuous_calibration.py
-  test/rotation_center_calibration_core.py
+  test/motion_yaw_continuous_test.py
+  test/task1_v3_yaml_logger.py
   test/test_task1_v2_black_marker.py
   test/test_task1_v2_line_fitting.py
   test/test_task1_v2_line_follow.py
@@ -218,7 +218,6 @@ catkin_install_python(PROGRAMS
   test/test_task1_v3_los_square.py
   test/test_task1_v3_yellow_marker.py
   test/test_task3_1_acquire_area.py
-  test/test_task3_1_acquire_area_motion.py
   test/test_task3_2_get_task.py
   test/test_task3_3_inspect_and_drop.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -259,10 +258,3 @@ install(DIRECTORY launch config docs
 # if(TARGET ${PROJECT_NAME}-test)
 #   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
 # endif()
-
-## Add folders to be run by python nosetests
-if(CATKIN_ENABLE_TESTING)
-  catkin_add_nosetests(test/test_motion_auto_sequence_core.py)
-  catkin_add_nosetests(test/test_motion_supervisor_core.py)
-  catkin_add_nosetests(test/test_rotation_center_calibration_core.py)
-endif()

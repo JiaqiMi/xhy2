@@ -7,6 +7,8 @@
     <arg name="repetitions" default="3" />
     <arg name="action_timeout" default="120.0" />
     <arg name="hover_hold_seconds" default="2.0" />
+    <arg name="acceptance_yaw_tolerance_deg" default="5.0" />
+    <arg name="stable_yaw_rate_threshold_deg_s" default="1.0" />
 
     <include file="$(find auv_control)/launch/motion_axis_auto_test.launch">
         <arg name="axis" value="yaw" />
@@ -14,5 +16,9 @@
         <arg name="repetitions" value="$(arg repetitions)" />
         <arg name="action_timeout" value="$(arg action_timeout)" />
         <arg name="hover_hold_seconds" value="$(arg hover_hold_seconds)" />
+        <arg name="acceptance_yaw_tolerance_deg"
+             value="$(arg acceptance_yaw_tolerance_deg)" />
+        <arg name="stable_yaw_rate_threshold_deg_s"
+             value="$(arg stable_yaw_rate_threshold_deg_s)" />
     </include>
 </launch>

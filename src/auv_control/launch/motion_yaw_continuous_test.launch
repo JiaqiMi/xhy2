@@ -1,0 +1,42 @@
+<launch>
+    <!--
+      通过 motion_supervisor 执行连续多圈原地转向。
+      运行阶段持续发布“当前航向 + lookahead_yaw_offset_deg”，达到 turns 圈后
+      切换为起始航向的最终定点目标并等待 HOVER。全程锁定起始 base_link 位置。
+    -->
+    <arg name="target_z" default="-0.9" />
+    <arg name="turns" default="3" />
+    <!-- 正值为 map 航向正方向，负值为反方向；绝对值为滚动前视偏置。 -->
+    <arg name="lookahead_yaw_offset_deg" default="90.0" />
+    <arg name="publish_rate_hz" default="10.0" />
+    <arg name="startup_timeout" default="60.0" />
+    <arg name="rotation_timeout" default="600.0" />
+    <arg name="final_hold_seconds" default="2.0" />
+    <arg name="feedback_timeout" default="0.5" />
+    <arg name="position_tolerance" default="0.10" />
+    <arg name="horizontal_speed_threshold" default="0.03" />
+    <arg name="yaw_tolerance_deg" default="5.0" />
+    <arg name="yaw_rate_threshold_deg_s" default="1.0" />
+    <arg name="log_directory"
+         default="$(env HOME)/.ros/auv_logs/motion_yaw_continuous_test" />
+
+    <node pkg="auv_control" type="motion_yaw_continuous_test.py"
+          name="motion_yaw_continuous_test" output="screen">
+        <param name="target_z" value="$(arg target_z)" />
+        <param name="turns" value="$(arg turns)" />
+        <param name="lookahead_yaw_offset_deg"
+               value="$(arg lookahead_yaw_offset_deg)" />
+        <param name="publish_rate_hz" value="$(arg publish_rate_hz)" />
+        <param name="startup_timeout" value="$(arg startup_timeout)" />
+        <param name="rotation_timeout" value="$(arg rotation_timeout)" />
+        <param name="final_hold_seconds" value="$(arg final_hold_seconds)" />
+        <param name="feedback_timeout" value="$(arg feedback_timeout)" />
+        <param name="position_tolerance" value="$(arg position_tolerance)" />
+        <param name="horizontal_speed_threshold"
+               value="$(arg horizontal_speed_threshold)" />
+        <param name="yaw_tolerance_deg" value="$(arg yaw_tolerance_deg)" />
+        <param name="yaw_rate_threshold_deg_s"
+               value="$(arg yaw_rate_threshold_deg_s)" />
+        <param name="log_directory" value="$(arg log_directory)" />
+    </node>
+</launch>

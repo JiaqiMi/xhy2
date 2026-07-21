@@ -1,32 +1,44 @@
 <launch>
-    <!-- 箭头识别：YOLO bbox -> 鲁棒二维方向估计 -> 连续话题 -> Web -->
+    <!--
+        YOLO Pose箭头识别：
+        左图 -> Pose模型 -> tip/tail_left/tail_right
+             -> 直接计算二维方向 -> 连续话题 -> Web
+
+        本launch不使用阈值分割、形态学、轮廓或PCA。
+    -->
 
     <arg name="start_camera" default="false" />
-    <arg name="start_splitter" default="false" />
+    <arg name="start_splitter" default="true" />
     <arg name="start_web" default="true" />
 
+    <!-- 请将训练得到的best.pt复制并重命名到该位置 -->
     <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/arrow0717.pt" />
-    <arg name="conf_thre" default="0.2" />
+         default="/home/xhy/catkin_ws/models/arrow_pose0720.pt" />
+    <arg name="conf_thre" default="0.10" />
+    <arg name="keypoint_conf_thre" default="0.1" />
     <arg name="top_k" default="3" />
     <arg name="rate" default="5.0" />
+    <arg name="imgsz" default="640" />
+    <arg name="device" default="0" />
     <arg name="visualization" default="0" />
     <arg name="web_port" default="8080" />
 
-    <!--
-        1 Hz rosbag回放建议 1.5~2.0 s；
-        5 Hz实时输入可设置 0.8~1.0 s。
-    -->
-    <arg name="bbox_timeout" default="1.5" />
+    <!-- 1 Hz rosbag建议1.5~2.0；实时5 Hz可设0.8~1.0 -->
+    <arg name="keypoint_timeout" default="1.5" />
     <arg name="max_sync_dt" default="1.2" />
+    <arg name="min_direction_length_px" default="15.0" />
 
-    <!-- 相机 -->
+    <arg name="input_topic" default="/left/image_raw" />
+
+    <!-- ================= 相机 ================= -->
+
     <node if="$(arg start_camera)"
           name="usb_cam"
           pkg="usb_cam"
           type="usb_cam_node"
           output="screen"
           launch-prefix="bash -c 'exec &quot;$0&quot; &quot;$@&quot; 2>/dev/null'">
+
         <param name="video_device" value="/dev/video0" />
         <param name="pixel_format" value="mjpeg" />
         <param name="image_width" value="1280" />
@@ -40,48 +52,57 @@
           name="split_stereo_image"
           output="screen" />
 
-    <!-- YOLO箭头检测：发布bbox -->
+    <!-- ================= YOLO Pose ================= -->
+
     <node pkg="yolo_bridge"
-          type="yolo_wrapper.sh"
-          name="yolo_unified_detector"
+          type="yolo_pose_arrow_wrapper.sh"
+          name="yolo_arrow_pose_detector"
           output="screen"
           launch-prefix="bash">
 
-        <env name="NODE_NAME" value="/yolo_unified_detector" />
+        <env name="NODE_NAME"
+             value="/yolo_arrow_pose_detector" />
 
-        <param name="task_mode" value="detect" />
-        <param name="detect_mode" value="4" />
-        <param name="model_path" value="$(arg model_path)" />
-        <param name="top_k" value="$(arg top_k)" />
-        <param name="visualization" value="$(arg visualization)" />
-        <param name="conf_thre" value="$(arg conf_thre)" />
-        <param name="detc_type" value="bbox" />
-        <param name="output_type" value="quartiles" />
-        <param name="infer_rate" value="$(arg rate)" />
+        <param name="model_path"
+               value="$(arg model_path)" />
+        <param name="top_k"
+               value="$(arg top_k)" />
+        <param name="visualization"
+               value="$(arg visualization)" />
+        <param name="conf_thre"
+               value="$(arg conf_thre)" />
+        <param name="keypoint_conf_thre"
+               value="$(arg keypoint_conf_thre)" />
+        <param name="infer_rate"
+               value="$(arg rate)" />
+        <param name="imgsz"
+               value="$(arg imgsz)" />
+        <param name="device"
+               value="$(arg device)" />
 
-        <param name="input_topic" value="/left/image_raw" />
+        <param name="input_topic"
+               value="$(arg input_topic)" />
         <param name="annotated_topic"
                value="/yolo_unified/annotated_image" />
         <param name="web_topic"
                value="/web/detections" />
-        <param name="center_topic"
-               value="/yolo_unified/target_center" />
+        <param name="keypoint_topic"
+               value="/yolo_unified/arrow_keypoints" />
         <param name="bbox_topic"
                value="/yolo_unified/target_bbox" />
-        <param name="line_topic"
-               value="/yolo_unified/line_bbox" />
     </node>
 
-    <!-- 改进版二维箭头方向节点 -->
+    <!-- ================= 三关键点方向计算 ================= -->
+
     <node pkg="stereo_depth"
-          type="arrow_direction_node_v2.py"
-          name="arrow_direction_node"
+          type="arrow_pose_direction_node.py"
+          name="arrow_pose_direction_node"
           output="screen">
 
         <param name="image_topic"
-               value="/left/image_raw" />
-        <param name="bbox_topic"
-               value="/yolo_unified/target_bbox" />
+               value="$(arg input_topic)" />
+        <param name="keypoint_topic"
+               value="/yolo_unified/arrow_keypoints" />
         <param name="target_class_name"
                value="arrow" />
 
@@ -98,42 +119,25 @@
 
         <param name="publish_rate"
                value="$(arg rate)" />
-        <param name="bbox_timeout"
-               value="$(arg bbox_timeout)" />
+        <param name="keypoint_timeout"
+               value="$(arg keypoint_timeout)" />
         <param name="max_sync_dt"
                value="$(arg max_sync_dt)" />
-
-        <param name="bbox_margin_ratio"
-               value="0.08" />
-        <param name="min_bbox_size"
-               value="20" />
-        <param name="min_contour_area"
-               value="30.0" />
-        <param name="min_contour_fill_ratio"
-               value="0.1" />
-        <param name="max_contour_fill_ratio"
-               value="0.90" />
-
-        <!-- 自动在otsu/adaptive/combined/dark中选择最佳轮廓 -->
-        <param name="threshold_mode"
-               value="combined" />
-        <param name="dark_threshold_offset"
-               value="12.0" />
-
-        <!-- 仅在方向证据较弱时抑制随机180度翻转 -->
-        <param name="direction_flip_confidence"
-               value="0.18" />
-        <param name="direction_memory_sec"
-               value="5.0" />
-
+        <param name="min_keypoint_confidence"
+               value="$(arg keypoint_conf_thre)" />
+        <param name="min_direction_length_px"
+               value="$(arg min_direction_length_px)" />
         <param name="visualization"
                value="$(arg visualization)" />
     </node>
 
+    <!-- ================= Web ================= -->
+
     <include if="$(arg start_web)"
              file="$(find vision_web)/launch/vision_web_v2.launch">
 
-        <arg name="port" value="$(arg web_port)" />
+        <arg name="port"
+             value="$(arg web_port)" />
         <arg name="image_topic"
              value="/arrow/annotated_image" />
         <arg name="detection_topic"

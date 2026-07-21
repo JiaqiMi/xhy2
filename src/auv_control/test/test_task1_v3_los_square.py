@@ -29,6 +29,13 @@
     轨迹和 LOS 改用双目摄像头位置，控制目标按 TF 杆臂补偿回 base_link；
     当前航点的位置与目标航向同时满足门槛后才顺序推进。
     控制周期完整诊断使用 logdebug，控制台 loginfo 只保留阶段和节流摘要。
+2026.7.20
+    Web 改为 Reset 原点下的 NED 俯视图并固定比例尺，支持滚轮缩放和拖动；
+    轨迹、机器人和目标显示 base_link，实际 camera 位置作为航向箭头终点。
+    航点改为先到达并定点，再对准下一航点；四个正方形拐角强制成为航点。
+2026.7.20
+    增加带时间戳的 YAML 数据文件，定期保存固定轨迹、机器人位姿、LOS目标、
+    监督器状态和已完成路径，便于复盘控制过程。
 """
 
 import copy
@@ -42,6 +49,7 @@ import tf
 from auv_control.msg import MotionState
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import Empty, String
+from task1_v3_yaml_logger import TimestampedYamlLogger
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
@@ -79,23 +87,26 @@ body{margin:0;background:#101820;color:#eef;font-family:Arial,"Microsoft YaHei"}
 header{padding:12px 18px;background:#172630}canvas{display:block;margin:16px auto;background:#f7fbfd;border-radius:8px}
 #s{margin-left:25px;color:#bcd0d8}.legend{font-size:13px;color:#bcd0d8;margin-top:8px}.legend span{margin-right:18px}
 </style></head><body><header><b>Task1 LOS 固定正方形测试</b><span id="s">等待数据</span>
-<div class="legend"><span>红线：固定正方形轨迹</span><span>蓝线：双目摄像头实际轨迹</span>
-<span>青色箭头：双目位置/机器人航向</span><span>紫点：LOS 当前跟踪点</span></div></header>
+<div class="legend"><span>红线：base_link 固定正方形轨迹</span><span>蓝线：base_link 实际轨迹</span>
+<span>青色圆点→箭头：base_link→camera</span><span>紫点：当前 base_link 目标</span><span>滚轮缩放，拖动平移</span></div></header>
 <canvas id="c" width="960" height="680"></canvas><script>
-const c=document.getElementById('c'),x=c.getContext('2d'),p=45;let k=1,mx=0,my=0;
-function q(a){return[p+(a[0]-mx)*k,c.height-p-(a[1]-my)*k]}
+const c=document.getElementById('c'),x=c.getContext('2d');let k=70,ox=90,oy=c.height-80,last={};
+function q(a){return[ox+a[1]*k,oy-a[0]*k]}
 function line(a,col,w){if(!a||a.length<2)return;x.beginPath();a.forEach((v,i)=>{let z=q(v);i?x.lineTo(...z):x.moveTo(...z)});x.strokeStyle=col;x.lineWidth=w;x.stroke()}
 function dot(a,col,r){if(!a)return;let z=q(a);x.beginPath();x.arc(z[0],z[1],r,0,7);x.fillStyle=col;x.fill()}
 function tag(a,text,col){if(!a)return;let z=q(a);x.fillStyle=col;x.font='bold 13px Arial';x.fillText(text,z[0]+7,z[1]-7)}
-function arrow(a,yawDeg){if(!a)return;let z=q(a),r=yawDeg*Math.PI/180,L=34,ex=z[0]+L*Math.cos(r),ey=z[1]-L*Math.sin(r),h=9;
-x.beginPath();x.moveTo(z[0],z[1]);x.lineTo(ex,ey);x.strokeStyle='#00a9c7';x.lineWidth=4;x.stroke();
-x.beginPath();x.moveTo(ex,ey);x.lineTo(ex-h*Math.cos(r-.55),ey+h*Math.sin(r-.55));x.moveTo(ex,ey);x.lineTo(ex-h*Math.cos(r+.55),ey+h*Math.sin(r+.55));x.stroke()}
-function draw(d){let a=[...(d.planned_path||[]),...(d.actual_path||[])];if(d.robot)a.push(d.robot);if(d.tracking_point)a.push(d.tracking_point);
-x.clearRect(0,0,c.width,c.height);if(!a.length)return;let xs=a.map(v=>v[0]),ys=a.map(v=>v[1]),xx=Math.max(...xs)+.2,yy=Math.max(...ys)+.2;
-mx=Math.min(...xs)-.2;my=Math.min(...ys)-.2;k=Math.min((c.width-2*p)/Math.max(.5,xx-mx),(c.height-2*p)/Math.max(.5,yy-my));
-line(d.planned_path,'#e74c3c',4);line(d.actual_path,'#1677ff',3);dot(d.tracking_point,'#9b2cff',7);tag(d.tracking_point,'LOS','#6f13ba');dot(d.robot,'#00cfe8',8);arrow(d.robot,d.robot_yaw_deg||0);
-document.getElementById('s').textContent=`任务 ${d.state}　监督器 ${d.motion_state??'-'}　固定轨迹 是　航向 ${(d.robot_yaw_deg||0).toFixed(1)}°　已完成 ${d.completed_length||0}/${d.total_length||0} m　监督器力 ${d.tx||0}/${d.ty||0}/${d.mz||0}`}
-async function t(){try{draw(await(await fetch('/data',{cache:'no-store'})).json())}catch(e){}setTimeout(t,500)}t();
+function nice(v){let p=10**Math.floor(Math.log10(Math.max(v,.01))),n=v/p;return(n<=1?1:n<=2?2:n<=5?5:10)*p}
+function grid(){let minN=(oy-c.height)/k,maxN=oy/k,minE=-ox/k,maxE=(c.width-ox)/k,st=nice(Math.max(maxN-minN,maxE-minE)/8);x.font='11px Arial';x.lineWidth=1;
+for(let n=Math.ceil(minN/st)*st;n<=maxN+1e-9;n+=st){let y=q([n,0])[1];x.strokeStyle=Math.abs(n)<1e-9?'#71848d':'#dce6ea';x.beginPath();x.moveTo(0,y);x.lineTo(c.width,y);x.stroke();x.fillStyle='#52646d';x.fillText(`N ${n.toFixed(1)}`,5,y-4)}
+for(let e=Math.ceil(minE/st)*st;e<=maxE+1e-9;e+=st){let z=q([0,e]);x.strokeStyle=Math.abs(e)<1e-9?'#71848d':'#dce6ea';x.beginPath();x.moveTo(z[0],0);x.lineTo(z[0],c.height);x.stroke();x.fillStyle='#52646d';x.fillText(`E ${e.toFixed(1)}`,z[0]+4,c.height-7)}
+if(ox>=0&&ox<=c.width){x.fillStyle='#263942';x.font='bold 13px Arial';x.fillText('N / North',ox+8,16)}if(oy>=0&&oy<=c.height){x.fillStyle='#263942';x.font='bold 13px Arial';x.fillText('E / East',c.width-68,oy-8)}let o=q([0,0]);if(o[0]>=0&&o[0]<=c.width&&o[1]>=0&&o[1]<=c.height){dot([0,0],'#111',5);tag([0,0],'Reset O(0,0)','#111')}x.fillStyle='#52646d';x.fillText(`${k.toFixed(0)} px/m`,c.width-72,18)}
+function bodyArrow(base,camera){if(!base||!camera)return;let a=q(base),b=q(camera),r=Math.atan2(b[1]-a[1],b[0]-a[0]),h=10;x.strokeStyle='#00a9c7';x.lineWidth=4;x.beginPath();x.moveTo(...a);x.lineTo(...b);x.stroke();x.beginPath();x.moveTo(...b);x.lineTo(b[0]-h*Math.cos(r-.55),b[1]-h*Math.sin(r-.55));x.moveTo(...b);x.lineTo(b[0]-h*Math.cos(r+.55),b[1]-h*Math.sin(r+.55));x.stroke();dot(camera,'#00a9c7',4)}
+function draw(d){last=d;x.clearRect(0,0,c.width,c.height);grid();line(d.planned_path,'#e74c3c',4);line(d.actual_path,'#1677ff',3);dot(d.tracking_point,'#9b2cff',7);tag(d.tracking_point,'目标','#6f13ba');dot(d.robot,'#00cfe8',8);bodyArrow(d.robot,d.camera);
+document.getElementById('s').textContent=`任务 ${d.state}/${d.los_phase||'-'}　监督器 ${d.motion_state??'-'}　base航向 ${(d.robot_yaw_deg||0).toFixed(1)}°　D(base/camera) ${(d.robot_down??0).toFixed(2)}/${(d.camera_down??0).toFixed(2)} m　已完成 ${d.completed_length||0}/${d.total_length||0} m　监督器力 ${d.tx||0}/${d.ty||0}/${d.mz||0}`}
+function pos(e){let r=c.getBoundingClientRect();return[(e.clientX-r.left)*c.width/r.width,(e.clientY-r.top)*c.height/r.height]}
+c.addEventListener('wheel',e=>{e.preventDefault();let m=pos(e),old=k,ne=(m[0]-ox)/old,nn=(oy-m[1])/old;k=Math.max(10,Math.min(500,k*(e.deltaY<0?1.15:1/1.15)));ox=m[0]-ne*k;oy=m[1]+nn*k;draw(last)},{passive:false});
+let drag=false,pm=null;c.addEventListener('mousedown',e=>{drag=true;pm=pos(e)});window.addEventListener('mouseup',()=>drag=false);window.addEventListener('mousemove',e=>{if(!drag)return;let m=pos(e);ox+=m[0]-pm[0];oy+=m[1]-pm[1];pm=m;draw(last)});
+async function t(){try{draw(await(await fetch('/data',{cache:'no-store'})).json())}catch(e){}setTimeout(t,500)}draw({});t();
 </script></body></html>"""
 
 
@@ -140,6 +151,8 @@ class LosSquareTest:
     FOLLOW = "FOLLOW"
     HOLD_END = "HOLD_END"
     FINISH = "FINISH"
+    LOS_MOVE = "MOVE_TO_WAYPOINT"
+    LOS_ALIGN = "ALIGN_AT_WAYPOINT"
 
     def __init__(self):
         self.rate = rospy.Rate(float(rospy.get_param("~rate", 5.0)))
@@ -173,6 +186,9 @@ class LosSquareTest:
         self.trajectory_topic = rospy.get_param(
             "~trajectory_topic", "/task1/v3/los_square/trajectory"
         )
+        self.log_directory = rospy.get_param(
+            "~log_directory", "~/.ros/auv_logs/task1"
+        )
 
         self.square_side_length = max(0.1, float(rospy.get_param(
             "~square_side_length", 1.0
@@ -203,6 +219,9 @@ class LosSquareTest:
                 "~los_waypoint_yaw_tolerance_deg", 10.0
             )),
         ))
+        self.los_waypoint_hold_seconds = max(0.0, float(rospy.get_param(
+            "~los_waypoint_hold_seconds", 0.5
+        )))
 
         self.endpoint_path_tolerance = max(0.0, float(rospy.get_param(
             "~endpoint_path_tolerance", 0.15
@@ -279,6 +298,9 @@ class LosSquareTest:
         self.active_los_target_s = None
         self.active_los_target = None
         self.active_los_yaw = None
+        self.active_los_move_yaw = None
+        self.active_los_phase = None
+        self.active_los_hold_started = None
         self.last_los_goal = None
         self.tracking_lever_arm = None
         self.end_goal = None
@@ -286,9 +308,46 @@ class LosSquareTest:
         self.latest_motion_state = None
         self.last_motion_goal = None
         self.cancel_sent = False
-        rospy.on_shutdown(self.cancel_motion)
         self.actual_trajectory = []
         self.last_trajectory_publish_time = rospy.Time(0)
+        self.data_logger = None
+        self.open_data_log()
+        rospy.on_shutdown(self.shutdown)
+
+    def open_data_log(self):
+        try:
+            self.data_logger = TimestampedYamlLogger(
+                NODE_NAME, self.log_directory
+            )
+            self.write_data_record(
+                "startup",
+                log_directory=self.log_directory,
+                square_side_length=self.square_side_length,
+                los_lookahead_distance=self.los_lookahead_distance,
+            )
+            rospy.loginfo(
+                "%s: 完整数据文件=%s", NODE_NAME, self.data_logger.path
+            )
+        except OSError as error:
+            self.data_logger = None
+            rospy.logwarn("%s: 无法创建完整数据文件: %s", NODE_NAME, error)
+
+    def shutdown(self):
+        self.cancel_motion()
+        if self.data_logger is not None:
+            self.data_logger.close()
+            self.data_logger = None
+
+    def write_data_record(self, event, **data):
+        if self.data_logger is None:
+            return
+        data.setdefault("state", self.state)
+        try:
+            self.data_logger.write(event, **data)
+        except (OSError, TypeError, ValueError) as error:
+            rospy.logwarn_throttle(
+                5.0, "%s: 完整数据写入失败: %s", NODE_NAME, error
+            )
 
     def motion_state_callback(self, message):
         self.latest_motion_state = copy.deepcopy(message)
@@ -400,7 +459,7 @@ class LosSquareTest:
         )
         self.planned_path_s = self.cumulative_distance(self.planned_path)
         self.current_tracking_point = copy.deepcopy(self.planned_path[0])
-        self.actual_trajectory.append(copy.deepcopy(tracking.pose.position))
+        self.actual_trajectory.append(copy.deepcopy(current.pose.position))
         rospy.loginfo(
             "%s: 双目起点=(%.2f, %.2f, %.2f)，初始航向=%.1f deg，"
             "正方形边长=%.2f m，总轨迹=%.2f m",
@@ -424,6 +483,13 @@ class LosSquareTest:
 
     def make_tracking_goal(self, camera_point, target_yaw):
         """把 map 下的摄像头 XY 目标补偿为 base_link 控制目标。"""
+        base_point = self.tracking_point_to_base_point(camera_point, target_yaw)
+        if base_point is None:
+            return None
+        return self.make_pose(base_point.x, base_point.y, target_yaw)
+
+    def tracking_point_to_base_point(self, camera_point, target_yaw):
+        """按目标航向将 camera 轨迹点换算为 base_link 轨迹点。"""
         lever_arm = self.get_tracking_lever_arm()
         if lever_arm is None:
             return None
@@ -431,11 +497,29 @@ class LosSquareTest:
         sine = math.sin(target_yaw)
         offset_x = cosine * lever_arm[0] - sine * lever_arm[1]
         offset_y = sine * lever_arm[0] + cosine * lever_arm[1]
-        return self.make_pose(
+        return Point(
             camera_point.x - offset_x,
             camera_point.y - offset_y,
-            target_yaw,
+            camera_point.z,
         )
+
+    def tracking_curve_to_base_points(self, points):
+        """生成仅供 Web 显示的 base_link 正方形轨迹。"""
+        if len(points) < 2:
+            return []
+        converted = []
+        for index, point in enumerate(points):
+            if index < len(points) - 1:
+                other = points[index + 1]
+                yaw = math.atan2(other.y - point.y, other.x - point.x)
+            else:
+                other = points[index - 1]
+                yaw = math.atan2(point.y - other.y, point.x - other.x)
+            base_point = self.tracking_point_to_base_point(point, yaw)
+            if base_point is None:
+                return []
+            converted.append(base_point)
+        return converted
 
     def publish_motion_goal(self, target):
         goal = copy.deepcopy(target)
@@ -556,18 +640,40 @@ class LosSquareTest:
         ))
         return math.atan2(target.y - previous.y, target.x - previous.x)
 
+    def next_waypoint_s(self, current_s):
+        """前视航点不能跨过正方形拐角。"""
+        path_end_s = self.planned_path_s[-1]
+        proposed = min(path_end_s, current_s + self.los_lookahead_distance)
+        for corner_index in range(1, 5):
+            corner_s = min(path_end_s, corner_index * self.square_side_length)
+            if current_s + 1e-6 < corner_s < proposed - 1e-6:
+                return corner_s
+        return proposed
+
+    def yaw_to_next_waypoint(self, target_s):
+        """到点后使用当前航点到下一航点的方向对向。"""
+        target = self.point_at_path_s(target_s)
+        next_s = self.next_waypoint_s(target_s)
+        next_point = self.point_at_path_s(next_s)
+        if xy_distance(target, next_point) > 1e-6:
+            return math.atan2(next_point.y - target.y, next_point.x - target.x)
+        return self.path_yaw_at_s(target_s)
+
     def clear_active_los_target(self):
         self.active_los_target_s = None
         self.active_los_target = None
         self.active_los_yaw = None
+        self.active_los_move_yaw = None
+        self.active_los_phase = None
+        self.active_los_hold_started = None
 
-    def record_actual_trajectory(self, tracking):
+    def record_actual_trajectory(self, current):
         if (
             not self.actual_trajectory
-            or xy_distance(tracking.pose.position, self.actual_trajectory[-1])
+            or xy_distance(current.pose.position, self.actual_trajectory[-1])
             >= self.actual_path_min_spacing
         ):
-            self.actual_trajectory.append(copy.deepcopy(tracking.pose.position))
+            self.actual_trajectory.append(copy.deepcopy(current.pose.position))
             if len(self.actual_trajectory) > self.actual_path_max_points:
                 self.actual_trajectory = self.actual_trajectory[
                     -self.actual_path_max_points:
@@ -599,7 +705,8 @@ class LosSquareTest:
         endpoint_yaw = self.path_yaw_at_s(self.planned_path_s[-1])
         endpoint_yaw_error = abs(wrap_angle(endpoint_yaw - current_yaw))
         if (
-            remaining <= self.endpoint_path_tolerance
+            self.active_los_target is None
+            and remaining <= self.endpoint_path_tolerance
             and endpoint_distance <= self.endpoint_position_tolerance
             and endpoint_yaw_error <= self.los_waypoint_yaw_tolerance
         ):
@@ -607,41 +714,72 @@ class LosSquareTest:
             return
 
         if self.active_los_target is None:
-            self.active_los_target_s = min(
-                self.planned_path_s[-1],
-                self.current_path_s + self.los_lookahead_distance,
-            )
+            self.active_los_target_s = self.next_waypoint_s(self.current_path_s)
             self.active_los_target = self.point_at_path_s(
                 self.active_los_target_s
             )
-            self.active_los_yaw = self.path_yaw_at_s(
+            self.active_los_yaw = self.yaw_to_next_waypoint(
                 self.active_los_target_s
             )
+            self.active_los_move_yaw = current_yaw
+            self.active_los_phase = self.LOS_MOVE
+            self.active_los_hold_started = None
 
         self.current_tracking_point = copy.deepcopy(self.active_los_target)
         position_error = xy_distance(
             tracking.pose.position, self.active_los_target
         )
-        yaw_error = abs(wrap_angle(self.active_los_yaw - current_yaw))
-        commanded_goal = self.publish_los_goal(
-            self.active_los_target, self.active_los_yaw
+        desired_yaw = (
+            self.active_los_move_yaw
+            if self.active_los_phase == self.LOS_MOVE
+            else self.active_los_yaw
         )
+        yaw_error = abs(wrap_angle(desired_yaw - current_yaw))
+        commanded_goal = self.publish_los_goal(self.active_los_target, desired_yaw)
         if commanded_goal is None:
             return
 
-        if (
+        if self.active_los_phase == self.LOS_MOVE:
+            position_stable = (
+                position_error <= self.endpoint_position_tolerance
+                and self.motion_arrived(commanded_goal)
+            )
+            if position_stable:
+                if self.active_los_hold_started is None:
+                    self.active_los_hold_started = rospy.Time.now()
+            else:
+                self.active_los_hold_started = None
+            held = (
+                self.active_los_hold_started is not None
+                and (rospy.Time.now() - self.active_los_hold_started).to_sec()
+                >= self.los_waypoint_hold_seconds
+            )
+            if held:
+                self.active_los_phase = self.LOS_ALIGN
+                self.active_los_hold_started = None
+                rospy.loginfo(
+                    "%s: 正方形航点位置已到达并定点；s=%.2f m，开始调整航向 %.1f deg",
+                    NODE_NAME,
+                    self.active_los_target_s,
+                    math.degrees(self.active_los_yaw),
+                )
+        elif (
             position_error <= self.endpoint_position_tolerance
-            and yaw_error <= self.los_waypoint_yaw_tolerance
+            and abs(wrap_angle(self.active_los_yaw - current_yaw))
+            <= self.los_waypoint_yaw_tolerance
+            and self.motion_arrived(commanded_goal)
         ):
             reached_s = self.active_los_target_s
             self.current_path_s = max(self.current_path_s, reached_s)
             self.completed_path_length = self.current_path_s
             rospy.loginfo(
-                "%s: LOS 航点已到达；双目位置误差=%.2f m，航向误差=%.1f deg，"
-                "推进到 s=%.2f/%.2f m",
+                "%s: 正方形航点移动和对向均完成；camera位置误差=%.2f m，"
+                "航向误差=%.1f deg，推进到 s=%.2f/%.2f m",
                 NODE_NAME,
                 position_error,
-                math.degrees(yaw_error),
+                math.degrees(abs(wrap_angle(
+                    self.active_los_yaw - current_yaw
+                ))),
                 reached_s,
                 self.planned_path_s[-1],
             )
@@ -654,10 +792,11 @@ class LosSquareTest:
         )
         rospy.loginfo_throttle(
             self.log_period_seconds,
-            "%s: LOS跟踪；双目位置=(%.2f, %.2f)，跟踪点=(%.2f, %.2f)，"
+            "%s: LOS跟踪；阶段=%s，camera位置=(%.2f, %.2f)，跟踪点=(%.2f, %.2f)，"
             "位置误差=%.2f m，航向误差=%.1f deg，进度=%.2f/%.2f m，"
             "motion_state=%s",
             NODE_NAME,
+            self.active_los_phase or "航点完成",
             tracking.pose.position.x,
             tracking.pose.position.y,
             self.current_tracking_point.x,
@@ -711,6 +850,12 @@ class LosSquareTest:
         def point_data(point):
             return [round(point.x, 3), round(point.y, 3)] if point else None
 
+        planned_base_path = self.tracking_curve_to_base_points(self.planned_path)
+        base_target = (
+            self.last_motion_goal.pose.position
+            if self.last_motion_goal is not None else None
+        )
+
         payload = {
             "stamp": round(now.to_sec(), 3),
             "state": self.state,
@@ -719,13 +864,18 @@ class LosSquareTest:
                 if self.motion_state_fresh() else None
             ),
             "path_fixed": True,
-            "robot": point_data(tracking.pose.position),
+            "robot": point_data(current.pose.position),
+            "camera": point_data(tracking.pose.position),
+            "robot_down": round(current.pose.position.z, 3),
+            "camera_down": round(tracking.pose.position.z, 3),
             "robot_yaw_deg": round(math.degrees(yaw_from_quaternion(
                 current.pose.orientation
             )), 2),
             "tracking_frame": self.line_tracking_frame,
-            "tracking_point": point_data(self.current_tracking_point),
-            "planned_path": [point_data(point) for point in self.planned_path],
+            "tracking_point": point_data(base_target),
+            "camera_tracking_point": point_data(self.current_tracking_point),
+            "los_phase": self.active_los_phase,
+            "planned_path": [point_data(point) for point in planned_base_path],
             "actual_path": [point_data(point) for point in self.actual_trajectory],
             "completed_length": round(self.completed_path_length, 3),
             "total_length": round(self.planned_path_s[-1], 3),
@@ -733,6 +883,7 @@ class LosSquareTest:
             "ty": self.latest_motion_state.ty if self.motion_state_fresh() else 0,
             "mz": self.latest_motion_state.mz if self.motion_state_fresh() else 0,
         }
+        self.write_data_record("trajectory_update", **payload)
         encoded = json.dumps(payload, separators=(",", ":"))
         self.trajectory_pub.publish(String(data=encoded))
         if self.trajectory_web is not None:
@@ -745,9 +896,12 @@ class LosSquareTest:
         goal = self.last_motion_goal
         current_yaw = yaw_from_quaternion(current.pose.orientation)
         target_yaw = (
-            self.active_los_yaw
-            if self.active_los_yaw is not None
-            else current_yaw
+            self.active_los_move_yaw
+            if self.active_los_phase == self.LOS_MOVE
+            else (
+                self.active_los_yaw
+                if self.active_los_yaw is not None else current_yaw
+            )
         )
         position_error = (
             xy_distance(tracking.pose.position, target)
@@ -762,7 +916,7 @@ class LosSquareTest:
             "%s: FULL state=%s base=(%.3f,%.3f,%.3f,%.2fdeg) "
             "%s=(%.3f,%.3f,%.3f) camera_target=(%.3f,%.3f) "
             "base_goal=(%.3f,%.3f,%.3f,%.2fdeg) error=(%.3fm,%.2fdeg) "
-            "path=%.3f/%.3f active_s=%s motion=(%s,%s,%s,%s,%s)",
+            "path=%.3f/%.3f active=(%s,%s) motion=(%s,%s,%s,%s,%s)",
             NODE_NAME,
             self.state,
             current.pose.position.x,
@@ -786,11 +940,65 @@ class LosSquareTest:
             self.planned_path_s[-1] if self.planned_path_s else 0.0,
             "%.3f" % self.active_los_target_s
             if self.active_los_target_s is not None else "-",
+            self.active_los_phase or "-",
             motion_state.state if motion_state is not None else "-",
             motion_state.reason if motion_state is not None else "-",
             motion_state.tx if motion_state is not None else 0,
             motion_state.ty if motion_state is not None else 0,
             motion_state.mz if motion_state is not None else 0,
+        )
+        self.write_data_record(
+            "control_cycle",
+            base={
+                "position": [
+                    current.pose.position.x,
+                    current.pose.position.y,
+                    current.pose.position.z,
+                ],
+                "yaw_deg": math.degrees(current_yaw),
+            },
+            camera={
+                "position": [
+                    tracking.pose.position.x,
+                    tracking.pose.position.y,
+                    tracking.pose.position.z,
+                ],
+            },
+            camera_target=(
+                [target.x, target.y, target.z]
+                if target is not None else None
+            ),
+            command_goal=(
+                {
+                    "position": [
+                        goal.pose.position.x,
+                        goal.pose.position.y,
+                        goal.pose.position.z,
+                    ],
+                    "yaw_deg": math.degrees(yaw_from_quaternion(
+                        goal.pose.orientation
+                    )),
+                }
+                if goal is not None else None
+            ),
+            position_error=position_error,
+            yaw_error_deg=yaw_error,
+            completed_path=self.completed_path_length,
+            total_path=(
+                self.planned_path_s[-1] if self.planned_path_s else 0.0
+            ),
+            active_target_s=self.active_los_target_s,
+            los_phase=self.active_los_phase,
+            motion=(
+                {
+                    "state": motion_state.state,
+                    "reason": motion_state.reason,
+                    "tx": motion_state.tx,
+                    "ty": motion_state.ty,
+                    "mz": motion_state.mz,
+                }
+                if motion_state is not None else None
+            ),
         )
 
     def finish(self):
@@ -823,7 +1031,7 @@ class LosSquareTest:
                 self.log_debug_cycle(current, tracking)
                 self.rate.sleep()
                 continue
-            self.record_actual_trajectory(tracking)
+            self.record_actual_trajectory(current)
 
             if self.state == self.WAIT_START:
                 self.publish_dprov(self.start_pose)
