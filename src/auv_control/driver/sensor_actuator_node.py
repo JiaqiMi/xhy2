@@ -24,6 +24,7 @@
 
 import socket
 import threading
+import time
 
 import rospy
 
@@ -57,10 +58,12 @@ class SensorActuatorNode:
     CMD_ACTUATOR = 0x30
     OP_SET = 0x00
     FLAG_NEED_ACK = 0x01
-    SEND_RATE_HZ = 5
+    CONTROL_SEND_RATE_HZ = 0.5
+    ACTUATOR_SEND_OFFSET_S = 0.25
+    STATUS_PUBLISH_RATE_HZ = 5
+    SEND_LOOP_RATE_HZ = 20
     # 协议 result=OK、ACCEPTED、EXEC_OK 均表示命令已成功处理。
     SUCCESS_RESULTS = {0x00, 0x02, 0x03}
-    ACK_SUCCESS_RESULTS = SUCCESS_RESULTS
     RESULT_NAMES = {
         0x00: 'OK',
         0x01: 'SENSOR_ERROR',
@@ -75,15 +78,9 @@ class SensorActuatorNode:
 
         self.sock = None
         self.buffer = bytearray()
-        self.ack_timeout = float(rospy.get_param('~ack_timeout', 0.5))
-        self.ack_retry_count = max(0, int(rospy.get_param('~ack_retry_count', 2)))
-        if self.ack_timeout <= 0.0:
-            raise ValueError('~ack_timeout must be positive')
 
         # --- 执行器状态缓存 ---
         self.lock = threading.Lock()
-        self.ack_lock = threading.Lock()
-        self.pending_acks = {}
         self.seq = 0  # 下行帧序列号 (0-255)
 
         self.light1 = 0
@@ -95,8 +92,6 @@ class SensorActuatorNode:
         self.red_light = 0
         self.yellow_light = 0
         self.green_light = 0
-        self.camera_light_changed = False
-        self.actuator_changed = False
 
         # --- 执行机构实际反馈缓存（来自 ACTUATOR_FB）---
         self.fb_heading = 0x80
@@ -106,6 +101,9 @@ class SensorActuatorNode:
         self.fb_red = 0
         self.fb_yellow = 0
         self.fb_green = 0
+        self.fb_result = 0x00
+        self.fb_error = 0x00
+        self.fb_actuator_error = 0x00
 
         # --- 发送线程 ---
         self.is_sending = True
@@ -113,7 +111,11 @@ class SensorActuatorNode:
 
         # --- ROS 接口 ---
         rospy.Subscriber('/cmd/actuator', ActuatorControl, self.actuator_callback)
-        self.status_pub = rospy.Publisher('/status/actuator', ActuatorControl, queue_size=10) 
+        self.status_pub = rospy.Publisher('/status/actuator', ActuatorControl, queue_size=10)
+        self.status_timer = rospy.Timer(
+            rospy.Duration(1.0 / self.STATUS_PUBLISH_RATE_HZ),
+            self._status_timer_callback,
+        )
 
         self.connect()
         rospy.loginfo("sensor_actuator: 已启动（执行器控制+反馈模式）")
@@ -238,7 +240,7 @@ class SensorActuatorNode:
         # STATUS (0x00) 和 CONFIG_FB (0x02) 由 status 节点处理，本节点忽略
 
     def _parse_ack(self, packet):
-        """解析 ACK 帧，记录命令处理结果并唤醒对应发送等待。"""
+        """解析 ACK 帧；发送端不等待 ACK，仅记录下位机拒绝。"""
         ack_seq = packet[3]
         ack_cmd = packet[5]
         ack_result = packet[7]
@@ -249,26 +251,15 @@ class SensorActuatorNode:
             self.CMD_ACTUATOR: 'ACTUATOR',
         }.get(ack_cmd, '0x%02X' % ack_cmd)
 
-        with self.ack_lock:
-            pending = self.pending_acks.get(ack_seq)
-            if pending is not None:
-                pending['result'] = ack_result
-                pending['error'] = ack_error
-                pending['event'].set()
-
-        if ack_result not in self.ACK_SUCCESS_RESULTS:
-            rospy.logwarn(
+        if ack_result not in self.SUCCESS_RESULTS:
+            rospy.logwarn_throttle(
+                5.0,
                 "sensor_actuator: ACK错误 seq=%3d cmd=%-14s result=0x%02X error=0x%02X",
                 ack_seq, cmd_name, ack_result, ack_error
             )
-        else:
-            rospy.loginfo(
-                "sensor_actuator: ACK成功 seq=%3d cmd=%-14s",
-                ack_seq, cmd_name
-            )
 
     def _parse_actuator_fb(self, packet, payload_len):
-        """解析 ACTUATOR_FB 帧，更新反馈缓存并发布 /status/actuator"""
+        """解析 ACTUATOR_FB 帧并更新锁存反馈状态。"""
         if payload_len < 8:
             rospy.logwarn(f"sensor_actuator: ACTUATOR_FB payload长度不足: {payload_len}")
             return
@@ -287,26 +278,9 @@ class SensorActuatorNode:
             self.fb_red = payload[4]
             self.fb_yellow = payload[5]
             self.fb_green = payload[6]
-
-        log_args = (
-            payload[0], payload[1],
-            payload[2], payload[3],
-            payload[4], payload[5], payload[6],
-            fb_result, self.RESULT_NAMES.get(fb_result, 'UNKNOWN'),
-            fb_error, actuator_error,
-        )
-        log_format = (
-            "sensor_actuator: 执行机构反馈 heading=%3d clamp=%3d drive=(%d,%3d) "
-            "led=(%d,%d,%d) result=0x%02X(%s) error=0x%02X actuator_error=0x%02X"
-        )
-        if (fb_result in self.SUCCESS_RESULTS and
-                fb_error == 0 and actuator_error == 0):
-            rospy.loginfo(log_format, *log_args)
-        else:
-            rospy.logwarn(log_format, *log_args)
-
-        # 发布 /status/actuator
-        self._publish_status()
+            self.fb_result = fb_result
+            self.fb_error = fb_error
+            self.fb_actuator_error = actuator_error
 
     def _publish_status(self):
         """根据反馈缓存和命令缓存组装 ActuatorControl 并发布"""
@@ -328,32 +302,43 @@ class SensorActuatorNode:
 
         self.status_pub.publish(msg)
 
+    def _status_timer_callback(self, _event):
+        """以 5Hz 持续发布锁存状态，并按固定频率记录当前执行器状态。"""
+        self._publish_status()
+        with self.lock:
+            values = (
+                self.fb_heading,
+                self.fb_clamp,
+                self.fb_drive_cmd,
+                self.fb_drive_speed,
+                self.fb_red,
+                self.fb_yellow,
+                self.fb_green,
+                self.fb_result,
+                self.RESULT_NAMES.get(self.fb_result, 'UNKNOWN'),
+                self.fb_error,
+                self.fb_actuator_error,
+            )
+        rospy.loginfo_throttle(
+            5.0,
+            "sensor_actuator: 当前执行器状态 heading=%3d clamp=%3d drive=(%d,%3d) "
+            "led=(%d,%d,%d) result=0x%02X(%s) error=0x%02X actuator_error=0x%02X",
+            *values
+        )
+
     # ============================================================
     # 下行控制
     # ============================================================
 
     def actuator_callback(self, msg):
-        """按 mode 更新补光灯或执行器缓存，并置对应的脏标志。"""
+        """按 mode 更新补光灯或执行器命令缓存。"""
         try:
             if msg.mode == 1:
                 new_light1 = max(0, min(100, msg.light1))
                 new_light2 = max(0, min(100, msg.light2))
                 with self.lock:
-                    camera_light_changed = (
-                        new_light1 != self.light1 or
-                        new_light2 != self.light2
-                    )
                     self.light1 = new_light1
                     self.light2 = new_light2
-                    if camera_light_changed:
-                        self.camera_light_changed = True
-
-                if camera_light_changed:
-                    rospy.loginfo(
-                        "sensor_actuator: 补光灯控制更新 light=(%3d,%3d)",
-                        self.light1,
-                        self.light2,
-                    )
                 return
 
             if msg.mode == 2:
@@ -366,15 +351,6 @@ class SensorActuatorNode:
                 new_green = 1 if msg.green_light else 0
 
                 with self.lock:
-                    actuator_changed = (
-                        new_heading != self.heading_servo or
-                        new_clamp != self.clamp_servo or
-                        new_drive_cmd != self.drive_cmd or
-                        new_drive_speed != self.drive_speed or
-                        new_red != self.red_light or
-                        new_yellow != self.yellow_light or
-                        new_green != self.green_light
-                    )
                     self.heading_servo = new_heading
                     self.clamp_servo = new_clamp
                     self.drive_cmd = new_drive_cmd
@@ -382,26 +358,12 @@ class SensorActuatorNode:
                     self.red_light = new_red
                     self.yellow_light = new_yellow
                     self.green_light = new_green
-                    if actuator_changed:
-                        self.actuator_changed = True
-
-                if actuator_changed:
-                    rospy.loginfo(
-                        "sensor_actuator: 执行器控制更新 heading=%3d clamp=%3d "
-                        "drive=(%d,%3d) led=(%d,%d,%d)",
-                        self.heading_servo,
-                        self.clamp_servo,
-                        self.drive_cmd,
-                        self.drive_speed,
-                        self.red_light,
-                        self.yellow_light,
-                        self.green_light,
-                    )
                 return
 
             # mode=0 及其他值均不响应。
             if msg.mode != 0:
-                rospy.loginfo(
+                rospy.logwarn_throttle(
+                    5.0,
                     "sensor_actuator: 忽略不支持的执行器控制模式 mode=%d",
                     msg.mode,
                 )
@@ -463,99 +425,38 @@ class SensorActuatorNode:
         packet[52:54] = self.DOWNLINK_TAIL
         return packet
 
-    def _send_frame_with_ack(self, frame, command_name):
-        """发送单帧并等待 ACK；超时后使用原序号重发。"""
-        seq = frame[3]
-        event = threading.Event()
-        attempts = self.ack_retry_count + 1
-        pending = {'event': event, 'result': None, 'error': None}
-        with self.ack_lock:
-            self.pending_acks[seq] = pending
-
+    def _send_frame(self, frame, command_name):
+        """发送控制帧；不等待 ACK，接收线程独立处理反馈。"""
         try:
-            for attempt in range(1, attempts + 1):
-                if self.sock is None:
-                    rospy.logwarn(
-                        'sensor_actuator: %s seq=%3d 未发送，TCP未连接',
-                        command_name, seq,
-                    )
-                    return False
-
-                event.clear()
+            if self.sock is not None:
                 self.sock.sendall(bytes(frame))
-                rospy.loginfo(
-                    'sensor_actuator: 已发送 %s seq=%3d 第%d/%d次',
-                    command_name, seq, attempt, attempts,
-                )
-
-                if not event.wait(self.ack_timeout):
-                    rospy.logwarn(
-                        'sensor_actuator: %s seq=%3d ACK超时（第%d/%d次）',
-                        command_name, seq, attempt, attempts,
-                    )
-                    continue
-
-                with self.ack_lock:
-                    result = pending['result']
-                    error = pending['error']
-                if result in self.ACK_SUCCESS_RESULTS:
-                    return True
-
-                rospy.logerr(
-                    'sensor_actuator: %s seq=%3d 被下位机拒绝 result=0x%02X error=0x%02X',
-                    command_name, seq, result, error,
-                )
-                return False
-        except (OSError, AttributeError) as error:
-            rospy.logerr(
-                'sensor_actuator: 发送 %s seq=%3d 失败: %s',
-                command_name, seq, error,
+        except OSError as error:
+            rospy.logerr_throttle(
+                5.0,
+                'sensor_actuator: 发送 %s 失败: %s', command_name, error,
             )
-            return False
-        finally:
-            with self.ack_lock:
-                self.pending_acks.pop(seq, None)
-
-        return False
-
-    def _requeue_camera_light_if_current(self, command):
-        """未获确认时，仅在状态未被新命令覆盖时重新排队。"""
-        with self.lock:
-            if (self.light1, self.light2) == command:
-                self.camera_light_changed = True
-
-    def _requeue_actuator_if_current(self, command):
-        """未获确认时，仅在状态未被新命令覆盖时重新排队。"""
-        with self.lock:
-            current = (
-                self.heading_servo,
-                self.clamp_servo,
-                self.drive_cmd,
-                self.drive_speed,
-                self.red_light,
-                self.yellow_light,
-                self.green_light,
-            )
-            if current == command:
-                self.actuator_changed = True
 
     def send_loop(self):
-        """5Hz 发送线程: 仅在控制值变化时发送两帧"""
-        rate = rospy.Rate(self.SEND_RATE_HZ)
+        """持续发送两类控制帧：各 0.5Hz，执行器帧固定滞后 0.25 秒。"""
+        rate = rospy.Rate(self.SEND_LOOP_RATE_HZ)
+        interval = 1.0 / self.CONTROL_SEND_RATE_HZ
+        next_camera_send = time.monotonic()
+        next_actuator_send = next_camera_send + self.ACTUATOR_SEND_OFFSET_S
         while not rospy.is_shutdown() and self.is_sending:
             try:
-                if self.sock is None:
-                    rate.sleep()
-                    continue
+                now = time.monotonic()
+                if now >= next_camera_send:
+                    with self.lock:
+                        command = (self.light1, self.light2)
+                    self._send_frame(
+                        self.build_camera_light_frame(*command), 'CAMERA_LIGHT'
+                    )
+                    while next_camera_send <= now:
+                        next_camera_send += interval
 
-                with self.lock:
-                    camera_command = None
-                    actuator_command = None
-                    if self.camera_light_changed:
-                        camera_command = (self.light1, self.light2)
-                        self.camera_light_changed = False
-                    if self.actuator_changed:
-                        actuator_command = (
+                if now >= next_actuator_send:
+                    with self.lock:
+                        command = (
                             self.heading_servo,
                             self.clamp_servo,
                             self.drive_cmd,
@@ -564,28 +465,11 @@ class SensorActuatorNode:
                             self.yellow_light,
                             self.green_light,
                         )
-                        self.actuator_changed = False
-                    changed = camera_command is not None or actuator_command is not None
-
-                if changed:
-                    if camera_command is not None:
-                        frame = self.build_camera_light_frame(*camera_command)
-                        if not self._send_frame_with_ack(frame, 'CAMERA_LIGHT'):
-                            self._requeue_camera_light_if_current(camera_command)
-
-                    if actuator_command is not None:
-                        frame = self.build_actuator_frame(*actuator_command)
-                        if not self._send_frame_with_ack(frame, 'ACTUATOR'):
-                            self._requeue_actuator_if_current(actuator_command)
-                    rospy.logdebug(
-                        "sensor_actuator: 已发送控制帧 seq=%3d light=(%3d,%3d) heading=%3d "
-                        "clamp=%3d drive=(%d,%3d) led=(%d,%d,%d)",
-                        self.seq,
-                        self.light1, self.light2,
-                        self.heading_servo, self.clamp_servo,
-                        self.drive_cmd, self.drive_speed,
-                        self.red_light, self.yellow_light, self.green_light
+                    self._send_frame(
+                        self.build_actuator_frame(*command), 'ACTUATOR'
                     )
+                    while next_actuator_send <= now:
+                        next_actuator_send += interval
             except Exception as e:
                 rospy.logerr(f"sensor_actuator: 发送失败: {e}")
             rate.sleep()
@@ -599,6 +483,7 @@ class SensorActuatorNode:
             self.recv_loop()
         finally:
             self.is_sending = False
+            self.status_timer.shutdown()
             if self.send_thread and self.send_thread.is_alive():
                 self.send_thread.join(timeout=2)
             if self.sock:
