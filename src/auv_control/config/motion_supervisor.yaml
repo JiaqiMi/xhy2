@@ -103,7 +103,7 @@ control_dt_max: 0.20
 effectiveness_x_tx: 1.0
 effectiveness_x_ty: 0.0
 effectiveness_x_mz: 0.0
-effectiveness_y_tx: -0.20
+effectiveness_y_tx: -0.12 # data1/data2 均确认 TX 对 Y 为负耦合；按 data2 收敛幅值
 effectiveness_y_ty: 1.0
 effectiveness_y_mz: 0.0
 effectiveness_yaw_tx: 0.0
