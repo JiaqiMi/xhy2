@@ -8,7 +8,7 @@
     1. 记录节点启动时的当前位置、高度和航向，定点等待相机和识别模块；
     2. 未识别红线时，依次定点左转、右转、回正，再向前移动后重复；
     3. 在短时间窗内选择置信度最高的第一条红线并锁定；
-    4. conf >= 0.70 时 positions 全部点进入拟合，后续高置信帧确认后立即冻结曲线段；
+    4. conf >= 0.70 时 positions 中坐标有限的点全部进入拟合，后续高置信帧确认后立即冻结曲线段；
     5. LOS 以 base_link 投影选择曲线前方目标，实际向 motion_supervisor
        下发 base_link 与 LOS 目标之间的中点；新目标直接覆盖旧目标；
     6. 已知曲线没有新目标时保持最后目标，由控制器完成平移和最终转向，
@@ -75,7 +75,7 @@
     base_link 与前视点的中点，新固定曲线立即更新目标。没有新目标时保持
     最后目标，待 MotionState.HOVER 连续 3 秒后固定 XY 左右旋转搜索延伸。
     增加曲线单向性检查和降阶拟合，禁止往返折线进入固定/执行轨迹；完整
-    控制、感知和轨迹数据按运行批次写入可配置目录下的 JSONL 文件。
+    控制、感知和轨迹数据按运行批次写入可配置目录下的 YAML 文件。
 2026.7.20
     红线一帧只查询一次原时间戳 TF，并用同一变换批量转换全部识别点；
     过期帧、零时间戳和原时刻 TF 不可用的帧直接拒绝，订阅队列缩短为 1。
@@ -93,11 +93,20 @@
     方向、固定段过滤和曲线回折等几何拒绝条件；所有达标点直接融合并重新拟合。
     进一步取消 point_valid、坐标合理性和每帧取点上限；置信度达标后直接使用
     positions 数组的全部点。密集点融合距离默认改为 0，避免正常近邻点被压缩。
+2026.7.20
+    跳过 positions 中无法参与数值计算的 NaN/Inf 点，其余高置信点仍全部用于拟合；
+    Web 历史点增加非有限值保护，避免显示处理打断感知回调。
+    终点结束增加已完成路径长度下限，防止把相机当前视野末端误判为整条红线终点。
+2026.7.20
+    当前 LOS 点与固定曲线末端的剩余弧长小于目标更新最小距离时，直接视为已走完
+    当前固定曲线，避免末端微小目标更新被抑制后永久停留在 FOLLOW_LINE。
+2026.7.20
+    结构化测试数据由 JSONL 改为带启动时间戳的 YAML 文档流；每条感知、目标、
+    状态和控制周期记录都保留独立墙钟时间与 ROS 时间，便于复现实测过程。
 """
 
 import copy
 from collections import deque
-from datetime import datetime
 import json
 import math
 import os
@@ -111,6 +120,7 @@ import tf
 from auv_control.msg import LineDetection, MotionState
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import Empty, String
+from task1_v3_yaml_logger import TimestampedYamlLogger
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
@@ -352,6 +362,9 @@ class Task1LineFollowTest:
         self.endpoint_confirm_seconds = float(rospy.get_param(
             "~endpoint_confirm_seconds", 5.0
         ))
+        self.endpoint_min_completed_path_length = max(0.0, float(
+            rospy.get_param("~endpoint_min_completed_path_length", 4.5)
+        ))
         self.endpoint_stable_frames = max(2, int(rospy.get_param(
             "~endpoint_stable_frames", 8
         )))
@@ -426,8 +439,7 @@ class Task1LineFollowTest:
         self.last_motion_goal = None
         self.last_los_goal = None
         self.cancel_sent = False
-        self.data_log_lock = threading.Lock()
-        self.data_log_file = None
+        self.data_logger = None
         self.data_log_path = None
         rospy.on_shutdown(self.shutdown)
 
@@ -502,59 +514,44 @@ class Task1LineFollowTest:
             queue_size=1,
         )
         rospy.loginfo(
-            "%s: 红线接口=auv_control/LineDetection；置信度达标后使用 positions 全部点；下限=%.2f",
+            "%s: 红线接口=auv_control/LineDetection；置信度达标后使用 positions 全部有限点；下限=%.2f",
             NODE_NAME,
             self.line_min_confidence,
         )
 
     def open_data_log(self):
-        """为本次运行创建独立 JSONL 文件；失败时不影响任务控制。"""
+        """为本次运行创建独立 YAML 数据文件；失败时不影响任务控制。"""
         try:
-            os.makedirs(self.log_directory, exist_ok=True)
-            filename = "task1_v3_line_follow_%s.jsonl" % datetime.now().strftime(
-                "%Y%m%d_%H%M%S"
+            self.data_logger = TimestampedYamlLogger(
+                NODE_NAME, self.log_directory
             )
-            self.data_log_path = os.path.join(self.log_directory, filename)
-            self.data_log_file = open(
-                self.data_log_path, "a", encoding="utf-8", buffering=1
-            )
+            self.data_log_path = self.data_logger.path
             self.write_data_record(
                 "startup",
                 log_directory=self.log_directory,
                 line_min_confidence=self.line_min_confidence,
                 los_midpoint_ratio=self.los_midpoint_ratio,
+                endpoint_min_completed_path_length=(
+                    self.endpoint_min_completed_path_length
+                ),
             )
             rospy.loginfo("%s: 完整数据文件=%s", NODE_NAME, self.data_log_path)
         except OSError as error:
-            self.data_log_file = None
+            self.data_logger = None
             rospy.logwarn("%s: 无法创建完整数据文件: %s", NODE_NAME, error)
 
     def shutdown(self):
         self.cancel_motion()
-        with self.data_log_lock:
-            if self.data_log_file is not None:
-                try:
-                    self.data_log_file.flush()
-                    self.data_log_file.close()
-                except OSError:
-                    pass
-                self.data_log_file = None
+        if self.data_logger is not None:
+            self.data_logger.close()
+            self.data_logger = None
 
     def write_data_record(self, event, **data):
-        if self.data_log_file is None:
+        if self.data_logger is None:
             return
-        record = {
-            "wall_time": datetime.now().isoformat(timespec="milliseconds"),
-            "ros_time": round(rospy.Time.now().to_sec(), 6),
-            "event": event,
-            "state": self.state,
-        }
-        record.update(data)
+        data.setdefault("state", self.state)
         try:
-            encoded = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-            with self.data_log_lock:
-                if self.data_log_file is not None:
-                    self.data_log_file.write(encoded + "\n")
+            self.data_logger.write(event, **data)
         except (OSError, TypeError, ValueError) as error:
             rospy.logwarn_throttle(
                 5.0, "%s: 完整数据写入失败: %s", NODE_NAME, error
@@ -1342,7 +1339,7 @@ class Task1LineFollowTest:
         return clamp(confidence, 0.0, 1.0)
 
     def line_poses(self, message):
-        """置信度达标后，将 positions 中的全部识别点用于拟合。"""
+        """置信度达标后，将 positions 中坐标有限的识别点全部用于拟合。"""
         declared_count = int(message.point_count)
         positions = list(message.positions)
         self.latest_line_input_count = declared_count
@@ -1358,6 +1355,10 @@ class Task1LineFollowTest:
 
         poses = []
         for position in positions:
+            if not all(math.isfinite(value) for value in (
+                position.x, position.y, position.z
+            )):
+                continue
             pose = PoseStamped()
             pose.header = copy.deepcopy(message.header)
             pose.pose.position = copy.deepcopy(position)
@@ -1365,7 +1366,7 @@ class Task1LineFollowTest:
             poses.append(pose)
 
         if len(poses) < 2:
-            return None, "too_few_line_points"
+            return None, "too_few_finite_line_points"
         self.latest_line_used_count = len(poses)
         return poses, "valid"
 
@@ -1374,6 +1375,10 @@ class Task1LineFollowTest:
         spacing = self.web_valid_point_merge_distance
         with self.web_valid_point_lock:
             for point in points:
+                if not all(math.isfinite(value) for value in (
+                    point.x, point.y, point.z
+                )):
+                    continue
                 cell = None
                 if spacing > 0.0:
                     cell = (
@@ -1809,9 +1814,13 @@ class Task1LineFollowTest:
         )
         yaw_error = abs(wrap_angle(self.active_los_yaw - current_yaw))
 
+        # 小于 los_target_update_min_distance 的末端更新本来就不会重新下发；
+        # 终点判断使用同一容差，否则活动 LOS 点可能永远差几厘米而无法进入 HOLD_END。
+        remaining_curve_length = max(
+            0.0, self.tracking_curve_s[-1] - self.active_los_target_s
+        )
         at_known_end = (
-            self.active_los_target_s
-            >= self.tracking_curve_s[-1] - 1e-6
+            remaining_curve_length <= self.los_target_update_min_distance
             and self.line_version <= self.tracking_curve_version
         )
         if at_known_end:
@@ -1859,7 +1868,9 @@ class Task1LineFollowTest:
             rospy.Time.now() - self.endpoint_hold_started
         ).to_sec()
         return (
-            pending_extension < self.curve_freeze_min_advance
+            self.completed_path_length
+            >= self.endpoint_min_completed_path_length
+            and pending_extension < self.curve_freeze_min_advance
             and self.endpoint_confirmed()
             and no_growth_seconds >= self.endpoint_confirm_seconds
         )
@@ -1906,11 +1917,14 @@ class Task1LineFollowTest:
         )
         rospy.loginfo_throttle(
             2.0,
-            "%s: 最后目标保持；LOS末端距离=%.2f m，HOVER连续确认=%s，重复观测=%d/%d，"
+            "%s: 最后目标保持；LOS末端距离=%.2f m，HOVER连续确认=%s，"
+            "已完成/结束下限=%.2f/%.2f m，重复观测=%d/%d，"
             "待固定延伸=%.2f m，确认=%d/%d，轨迹未增长=%.1f/%.1f s",
             NODE_NAME,
             distance,
             "是" if stable else "否",
+            self.completed_path_length,
+            self.endpoint_min_completed_path_length,
             self.endpoint_candidate_count,
             self.endpoint_stable_frames,
             pending_extension,

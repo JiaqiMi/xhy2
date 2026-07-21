@@ -27,6 +27,8 @@
     同步启动定点等待、N 取 K 滑动识别窗口和左右转后前进的搜索流程。
     新增 v3：迁移到 motion_supervisor；不再输出 MZ，累计两圈旋转改为逐个
     绝对航向目标，每个子目标均等待新鲜 HOVER 后才进入下一段。
+2026.7.20
+    复用黄色子任务的 YAML 数据记录，并增加黑色旋转阶段及累计角度数据。
 """
 
 import math
@@ -49,6 +51,8 @@ class BlackMarkerTest(YellowMarkerTest):
 
     def __init__(self):
         # 父类构造时会立即创建目标订阅；先准备回调最早可能访问的黑色参数。
+        self.node_name = "test_task1_v3_black_marker"
+        self.marker_display_name = "黑色方形"
         self.black_classes = class_names("~black_classes", ["rectangle"])
         self.black_min_confidence = float(rospy.get_param(
             "~black_min_confidence", 0.30
@@ -80,16 +84,27 @@ class BlackMarkerTest(YellowMarkerTest):
 
         self.black_action_phase = "LIGHT"
         self.rotation_state = None
+        self.write_data_record(
+            "black_configuration",
+            black_min_confidence=self.black_min_confidence,
+            black_light_count=self.black_light_count,
+            black_rotation_angle_deg=math.degrees(
+                self.black_rotation_angle
+            ),
+            black_rotation_step_deg=math.degrees(self.black_rotation_step),
+        )
 
     def target_callback(self, message):
         """最近 N 条识别输出中有 K 条有效结果时确认黑色 rectangle。"""
         if self.hold_z is None and not self.initialize_start_pose():
+            self.record_target_message(message, "robot_pose_unavailable")
             return
         if (
             self.step == self.STEP_WAIT_CAMERA
             or self.detected_marker is not None
             or not self.camera_ready()
         ):
+            self.record_target_message(message, "ignored_in_current_step")
             return
 
         marker = None
@@ -114,6 +129,13 @@ class BlackMarkerTest(YellowMarkerTest):
             marker = self.transform_pose_to_map(message.pose)
 
         confirmed = self.add_marker_observation(marker)
+        self.record_target_message(
+            message,
+            "confirmed" if confirmed is not None else (
+                "accepted" if marker is not None else "rejected"
+            ),
+            marker,
+        )
         if confirmed is not None:
             self.lock_confirmed_marker(confirmed)
 

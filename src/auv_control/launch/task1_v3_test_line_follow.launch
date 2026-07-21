@@ -29,7 +29,7 @@
     <!-- 双目坐标系仅用于 Web 航向箭头和日志；巡线控制固定使用 base_link。 -->
     <arg name="line_tracking_frame" default="camera" />
     <arg name="trajectory_topic" default="/task1/v3/trajectory" />
-    <!-- 每次运行的完整 JSONL 数据目录。 -->
+    <!-- 每次启动新建带时间戳的 YAML 分析数据文件。 -->
     <arg name="log_directory"
          default="$(env HOME)/.ros/auv_logs/task1" />
 
@@ -55,7 +55,7 @@
     <arg name="line_lock_window_seconds" default="0.3" />
     <!-- 红线置信度硬下限；低于该值的整帧识别直接丢弃，不参与锁线和曲线拟合。 -->
     <arg name="line_min_confidence" default="0.70" />
-    <!-- 达到置信度下限后，positions 数组全部识别点直接进入拟合；
+    <!-- 达到置信度下限后，positions 中坐标有限的识别点全部直接进入拟合；NaN/Inf 跳过；
          关联距离、方向、内点比例、延伸间隔和回折门槛均已停用。 -->
 
     <!-- 新点与已有点距离小于该值时做平滑融合，不重复增加点，单位 m。
@@ -92,6 +92,8 @@
 
     <!-- 进入终点定点后，曲线在该时间内不再增长才结束任务，单位 s。 -->
     <arg name="endpoint_confirm_seconds" default="5.0" />
+    <!-- 允许结束任务前必须实际完成的最短巡线路径，单位 m；比赛红线长 5~8 m，默认留 0.5 m 余量。 -->
+    <arg name="endpoint_min_completed_path_length" default="4.5" />
     <!-- 同一最远点必须被连续观测的帧数；达到后才形成真实终点证据。 -->
     <arg name="endpoint_stable_frames" default="8" />
     <!-- 多帧最远点视为同一位置的最大坐标偏差，单位 m。 -->
@@ -170,6 +172,7 @@
         <param name="los_target_update_min_distance" type="double" value="$(arg los_target_update_min_distance)" />
         <param name="motion_hover_confirm_seconds" type="double" value="$(arg motion_hover_confirm_seconds)" />
         <param name="endpoint_confirm_seconds" type="double" value="$(arg endpoint_confirm_seconds)" />
+        <param name="endpoint_min_completed_path_length" type="double" value="$(arg endpoint_min_completed_path_length)" />
         <param name="endpoint_stable_frames" type="int" value="$(arg endpoint_stable_frames)" />
         <param name="endpoint_stable_position_tolerance" type="double" value="$(arg endpoint_stable_position_tolerance)" />
         <param name="endpoint_evidence_robot_distance" type="double" value="$(arg endpoint_evidence_robot_distance)" />
