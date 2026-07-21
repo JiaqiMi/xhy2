@@ -1,7 +1,7 @@
 # 运动管理层控制频率与反馈处理
 control_rate_hz: 20.0         # 统一三轴速度闭环频率；目标可保持 5 Hz 发布
 feedback_timeout: 0.5         # TF 或速度反馈最大允许间隔，单位 s，超时后进入 SAFE
-velocity_filter_alpha: 0.35   # 速度一阶低通新数据权重，范围 (0,1]，越大响应越快
+velocity_filter_alpha: 0.5   # 速度一阶低通新数据权重，范围 (0,1]，越大响应越快
 # 原始 /status/vel.r 到 map 航向角速度的符号；当前 MZ 与 r 方向相反，取 -1。
 yaw_rate_to_map_sign: -1.0
 pitch_offset_deg: 0.0         # 发送目标姿态时附加的固定俯仰角，单位 deg
@@ -15,8 +15,8 @@ log_flush_every: 20           # 每累计多少个控制周期刷新磁盘，20 
 # 正常运动限幅；参数后缀表示本周期实际输出力或力矩的正负号
 max_tx_positive: 700.0       # 正常运动阶段正 TX 最大值
 max_tx_negative: 1000.0       # 正常运动阶段负 TX 绝对值上限
-max_ty_positive: 1200.0       # 正常运动阶段正 TY 最大值
-max_ty_negative: 2000.0       # 正常运动阶段负 TY 绝对值上限
+max_ty_positive: 2000.0       # 正常运动阶段正 TY 最大值 对应0.1m/s
+max_ty_negative: 4000.0       # 正常运动阶段负 TY 绝对值上限 对应0.1m/s
 max_mz_positive: 2000.0       # 正常转向阶段正 MZ 最大值
 max_mz_negative: 3000.0       # 正常转向阶段负 MZ 绝对值上限
 brake_max_tx_positive: 2000.0 # 主动刹车阶段正 TX 最大值
@@ -46,22 +46,22 @@ brake_gain_mz_negative: -6000.0 # 输出负 MZ 时的主动刹转增益，符号
 brake_min_mz: 100.0          # 超过角速度停稳阈值时使用的最小有效 MZ 绝对值
 
 # 各轴独立停车距离模型；后缀表示实际刹车输出力或力矩的符号
-brake_acceleration_tx_positive: 0.04 # 输出正 TX 刹车时的实测有效减速度，单位 m/s²
-brake_acceleration_tx_negative: 0.08 # 输出负 TX 刹车时的实测有效减速度，单位 m/s²
+brake_acceleration_tx_positive: 0.08 # 输出正 TX 刹车时的实测有效减速度，单位 m/s²
+brake_acceleration_tx_negative: 0.04 # 输出负 TX 刹车时的实测有效减速度，单位 m/s²
 brake_acceleration_ty_positive: 0.05 # 输出正 TY 刹车时的实测有效减速度，单位 m/s²
 brake_acceleration_ty_negative: 0.05 # 输出负 TY 刹车时的实测有效减速度，单位 m/s²
 angular_brake_acceleration_mz_positive: 0.025 # 输出正 MZ 刹转的保守有效角减速度，来自负向 yaw 试验
-angular_brake_acceleration_mz_negative: 0.04 # 输出负 MZ 刹转的保守有效角减速度，来自正向 yaw 试验
-control_delay: 0.35          # 反馈、计算、通信和执行的综合延迟估计，单位 s
-brake_margin_tx_positive: 0.10 # 输出正 TX 刹车时的附加停车余量，单位 m
-brake_margin_tx_negative: 0.10 # 输出负 TX 刹车时的附加停车余量，单位 m
-brake_margin_ty_positive: 0.14 # 输出正 TY 刹车时的附加停车余量，单位 m；对应 Y 负向运动
-brake_margin_ty_negative: 0.10 # 输出负 TY 刹车时的附加停车余量，单位 m
-yaw_brake_margin_positive_deg: 3.0 # 输出正 MZ 刹转时的附加角度余量，单位 deg
-yaw_brake_margin_negative_deg: 3.0 # 输出负 MZ 刹转时的附加角度余量，单位 deg
+angular_brake_acceleration_mz_negative: 0.012 # 输出负 MZ 刹转的保守有效角减速度，来自正向 yaw 试验
+control_delay: 0.55          # 反馈、计算、通信和执行的综合延迟估计，单位 s
+brake_margin_tx_positive: 0.24 # 输出正 TX 刹车时的附加停车余量，单位 m
+brake_margin_tx_negative: 0.22 # 输出负 TX 刹车时的附加停车余量，单位 m
+brake_margin_ty_positive: 0.30 # 输出正 TY 刹车时的附加停车余量，单位 m；对应 Y 负向运动
+brake_margin_ty_negative: 0.28 # 输出负 TY 刹车时的附加停车余量，单位 m
+yaw_brake_margin_positive_deg: 5.0 # 输出正 MZ 刹转时的附加角度余量，单位 deg
+yaw_brake_margin_negative_deg: 5.0 # 输出负 MZ 刹转时的附加角度余量，单位 deg
 
 # 捕获、接管和异常回退阈值
-capture_radius: 0.07                # 允许进入 mode=4 接管等待的水平位置误差，单位 m
+capture_radius: 0.05                # 允许进入 mode=4 接管等待的水平位置误差，单位 m
 capture_exit_radius: 0.25           # mode=4 接管等待期间触发重新跟踪的水平位置误差，单位 m
 control_center_hold_tolerance: 0.03 # 当前锁存控制中心的二维圆形位置死区，单位 m
 horizontal_speed_threshold: 0.015   # 判定水平停稳的合速度上限，单位 m/s
@@ -103,7 +103,7 @@ control_dt_max: 0.20
 effectiveness_x_tx: 1.0
 effectiveness_x_ty: 0.0
 effectiveness_x_mz: 0.0
-effectiveness_y_tx: 0.0
+effectiveness_y_tx: -0.2
 effectiveness_y_ty: 1.0
 effectiveness_y_mz: 0.0
 effectiveness_yaw_tx: 0.0

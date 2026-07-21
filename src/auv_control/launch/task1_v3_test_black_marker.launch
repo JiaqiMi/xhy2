@@ -52,12 +52,12 @@
     <arg name="black_min_confidence" default="0.30" />
     <arg name="marker_window_size" default="10" />
     <arg name="marker_required_valid" default="3" />
-    <arg name="marker_sample_timeout" default="1.0" />
+    <arg name="marker_sample_timeout" default="5.0" />
     <arg name="marker_cluster_distance" default="0.25" />
     <arg name="max_camera_distance" default="5.0" />
 
     <!-- 启动与消息有效期：启动后先锁定初始位姿悬停；相机超时单位为 s。 -->
-    <arg name="startup_hold_seconds" default="10.0" />
+    <arg name="startup_hold_seconds" default="50.0" />
     <arg name="camera_message_timeout" default="2.0" />
 
     <!-- 黑色灯光动作：每次绿灯时长、间隔（s）和亮灯次数。 -->

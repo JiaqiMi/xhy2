@@ -93,7 +93,7 @@
     <!-- 进入终点定点后，曲线在该时间内不再增长才结束任务，单位 s。 -->
     <arg name="endpoint_confirm_seconds" default="5.0" />
     <!-- 允许结束任务前必须实际完成的最短巡线路径，单位 m；比赛红线长 5~8 m，默认留 0.5 m 余量。 -->
-    <arg name="endpoint_min_completed_path_length" default="4.5" />
+    <arg name="endpoint_min_completed_path_length" default="2" />
     <!-- 同一最远点必须被连续观测的帧数；达到后才形成真实终点证据。 -->
     <arg name="endpoint_stable_frames" default="8" />
     <!-- 多帧最远点视为同一位置的最大坐标偏差，单位 m。 -->
