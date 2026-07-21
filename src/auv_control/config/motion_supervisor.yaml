@@ -46,19 +46,19 @@ brake_gain_mz_negative: -6000.0 # 输出负 MZ 时的主动刹转增益，符号
 brake_min_mz: 100.0          # 超过角速度停稳阈值时使用的最小有效 MZ 绝对值
 
 # 各轴独立停车距离模型；后缀表示实际刹车输出力或力矩的符号
-brake_acceleration_tx_positive: 0.07 # 输出正 TX 刹车时的保守有效减速度；对应 X 负向运动
+brake_acceleration_tx_positive: 0.08 # 输出正 TX 刹车时的保守有效减速度；对应 X 负向运动
 brake_acceleration_tx_negative: 0.04 # 输出负 TX 刹车时的保守有效减速度；对应 X 正向运动
 brake_acceleration_ty_positive: 0.06 # 输出正 TY 刹车时的保守有效减速度；对应 Y 负向运动
 brake_acceleration_ty_negative: 0.04 # 输出负 TY 刹车时的保守有效减速度；对应 Y 正向运动
-angular_brake_acceleration_mz_positive: 0.020 # 输出正 MZ 刹转时的保守有效角减速度；对应负向 yaw 运动
-angular_brake_acceleration_mz_negative: 0.014 # 输出负 MZ 刹转时的保守有效角减速度；对应正向 yaw 运动
-control_delay: 0.55          # 反馈、计算、通信和执行的综合延迟估计，单位 s
-brake_margin_tx_positive: 0.24 # 输出正 TX 刹车时的附加停车余量，单位 m
-brake_margin_tx_negative: 0.22 # 输出负 TX 刹车时的附加停车余量，单位 m
-brake_margin_ty_positive: 0.30 # 输出正 TY 刹车时的附加停车余量，单位 m；对应 Y 负向运动
-brake_margin_ty_negative: 0.28 # 输出负 TY 刹车时的附加停车余量，单位 m
-yaw_brake_margin_positive_deg: 5.0 # 输出正 MZ 刹转时的附加角度余量，单位 deg
-yaw_brake_margin_negative_deg: 5.0 # 输出负 MZ 刹转时的附加角度余量，单位 deg
+angular_brake_acceleration_mz_positive: 0.025 # 输出正 MZ 刹转时的保守有效角减速度；对应负向 yaw 运动
+angular_brake_acceleration_mz_negative: 0.012 # 输出负 MZ 刹转时的保守有效角减速度；对应正向 yaw 运动
+control_delay: 0.45          # 反馈、计算、通信和执行的综合延迟估计，单位 s
+brake_margin_tx_positive: 0.18 # 输出正 TX 刹车时的附加停车余量，单位 m
+brake_margin_tx_negative: 0.16 # 输出负 TX 刹车时的附加停车余量，单位 m
+brake_margin_ty_positive: 0.20 # 输出正 TY 刹车时的附加停车余量，单位 m；对应 Y 负向运动
+brake_margin_ty_negative: 0.18 # 输出负 TY 刹车时的附加停车余量，单位 m
+yaw_brake_margin_positive_deg: 3.0 # 输出正 MZ 刹转时的附加角度余量，单位 deg
+yaw_brake_margin_negative_deg: 3.0 # 输出负 MZ 刹转时的附加角度余量，单位 deg
 
 # 捕获、接管和异常回退阈值
 capture_radius: 0.04                # 允许进入 mode=4 接管等待的水平位置误差，单位 m

@@ -427,6 +427,11 @@ class MotionSupervisorCore(object):
         if (self.parameters['yaw_brake_exit_rate'] >=
                 self.parameters['yaw_brake_enter_rate']):
             raise ValueError('yaw_brake_exit_rate 必须小于 yaw_brake_enter_rate')
+        if (self.parameters['yaw_brake_margin_positive'] >=
+                self.parameters['yaw_tolerance'] or
+                self.parameters['yaw_brake_margin_negative'] >=
+                self.parameters['yaw_tolerance']):
+            raise ValueError('yaw_brake_margin 必须小于 yaw_tolerance')
         for name in (
                 'brake_gain_mz_positive', 'brake_gain_mz_negative'):
             if self.parameters[name] == 0:
@@ -674,6 +679,16 @@ class MotionSupervisorCore(object):
         self.yaw_brake_entry_count = 0
         self.yaw_brake_exit_count = 0
         self.reference_reset_pending = True
+
+    def _reset_xy_reference_for_brake(self):
+        """首次进入水平制动时立即丢弃旧的前进速度轨迹。"""
+        self.last_velocity_reference = (0.0, 0.0)
+        self.last_velocity_acceleration = (0.0, 0.0)
+
+    def _reset_yaw_reference_for_brake(self):
+        """首次进入航向制动时立即丢弃旧的角速度轨迹。"""
+        self.last_yaw_rate_reference = 0.0
+        self.last_yaw_acceleration = 0.0
 
     def _initialize_motion_references(self, vehicle, map_vx, map_vy):
         """从当前实测速度无扰初始化新动作参考，并立即施加配置硬限幅。"""
@@ -933,6 +948,9 @@ class MotionSupervisorCore(object):
             if not self.xy_brake_latched:
                 xy_brake_entered = True
                 self.xy_brake_entry_count += 1
+                # 停车距离模型已经把制动延迟计入；进入制动后不能继续
+                # 沿用原加速段的速度参考，否则会在目标附近继续推向目标。
+                self._reset_xy_reference_for_brake()
             self.xy_brake_latched = True
             self.xy_brake_release_started_at = None
         elif self.xy_brake_latched:
@@ -955,12 +973,16 @@ class MotionSupervisorCore(object):
             else:
                 self.xy_brake_release_started_at = None
         braking_xy = self.xy_brake_latched
-        position_speed = self.parameters['xy_position_gain'] * distance
+        # 接近 capture_radius 时把位置速度参考降为零，避免刚解除制动就
+        # 以较高速度重新穿越目标。
+        capture_error = max(
+            distance - self.parameters['capture_radius'], 0.0)
+        position_speed = self.parameters['xy_position_gain'] * capture_error
         stopping_speed = math.sqrt(
             2.0 * brake_acceleration * max(distance - brake_margin, 0.0)
         )
         close_position_speed = self.parameters['xy_position_gain'] * min(
-            distance, brake_margin)
+            capture_error, brake_margin)
         desired_speed = min(
             self.parameters['xy_max_speed'],
             position_speed,
@@ -1005,6 +1027,9 @@ class MotionSupervisorCore(object):
             if not self.yaw_brake_latched:
                 yaw_brake_entered = True
                 self.yaw_brake_entry_count += 1
+                # 进入制动的本周期直接用实测角速度建立反向阻尼；不能让
+                # 原来的角速度参考按 jerk 缓慢回零，否则会继续同向施力。
+                self._reset_yaw_reference_for_brake()
             self.yaw_brake_latched = True
             self.yaw_brake_release_started_at = None
         elif self.yaw_brake_latched:
@@ -1031,16 +1056,20 @@ class MotionSupervisorCore(object):
             2.0 * yaw_brake_acceleration * max(
                 abs(yaw_error) - yaw_margin, 0.0)
         )
+        # yaw_tolerance 内不再产生新的角速度目标，容差外的速度随剩余
+        # 误差连续减小，防止在制动释放后从约 5 deg 误差重新加速。
+        yaw_capture_error = max(
+            abs(yaw_error) - self.parameters['yaw_tolerance'], 0.0)
         yaw_close_rate = self.parameters['yaw_position_gain'] * min(
-            abs(yaw_error), yaw_margin)
+            yaw_capture_error, yaw_margin)
         desired_yaw_rate = math.copysign(
             min(
                 self.parameters['yaw_max_rate'],
-                self.parameters['yaw_position_gain'] * abs(yaw_error),
+                self.parameters['yaw_position_gain'] * yaw_capture_error,
                 max(yaw_stopping_rate, yaw_close_rate),
             ),
             yaw_error,
-        ) if abs(yaw_error) > 1e-9 else 0.0
+        ) if yaw_capture_error > 1e-9 else 0.0
         if braking_yaw:
             # 锁存刹转期间将 map 航向角速度参考置零，持续施加反向阻尼。
             desired_yaw_rate = 0.0
