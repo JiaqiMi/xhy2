@@ -324,7 +324,7 @@ class SensorActuatorNode:
                 self.fb_actuator_error,
             )
         rospy.loginfo_throttle(
-            5.0,
+            10.0,
             "sensor_actuator: 当前执行器状态 heading=%3d clamp=%3d drive=(%d,%3d) "
             "led=(%d,%d,%d) result=0x%02X(%s) error=0x%02X actuator_error=0x%02X",
             *values

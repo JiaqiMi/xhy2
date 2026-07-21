@@ -9,7 +9,8 @@
 
     <arg name="start_camera" default="false" />
     <arg name="start_splitter" default="true" />
-    <arg name="start_web" default="false" />
+    <arg name="start_web" default="true" />
+    <arg name="start_depth" default="true" />
 
     <!-- 请将训练得到的best.pt复制并重命名到该位置 -->
     <arg name="model_path"
@@ -29,6 +30,31 @@
     <arg name="min_direction_length_px" default="15.0" />
 
     <arg name="input_topic" default="/left/image_raw" />
+
+    <!-- ================= 箭头三维定位参数 ================= -->
+    <arg name="right_topic" default="/right/image_raw" />
+    <arg name="arrow_center_topic"
+         default="/yolo_unified/arrow_center" />
+
+    <!-- 三关键点代表中心：keypoint_centroid 或 axis_midpoint -->
+    <arg name="depth_center_mode"
+         default="keypoint_centroid" />
+
+    <!-- 在代表中心周围取 window_size x window_size 深度窗口 -->
+    <arg name="window_size" default="25" />
+    <arg name="depth_statistic" default="mean" />
+    <arg name="min_valid_pixels" default="3" />
+    <arg name="min_depth" default="0.5" />
+    <arg name="max_depth" default="2.0" />
+
+    <arg name="depth_max_sync_dt" default="0.15" />
+    <arg name="frame_buffer_size" default="20" />
+    <arg name="exp_env" default="water" />
+
+    <!-- StereoSGBM参数 -->
+    <arg name="min_disparity" default="0" />
+    <arg name="num_disparities" default="96" />
+    <arg name="block_size" default="7" />
 
     <!-- ================= 相机 ================= -->
 
@@ -131,6 +157,67 @@
                value="$(arg visualization)" />
     </node>
 
+    <!-- ================= 箭头三维位置计算 ================= -->
+    <!--
+        arrow_pose_direction_node.py 发布:
+            /yolo_unified/arrow_center  geometry_msgs/PointStamped
+
+        stereo_depth_node.py 使用该像素周围 window_size 区域的
+        有效深度均值，发布:
+            /obj/target_message
+            /web/pose
+    -->
+    <node if="$(arg start_depth)"
+          pkg="stereo_depth"
+          type="stereo_depth_node.py"
+          name="stereo_depth_arrow_pose"
+          output="screen">
+
+        <param name="task_mode" value="center" />
+        <param name="exp_env" value="$(arg exp_env)" />
+        <param name="visualization"
+               value="$(arg visualization)" />
+        <param name="conf_thre"
+               value="$(arg conf_thre)" />
+        <param name="rate"
+               value="$(arg rate)" />
+
+        <param name="left_topic"
+               value="$(arg input_topic)" />
+        <param name="right_topic"
+               value="$(arg right_topic)" />
+        <param name="center_topic"
+               value="$(arg arrow_center_topic)" />
+
+        <param name="window_size"
+               value="$(arg window_size)" />
+        <param name="depth_statistic"
+               value="$(arg depth_statistic)" />
+        <param name="min_valid_pixels"
+               value="$(arg min_valid_pixels)" />
+        <param name="min_depth"
+               value="$(arg min_depth)" />
+        <param name="max_depth"
+               value="$(arg max_depth)" />
+
+        <param name="max_sync_dt"
+               value="$(arg depth_max_sync_dt)" />
+        <param name="frame_buffer_size"
+               value="$(arg frame_buffer_size)" />
+
+        <param name="min_disparity"
+               value="$(arg min_disparity)" />
+        <param name="num_disparities"
+               value="$(arg num_disparities)" />
+        <param name="block_size"
+               value="$(arg block_size)" />
+
+        <param name="target_output_topic"
+               value="/obj/target_message" />
+        <param name="web_pose_topic"
+               value="/web/pose" />
+    </node>
+    
     <!-- ================= Web ================= -->
 
     <include if="$(arg start_web)"
