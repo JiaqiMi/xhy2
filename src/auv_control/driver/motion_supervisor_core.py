@@ -298,10 +298,18 @@ DEFAULT_PARAMETERS = {
     'xy_position_gain': 1.00,
     'xy_max_acceleration': 0.20,
     'xy_max_jerk': 0.40,
+    # 预测到停车距离后进入刹停；速度降至退出阈值后才恢复位置跟踪。
+    'xy_brake_enter_speed': 0.020,
+    'xy_brake_exit_speed': 0.012,
     'yaw_max_rate': math.radians(25.0),
     'yaw_position_gain': 1.50,
     'yaw_max_acceleration': math.radians(20.0),
     'yaw_max_jerk': math.radians(60.0),
+    # 航向刹停使用独立迟滞，避免 r 在停稳阈值附近抖动。
+    'yaw_brake_enter_rate': math.radians(0.6),
+    'yaw_brake_exit_rate': math.radians(0.2),
+    # 低频速度反馈下，退出刹车前必须连续低速保持的时间。
+    'brake_release_hold_seconds': 0.40,
     # 原始 /status/vel.r 到 map 航向角速度的符号转换。
     # 当前下位机约定：MZ 与 r 方向相反，故 map 航向角速度 = -r。
     'yaw_rate_to_map_sign': -1.0,
@@ -352,6 +360,14 @@ class MotionSupervisorCore(object):
         self.last_velocity_acceleration = (0.0, 0.0)
         self.last_yaw_rate_reference = 0.0
         self.last_yaw_acceleration = 0.0
+        self.xy_brake_latched = False
+        self.yaw_brake_latched = False
+        self.xy_brake_release_started_at = None
+        self.yaw_brake_release_started_at = None
+        self.xy_brake_entry_count = 0
+        self.xy_brake_exit_count = 0
+        self.yaw_brake_entry_count = 0
+        self.yaw_brake_exit_count = 0
         self.reference_reset_pending = True
         self.goal_changed_pending = False
         self.goal_changed_at = None
@@ -387,8 +403,11 @@ class MotionSupervisorCore(object):
             'brake_margin_ty_positive', 'brake_margin_ty_negative',
             'yaw_brake_margin_positive', 'yaw_brake_margin_negative',
             'xy_max_speed', 'xy_position_gain', 'xy_max_acceleration',
-            'xy_max_jerk', 'yaw_max_rate', 'yaw_position_gain',
+            'xy_max_jerk', 'xy_brake_enter_speed', 'xy_brake_exit_speed',
+            'yaw_max_rate', 'yaw_position_gain',
             'yaw_max_acceleration', 'yaw_max_jerk',
+            'yaw_brake_enter_rate', 'yaw_brake_exit_rate',
+            'brake_release_hold_seconds',
             'goal_static_capture_seconds',
             'goal_replan_position_threshold', 'goal_replan_yaw_threshold',
             'control_dt_min',
@@ -402,6 +421,12 @@ class MotionSupervisorCore(object):
                 raise ValueError('{} 必须为有限值'.format(name))
         if abs(abs(self.parameters['yaw_rate_to_map_sign']) - 1.0) > 1e-9:
             raise ValueError('yaw_rate_to_map_sign 必须为 +1 或 -1')
+        if (self.parameters['xy_brake_exit_speed'] >=
+                self.parameters['xy_brake_enter_speed']):
+            raise ValueError('xy_brake_exit_speed 必须小于 xy_brake_enter_speed')
+        if (self.parameters['yaw_brake_exit_rate'] >=
+                self.parameters['yaw_brake_enter_rate']):
+            raise ValueError('yaw_brake_exit_rate 必须小于 yaw_brake_enter_rate')
         for name in (
                 'brake_gain_mz_positive', 'brake_gain_mz_negative'):
             if self.parameters[name] == 0:
@@ -640,6 +665,14 @@ class MotionSupervisorCore(object):
         self.last_velocity_acceleration = (0.0, 0.0)
         self.last_yaw_rate_reference = 0.0
         self.last_yaw_acceleration = 0.0
+        self.xy_brake_latched = False
+        self.yaw_brake_latched = False
+        self.xy_brake_release_started_at = None
+        self.yaw_brake_release_started_at = None
+        self.xy_brake_entry_count = 0
+        self.xy_brake_exit_count = 0
+        self.yaw_brake_entry_count = 0
+        self.yaw_brake_exit_count = 0
         self.reference_reset_pending = True
 
     def _initialize_motion_references(self, vehicle, map_vx, map_vy):
@@ -652,7 +685,7 @@ class MotionSupervisorCore(object):
         self.last_velocity_reference = (reference_vx, reference_vy)
         self.last_velocity_acceleration = (0.0, 0.0)
         self.last_yaw_rate_reference = clamp(
-            vehicle.yaw_rate,
+            self.parameters['yaw_rate_to_map_sign'] * vehicle.yaw_rate,
             -self.parameters['yaw_max_rate'],
             self.parameters['yaw_max_rate'],
         )
@@ -891,7 +924,37 @@ class MotionSupervisorCore(object):
             self.parameters['control_delay'],
             brake_margin,
         )
-        braking_xy = closing_speed > 0.0 and distance <= stop_distance
+        xy_brake_entry = (
+            closing_speed >= self.parameters['xy_brake_enter_speed']
+            and distance <= stop_distance)
+        xy_brake_entered = False
+        xy_brake_released = False
+        if xy_brake_entry:
+            if not self.xy_brake_latched:
+                xy_brake_entered = True
+                self.xy_brake_entry_count += 1
+            self.xy_brake_latched = True
+            self.xy_brake_release_started_at = None
+        elif self.xy_brake_latched:
+            xy_stopped = (
+                math.hypot(map_vx, map_vy)
+                <= self.parameters['xy_brake_exit_speed'])
+            # 已落入捕获半径时保持零速度参考，直接等待 CAPTURE；否则
+            # 仅在连续低速一段时间后重新允许位置跟踪，避免反馈抖动反复切换。
+            if xy_stopped and distance <= self.parameters['capture_radius']:
+                self.xy_brake_release_started_at = None
+            elif xy_stopped:
+                if self.xy_brake_release_started_at is None:
+                    self.xy_brake_release_started_at = vehicle.now
+                elif (vehicle.now - self.xy_brake_release_started_at >=
+                      self.parameters['brake_release_hold_seconds']):
+                    self.xy_brake_latched = False
+                    self.xy_brake_release_started_at = None
+                    xy_brake_released = True
+                    self.xy_brake_exit_count += 1
+            else:
+                self.xy_brake_release_started_at = None
+        braking_xy = self.xy_brake_latched
         position_speed = self.parameters['xy_position_gain'] * distance
         stopping_speed = math.sqrt(
             2.0 * brake_acceleration * max(distance - brake_margin, 0.0)
@@ -905,6 +968,10 @@ class MotionSupervisorCore(object):
         )
         desired_vx = desired_speed * direction_x
         desired_vy = desired_speed * direction_y
+        if braking_xy:
+            # 锁存刹停期间始终把速度参考收敛到零，避免越过目标后立即恢复加速。
+            desired_vx = 0.0
+            desired_vy = 0.0
         reference_vx, reference_vy = self._slew_velocity_reference(
             desired_vx, desired_vy, dt)
         reference_body_x, reference_body_y = map_vector_to_body(
@@ -929,10 +996,37 @@ class MotionSupervisorCore(object):
             self.parameters['control_delay'],
             yaw_margin,
         )
-        braking_yaw = (
-            abs(map_yaw_rate) > self.parameters['yaw_rate_threshold']
-            and abs(yaw_error) <= yaw_stop_angle
-        )
+        yaw_brake_entry = (
+            abs(map_yaw_rate) >= self.parameters['yaw_brake_enter_rate']
+            and abs(yaw_error) <= yaw_stop_angle)
+        yaw_brake_entered = False
+        yaw_brake_released = False
+        if yaw_brake_entry:
+            if not self.yaw_brake_latched:
+                yaw_brake_entered = True
+                self.yaw_brake_entry_count += 1
+            self.yaw_brake_latched = True
+            self.yaw_brake_release_started_at = None
+        elif self.yaw_brake_latched:
+            yaw_stopped = (
+                abs(map_yaw_rate)
+                <= self.parameters['yaw_brake_exit_rate'])
+            # 已满足航向捕获误差时维持零角速度参考直至接管；若仍未到位，
+            # 则等待连续低速确认后才恢复跟踪，防止 7 Hz 左右反馈反复触发。
+            if yaw_stopped and abs(yaw_error) <= self.parameters['yaw_tolerance']:
+                self.yaw_brake_release_started_at = None
+            elif yaw_stopped:
+                if self.yaw_brake_release_started_at is None:
+                    self.yaw_brake_release_started_at = vehicle.now
+                elif (vehicle.now - self.yaw_brake_release_started_at >=
+                      self.parameters['brake_release_hold_seconds']):
+                    self.yaw_brake_latched = False
+                    self.yaw_brake_release_started_at = None
+                    yaw_brake_released = True
+                    self.yaw_brake_exit_count += 1
+            else:
+                self.yaw_brake_release_started_at = None
+        braking_yaw = self.yaw_brake_latched
         yaw_stopping_rate = math.sqrt(
             2.0 * yaw_brake_acceleration * max(
                 abs(yaw_error) - yaw_margin, 0.0)
@@ -947,6 +1041,9 @@ class MotionSupervisorCore(object):
             ),
             yaw_error,
         ) if abs(yaw_error) > 1e-9 else 0.0
+        if braking_yaw:
+            # 锁存刹转期间将 map 航向角速度参考置零，持续施加反向阻尼。
+            desired_yaw_rate = 0.0
         reference_yaw_rate = self._slew_yaw_rate_reference(
             desired_yaw_rate, dt)
         yaw_rate_error = reference_yaw_rate - map_yaw_rate
@@ -968,9 +1065,15 @@ class MotionSupervisorCore(object):
                 and abs(vehicle.yaw_rate) <= self.parameters['yaw_rate_threshold']
             ) else (AXIS_BRAKE if braking_yaw else AXIS_TRACK)
         )
+        brake_axes = []
+        if braking_xy:
+            brake_axes.append('XY')
+        if braking_yaw:
+            brake_axes.append('Yaw')
         self._transition(
-            TRANSLATE_BRAKE if (braking_xy or braking_yaw) else TRANSLATE,
-            '统一三轴制动跟踪' if (braking_xy or braking_yaw) else '统一三轴位姿跟踪',
+            TRANSLATE_BRAKE if brake_axes else TRANSLATE,
+            ('统一三轴制动跟踪（{}）'.format('+'.join(brake_axes))
+            if brake_axes else '统一三轴位姿跟踪'),
         )
         return self._output(
             vehicle,
@@ -991,11 +1094,32 @@ class MotionSupervisorCore(object):
                 'xy_stop_distance': stop_distance,
                 'xy_brake_acceleration': brake_acceleration,
                 'xy_brake_margin': brake_margin,
+                'xy_brake_entry': xy_brake_entry,
+                'xy_brake_entered': xy_brake_entered,
+                'xy_brake_released': xy_brake_released,
+                'xy_brake_entry_count': self.xy_brake_entry_count,
+                'xy_brake_exit_count': self.xy_brake_exit_count,
+                'xy_brake_release_wait_s': (
+                    0.0 if self.xy_brake_release_started_at is None else
+                    max(0.0, vehicle.now - self.xy_brake_release_started_at)
+                ),
+                'xy_brake_latched': self.xy_brake_latched,
                 'xy_braking': braking_xy,
                 'yaw_rate_reference': reference_yaw_rate,
                 'map_yaw_rate': map_yaw_rate,
                 'yaw_stop_angle': yaw_stop_angle,
+                'yaw_brake_entry': yaw_brake_entry,
+                'yaw_brake_entered': yaw_brake_entered,
+                'yaw_brake_released': yaw_brake_released,
+                'yaw_brake_entry_count': self.yaw_brake_entry_count,
+                'yaw_brake_exit_count': self.yaw_brake_exit_count,
+                'yaw_brake_release_wait_s': (
+                    0.0 if self.yaw_brake_release_started_at is None else
+                    max(0.0, vehicle.now - self.yaw_brake_release_started_at)
+                ),
+                'yaw_brake_latched': self.yaw_brake_latched,
                 'yaw_braking': braking_yaw,
+                'brake_axes': '+'.join(brake_axes),
                 'goal_static_seconds': self._goal_static_seconds(vehicle.now),
                 'goal_static_for_capture': (
                     self._goal_static_seconds(vehicle.now)

@@ -519,13 +519,38 @@ function renderMotionDiagnostics(data) {
             className: diagnostics.xy_braking ? "warning" : "good",
         },
         {
+            label: "XY 锁存 / 进出次数",
+            value: diagnostics.xy_brake_latched === undefined ? "--" : (
+                `${diagnostics.xy_brake_latched ? "锁存中" : "未锁存"} / `
+                + `${integerText(diagnostics.xy_brake_entry_count)} / ${integerText(diagnostics.xy_brake_exit_count)}`
+            ),
+            className: diagnostics.xy_brake_latched ? "warning" : "good",
+        },
+        {
             label: "Yaw 速度参考 / 停止角",
             value: `${numberText(radToDeg(diagnostics.yaw_rate_reference), 2)} °/s / ${numberText(radToDeg(diagnostics.yaw_stop_angle), 2)} °`,
+        },
+        {
+            label: "地图航向角速度",
+            value: `${numberText(radToDeg(diagnostics.map_yaw_rate), 2)} °/s`,
         },
         {
             label: "Yaw 主动制动",
             value: diagnostics.yaw_braking === undefined ? "--" : (diagnostics.yaw_braking ? "进行中" : "跟踪中"),
             className: diagnostics.yaw_braking ? "warning" : "good",
+        },
+        {
+            label: "Yaw 锁存 / 进出次数",
+            value: diagnostics.yaw_brake_latched === undefined ? "--" : (
+                `${diagnostics.yaw_brake_latched ? "锁存中" : "未锁存"} / `
+                + `${integerText(diagnostics.yaw_brake_entry_count)} / ${integerText(diagnostics.yaw_brake_exit_count)}`
+            ),
+            className: diagnostics.yaw_brake_latched ? "warning" : "good",
+        },
+        {
+            label: "当前制动轴",
+            value: diagnostics.brake_axes || "无",
+            className: diagnostics.brake_axes ? "warning" : "good",
         },
         {
             label: "目标几何静止",
