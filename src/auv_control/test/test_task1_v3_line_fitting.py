@@ -5,8 +5,8 @@
 功能：Task1 红线曲线拟合观察工具，只处理感知数据，不发布运动控制命令。
 
 流程：
-    1. 监听相机红线多点识别消息，将 positions 全部点从 camera 变换到 map；
-    2. conf >= 0.70 时保留全部识别点，密集近邻点不再合并压缩；
+    1. 监听相机红线多点识别消息，将 positions 中坐标有限的点从 camera 变换到 map；
+    2. conf >= 0.70 时保留全部有限识别点，密集近邻点不再合并压缩；
     3. 首次短时间窗内累计所有高置信识别点并锁定红线；
     4. 后续 conf >= 0.70 的 positions 全部点进入点集并重新拟合；
     5. 当前拟合经后续高置信帧确认后立即冻结；
@@ -56,6 +56,11 @@
     方向、固定段过滤和曲线回折等几何拒绝条件；所有达标点直接融合并重新拟合。
     进一步取消 point_valid、坐标合理性和每帧取点上限；置信度达标后直接使用
     positions 数组的全部点。密集点融合距离默认改为 0，避免正常近邻点被压缩。
+2026.7.20
+    跳过 positions 中无法参与数值计算的 NaN/Inf 点，其余高置信点仍全部用于拟合；
+    Web 历史点增加非有限值保护，避免显示处理打断感知回调。
+2026.7.20
+    增加带时间戳的 YAML 数据文件，记录每帧识别结果及定期发布的完整拟合快照。
 """
 
 import copy
@@ -72,6 +77,7 @@ import tf
 from auv_control.msg import LineDetection
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import String
+from task1_v3_yaml_logger import TimestampedYamlLogger
 from tf.transformations import euler_from_quaternion
 
 
@@ -210,6 +216,9 @@ class LineFittingTest:
         self.log_period_seconds = max(0.1, float(rospy.get_param(
             "~log_period_seconds", 2.0
         )))
+        self.log_directory = rospy.get_param(
+            "~log_directory", "~/.ros/auv_logs/task1"
+        )
 
         self.line_classes = class_names("~line_classes", ["line"])
         self.line_lock_window_seconds = max(0.0, float(rospy.get_param(
@@ -329,6 +338,9 @@ class LineFittingTest:
         self.web_valid_point_cells = set()
         self.web_valid_point_lock = threading.Lock()
         self.last_trajectory_publish_time = rospy.Time(0)
+        self.data_logger = None
+        self.open_data_log()
+        rospy.on_shutdown(self.shutdown)
 
         rospy.Subscriber(
             self.line_topic, LineDetection, self.line_callback, queue_size=1
@@ -337,10 +349,43 @@ class LineFittingTest:
             self.camera_topic, rospy.AnyMsg, self.camera_callback, queue_size=1
         )
         rospy.loginfo(
-            "%s: 红线接口=auv_control/LineDetection；置信度达标后使用 positions 全部点；下限=%.2f",
+            "%s: 红线接口=auv_control/LineDetection；置信度达标后使用 positions 全部有限点；下限=%.2f",
             NODE_NAME,
             self.line_min_confidence,
         )
+
+    def open_data_log(self):
+        try:
+            self.data_logger = TimestampedYamlLogger(
+                NODE_NAME, self.log_directory
+            )
+            self.write_data_record(
+                "startup",
+                log_directory=self.log_directory,
+                line_min_confidence=self.line_min_confidence,
+            )
+            rospy.loginfo(
+                "%s: 完整数据文件=%s", NODE_NAME, self.data_logger.path
+            )
+        except OSError as error:
+            self.data_logger = None
+            rospy.logwarn("%s: 无法创建完整数据文件: %s", NODE_NAME, error)
+
+    def shutdown(self):
+        if self.data_logger is not None:
+            self.data_logger.close()
+            self.data_logger = None
+
+    def write_data_record(self, event, **data):
+        if self.data_logger is None:
+            return
+        data.setdefault("state", self.state)
+        try:
+            self.data_logger.write(event, **data)
+        except (OSError, TypeError, ValueError) as error:
+            rospy.logwarn_throttle(
+                5.0, "%s: 完整数据写入失败: %s", NODE_NAME, error
+            )
 
     def camera_callback(self, _message):
         self.last_camera_time = rospy.Time.now()
@@ -812,7 +857,7 @@ class LineFittingTest:
         return clamp(confidence, 0.0, 1.0)
 
     def line_poses(self, message):
-        """置信度达标后，将 positions 中的全部识别点用于拟合。"""
+        """置信度达标后，将 positions 中坐标有限的识别点全部用于拟合。"""
         declared_count = int(message.point_count)
         positions = list(message.positions)
         self.latest_line_input_count = declared_count
@@ -828,6 +873,10 @@ class LineFittingTest:
 
         poses = []
         for position in positions:
+            if not all(math.isfinite(value) for value in (
+                position.x, position.y, position.z
+            )):
+                continue
             pose = PoseStamped()
             pose.header = copy.deepcopy(message.header)
             pose.pose.position = copy.deepcopy(position)
@@ -835,7 +884,7 @@ class LineFittingTest:
             poses.append(pose)
 
         if len(poses) < 2:
-            return None, "too_few_line_points"
+            return None, "too_few_finite_line_points"
         self.latest_line_used_count = len(poses)
         return poses, "valid"
 
@@ -844,6 +893,10 @@ class LineFittingTest:
         spacing = self.web_valid_point_merge_distance
         with self.web_valid_point_lock:
             for point in points:
+                if not all(math.isfinite(value) for value in (
+                    point.x, point.y, point.z
+                )):
+                    continue
                 cell = None
                 if spacing > 0.0:
                     cell = (
@@ -868,6 +921,15 @@ class LineFittingTest:
     def reject_triplet(self, reason):
         self.rejected_triplets += 1
         self.last_reject_reason = reason
+        self.write_data_record(
+            "line_frame",
+            status="rejected",
+            reason=reason,
+            confidence=round(self.latest_confidence, 6),
+            input_count=self.latest_line_input_count,
+            valid_count=self.latest_line_valid_count,
+            used_count=self.latest_line_used_count,
+        )
         rospy.loginfo_throttle(
             self.log_period_seconds,
             "%s: 本帧红线已忽略，原因=%s",
@@ -932,6 +994,17 @@ class LineFittingTest:
                     copy.deepcopy(points)
                 )
             self.state = self.SELECT_CANDIDATE
+            self.write_data_record(
+                "line_frame",
+                status="lock_candidate",
+                confidence=round(confidence, 6),
+                input_count=self.latest_line_input_count,
+                valid_count=self.latest_line_valid_count,
+                used_count=self.latest_line_used_count,
+                points=[
+                    [point.x, point.y, point.z] for point in points
+                ],
+            )
             return
 
         # conf 已通过硬下限后，positions 全部点直接进入融合和拟合；旧的曲线关联、
@@ -945,6 +1018,25 @@ class LineFittingTest:
                 self.freeze_confirmation_count + 1,
             )
             self.freeze_confirmed_curve()
+            self.write_data_record(
+                "line_frame",
+                status="accepted",
+                confidence=round(confidence, 6),
+                input_count=self.latest_line_input_count,
+                valid_count=self.latest_line_valid_count,
+                used_count=self.latest_line_used_count,
+                points=[
+                    [point.x, point.y, point.z] for point in points
+                ],
+                curve_length=(
+                    self.line_curve_s[-1] if self.line_curve_s else 0.0
+                ),
+                fixed_length=(
+                    self.line_committed_curve_s[-1]
+                    if self.line_committed_curve_s else 0.0
+                ),
+                freeze_version=self.freeze_version,
+            )
         else:
             self.freeze_confirmation_count = 0
             self.reject_triplet(fit_reason)
@@ -1060,6 +1152,7 @@ class LineFittingTest:
             "valid_line_point_history_count": len(web_valid_points),
             "actual_path": [point_data(point) for point in self.actual_trajectory],
         }
+        self.write_data_record("trajectory_update", **payload)
         encoded = json.dumps(payload, separators=(",", ":"))
         self.trajectory_pub.publish(String(data=encoded))
         if self.trajectory_web is not None:
