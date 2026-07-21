@@ -33,6 +33,9 @@
     Web 改为 Reset 原点下的 NED 俯视图并固定比例尺，支持滚轮缩放和拖动；
     轨迹、机器人和目标显示 base_link，实际 camera 位置作为航向箭头终点。
     航点改为先到达并定点，再对准下一航点；四个正方形拐角强制成为航点。
+2026.7.20
+    增加带时间戳的 YAML 数据文件，定期保存固定轨迹、机器人位姿、LOS目标、
+    监督器状态和已完成路径，便于复盘控制过程。
 """
 
 import copy
@@ -46,6 +49,7 @@ import tf
 from auv_control.msg import MotionState
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import Empty, String
+from task1_v3_yaml_logger import TimestampedYamlLogger
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
@@ -182,6 +186,9 @@ class LosSquareTest:
         self.trajectory_topic = rospy.get_param(
             "~trajectory_topic", "/task1/v3/los_square/trajectory"
         )
+        self.log_directory = rospy.get_param(
+            "~log_directory", "~/.ros/auv_logs/task1"
+        )
 
         self.square_side_length = max(0.1, float(rospy.get_param(
             "~square_side_length", 1.0
@@ -301,9 +308,46 @@ class LosSquareTest:
         self.latest_motion_state = None
         self.last_motion_goal = None
         self.cancel_sent = False
-        rospy.on_shutdown(self.cancel_motion)
         self.actual_trajectory = []
         self.last_trajectory_publish_time = rospy.Time(0)
+        self.data_logger = None
+        self.open_data_log()
+        rospy.on_shutdown(self.shutdown)
+
+    def open_data_log(self):
+        try:
+            self.data_logger = TimestampedYamlLogger(
+                NODE_NAME, self.log_directory
+            )
+            self.write_data_record(
+                "startup",
+                log_directory=self.log_directory,
+                square_side_length=self.square_side_length,
+                los_lookahead_distance=self.los_lookahead_distance,
+            )
+            rospy.loginfo(
+                "%s: 完整数据文件=%s", NODE_NAME, self.data_logger.path
+            )
+        except OSError as error:
+            self.data_logger = None
+            rospy.logwarn("%s: 无法创建完整数据文件: %s", NODE_NAME, error)
+
+    def shutdown(self):
+        self.cancel_motion()
+        if self.data_logger is not None:
+            self.data_logger.close()
+            self.data_logger = None
+
+    def write_data_record(self, event, **data):
+        if self.data_logger is None:
+            return
+        data.setdefault("state", self.state)
+        try:
+            self.data_logger.write(event, **data)
+        except (OSError, TypeError, ValueError) as error:
+            rospy.logwarn_throttle(
+                5.0, "%s: 完整数据写入失败: %s", NODE_NAME, error
+            )
 
     def motion_state_callback(self, message):
         self.latest_motion_state = copy.deepcopy(message)
@@ -839,6 +883,7 @@ class LosSquareTest:
             "ty": self.latest_motion_state.ty if self.motion_state_fresh() else 0,
             "mz": self.latest_motion_state.mz if self.motion_state_fresh() else 0,
         }
+        self.write_data_record("trajectory_update", **payload)
         encoded = json.dumps(payload, separators=(",", ":"))
         self.trajectory_pub.publish(String(data=encoded))
         if self.trajectory_web is not None:
@@ -901,6 +946,59 @@ class LosSquareTest:
             motion_state.tx if motion_state is not None else 0,
             motion_state.ty if motion_state is not None else 0,
             motion_state.mz if motion_state is not None else 0,
+        )
+        self.write_data_record(
+            "control_cycle",
+            base={
+                "position": [
+                    current.pose.position.x,
+                    current.pose.position.y,
+                    current.pose.position.z,
+                ],
+                "yaw_deg": math.degrees(current_yaw),
+            },
+            camera={
+                "position": [
+                    tracking.pose.position.x,
+                    tracking.pose.position.y,
+                    tracking.pose.position.z,
+                ],
+            },
+            camera_target=(
+                [target.x, target.y, target.z]
+                if target is not None else None
+            ),
+            command_goal=(
+                {
+                    "position": [
+                        goal.pose.position.x,
+                        goal.pose.position.y,
+                        goal.pose.position.z,
+                    ],
+                    "yaw_deg": math.degrees(yaw_from_quaternion(
+                        goal.pose.orientation
+                    )),
+                }
+                if goal is not None else None
+            ),
+            position_error=position_error,
+            yaw_error_deg=yaw_error,
+            completed_path=self.completed_path_length,
+            total_path=(
+                self.planned_path_s[-1] if self.planned_path_s else 0.0
+            ),
+            active_target_s=self.active_los_target_s,
+            los_phase=self.active_los_phase,
+            motion=(
+                {
+                    "state": motion_state.state,
+                    "reason": motion_state.reason,
+                    "tx": motion_state.tx,
+                    "ty": motion_state.ty,
+                    "mz": motion_state.mz,
+                }
+                if motion_state is not None else None
+            ),
         )
 
     def finish(self):

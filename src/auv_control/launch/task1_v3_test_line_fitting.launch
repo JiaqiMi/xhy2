@@ -18,6 +18,9 @@
     <arg name="line_topic" default="/obj/line_message" />
     <arg name="camera_topic" default="/left/image_raw" />
     <arg name="trajectory_topic" default="/task1/v3/line_fitting/trajectory" />
+    <!-- 每次启动新建带时间戳的 YAML 分析数据文件。 -->
+    <arg name="log_directory"
+         default="$(env HOME)/.ros/auv_logs/task1" />
     <!-- 每帧红线只等待一次原时间戳 TF；超过该时间仍不可用则丢弃整帧，单位 s。 -->
     <arg name="tf_timeout_seconds" default="1" />
     <!-- 红线消息允许的最大年龄；过期帧不参与锁线或拟合，单位 s。 -->
@@ -33,7 +36,7 @@
     <arg name="line_lock_window_seconds" default="0.3" />
     <!-- 红线置信度硬下限；低于该值的整帧识别不参与锁线、拟合和冻结。 -->
     <arg name="line_min_confidence" default="0.70" />
-    <!-- 达到置信度下限后，positions 数组全部识别点直接进入拟合；
+    <!-- 达到置信度下限后，positions 中坐标有限的识别点全部直接进入拟合；NaN/Inf 跳过；
          关联距离、方向、内点比例、延伸间隔和回折门槛均已停用。 -->
 
     <!-- 新点距已有点小于该值时融合而不重复增加，单位 m。
@@ -87,6 +90,7 @@
         <param name="line_topic" type="string" value="$(arg line_topic)" />
         <param name="camera_topic" type="string" value="$(arg camera_topic)" />
         <param name="trajectory_topic" type="string" value="$(arg trajectory_topic)" />
+        <param name="log_directory" type="string" value="$(arg log_directory)" />
         <param name="tf_timeout_seconds" type="double" value="$(arg tf_timeout_seconds)" />
         <param name="line_message_max_age_seconds" type="double" value="$(arg line_message_max_age_seconds)" />
         <param name="camera_message_timeout" type="double" value="$(arg camera_message_timeout)" />

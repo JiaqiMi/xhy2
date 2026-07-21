@@ -29,6 +29,9 @@
     搜索改为 mode=4 左右转、回到启动航向并稳定后定点前进，循环执行。
     新增 v3：任务不再发布 PoseNEDcmd，不直接控制 mode 或六轴力；所有运动
     改为向 motion_supervisor 发布 map 绝对目标，并只用新鲜 HOVER 判定到达。
+2026.7.20
+    增加带时间戳的 YAML 数据文件，记录图形消息处理结果以及每个控制周期的
+    位姿、目标、MotionState、识别窗口和动作阶段。
 """
 
 import copy
@@ -39,6 +42,7 @@ import tf
 from auv_control.msg import ActuatorControl, MotionState, TargetDetection
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import Empty, String
+from task1_v3_yaml_logger import TimestampedYamlLogger
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
@@ -90,8 +94,12 @@ class YellowMarkerTest:
     }
 
     def __init__(self):
-        self.node_name = "test_task1_v3_yellow_marker"
-        self.marker_display_name = "黄色图形"
+        self.node_name = getattr(
+            self, "node_name", "test_task1_v3_yellow_marker"
+        )
+        self.marker_display_name = getattr(
+            self, "marker_display_name", "黄色图形"
+        )
         self.rate = rospy.Rate(float(rospy.get_param("~rate", 5.0)))
         self.tf_listener = tf.TransformListener()
 
@@ -118,6 +126,9 @@ class YellowMarkerTest:
         self.actuator_topic = rospy.get_param("~actuator_topic", "/cmd/actuator")
         self.finished_topic = rospy.get_param("~finished_topic", "/finished")
         self.camera_topic = rospy.get_param("~camera_topic", "/left/image_raw")
+        self.log_directory = rospy.get_param(
+            "~log_directory", "~/.ros/auv_logs/task1"
+        )
 
         self.search_forward_distance = float(rospy.get_param(
             "~search_forward_distance", 0.5
@@ -208,7 +219,6 @@ class YellowMarkerTest:
         self.latest_motion_state = None
         self.last_motion_goal = None
         self.cancel_sent = False
-        rospy.on_shutdown(self.cancel_motion)
 
         self.marker_observation_window = []
         self.last_marker_sample_time = None
@@ -221,6 +231,9 @@ class YellowMarkerTest:
         self.search_stable_since = None
         self.search_arrival_logged = False
         self.light_started_at = None
+        self.data_logger = None
+        self.open_data_log()
+        rospy.on_shutdown(self.shutdown)
 
         # 状态字段全部就绪后再创建订阅，避免首帧消息在构造期间触发回调。
         rospy.Subscriber(
@@ -234,6 +247,120 @@ class YellowMarkerTest:
             MotionState,
             self.motion_state_callback,
             queue_size=1,
+        )
+
+    @staticmethod
+    def point_record(point):
+        if point is None:
+            return None
+        return [point.x, point.y, point.z]
+
+    @staticmethod
+    def pose_record(pose):
+        if pose is None:
+            return None
+        return {
+            "position": YellowMarkerTest.point_record(pose.pose.position),
+            "yaw_deg": math.degrees(yaw_from_quaternion(
+                pose.pose.orientation
+            )),
+        }
+
+    def open_data_log(self):
+        try:
+            self.data_logger = TimestampedYamlLogger(
+                self.node_name, self.log_directory
+            )
+            self.write_data_record(
+                "startup",
+                log_directory=self.log_directory,
+                marker_display_name=self.marker_display_name,
+            )
+            rospy.loginfo(
+                "%s: 完整数据文件=%s",
+                self.node_name,
+                self.data_logger.path,
+            )
+        except OSError as error:
+            self.data_logger = None
+            rospy.logwarn(
+                "%s: 无法创建完整数据文件: %s", self.node_name, error
+            )
+
+    def shutdown(self):
+        self.cancel_motion()
+        if self.data_logger is not None:
+            self.data_logger.close()
+            self.data_logger = None
+
+    def write_data_record(self, event, **data):
+        if self.data_logger is None:
+            return
+        data.setdefault("step", self.step)
+        try:
+            self.data_logger.write(event, **data)
+        except (OSError, TypeError, ValueError) as error:
+            rospy.logwarn_throttle(
+                5.0, "%s: 完整数据写入失败: %s", self.node_name, error
+            )
+
+    def record_target_message(self, message, status, transformed=None):
+        self.write_data_record(
+            "target_frame",
+            status=status,
+            class_name=message.class_name,
+            target_type=message.type,
+            confidence=float(message.conf),
+            source_frame=message.pose.header.frame_id,
+            camera_position=self.point_record(message.pose.pose.position),
+            map_position=(
+                self.point_record(transformed.pose.position)
+                if transformed is not None else None
+            ),
+            observation_window_size=len(self.marker_observation_window),
+            observation_valid_count=sum(
+                item is not None for item in self.marker_observation_window
+            ),
+        )
+
+    def record_control_cycle(self, current):
+        motion = self.latest_motion_state
+        rotation = getattr(self, "rotation_state", None)
+        rotation_data = None
+        if rotation is not None:
+            rotation_data = {
+                "completed_deg": math.degrees(rotation["completed"]),
+                "step_deg": math.degrees(rotation["step_angle"]),
+                "goal": self.pose_record(rotation["goal"]),
+                "hover_started": (
+                    rotation["hover_started"].to_sec()
+                    if rotation["hover_started"] is not None else None
+                ),
+            }
+        self.write_data_record(
+            "control_cycle",
+            camera_ready=self.camera_ready(),
+            current_pose=self.pose_record(current),
+            command_goal=self.pose_record(self.last_motion_goal),
+            move_target=self.point_record(self.move_target),
+            detected_marker=self.pose_record(self.detected_marker),
+            observation_window_size=len(self.marker_observation_window),
+            observation_valid_count=sum(
+                item is not None for item in self.marker_observation_window
+            ),
+            action_phase=getattr(self, "black_action_phase", None),
+            rotation=rotation_data,
+            motion=(
+                {
+                    "state": motion.state,
+                    "reason": motion.reason,
+                    "goal": self.pose_record(motion.goal),
+                    "tx": motion.tx,
+                    "ty": motion.ty,
+                    "mz": motion.mz,
+                }
+                if motion is not None else None
+            ),
         )
 
     def camera_callback(self, _message):
@@ -483,12 +610,14 @@ class YellowMarkerTest:
     def target_callback(self, message):
         """最近 N 条识别输出中有 K 条同类有效结果时确认黄色图形。"""
         if self.hold_z is None and not self.initialize_start_pose():
+            self.record_target_message(message, "robot_pose_unavailable")
             return
         if (
             self.step == self.STEP_WAIT_CAMERA
             or self.detected_marker is not None
             or not self.camera_ready()
         ):
+            self.record_target_message(message, "ignored_in_current_step")
             return
 
         marker = None
@@ -513,6 +642,13 @@ class YellowMarkerTest:
             marker = self.transform_pose_to_map(message.pose)
 
         confirmed = self.add_marker_observation(marker)
+        self.record_target_message(
+            message,
+            "confirmed" if confirmed is not None else (
+                "accepted" if marker is not None else "rejected"
+            ),
+            marker,
+        )
         if confirmed is not None:
             self.lock_confirmed_marker(confirmed)
 
@@ -726,11 +862,13 @@ class YellowMarkerTest:
     def run(self):
         while not rospy.is_shutdown():
             if not self.initialize_start_pose():
+                self.record_control_cycle(None)
                 self.rate.sleep()
                 continue
 
             current = self.get_current_pose()
             if current is None:
+                self.record_control_cycle(None)
                 self.rate.sleep()
                 continue
             if self.motion_failed():
@@ -740,6 +878,7 @@ class YellowMarkerTest:
                     self.node_name,
                     self.latest_motion_state.reason,
                 )
+                self.record_control_cycle(current)
                 self.rate.sleep()
                 continue
 
@@ -783,6 +922,7 @@ class YellowMarkerTest:
             elif self.step == self.STEP_FINISH:
                 self.finish()
 
+            self.record_control_cycle(current)
             self.rate.sleep()
 
 
