@@ -58,7 +58,16 @@ class SensorActuatorNode:
     OP_SET = 0x00
     FLAG_NEED_ACK = 0x01
     SEND_RATE_HZ = 5
-    ACK_SUCCESS_RESULTS = {0x00, 0x02, 0x03}
+    # 协议 result=OK、ACCEPTED、EXEC_OK 均表示命令已成功处理。
+    SUCCESS_RESULTS = {0x00, 0x02, 0x03}
+    ACK_SUCCESS_RESULTS = SUCCESS_RESULTS
+    RESULT_NAMES = {
+        0x00: 'OK',
+        0x01: 'SENSOR_ERROR',
+        0x02: 'ACCEPTED',
+        0x03: 'EXEC_OK',
+        0x04: 'EXEC_ERROR',
+    }
 
     def __init__(self):
         self.ip = rospy.get_param('~sensor_ip', '192.168.1.115')
@@ -267,6 +276,7 @@ class SensorActuatorNode:
         payload = packet[10:10 + payload_len]
         fb_result = packet[7]
         fb_error = packet[8]
+        actuator_error = payload[7]
 
         # 更新反馈缓存
         with self.lock:
@@ -278,14 +288,22 @@ class SensorActuatorNode:
             self.fb_yellow = payload[5]
             self.fb_green = payload[6]
 
-        rospy.loginfo(
-            "sensor_actuator: 执行机构反馈 heading=%3d clamp=%3d drive=(%d,%3d) "
-            "led=(%d,%d,%d) result=%s",
+        log_args = (
             payload[0], payload[1],
             payload[2], payload[3],
             payload[4], payload[5], payload[6],
-            "正常" if fb_result == 0 else "错误(0x%02X)" % fb_result
+            fb_result, self.RESULT_NAMES.get(fb_result, 'UNKNOWN'),
+            fb_error, actuator_error,
         )
+        log_format = (
+            "sensor_actuator: 执行机构反馈 heading=%3d clamp=%3d drive=(%d,%3d) "
+            "led=(%d,%d,%d) result=0x%02X(%s) error=0x%02X actuator_error=0x%02X"
+        )
+        if (fb_result in self.SUCCESS_RESULTS and
+                fb_error == 0 and actuator_error == 0):
+            rospy.loginfo(log_format, *log_args)
+        else:
+            rospy.logwarn(log_format, *log_args)
 
         # 发布 /status/actuator
         self._publish_status()
