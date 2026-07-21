@@ -24,12 +24,14 @@ from state_web_core import (  # noqa: E402
     OriginRevision,
     health_state,
     horizon_transform,
+    has_vision_detections,
     normalize_heading,
     quaternion_to_euler_deg,
     sanitize_json,
     select_attitude,
     shortest_heading_error,
     update_fps,
+    vision_packet_status,
 )
 
 
@@ -127,6 +129,51 @@ class StateWebCoreTest(unittest.TestCase):
         self.assertEqual(result["valid"], 1.0)
         self.assertIsNone(result["nan"])
         self.assertIsNone(result["values"][0])
+
+    def test_vision_packet_requires_fresh_and_synchronized_frame(self):
+        packet = {
+            "received_at": 10.0,
+            "payload": {"stamp": 9.8, "detections": [{}]},
+        }
+        fresh = vision_packet_status(
+            packet,
+            now=11.0,
+            timeout=2.0,
+            frame_stamp=10.0,
+            frame_tolerance=0.5,
+        )
+        self.assertTrue(fresh["online"])
+        self.assertTrue(fresh["frame_synced"])
+        self.assertAlmostEqual(fresh["frame_delta_sec"], 0.2)
+
+        unsynchronized = vision_packet_status(
+            packet,
+            now=11.0,
+            timeout=2.0,
+            frame_stamp=10.5,
+            frame_tolerance=0.5,
+        )
+        self.assertFalse(unsynchronized["online"])
+        self.assertFalse(unsynchronized["frame_synced"])
+
+        stale = vision_packet_status(
+            packet,
+            now=13.0,
+            timeout=2.0,
+            frame_stamp=10.0,
+            frame_tolerance=0.5,
+        )
+        self.assertFalse(stale["online"])
+
+    def test_vision_detection_payload_requires_nonempty_list(self):
+        self.assertTrue(has_vision_detections({"detections": [{}]}))
+        self.assertFalse(has_vision_detections({
+            "valid": False,
+            "detections": [{}],
+        }))
+        self.assertFalse(has_vision_detections({"detections": []}))
+        self.assertFalse(has_vision_detections({"detections": {}}))
+        self.assertFalse(has_vision_detections(None))
 
 
 if __name__ == "__main__":

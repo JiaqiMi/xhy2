@@ -6,6 +6,19 @@
     <arg name="right_image_topic" default="/right/image_raw" />
     <arg name="fisheye_image_topic" default="/fisheye_camera/image_raw" />
 
+    <arg name="line_detection_topic" default="/vision/line/detections" />
+    <arg name="line_pose_topic" default="/vision/line/pose" />
+    <arg name="red_circle_detection_topic" default="/vision/red_circle/detections" />
+    <arg name="red_circle_pose_topic" default="/vision/red_circle/pose" />
+    <arg name="shapes_detection_topic" default="/vision/shapes/detections" />
+    <arg name="shapes_pose_topic" default="/vision/shapes/pose" />
+    <arg name="rectangle_detection_topic" default="/vision/rectangle/detections" />
+    <arg name="rectangle_pose_topic" default="/vision/rectangle/pose" />
+    <arg name="arrow_detection_topic" default="/vision/arrow/detections" />
+    <arg name="arrow_direction_topic" default="/vision/arrow/direction" />
+    <arg name="aruco_detection_topic" default="/vision/aruco/detections" />
+    <arg name="aruco_pose_topic" default="/vision/aruco/pose" />
+
     <arg name="auv_status_topic" default="/status/auv" />
     <arg name="velocity_topic" default="/status/vel" />
     <arg name="pose_command_topic" default="/cmd/pose/ned" />
@@ -24,6 +37,8 @@
     <arg name="jpeg_quality" default="75" />
     <arg name="image_max_width" default="960" />
     <arg name="image_timeout" default="3.0" />
+    <arg name="vision_timeout" default="2.0" />
+    <arg name="vision_frame_tolerance" default="0.5" />
     <arg name="state_timeout" default="2.0" />
     <arg name="command_timeout" default="2.0" />
     <arg name="tf_timeout" default="2.0" />
@@ -41,6 +56,19 @@
         <param name="left_image_topic" value="$(arg left_image_topic)" />
         <param name="right_image_topic" value="$(arg right_image_topic)" />
         <param name="fisheye_image_topic" value="$(arg fisheye_image_topic)" />
+
+        <param name="line_detection_topic" value="$(arg line_detection_topic)" />
+        <param name="line_pose_topic" value="$(arg line_pose_topic)" />
+        <param name="red_circle_detection_topic" value="$(arg red_circle_detection_topic)" />
+        <param name="red_circle_pose_topic" value="$(arg red_circle_pose_topic)" />
+        <param name="shapes_detection_topic" value="$(arg shapes_detection_topic)" />
+        <param name="shapes_pose_topic" value="$(arg shapes_pose_topic)" />
+        <param name="rectangle_detection_topic" value="$(arg rectangle_detection_topic)" />
+        <param name="rectangle_pose_topic" value="$(arg rectangle_pose_topic)" />
+        <param name="arrow_detection_topic" value="$(arg arrow_detection_topic)" />
+        <param name="arrow_direction_topic" value="$(arg arrow_direction_topic)" />
+        <param name="aruco_detection_topic" value="$(arg aruco_detection_topic)" />
+        <param name="aruco_pose_topic" value="$(arg aruco_pose_topic)" />
 
         <param name="auv_status_topic" value="$(arg auv_status_topic)" />
         <param name="velocity_topic" value="$(arg velocity_topic)" />
@@ -60,6 +88,8 @@
         <param name="jpeg_quality" value="$(arg jpeg_quality)" />
         <param name="image_max_width" value="$(arg image_max_width)" />
         <param name="image_timeout" value="$(arg image_timeout)" />
+        <param name="vision_timeout" value="$(arg vision_timeout)" />
+        <param name="vision_frame_tolerance" value="$(arg vision_frame_tolerance)" />
         <param name="state_timeout" value="$(arg state_timeout)" />
         <param name="command_timeout" value="$(arg command_timeout)" />
         <param name="tf_timeout" value="$(arg tf_timeout)" />

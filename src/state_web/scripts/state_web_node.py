@@ -16,6 +16,7 @@ import threading
 import time
 
 import cv2
+import numpy as np
 import rospkg
 import rospy
 import tf
@@ -37,6 +38,7 @@ from state_web_core import (
     CONTROL_MODE_NAMES,
     MOTION_STATE_NAMES,
     OriginRevision,
+    has_vision_detections,
     health_state,
     normalize_heading,
     quaternion_to_euler_deg,
@@ -44,6 +46,7 @@ from state_web_core import (
     select_attitude,
     shortest_heading_error,
     update_fps,
+    vision_packet_status,
 )
 
 
@@ -132,11 +135,154 @@ def serialize_actuator(message):
     }
 
 
+VISION_SOURCE_DEFAULTS = {
+    "line": {
+        "camera": "left",
+        "label": "Line",
+        "color": (0, 214, 255),
+        "topics": {
+            "detection": "/vision/line/detections",
+            "pose": "/vision/line/pose",
+        },
+    },
+    "red_circle": {
+        "camera": "left",
+        "label": "RedCircle",
+        "color": (55, 80, 255),
+        "topics": {
+            "detection": "/vision/red_circle/detections",
+            "pose": "/vision/red_circle/pose",
+        },
+    },
+    "shapes": {
+        "camera": "left",
+        "label": "Shapes",
+        "color": (86, 220, 113),
+        "topics": {
+            "detection": "/vision/shapes/detections",
+            "pose": "/vision/shapes/pose",
+        },
+    },
+    "rectangle": {
+        "camera": "left",
+        "label": "Rectangle",
+        "color": (255, 163, 62),
+        "topics": {
+            "detection": "/vision/rectangle/detections",
+            "pose": "/vision/rectangle/pose",
+        },
+    },
+    "arrow": {
+        "camera": "left",
+        "label": "Arrow",
+        "color": (255, 93, 205),
+        "topics": {
+            "detection": "/vision/arrow/detections",
+            "arrow": "/vision/arrow/direction",
+        },
+    },
+    "aruco": {
+        "camera": "fisheye",
+        "label": "ArUco",
+        "color": (0, 235, 235),
+        "topics": {
+            "detection": "/vision/aruco/detections",
+            "pose": "/vision/aruco/pose",
+        },
+    },
+}
+
+
+class VisionOverlayStore:
+    """缓存各视觉任务结果，并按相机帧筛选可绘制数据。"""
+
+    def __init__(self, sources, timeout, frame_tolerance):
+        self.sources = copy.deepcopy(sources)
+        self.timeout = float(timeout)
+        self.frame_tolerance = float(frame_tolerance)
+        self.lock = threading.RLock()
+        self.values = {
+            source: {kind: None for kind in config["topics"]}
+            for source, config in self.sources.items()
+        }
+
+    def store(self, source, kind, payload, received_at):
+        """保存一类视觉 JSON 的最近一次有效格式消息。"""
+        if source not in self.values or kind not in self.values[source]:
+            return
+        with self.lock:
+            self.values[source][kind] = {
+                "payload": copy.deepcopy(payload),
+                "received_at": float(received_at),
+            }
+
+    def packets_for_frame(self, camera, frame_stamp, now):
+        """返回与当前相机帧同相机、同时间窗口的有效任务结果。"""
+        with self.lock:
+            values = copy.deepcopy(self.values)
+
+        active = {}
+        for source, config in self.sources.items():
+            if config["camera"] != camera:
+                continue
+            packets = values.get(source, {})
+            selected = {}
+            for kind, packet in packets.items():
+                status = vision_packet_status(
+                    packet,
+                    now,
+                    self.timeout,
+                    frame_stamp,
+                    self.frame_tolerance,
+                )
+                if not status["online"]:
+                    continue
+                payload = packet.get("payload") if packet else None
+                if not isinstance(payload, dict):
+                    continue
+                selected[kind] = payload
+
+            if source == "arrow":
+                arrow = selected.get("arrow")
+                if arrow and arrow.get("valid") is True:
+                    active[source] = selected
+            else:
+                detection = selected.get("detection")
+                if detection and has_vision_detections(detection):
+                    active[source] = selected
+        return active
+
+    def status(self, now):
+        """生成不依赖单帧图像的视觉诊断状态。"""
+        with self.lock:
+            values = copy.deepcopy(self.values)
+        payload = {}
+        for source, config in self.sources.items():
+            channels = {}
+            for kind, packet in values[source].items():
+                status = vision_packet_status(packet, now, self.timeout)
+                message = packet.get("payload") if packet else None
+                if kind == "detection":
+                    status["valid"] = has_vision_detections(message)
+                else:
+                    status["valid"] = bool(
+                        isinstance(message, dict) and message.get("valid")
+                    )
+                channels[kind] = status
+            payload[source] = {
+                "camera": config["camera"],
+                "label": config["label"],
+                "topics": copy.deepcopy(config["topics"]),
+                "channels": channels,
+            }
+        return payload
+
+
 class CameraStream:
     """保存单路相机最新 JPEG 和流状态。"""
 
     def __init__(self, name, topic, bridge, jpeg_quality, max_width,
-                 timeout, stream_fps):
+                 timeout, stream_fps, overlay_callback=None):
         self.name = name
         self.topic = topic
         self.bridge = bridge
@@ -144,6 +290,7 @@ class CameraStream:
         self.max_width = int(max_width)
         self.timeout = float(timeout)
         self.stream_fps = float(max(0.5, stream_fps))
+        self.overlay_callback = overlay_callback
 
         self.lock = threading.Lock()
         self.jpeg = None
@@ -168,6 +315,21 @@ class CameraStream:
                 str(exc),
             )
             return
+
+        if self.overlay_callback is not None:
+            try:
+                frame = self.overlay_callback(
+                    self.name,
+                    frame,
+                    ros_stamp_sec(message.header),
+                )
+            except Exception as exc:
+                rospy.logerr_throttle(
+                    2.0,
+                    "state_web: %s 视觉标注绘制失败: %s",
+                    self.name,
+                    str(exc),
+                )
 
         height, width = frame.shape[:2]
         if self.max_width > 0 and width > self.max_width:
@@ -255,6 +417,12 @@ class StateWebNode:
         )
         self.tf_timeout = float(rospy.get_param("~tf_timeout", 2.0))
         self.tf_poll_hz = float(rospy.get_param("~tf_poll_hz", 10.0))
+        self.vision_timeout = float(
+            rospy.get_param("~vision_timeout", 2.0)
+        )
+        self.vision_frame_tolerance = float(
+            rospy.get_param("~vision_frame_tolerance", 0.5)
+        )
 
         self.topics = {
             "left": rospy.get_param(
@@ -295,10 +463,27 @@ class StateWebNode:
             ),
         }
 
+        self.vision_sources = copy.deepcopy(VISION_SOURCE_DEFAULTS)
+        for source, config in self.vision_sources.items():
+            for kind, default_topic in config["topics"].items():
+                parameter_kind = (
+                    "direction" if source == "arrow" and kind == "arrow"
+                    else kind
+                )
+                config["topics"][kind] = rospy.get_param(
+                    "~{}_{}_topic".format(source, parameter_kind),
+                    default_topic,
+                )
+
         self.bridge = CvBridge()
         self.tf_listener = tf.TransformListener()
         self.state_lock = threading.RLock()
         self.values = {}
+        self.vision_store = VisionOverlayStore(
+            self.vision_sources,
+            self.vision_timeout,
+            self.vision_frame_tolerance,
+        )
         self.origin_revision = OriginRevision()
         # 使用哨兵值，确保时间戳为 0 的首组 TF 也能被记录。
         self.last_tf_signature = object()
@@ -312,6 +497,7 @@ class StateWebNode:
                 max_width=self.image_max_width,
                 timeout=self.image_timeout,
                 stream_fps=self.stream_fps,
+                overlay_callback=self._annotate_frame,
             )
             for name in ("left", "right", "fisheye")
         }
@@ -347,6 +533,14 @@ class StateWebNode:
                 "pose_command", "actuator_command", "actuator_feedback",
                 "power", "motion_state", "motion_diagnostics", "origin"):
             rospy.loginfo("state_web: %s 话题 %s", key, self.topics[key])
+        for source, config in self.vision_sources.items():
+            for kind, topic in config["topics"].items():
+                rospy.loginfo(
+                    "state_web: 视觉%s/%s话题 %s",
+                    source,
+                    kind,
+                    topic,
+                )
 
     def _create_subscribers(self):
         """创建所有只读 ROS 订阅。"""
@@ -413,6 +607,38 @@ class StateWebNode:
             self._origin_callback,
             queue_size=1,
         )
+        for source, config in self.vision_sources.items():
+            for kind, topic in config["topics"].items():
+                rospy.Subscriber(
+                    topic,
+                    String,
+                    lambda message, task=source, channel=kind:
+                    self._vision_callback(task, channel, message),
+                    queue_size=1,
+                )
+
+    def _vision_callback(self, source, kind, message):
+        """接收并缓存一类视觉任务 JSON，格式错误时直接忽略。"""
+        try:
+            payload = json.loads(message.data)
+        except (TypeError, ValueError) as error:
+            rospy.logwarn_throttle(
+                2.0,
+                "state_web: 视觉%s/%s JSON无效: %s",
+                source,
+                kind,
+                error,
+            )
+            return
+        if not isinstance(payload, dict):
+            rospy.logwarn_throttle(
+                2.0,
+                "state_web: 视觉%s/%s JSON不是对象",
+                source,
+                kind,
+            )
+            return
+        self.vision_store.store(source, kind, payload, time.time())
 
     def _store(self, name, data, ros_stamp=None, received_at=None):
         """线程安全保存一份话题快照。"""
@@ -446,6 +672,227 @@ class StateWebNode:
         )
         result.update(value)
         return result
+
+    @staticmethod
+    def _pixel(point, width, height):
+        """将 JSON 像素点裁剪到图像范围内。"""
+        try:
+            if isinstance(point, dict):
+                u = point.get("u", point.get("x"))
+                v = point.get("v", point.get("y"))
+            elif isinstance(point, (list, tuple)) and len(point) >= 2:
+                u, v = point[0], point[1]
+            else:
+                return None
+            u = int(round(float(u)))
+            v = int(round(float(v)))
+        except (TypeError, ValueError):
+            return None
+        return (
+            max(0, min(width - 1, u)),
+            max(0, min(height - 1, v)),
+        )
+
+    @staticmethod
+    def _finite_text(value, digits=2, prefix=""):
+        """仅格式化有限数值，避免把无效值画到画面上。"""
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return ""
+        if not (-float("inf") < number < float("inf")):
+            return ""
+        return "{}{:0.{precision}f}".format(
+            prefix,
+            number,
+            precision=digits,
+        )
+
+    @staticmethod
+    def _position_text(pose):
+        """提取位姿结果中最有价值的距离信息。"""
+        if not isinstance(pose, dict) or pose.get("valid") is not True:
+            return ""
+        position = pose.get("position_m")
+        if not isinstance(position, dict):
+            return ""
+        distance = StateWebNode._finite_text(position.get("z"), 2, "Z=")
+        return "{}m".format(distance) if distance else ""
+
+    @staticmethod
+    def _draw_label(frame, text, anchor, color, slot):
+        """绘制带半透明底板的英文紧凑标签。"""
+        if not text:
+            return
+        height, width = frame.shape[:2]
+        x = max(2, min(width - 2, int(anchor[0])))
+        y = max(18, min(height - 4, int(anchor[1]) + slot * 19))
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.48
+        thickness = 1
+        (text_width, text_height), baseline = cv2.getTextSize(
+            text, font, scale, thickness
+        )
+        left = max(0, min(width - text_width - 8, x))
+        top = max(0, y - text_height - baseline - 6)
+        right = min(width - 1, left + text_width + 8)
+        bottom = min(height - 1, y + 3)
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (left, top), (right, bottom), (8, 16, 24), -1)
+        cv2.addWeighted(overlay, 0.66, frame, 0.34, 0, frame)
+        cv2.putText(
+            frame,
+            text,
+            (left + 4, bottom - baseline - 2),
+            font,
+            scale,
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
+
+    def _draw_detection_source(self, frame, source, packets, label_slot):
+        """绘制通用 YOLO、线段和 ArUco 检测结果。"""
+        config = self.vision_sources[source]
+        color = config["color"]
+        payload = packets["detection"]
+        pose_text = self._position_text(packets.get("pose"))
+        height, width = frame.shape[:2]
+        for index, item in enumerate(payload.get("detections", [])):
+            if not isinstance(item, dict):
+                continue
+            anchor = None
+            corners = [
+                self._pixel(point, width, height)
+                for point in item.get("corners", [])
+            ]
+            corners = [point for point in corners if point is not None]
+            keypoints = [
+                self._pixel(point, width, height)
+                for point in item.get("keypoints", [])
+            ]
+            keypoints = [point for point in keypoints if point is not None]
+            polygon = [
+                self._pixel(point, width, height)
+                for point in item.get("polygon", [])
+            ]
+            polygon = [point for point in polygon if point is not None]
+            if len(corners) >= 3:
+                cv2.polylines(
+                    frame,
+                    [np.array(corners, dtype="int32")],
+                    True,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
+                anchor = corners[0]
+            elif len(keypoints) >= 2:
+                cv2.polylines(
+                    frame,
+                    [np.array(keypoints, dtype="int32")],
+                    False,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
+                for point in keypoints:
+                    cv2.circle(frame, point, 3, color, -1, cv2.LINE_AA)
+                anchor = keypoints[0]
+            elif len(polygon) >= 3:
+                cv2.polylines(
+                    frame,
+                    [np.array(polygon, dtype="int32")],
+                    True,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
+                anchor = polygon[0]
+            else:
+                bbox = item.get("bbox") or {}
+                try:
+                    x1 = max(0, min(width - 1, int(round(float(bbox["x1"])))))
+                    y1 = max(0, min(height - 1, int(round(float(bbox["y1"])))))
+                    x2 = max(0, min(width - 1, int(round(float(bbox["x2"])))))
+                    y2 = max(0, min(height - 1, int(round(float(bbox["y2"])))))
+                except (KeyError, TypeError, ValueError):
+                    center = self._pixel(item.get("center"), width, height)
+                    if center is None:
+                        continue
+                    cv2.circle(frame, center, 6, color, 2, cv2.LINE_AA)
+                    anchor = center
+                else:
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
+                    anchor = (x1, y1)
+            class_name = str(item.get("class_name") or config["label"])
+            confidence = self._finite_text(item.get("confidence"), 2, "C=")
+            details = " ".join(
+                value for value in (config["label"], class_name, confidence,
+                                    pose_text if index == 0 else "") if value
+            )
+            self._draw_label(frame, details, anchor, color, label_slot + index)
+
+    def _draw_arrow_source(self, frame, packets, label_slot):
+        """绘制箭头方向估计的框、尖端、尾端和方向线。"""
+        payload = packets["arrow"]
+        config = self.vision_sources["arrow"]
+        color = config["color"]
+        height, width = frame.shape[:2]
+        bbox = payload.get("bbox") or {}
+        anchor = self._pixel(payload.get("center"), width, height)
+        try:
+            x1 = max(0, min(width - 1, int(round(float(bbox["x1"])))))
+            y1 = max(0, min(height - 1, int(round(float(bbox["y1"])))))
+            x2 = max(0, min(width - 1, int(round(float(bbox["x2"])))))
+            y2 = max(0, min(height - 1, int(round(float(bbox["y2"])))))
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
+            anchor = (x1, y1)
+        except (KeyError, TypeError, ValueError):
+            pass
+        tail = self._pixel(payload.get("tail"), width, height)
+        tip = self._pixel(payload.get("tip"), width, height)
+        if tail is not None and tip is not None:
+            cv2.arrowedLine(frame, tail, tip, color, 3, cv2.LINE_AA, tipLength=0.22)
+            cv2.circle(frame, tail, 4, color, -1, cv2.LINE_AA)
+            anchor = anchor or tail
+        if anchor is None:
+            return
+        direction = str(payload.get("discrete_direction") or "unknown")
+        angle = self._finite_text(payload.get("angle_deg"), 1, "A=")
+        confidence = self._finite_text(payload.get("direction_confidence"), 2, "C=")
+        label = " ".join(
+            value for value in (config["label"], direction, angle, confidence)
+            if value
+        )
+        self._draw_label(frame, label, anchor, color, label_slot)
+
+    def _annotate_frame(self, camera, frame, frame_stamp):
+        """在左目和鱼眼原始帧上叠加当前有效的视觉检测。"""
+        if camera not in ("left", "fisheye"):
+            return frame
+        active = self.vision_store.packets_for_frame(
+            camera,
+            frame_stamp,
+            time.time(),
+        )
+        if not active:
+            return frame
+        frame = frame.copy()
+        labels = []
+        label_slot = 0
+        for source, packets in active.items():
+            if source == "arrow":
+                self._draw_arrow_source(frame, packets, label_slot)
+            else:
+                self._draw_detection_source(frame, source, packets, label_slot)
+            labels.append(self.vision_sources[source]["label"])
+            label_slot += max(1, len(
+                packets.get("detection", {}).get("detections", [])
+            ))
+        summary = "Active: {}".format(", ".join(labels))
+        self._draw_label(frame, summary, (8, 20), (235, 235, 235), 0)
+        return frame
 
     def _feedback_callback(self, message):
         """接收 AUV 原始反馈。"""
@@ -759,6 +1206,7 @@ class StateWebNode:
             name: camera.status(now)
             for name, camera in self.cameras.items()
         }
+        vision = self.vision_store.status(now)
         feedback = self._snapshot(
             "feedback", self.state_timeout, now
         )
@@ -817,6 +1265,14 @@ class StateWebNode:
                 "age_sec": stream.get("age_sec"),
                 "topic": stream.get("topic"),
             }
+        for source, source_status in vision.items():
+            for kind, channel in source_status["channels"].items():
+                topic_health["vision_{}_{}".format(source, kind)] = {
+                    "online": bool(channel.get("online")),
+                    "age_sec": channel.get("age_sec"),
+                    "topic": source_status["topics"].get(kind),
+                    "valid": bool(channel.get("valid")),
+                }
 
         payload = {
             "server_time": now,
@@ -839,6 +1295,7 @@ class StateWebNode:
             "motion_diagnostics": motion_diagnostics,
             "origin": origin,
             "attitude": attitude,
+            "vision": vision,
             "topic_health": topic_health,
         }
         return sanitize_json(payload)

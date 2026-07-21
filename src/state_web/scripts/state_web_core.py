@@ -48,6 +48,50 @@ def safe_float(value):
     return result if math.isfinite(result) else None
 
 
+def vision_packet_status(packet, now, timeout, frame_stamp=None,
+                         frame_tolerance=None):
+    """返回视觉结果的时效和与当前图像的同步状态。"""
+    if not isinstance(packet, dict):
+        return {
+            "online": False,
+            "age_sec": None,
+            "frame_delta_sec": None,
+            "frame_synced": False,
+        }
+
+    received_at = safe_float(packet.get("received_at"))
+    status = health_state(received_at, now, timeout)
+    payload = packet.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    payload_stamp = safe_float(payload.get("stamp"))
+    current_stamp = safe_float(frame_stamp)
+    tolerance = safe_float(frame_tolerance)
+
+    frame_delta = None
+    frame_synced = True
+    if payload_stamp is not None and current_stamp is not None:
+        frame_delta = abs(payload_stamp - current_stamp)
+        if tolerance is not None and tolerance > 0.0:
+            frame_synced = frame_delta <= tolerance
+
+    status.update({
+        "frame_delta_sec": frame_delta,
+        "frame_synced": frame_synced,
+    })
+    status["online"] = bool(status["online"] and frame_synced)
+    return status
+
+
+def has_vision_detections(payload):
+    """判断通用检测 JSON 是否包含至少一个检测结果。"""
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("valid") is False:
+        return False
+    detections = payload.get("detections")
+    return isinstance(detections, list) and bool(detections)
+
+
 def sanitize_json(value):
     """递归清理 JSON 中不能可靠传输的非有限浮点数。"""
     if isinstance(value, dict):
