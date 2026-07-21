@@ -33,13 +33,13 @@
 
     <!-- 输出 -->
     <arg name="pose_topic" default="/aruco/pose" />
-    <arg name="annotated_topic" default="/aruco/annotated_image" />
-    <arg name="rectified_topic" default="/fisheye_camera/image_rect" />
-    <arg name="web_detection_topic" default="/web/detections" />
-    <arg name="web_pose_topic" default="/web/pose" />
+    <arg name="annotated_topic" default="/vision/aruco/annotated_image" />
+    <arg name="rectified_topic" default="/vision/aruco/image_rect" />
+    <arg name="web_detection_topic" default="/vision/aruco/detections" />
+    <arg name="web_pose_topic" default="/vision/aruco/pose" />
 
     <!-- 避免与test_web.launch的8081冲突 -->
-    <arg name="start_web" default="true" />
+    <arg name="start_web" default="false" />
     <arg name="web_port" default="8082" />
 
     <include if="$(arg start_driver)"

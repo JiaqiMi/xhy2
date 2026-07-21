@@ -3,7 +3,7 @@
 
     <arg name="start_camera" default="false" />
     <arg name="start_splitter" default="false" />
-    <arg name="start_web" default="true" />
+    <arg name="start_web" default="false" />
 
     <arg name="model_path"
          default="/home/xhy/catkin_ws/models/arrow0717.pt" />
@@ -43,11 +43,11 @@
     <!-- YOLO箭头检测：发布bbox -->
     <node pkg="yolo_bridge"
           type="yolo_wrapper.sh"
-          name="yolo_unified_detector"
+          name="yolo_arrow_detector"
           output="screen"
           launch-prefix="bash">
 
-        <env name="NODE_NAME" value="/yolo_unified_detector" />
+        <env name="NODE_NAME" value="/yolo_arrow_detector" />
 
         <param name="task_mode" value="detect" />
         <param name="detect_mode" value="4" />
@@ -61,40 +61,40 @@
 
         <param name="input_topic" value="/left/image_raw" />
         <param name="annotated_topic"
-               value="/yolo_unified/annotated_image" />
+               value="/vision/arrow/annotated_image" />
         <param name="web_topic"
-               value="/web/detections" />
+               value="/vision/arrow/detections" />
         <param name="center_topic"
-               value="/yolo_unified/target_center" />
+               value="/vision/arrow/target_center" />
         <param name="bbox_topic"
-               value="/yolo_unified/target_bbox" />
+               value="/vision/arrow/target_bbox" />
         <param name="line_topic"
-               value="/yolo_unified/line_bbox" />
+               value="/vision/arrow/line_bbox" />
     </node>
 
     <!-- 改进版二维箭头方向节点 -->
     <node pkg="stereo_depth"
           type="arrow_direction_node_v2.py"
-          name="arrow_direction_node"
+          name="arrow_direction_detector"
           output="screen">
 
         <param name="image_topic"
                value="/left/image_raw" />
         <param name="bbox_topic"
-               value="/yolo_unified/target_bbox" />
+               value="/vision/arrow/target_bbox" />
         <param name="target_class_name"
                value="arrow" />
 
         <param name="annotated_topic"
-               value="/arrow/annotated_image" />
+               value="/vision/arrow/direction_annotated_image" />
         <param name="direction_topic"
-               value="/arrow/direction" />
+               value="/vision/arrow/direction" />
         <param name="angle_topic"
-               value="/arrow/angle_deg" />
+               value="/vision/arrow/angle_deg" />
         <param name="discrete_topic"
-               value="/arrow/discrete_direction" />
+               value="/vision/arrow/discrete_direction" />
         <param name="vector_topic"
-               value="/arrow/direction_vector" />
+               value="/vision/arrow/direction_vector" />
 
         <param name="publish_rate"
                value="$(arg rate)" />
@@ -135,13 +135,13 @@
 
         <arg name="port" value="$(arg web_port)" />
         <arg name="image_topic"
-             value="/arrow/annotated_image" />
+             value="/vision/arrow/direction_annotated_image" />
         <arg name="detection_topic"
-             value="/web/detections" />
+             value="/vision/arrow/detections" />
         <arg name="pose_topic"
-             value="/web/pose" />
+             value="/vision/arrow/pose" />
         <arg name="arrow_topic"
-             value="/arrow/direction" />
+             value="/vision/arrow/direction" />
 
         <arg name="stream_fps"
              value="$(arg rate)" />

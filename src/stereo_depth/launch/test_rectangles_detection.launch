@@ -3,7 +3,7 @@
 
     <arg name="start_camera" default="false" />
     <arg name="start_splitter" default="false" />
-    <arg name="start_web" default="true" />
+    <arg name="start_web" default="false" />
 
     <arg name="model_path"
          default="/home/xhy/catkin_ws/models/rectangles0720.pt" />
@@ -31,10 +31,10 @@
 
     <node pkg="yolo_bridge"
           type="yolo_wrapper.sh"
-          name="yolo_unified_detector"
+          name="yolo_rectangle_detector"
           output="screen"
           launch-prefix="bash">
-        <env name="NODE_NAME" value="/yolo_unified_detector" />
+        <env name="NODE_NAME" value="/yolo_rectangle_detector" />
         
         <!-- <param name="task_mode" value="detect" />
         <param name="detect_mode" value="2" />
@@ -51,19 +51,19 @@
 
         <param name="input_topic" value="/left/image_raw" />
         <param name="annotated_topic"
-               value="/yolo_unified/annotated_image" />
-        <param name="web_topic" value="/web/detections" />
+               value="/vision/rectangle/annotated_image" />
+        <param name="web_topic" value="/vision/rectangle/detections" />
         <param name="center_topic"
-               value="/yolo_unified/target_center" />
+               value="/vision/rectangle/target_center" />
         <param name="bbox_topic"
-               value="/yolo_unified/target_bbox" />
+               value="/vision/rectangle/target_bbox" />
         <param name="line_topic"
-               value="/yolo_unified/line_bbox" />
+               value="/vision/rectangle/line_bbox" />
     </node>
 
     <node pkg="stereo_depth"
           type="stereo_depth_node.py"
-          name="stereo_depth_unified"
+          name="stereo_depth_rectangle"
           output="screen">
         <param name="task_mode" value="center" />
         <param name="exp_env" value="$(arg exp_env)" />
@@ -74,17 +74,17 @@
         <param name="left_topic" value="/left/image_raw" />
         <param name="right_topic" value="/right/image_raw" />
         <param name="center_topic"
-               value="/yolo_unified/target_center" />
+               value="/vision/rectangle/target_center" />
         <param name="bbox_topic"
-               value="/yolo_unified/target_bbox" />
+               value="/vision/rectangle/target_bbox" />
         <param name="line_topic"
-               value="/yolo_unified/line_bbox" />
+               value="/vision/rectangle/line_bbox" />
 
         <param name="target_output_topic"
-               value="/obj/target_message" />
+               value="/vision/rectangle/target_message" />
         <param name="line_output_topic"
-               value="/obj/line_message" />
-        <param name="web_pose_topic" value="/web/pose" />
+               value="/vision/rectangle/line_message" />
+        <param name="web_pose_topic" value="/vision/rectangle/pose" />
 
         <param name="max_sync_dt" value="0.15" />
         <param name="frame_buffer_size" value="20" />
@@ -95,10 +95,10 @@
              file="$(find vision_web)/launch/vision_web.launch">
         <arg name="port" value="$(arg web_port)" />
         <arg name="image_topic"
-             value="/yolo_unified/annotated_image" />
+             value="/vision/rectangle/annotated_image" />
         <arg name="detection_topic"
-             value="/web/detections" />
-        <arg name="pose_topic" value="/web/pose" />
+             value="/vision/rectangle/detections" />
+        <arg name="pose_topic" value="/vision/rectangle/pose" />
         <arg name="stream_fps" value="$(arg rate)" />
         <arg name="jpeg_quality" value="75" />
         <arg name="web_width" value="960" />
