@@ -5,24 +5,25 @@
 
 节点支持两种操作模式：
   1. manual：人工控制机器人到方框上方，本节点只识别并执行灯光、夹爪动作；
-  2. auto：使用定深定向手控模式向前搜索，再根据方框中心像素控制 TX/TY 对齐。
+  2. auto：向 motion_supervisor 发布绝对位置目标，自动搜索并根据方框中心像素对齐。
 
 两种模式共用颜色过滤、连续帧稳定判断和执行器动作流程。
 """
 
+import copy
 import json
 import math
 
 import rospy
 import tf
-from auv_control.msg import AUVData, ActuatorControl, PoseNEDcmd
+from auv_control.msg import AUVData, ActuatorControl, MotionState
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
 NODE_NAME = "test_task3_3_inspect_and_drop"
-MODE_DEPTH_HDG = 3
+MODE_POSITION = 4
 
 
 def clamp(value, lower, upper):
@@ -38,6 +39,10 @@ def yaw_from_quaternion(quaternion):
     ])[2]
 
 
+def normalize_angle_rad(angle):
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
 # 模型识别参数。
 DEFAULT_RATE = 10.0
 DEFAULT_DETECTION_TOPIC = "/web/detections"
@@ -51,49 +56,49 @@ DEFAULT_STABLE_AREA_TOLERANCE_RATIO = 0.35
 DEFAULT_DETECTION_TIMEOUT = 2.0
 DEFAULT_MAX_WAIT_SECONDS = 300.0
 
-# 操作模式和自动视觉控制参数。
+# 操作模式和 motion_supervisor 接口参数。
 DEFAULT_OPERATION_MODE = "manual"
-DEFAULT_POSE_CMD_TOPIC = "/cmd/pose/ned"
+DEFAULT_MOTION_GOAL_TOPIC = "/cmd/motion/goal"
+DEFAULT_MOTION_CANCEL_TOPIC = "/cmd/motion/cancel"
+DEFAULT_MOTION_STATE_TOPIC = "/motion/state"
 DEFAULT_STATUS_TOPIC = "/status/auv"
+DEFAULT_MOTION_STATE_TIMEOUT = 0.5
+DEFAULT_MOTION_STARTUP_TIMEOUT = 10.0
+DEFAULT_CANCEL_TIMEOUT = 15.0
 DEFAULT_STATUS_TIMEOUT = 0.5
 DEFAULT_STATUS_LINEAR_VELOCITY_SCALE = 1.0
-DEFAULT_STATUS_ANGULAR_VELOCITY_SCALE = math.pi / 180.0
+DEFAULT_GOAL_MATCH_POSITION_TOLERANCE = 0.03
+DEFAULT_GOAL_MATCH_DEPTH_TOLERANCE = 0.03
+DEFAULT_GOAL_MATCH_YAW_TOLERANCE_DEG = 2.0
+DEFAULT_ARRIVAL_POSITION_TOLERANCE = 0.05
+DEFAULT_ARRIVAL_YAW_TOLERANCE_DEG = 5.0
+DEFAULT_ARRIVAL_MAX_HORIZONTAL_SPEED = 0.02
+DEFAULT_ARRIVAL_MAX_YAW_RATE_DEG_S = 0.5
 DEFAULT_AUTO_INITIAL_HOVER_SECONDS = 10.0
-DEFAULT_AUTO_SEARCH_FORWARD_FORCE = 120.0
-DEFAULT_AUTO_SEARCH_LATERAL_FORCE = 120.0
 DEFAULT_AUTO_SEARCH_FIRST_FORWARD_DISTANCE = 0.30
 DEFAULT_AUTO_SEARCH_SECOND_FORWARD_DISTANCE = 0.20
 DEFAULT_AUTO_SEARCH_THIRD_FORWARD_DISTANCE = 0.10
 DEFAULT_AUTO_SEARCH_LATERAL_DISTANCE = 0.20
-DEFAULT_AUTO_SEARCH_DISTANCE_TOLERANCE = 0.03
-DEFAULT_AUTO_SEARCH_FORWARD_BRAKING_DISTANCE = 0.08
-DEFAULT_AUTO_SEARCH_LATERAL_BRAKING_DISTANCE = 0.08
-DEFAULT_AUTO_FORWARD_GAIN = 250.0
-DEFAULT_AUTO_LATERAL_GAIN = 250.0
-DEFAULT_AUTO_MAX_FORWARD_FORCE = 180.0
-DEFAULT_AUTO_MAX_LATERAL_FORCE = 180.0
-DEFAULT_AUTO_MIN_CORRECTION_FORCE = 50.0
-DEFAULT_AUTO_FORCE_STEP = 50.0
-DEFAULT_AUTO_FORWARD_VELOCITY_DAMPING = 300.0
-DEFAULT_AUTO_LATERAL_VELOCITY_DAMPING = 300.0
-DEFAULT_AUTO_SEARCH_STOP_SPEED = 0.05
+DEFAULT_AUTO_VISUAL_FORWARD_GAIN_M = 0.10
+DEFAULT_AUTO_VISUAL_LATERAL_GAIN_M = 0.10
+DEFAULT_AUTO_VISUAL_MIN_STEP_M = 0.005
+DEFAULT_AUTO_VISUAL_MAX_STEP_M = 0.03
+DEFAULT_AUTO_VISUAL_GOAL_MIN_INTERVAL = 0.50
+DEFAULT_AUTO_FORWARD_SIGN = 1.0
+DEFAULT_AUTO_LATERAL_SIGN = 1.0
 DEFAULT_AUTO_ACTION_MAX_HORIZONTAL_SPEED = 0.03
 DEFAULT_AUTO_ACTION_MAX_VERTICAL_SPEED = 0.03
 DEFAULT_AUTO_ACTION_MAX_YAW_RATE = 0.05
 DEFAULT_AUTO_ACTION_MAX_DEPTH_ERROR = 0.08
 DEFAULT_AUTO_ACTION_MAX_YAW_ERROR_DEG = 5.0
-DEFAULT_AUTO_HOLD_FORWARD_POSITION_GAIN = 600.0
-DEFAULT_AUTO_HOLD_LATERAL_POSITION_GAIN = 600.0
-DEFAULT_AUTO_HOLD_MAX_FORCE = 120.0
-DEFAULT_AUTO_HOLD_POSITION_TOLERANCE = 0.02
-DEFAULT_AUTO_TX_SIGN = 1.0
-DEFAULT_AUTO_TY_SIGN = 1.0
 DEFAULT_AUTO_TARGET_CENTER_U_RATIO = 0.5
 DEFAULT_AUTO_TARGET_CENTER_V_RATIO = 0.5
 DEFAULT_AUTO_CENTER_TOLERANCE_U_PX = 35.0
 DEFAULT_AUTO_CENTER_TOLERANCE_V_PX = 35.0
 DEFAULT_AUTO_IMAGE_WIDTH = 640.0
 DEFAULT_AUTO_IMAGE_HEIGHT = 480.0
+DEFAULT_LOG_INTERVAL = 1.0
+DEFAULT_WARNING_LOG_INTERVAL = 2.0
 
 # 识别成功后的动作参数。
 DEFAULT_HOLD_SECONDS = 1.0
@@ -132,6 +137,19 @@ class Task3InspectAndDropTest:
         "forward": "向前移动",
         "left": "向左横移",
         "right": "向右横移",
+    }
+
+    MOTION_STATE_NAMES = {
+        MotionState.IDLE: "IDLE",
+        MotionState.ALIGN_PATH: "ALIGN_PATH",
+        MotionState.ALIGN_PATH_BRAKE: "ALIGN_PATH_BRAKE",
+        MotionState.TRANSLATE: "TRANSLATE",
+        MotionState.TRANSLATE_BRAKE: "TRANSLATE_BRAKE",
+        MotionState.ALIGN_FINAL: "ALIGN_FINAL",
+        MotionState.FINAL_BRAKE: "FINAL_BRAKE",
+        MotionState.CAPTURE: "CAPTURE",
+        MotionState.HOVER: "HOVER",
+        MotionState.SAFE: "SAFE",
     }
 
     COLOR_LIGHTS = {
@@ -203,12 +221,27 @@ class Task3InspectAndDropTest:
             rospy.get_param("~close_seconds", DEFAULT_CLOSE_SECONDS)
         )
 
-        self.pose_cmd_topic = str(
-            rospy.get_param("~pose_cmd_topic", DEFAULT_POSE_CMD_TOPIC)
-        ).strip()
+        self.motion_goal_topic = str(rospy.get_param(
+            "~motion_goal_topic", DEFAULT_MOTION_GOAL_TOPIC
+        )).strip()
+        self.motion_cancel_topic = str(rospy.get_param(
+            "~motion_cancel_topic", DEFAULT_MOTION_CANCEL_TOPIC
+        )).strip()
+        self.motion_state_topic = str(rospy.get_param(
+            "~motion_state_topic", DEFAULT_MOTION_STATE_TOPIC
+        )).strip()
         self.status_topic = str(
             rospy.get_param("~status_topic", DEFAULT_STATUS_TOPIC)
         ).strip()
+        self.motion_state_timeout = float(rospy.get_param(
+            "~motion_state_timeout", DEFAULT_MOTION_STATE_TIMEOUT
+        ))
+        self.motion_startup_timeout = float(rospy.get_param(
+            "~motion_startup_timeout", DEFAULT_MOTION_STARTUP_TIMEOUT
+        ))
+        self.cancel_timeout = float(rospy.get_param(
+            "~cancel_timeout", DEFAULT_CANCEL_TIMEOUT
+        ))
         self.status_timeout = float(rospy.get_param(
             "~status_timeout", DEFAULT_STATUS_TIMEOUT
         ))
@@ -216,18 +249,36 @@ class Task3InspectAndDropTest:
             "~status_linear_velocity_scale",
             DEFAULT_STATUS_LINEAR_VELOCITY_SCALE,
         ))
-        self.status_angular_velocity_scale = float(rospy.get_param(
-            "~status_angular_velocity_scale",
-            DEFAULT_STATUS_ANGULAR_VELOCITY_SCALE,
+        self.goal_match_position_tolerance = float(rospy.get_param(
+            "~goal_match_position_tolerance",
+            DEFAULT_GOAL_MATCH_POSITION_TOLERANCE,
+        ))
+        self.goal_match_depth_tolerance = float(rospy.get_param(
+            "~goal_match_depth_tolerance",
+            DEFAULT_GOAL_MATCH_DEPTH_TOLERANCE,
+        ))
+        self.goal_match_yaw_tolerance_deg = float(rospy.get_param(
+            "~goal_match_yaw_tolerance_deg",
+            DEFAULT_GOAL_MATCH_YAW_TOLERANCE_DEG,
+        ))
+        self.arrival_position_tolerance = float(rospy.get_param(
+            "~arrival_position_tolerance",
+            DEFAULT_ARRIVAL_POSITION_TOLERANCE,
+        ))
+        self.arrival_yaw_tolerance_deg = float(rospy.get_param(
+            "~arrival_yaw_tolerance_deg",
+            DEFAULT_ARRIVAL_YAW_TOLERANCE_DEG,
+        ))
+        self.arrival_max_horizontal_speed = float(rospy.get_param(
+            "~arrival_max_horizontal_speed",
+            DEFAULT_ARRIVAL_MAX_HORIZONTAL_SPEED,
+        ))
+        self.arrival_max_yaw_rate_deg_s = float(rospy.get_param(
+            "~arrival_max_yaw_rate_deg_s",
+            DEFAULT_ARRIVAL_MAX_YAW_RATE_DEG_S,
         ))
         self.auto_initial_hover_seconds = float(rospy.get_param(
             "~auto_initial_hover_seconds", DEFAULT_AUTO_INITIAL_HOVER_SECONDS
-        ))
-        self.auto_search_forward_force = float(rospy.get_param(
-            "~auto_search_forward_force", DEFAULT_AUTO_SEARCH_FORWARD_FORCE
-        ))
-        self.auto_search_lateral_force = float(rospy.get_param(
-            "~auto_search_lateral_force", DEFAULT_AUTO_SEARCH_LATERAL_FORCE
         ))
         self.auto_search_first_forward_distance = float(rospy.get_param(
             "~auto_search_first_forward_distance",
@@ -244,46 +295,27 @@ class Task3InspectAndDropTest:
         self.auto_search_lateral_distance = float(rospy.get_param(
             "~auto_search_lateral_distance", DEFAULT_AUTO_SEARCH_LATERAL_DISTANCE
         ))
-        self.auto_search_distance_tolerance = float(rospy.get_param(
-            "~auto_search_distance_tolerance",
-            DEFAULT_AUTO_SEARCH_DISTANCE_TOLERANCE,
+        self.auto_visual_forward_gain_m = float(rospy.get_param(
+            "~auto_visual_forward_gain_m", DEFAULT_AUTO_VISUAL_FORWARD_GAIN_M
         ))
-        self.auto_search_forward_braking_distance = float(rospy.get_param(
-            "~auto_search_forward_braking_distance",
-            DEFAULT_AUTO_SEARCH_FORWARD_BRAKING_DISTANCE,
+        self.auto_visual_lateral_gain_m = float(rospy.get_param(
+            "~auto_visual_lateral_gain_m", DEFAULT_AUTO_VISUAL_LATERAL_GAIN_M
         ))
-        self.auto_search_lateral_braking_distance = float(rospy.get_param(
-            "~auto_search_lateral_braking_distance",
-            DEFAULT_AUTO_SEARCH_LATERAL_BRAKING_DISTANCE,
+        self.auto_visual_min_step_m = float(rospy.get_param(
+            "~auto_visual_min_step_m", DEFAULT_AUTO_VISUAL_MIN_STEP_M
         ))
-        self.auto_forward_gain = float(rospy.get_param(
-            "~auto_forward_gain", DEFAULT_AUTO_FORWARD_GAIN
+        self.auto_visual_max_step_m = float(rospy.get_param(
+            "~auto_visual_max_step_m", DEFAULT_AUTO_VISUAL_MAX_STEP_M
         ))
-        self.auto_lateral_gain = float(rospy.get_param(
-            "~auto_lateral_gain", DEFAULT_AUTO_LATERAL_GAIN
+        self.auto_visual_goal_min_interval = float(rospy.get_param(
+            "~auto_visual_goal_min_interval",
+            DEFAULT_AUTO_VISUAL_GOAL_MIN_INTERVAL,
         ))
-        self.auto_max_forward_force = float(rospy.get_param(
-            "~auto_max_forward_force", DEFAULT_AUTO_MAX_FORWARD_FORCE
+        self.auto_forward_sign = float(rospy.get_param(
+            "~auto_forward_sign", DEFAULT_AUTO_FORWARD_SIGN
         ))
-        self.auto_max_lateral_force = float(rospy.get_param(
-            "~auto_max_lateral_force", DEFAULT_AUTO_MAX_LATERAL_FORCE
-        ))
-        self.auto_min_correction_force = float(rospy.get_param(
-            "~auto_min_correction_force", DEFAULT_AUTO_MIN_CORRECTION_FORCE
-        ))
-        self.auto_force_step = float(rospy.get_param(
-            "~auto_force_step", DEFAULT_AUTO_FORCE_STEP
-        ))
-        self.auto_forward_velocity_damping = float(rospy.get_param(
-            "~auto_forward_velocity_damping",
-            DEFAULT_AUTO_FORWARD_VELOCITY_DAMPING,
-        ))
-        self.auto_lateral_velocity_damping = float(rospy.get_param(
-            "~auto_lateral_velocity_damping",
-            DEFAULT_AUTO_LATERAL_VELOCITY_DAMPING,
-        ))
-        self.auto_search_stop_speed = float(rospy.get_param(
-            "~auto_search_stop_speed", DEFAULT_AUTO_SEARCH_STOP_SPEED
+        self.auto_lateral_sign = float(rospy.get_param(
+            "~auto_lateral_sign", DEFAULT_AUTO_LATERAL_SIGN
         ))
         self.auto_action_max_horizontal_speed = float(rospy.get_param(
             "~auto_action_max_horizontal_speed",
@@ -303,27 +335,6 @@ class Task3InspectAndDropTest:
             "~auto_action_max_yaw_error_deg",
             DEFAULT_AUTO_ACTION_MAX_YAW_ERROR_DEG,
         ))
-        self.auto_hold_forward_position_gain = float(rospy.get_param(
-            "~auto_hold_forward_position_gain",
-            DEFAULT_AUTO_HOLD_FORWARD_POSITION_GAIN,
-        ))
-        self.auto_hold_lateral_position_gain = float(rospy.get_param(
-            "~auto_hold_lateral_position_gain",
-            DEFAULT_AUTO_HOLD_LATERAL_POSITION_GAIN,
-        ))
-        self.auto_hold_max_force = float(rospy.get_param(
-            "~auto_hold_max_force", DEFAULT_AUTO_HOLD_MAX_FORCE
-        ))
-        self.auto_hold_position_tolerance = float(rospy.get_param(
-            "~auto_hold_position_tolerance",
-            DEFAULT_AUTO_HOLD_POSITION_TOLERANCE,
-        ))
-        self.auto_tx_sign = float(rospy.get_param(
-            "~auto_tx_sign", DEFAULT_AUTO_TX_SIGN
-        ))
-        self.auto_ty_sign = float(rospy.get_param(
-            "~auto_ty_sign", DEFAULT_AUTO_TY_SIGN
-        ))
         self.auto_target_center_u_ratio = float(rospy.get_param(
             "~auto_target_center_u_ratio", DEFAULT_AUTO_TARGET_CENTER_U_RATIO
         ))
@@ -341,6 +352,12 @@ class Task3InspectAndDropTest:
         ))
         self.auto_image_height = float(rospy.get_param(
             "~auto_image_height", DEFAULT_AUTO_IMAGE_HEIGHT
+        ))
+        self.log_interval = float(rospy.get_param(
+            "~log_interval", DEFAULT_LOG_INTERVAL
+        ))
+        self.warning_log_interval = float(rospy.get_param(
+            "~warning_log_interval", DEFAULT_WARNING_LOG_INTERVAL
         ))
 
         self.actuator_topic = str(
@@ -378,11 +395,15 @@ class Task3InspectAndDropTest:
         self.actuator_pub = rospy.Publisher(
             self.actuator_topic, ActuatorControl, queue_size=10
         )
-        self.pose_cmd_pub = None
+        self.goal_pub = None
+        self.cancel_pub = None
         self.tf_listener = None
         if self.auto_enabled:
-            self.pose_cmd_pub = rospy.Publisher(
-                self.pose_cmd_topic, PoseNEDcmd, queue_size=10
+            self.goal_pub = rospy.Publisher(
+                self.motion_goal_topic, PoseStamped, queue_size=1
+            )
+            self.cancel_pub = rospy.Publisher(
+                self.motion_cancel_topic, Empty, queue_size=1
             )
             self.tf_listener = tf.TransformListener()
 
@@ -397,8 +418,20 @@ class Task3InspectAndDropTest:
         self.auto_hold_z = None
         self.auto_hold_yaw = None
         self.auto_centered_frame_count = 0
-        self.last_auto_tx = 0
-        self.last_auto_ty = 0
+        self.active_goal = None
+        self.active_goal_reason = ""
+        self.latest_motion_state = None
+        self.last_motion_state_received = None
+        self.last_motion_state_value = None
+        self.motion_ready_once = False
+        self.motion_cancel_requested_at = None
+        self.motion_cancel_reason = ""
+        self.auto_search_resume_goal = None
+        self.auto_search_paused_for_model = False
+        self.last_visual_goal_frame = 0
+        self.last_visual_goal_time = None
+        self.visual_center_hold_requested = False
+        self.visual_stop_locked = False
         self.auto_search_plan = [
             ("hover", self.auto_initial_hover_seconds),
             ("forward", self.auto_search_first_forward_distance),
@@ -413,8 +446,7 @@ class Task3InspectAndDropTest:
         ]
         self.auto_search_index = 0
         self.auto_search_step_started = None
-        self.auto_search_step_origin = None
-        self.auto_search_step_braking = False
+        self.auto_search_step_goal = None
         self.last_status_time = None
         self.current_status = None
         self.status_hold_depth = None
@@ -430,6 +462,7 @@ class Task3InspectAndDropTest:
             queue_size=10,
         )
         self.status_sub = None
+        self.motion_state_sub = None
         if self.auto_enabled:
             self.status_sub = rospy.Subscriber(
                 self.status_topic,
@@ -437,17 +470,24 @@ class Task3InspectAndDropTest:
                 self.status_callback,
                 queue_size=20,
             )
+            self.motion_state_sub = rospy.Subscriber(
+                self.motion_state_topic,
+                MotionState,
+                self.motion_state_callback,
+                queue_size=20,
+            )
         rospy.on_shutdown(self.on_shutdown)
 
         if self.auto_enabled:
             rospy.loginfo(
                 (
-                    "%s：启动自动寻找模式，运动话题=%s，底层模式=3（定深定向），"
-                    "状态反馈=%s，仅发送 TX/TY"
+                    "%s：启动自动寻找模式，运动目标=%s，取消=%s，反馈=%s；"
+                    "底层 mode=4、推力、阻尼和刹车全部由 motion_supervisor 管理"
                 ),
                 NODE_NAME,
-                self.pose_cmd_topic,
-                self.status_topic,
+                self.motion_goal_topic,
+                self.motion_cancel_topic,
+                self.motion_state_topic,
             )
         else:
             rospy.loginfo(
@@ -498,57 +538,64 @@ class Task3InspectAndDropTest:
             )
             rospy.loginfo(
                 (
-                    "%s：自动控制：保持启动时当前航向，搜索力=(前进%.0f,横移%.0f)，"
-                    "修正增益=(前后%.0f,左右%.0f)，"
-                    "最大力=(%.0f,%.0f)，单次变化<=%.0f"
+                    "%s：motion_supervisor 判定：状态超时=%.2fs，启动等待=%.1fs，"
+                    "取消等待=%.1fs，目标匹配容差=(水平%.3fm,深度%.3fm,航向%.1fdeg)"
                 ),
                 NODE_NAME,
-                self.auto_search_forward_force,
-                self.auto_search_lateral_force,
-                self.auto_forward_gain,
-                self.auto_lateral_gain,
-                self.auto_max_forward_force,
-                self.auto_max_lateral_force,
-                self.auto_force_step,
+                self.motion_state_timeout,
+                self.motion_startup_timeout,
+                self.cancel_timeout,
+                self.goal_match_position_tolerance,
+                self.goal_match_depth_tolerance,
+                self.goal_match_yaw_tolerance_deg,
             )
             rospy.loginfo(
                 (
-                    "%s：状态反馈：超时=%.2fs，速度缩放=(线速度%.6f,角速度%.6f)，"
-                    "阻尼=(前后%.0f,左右%.0f)，"
-                    "搜索停稳<=%.3fm/s，动作前速度<=水平%.3f/垂直%.3fm/s，"
-                    "航向角速度<=%.3frad/s，深度误差<=%.2fm，航向误差<=%.1fdeg"
+                    "%s：实际到达门槛：base_link误差<=%.3fm，航向误差<=%.1fdeg，"
+                    "水平速度<=%.3fm/s，航向角速度<=%.2fdeg/s；"
+                    "以上条件全部通过才接受HOVER"
                 ),
                 NODE_NAME,
-                self.status_timeout,
-                self.status_linear_velocity_scale,
-                self.status_angular_velocity_scale,
-                self.auto_forward_velocity_damping,
-                self.auto_lateral_velocity_damping,
-                self.auto_search_stop_speed,
+                self.arrival_position_tolerance,
+                self.arrival_yaw_tolerance_deg,
+                self.arrival_max_horizontal_speed,
+                self.arrival_max_yaw_rate_deg_s,
+            )
+            rospy.loginfo(
+                (
+                    "%s：动作放行附加门槛：底层mode=4，水平速度<=%.3fm/s，"
+                    "垂直速度<=%.3fm/s，航向角速度<=%.3frad/s，"
+                    "深度误差<=%.3fm，航向误差<=%.1fdeg；"
+                    "/status/auv超时=%.2fs，线速度缩放=%.3f"
+                ),
+                NODE_NAME,
                 self.auto_action_max_horizontal_speed,
                 self.auto_action_max_vertical_speed,
                 self.auto_action_max_yaw_rate,
                 self.auto_action_max_depth_error,
                 self.auto_action_max_yaw_error_deg,
+                self.status_timeout,
+                self.status_linear_velocity_scale,
             )
             rospy.loginfo(
                 (
-                    "%s：提前刹车距离=(前进%.3fm,横移%.3fm)，"
-                    "最终定点增益=(前后%.0f,左右%.0f)，"
-                    "定点最大力=%.0f，位置容差=%.3fm"
+                    "%s：视觉位置小步：增益=(前后%.3fm,左右%.3fm)，"
+                    "步长范围=[%.3f,%.3f]m，最短更新间隔=%.2fs，"
+                    "方向符号=(前后%.0f,左右%.0f)"
                 ),
                 NODE_NAME,
-                self.auto_search_forward_braking_distance,
-                self.auto_search_lateral_braking_distance,
-                self.auto_hold_forward_position_gain,
-                self.auto_hold_lateral_position_gain,
-                self.auto_hold_max_force,
-                self.auto_hold_position_tolerance,
+                self.auto_visual_forward_gain_m,
+                self.auto_visual_lateral_gain_m,
+                self.auto_visual_min_step_m,
+                self.auto_visual_max_step_m,
+                self.auto_visual_goal_min_interval,
+                self.auto_forward_sign,
+                self.auto_lateral_sign,
             )
             rospy.loginfo(
                 (
                     "%s：自动对齐：目标中心=(%.2fW, %.2fH)，容差=(%.1fpx, %.1fpx)，"
-                    "连续居中确认=%d帧，方向符号=(TX %.0f, TY %.0f)"
+                    "连续居中确认=%d帧"
                 ),
                 NODE_NAME,
                 self.auto_target_center_u_ratio,
@@ -556,8 +603,6 @@ class Task3InspectAndDropTest:
                 self.auto_center_tolerance_u_px,
                 self.auto_center_tolerance_v_px,
                 self.auto_center_stable_detection_count,
-                self.auto_tx_sign,
-                self.auto_ty_sign,
             )
             rospy.loginfo(
                 (
@@ -623,9 +668,6 @@ class Task3InspectAndDropTest:
             message.linear_velocity[0],
             message.linear_velocity[1],
             message.linear_velocity[2],
-            message.angular_velocity[0],
-            message.angular_velocity[1],
-            message.angular_velocity[2],
             message.pose.latitude,
             message.pose.longitude,
             message.pose.depth,
@@ -636,7 +678,7 @@ class Task3InspectAndDropTest:
         )
         if not all(math.isfinite(value) for value in raw_values):
             rospy.logwarn_throttle(
-                2.0,
+                self.warning_log_interval,
                 "%s：/status/auv 包含无效位姿或速度，本帧已忽略",
                 NODE_NAME,
             )
@@ -647,65 +689,84 @@ class Task3InspectAndDropTest:
             "vx": float(raw_values[0]) * self.status_linear_velocity_scale,
             "vy": float(raw_values[1]) * self.status_linear_velocity_scale,
             "vz": float(raw_values[2]) * self.status_linear_velocity_scale,
-            "wx": float(raw_values[3]) * self.status_angular_velocity_scale,
-            "wy": float(raw_values[4]) * self.status_angular_velocity_scale,
-            "wz": float(raw_values[5]) * self.status_angular_velocity_scale,
-            "latitude": float(raw_values[6]),
-            "longitude": float(raw_values[7]),
-            "depth": float(raw_values[8]),
-            "altitude": float(raw_values[9]),
-            "roll_deg": float(raw_values[10]),
-            "pitch_deg": float(raw_values[11]),
-            "yaw_deg": float(raw_values[12]),
+            "latitude": float(raw_values[3]),
+            "longitude": float(raw_values[4]),
+            "depth": float(raw_values[5]),
+            "altitude": float(raw_values[6]),
+            "roll_deg": float(raw_values[7]),
+            "pitch_deg": float(raw_values[8]),
+            "yaw_deg": float(raw_values[9]),
         }
         self.last_status_time = rospy.Time.now()
 
-        if self.status_hold_depth is None:
-            self.status_hold_depth = self.current_status["depth"]
-            self.status_hold_yaw_deg = self.current_status["yaw_deg"]
-            rospy.loginfo(
-                "%s：记录 /status/auv 启动基准：深度=%.3fm，航向=%.2fdeg",
-                NODE_NAME,
-                self.status_hold_depth,
-                self.status_hold_yaw_deg,
-            )
-
         rospy.loginfo_throttle(
-            1.0,
+            self.log_interval,
             (
-                "%s：/status/auv：mode=%d，位姿=(lat=%.7f,lon=%.7f,"
-                "深度=%.3f,航向=%.2fdeg)，速度前右下=(%+.3f,%+.3f,%+.3f)m/s，"
-                "角速度=(%+.3f,%+.3f,%+.3f)rad/s"
+                "%s：/status/auv：mode=%d，深度=%.3fm，高度=%.3fm，"
+                "航向=%.2fdeg，速度前右下=(%+.3f,%+.3f,%+.3f)m/s"
             ),
             NODE_NAME,
             self.current_status["control_mode"],
-            self.current_status["latitude"],
-            self.current_status["longitude"],
             self.current_status["depth"],
+            self.current_status["altitude"],
             self.current_status["yaw_deg"],
             self.current_status["vx"],
             self.current_status["vy"],
             self.current_status["vz"],
-            self.current_status["wx"],
-            self.current_status["wy"],
-            self.current_status["wz"],
+        )
+
+    def motion_state_callback(self, message):
+        self.latest_motion_state = message
+        self.last_motion_state_received = rospy.Time.now()
+        state_name = self.MOTION_STATE_NAMES.get(
+            message.state, "UNKNOWN({})".format(message.state)
+        )
+        if message.state != self.last_motion_state_value:
+            rospy.loginfo(
+                "%s：运动状态切换为 %s，原因=%s",
+                NODE_NAME,
+                state_name,
+                message.reason or "无",
+            )
+            self.last_motion_state_value = message.state
+        if message.state != MotionState.SAFE:
+            self.motion_ready_once = True
+        rospy.loginfo_throttle(
+            self.log_interval,
+            (
+                "%s：运动反馈：state=%s，goal_active=%s，"
+                "控制误差=%.3fm，base_link误差=%.3fm，"
+                "航向误差=%+.2fdeg，水平速度=%.3fm/s，航向角速度=%+.2fdeg/s，"
+                "输出=(TX=%d,TY=%d,MZ=%d)，原因=%s"
+            ),
+            NODE_NAME,
+            state_name,
+            str(bool(message.goal_active)),
+            message.position_error,
+            message.base_position_error,
+            math.degrees(message.yaw_error),
+            message.horizontal_speed,
+            math.degrees(message.yaw_rate),
+            message.tx,
+            message.ty,
+            message.mz,
+            message.reason or "无",
         )
 
     def get_recent_status(self, context):
         if self.current_status is None or self.last_status_time is None:
             rospy.logwarn_throttle(
-                2.0,
+                self.warning_log_interval,
                 "%s：等待状态话题 %s，%s暂停",
                 NODE_NAME,
                 self.status_topic,
                 context,
             )
             return None
-
         age = (rospy.Time.now() - self.last_status_time).to_sec()
         if age > self.status_timeout:
             rospy.logwarn_throttle(
-                2.0,
+                self.warning_log_interval,
                 "%s：/status/auv 已超时 %.2fs（限制 %.2fs），%s暂停",
                 NODE_NAME,
                 age,
@@ -716,65 +777,12 @@ class Task3InspectAndDropTest:
         return self.current_status
 
     @staticmethod
-    def horizontal_speed(status):
-        return math.hypot(status["vx"], status["vy"])
-
-    def velocity_feedback_command(
-        self,
-        base_forward_force,
-        base_right_force,
-        status,
-        speed_deadband,
-        max_forward_force=None,
-        max_right_force=None,
-    ):
-        if max_forward_force is None:
-            max_forward_force = self.auto_max_forward_force
-        if max_right_force is None:
-            max_right_force = self.auto_max_lateral_force
-
-        if self.horizontal_speed(status) > speed_deadband:
-            damping_vx = status["vx"]
-            damping_vy = status["vy"]
-        else:
-            damping_vx = 0.0
-            damping_vy = 0.0
-
-        physical_forward = clamp(
-            base_forward_force
-            - self.auto_forward_velocity_damping * damping_vx,
-            -max_forward_force,
-            max_forward_force,
-        )
-        physical_right = clamp(
-            base_right_force
-            - self.auto_lateral_velocity_damping * damping_vy,
-            -max_right_force,
-            max_right_force,
-        )
-        return (
-            self.auto_tx_sign * physical_forward,
-            self.auto_ty_sign * physical_right,
-        )
-
-    def publish_velocity_brake(self, reason, speed_deadband):
-        status = self.get_recent_status(reason)
-        if status is None:
-            self.publish_auto_stop("/status/auv 不可用，清零水平推力")
-            return False
-        desired_tx, desired_ty = self.velocity_feedback_command(
-            0.0,
-            0.0,
-            status,
-            speed_deadband,
-        )
-        return self.publish_auto_motion(desired_tx, desired_ty, reason)
-
-    @staticmethod
     def angle_difference_deg(angle_a, angle_b):
         return (angle_a - angle_b + 180.0) % 360.0 - 180.0
 
     def status_pose_errors(self, status):
+        if self.status_hold_depth is None or self.status_hold_yaw_deg is None:
+            return None
         depth_error = status["depth"] - self.status_hold_depth
         yaw_error_deg = self.angle_difference_deg(
             status["yaw_deg"],
@@ -782,101 +790,11 @@ class Task3InspectAndDropTest:
         )
         return depth_error, yaw_error_deg
 
-    def action_status_is_stable(self, status):
-        depth_error, yaw_error_deg = self.status_pose_errors(status)
-        return (
-            status["control_mode"] == MODE_DEPTH_HDG
-            and self.horizontal_speed(status)
-            <= self.auto_action_max_horizontal_speed
-            and abs(status["vz"]) <= self.auto_action_max_vertical_speed
-            and abs(status["wz"]) <= self.auto_action_max_yaw_rate
-            and abs(depth_error) <= self.auto_action_max_depth_error
-            and abs(yaw_error_deg) <= self.auto_action_max_yaw_error_deg
-        )
-
-    def capture_action_hold_position(self):
-        current = self.get_current_pose()
-        if current is None:
-            return False
-        self.auto_action_hold_position = (
-            current.pose.position.x,
-            current.pose.position.y,
-        )
-        rospy.loginfo(
-            "%s：记录最终定点位置：map=(%.3f, %.3f)",
-            NODE_NAME,
-            self.auto_action_hold_position[0],
-            self.auto_action_hold_position[1],
-        )
-        return True
-
-    def publish_action_position_hold(self, reason):
-        if self.auto_action_hold_position is None:
-            return self.publish_velocity_brake(
-                "%s，最终定点尚未记录" % reason,
-                self.auto_action_max_horizontal_speed,
-            )
-
-        status = self.get_recent_status(reason)
-        current = self.get_current_pose()
-        if status is None or current is None:
-            self.publish_auto_stop("最终定点反馈不可用，清零水平推力")
-            return False
-
-        dx = self.auto_action_hold_position[0] - current.pose.position.x
-        dy = self.auto_action_hold_position[1] - current.pose.position.y
-        forward_error = (
-            dx * math.cos(self.auto_hold_yaw)
-            + dy * math.sin(self.auto_hold_yaw)
-        )
-        right_error = (
-            -dx * math.sin(self.auto_hold_yaw)
-            + dy * math.cos(self.auto_hold_yaw)
-        )
-
-        base_forward_force = 0.0
-        if abs(forward_error) > self.auto_hold_position_tolerance:
-            base_forward_force = (
-                self.auto_hold_forward_position_gain * forward_error
-            )
-        base_right_force = 0.0
-        if abs(right_error) > self.auto_hold_position_tolerance:
-            base_right_force = (
-                self.auto_hold_lateral_position_gain * right_error
-            )
-
-        desired_tx, desired_ty = self.velocity_feedback_command(
-            base_forward_force,
-            base_right_force,
-            status,
-            self.auto_action_max_horizontal_speed,
-            self.auto_hold_max_force,
-            self.auto_hold_max_force,
-        )
-        if not self.publish_auto_motion(desired_tx, desired_ty, reason):
-            return False
-
-        rospy.loginfo_throttle(
-            1.0,
-            (
-                "%s：最终定点保持：位置误差=(前%+.3f,右%+.3f)m，"
-                "速度=(前%+.3f,右%+.3f)m/s，指令=(TX=%d,TY=%d)"
-            ),
-            NODE_NAME,
-            forward_error,
-            right_error,
-            status["vx"],
-            status["vy"],
-            self.last_auto_tx,
-            self.last_auto_ty,
-        )
-        return True
-
     def validate_params(self):
         if self.operation_mode not in ("manual", "auto"):
             raise ValueError("operation_mode 必须是 manual 或 auto")
         if not self.detection_topic:
-            raise ValueError("detection_topic 不能为空")
+            raise ValueError("model_detection_topic 不能为空")
         if not self.target_color:
             raise ValueError("target_color 不能为空")
         if not 0.0 <= self.min_confidence <= 1.0:
@@ -900,106 +818,94 @@ class Task3InspectAndDropTest:
             )
         if min(self.hold_seconds, self.open_seconds, self.close_seconds) < 0.0:
             raise ValueError("动作持续时间不能小于 0")
-
         if self.target_color not in self.COLOR_LIGHTS:
             raise ValueError("target_color 必须是 yellow、green 或 red")
+        if min(self.log_interval, self.warning_log_interval) <= 0.0:
+            raise ValueError("日志间隔必须大于 0")
 
-        if self.auto_enabled:
-            if self.auto_search_stable_detection_count < 1:
-                raise ValueError(
-                    "auto_search_stable_detection_count 必须大于等于 1"
-                )
-            if self.auto_center_stable_detection_count < 1:
-                raise ValueError(
-                    "auto_center_stable_detection_count 必须大于等于 1"
-                )
-            if not self.pose_cmd_topic:
-                raise ValueError("pose_cmd_topic 不能为空")
-            if not self.status_topic:
-                raise ValueError("status_topic 不能为空")
-            if self.status_timeout <= 0.0:
-                raise ValueError("status_timeout 必须大于 0")
-            if min(
-                self.status_linear_velocity_scale,
-                self.status_angular_velocity_scale,
-            ) <= 0.0:
-                raise ValueError("/status/auv 速度缩放参数必须大于 0")
-            if min(
-                self.auto_initial_hover_seconds,
-                self.auto_search_forward_force,
-                self.auto_search_lateral_force,
-                self.auto_search_distance_tolerance,
-            ) < 0.0:
-                raise ValueError("自动悬停、搜索力和距离容差不能小于 0")
-            search_distances = (
-                self.auto_search_first_forward_distance,
-                self.auto_search_second_forward_distance,
-                self.auto_search_third_forward_distance,
-                self.auto_search_lateral_distance,
+        if not self.auto_enabled:
+            return
+        if self.auto_search_stable_detection_count < 1:
+            raise ValueError(
+                "auto_search_stable_detection_count 必须大于等于 1"
             )
-            if min(search_distances) <= 0.0:
-                raise ValueError("自动搜索的前进和横移距离必须大于 0")
-            if self.auto_search_distance_tolerance >= min(search_distances):
-                raise ValueError("auto_search_distance_tolerance 必须小于搜索距离")
-            if min(
-                self.auto_search_forward_braking_distance,
-                self.auto_search_lateral_braking_distance,
-            ) <= self.auto_search_distance_tolerance:
-                raise ValueError("提前刹车距离必须大于搜索距离容差")
-            if self.auto_search_forward_braking_distance > min(
-                self.auto_search_first_forward_distance,
-                self.auto_search_second_forward_distance,
-                self.auto_search_third_forward_distance,
-            ):
-                raise ValueError("前进提前刹车距离不能大于最短前进距离")
-            if (
-                self.auto_search_lateral_braking_distance
-                > self.auto_search_lateral_distance
-            ):
-                raise ValueError("横移提前刹车距离不能大于横移距离")
-            if min(self.auto_forward_gain, self.auto_lateral_gain) < 0.0:
-                raise ValueError("自动修正增益不能小于 0")
-            if min(
-                self.auto_max_forward_force,
-                self.auto_max_lateral_force,
-                self.auto_min_correction_force,
-                self.auto_force_step,
-                self.auto_forward_velocity_damping,
-                self.auto_lateral_velocity_damping,
-                self.auto_search_stop_speed,
-                self.auto_action_max_horizontal_speed,
-                self.auto_action_max_vertical_speed,
-                self.auto_action_max_yaw_rate,
-                self.auto_action_max_depth_error,
-                self.auto_action_max_yaw_error_deg,
-                self.auto_hold_forward_position_gain,
-                self.auto_hold_lateral_position_gain,
-                self.auto_hold_max_force,
-                self.auto_hold_position_tolerance,
-            ) < 0.0:
-                raise ValueError("自动推力限制和速度反馈参数不能小于 0")
-            if self.auto_hold_max_force <= 0.0:
-                raise ValueError("auto_hold_max_force 必须大于 0")
-            if self.auto_min_correction_force > min(
-                self.auto_max_forward_force, self.auto_max_lateral_force
-            ):
-                raise ValueError("auto_min_correction_force 不能大于最大修正力")
-            if not 0.0 <= self.auto_target_center_u_ratio <= 1.0:
-                raise ValueError("auto_target_center_u_ratio 必须在 0 到 1 之间")
-            if not 0.0 <= self.auto_target_center_v_ratio <= 1.0:
-                raise ValueError("auto_target_center_v_ratio 必须在 0 到 1 之间")
-            if min(
-                self.auto_center_tolerance_u_px,
-                self.auto_center_tolerance_v_px,
-            ) < 0.0:
-                raise ValueError("自动居中容差不能小于 0")
-            if min(self.auto_image_width, self.auto_image_height) <= 0.0:
-                raise ValueError("自动控制默认图像尺寸必须大于 0")
+        if self.auto_center_stable_detection_count < 1:
+            raise ValueError(
+                "auto_center_stable_detection_count 必须大于等于 1"
+            )
+        topics = (
+            self.motion_goal_topic,
+            self.motion_cancel_topic,
+            self.motion_state_topic,
+            self.status_topic,
+        )
+        if not all(topics):
+            raise ValueError("motion_supervisor 和状态反馈话题不能为空")
+        if min(
+            self.motion_state_timeout,
+            self.motion_startup_timeout,
+            self.cancel_timeout,
+            self.status_timeout,
+            self.status_linear_velocity_scale,
+        ) <= 0.0:
+            raise ValueError("运动反馈超时和状态缩放参数必须大于 0")
+        if min(
+            self.goal_match_position_tolerance,
+            self.goal_match_depth_tolerance,
+            self.goal_match_yaw_tolerance_deg,
+            self.arrival_position_tolerance,
+            self.arrival_yaw_tolerance_deg,
+            self.arrival_max_horizontal_speed,
+            self.arrival_max_yaw_rate_deg_s,
+        ) < 0.0:
+            raise ValueError("运动目标匹配和实际到达阈值不能小于 0")
+        search_distances = (
+            self.auto_search_first_forward_distance,
+            self.auto_search_second_forward_distance,
+            self.auto_search_third_forward_distance,
+            self.auto_search_lateral_distance,
+        )
+        if min(search_distances) <= 0.0:
+            raise ValueError("自动搜索的前进和横移距离必须大于 0")
+        if self.auto_initial_hover_seconds < 0.0:
+            raise ValueError("auto_initial_hover_seconds 不能小于 0")
+        if min(
+            self.auto_visual_forward_gain_m,
+            self.auto_visual_lateral_gain_m,
+            self.auto_visual_min_step_m,
+            self.auto_visual_max_step_m,
+            self.auto_visual_goal_min_interval,
+        ) < 0.0:
+            raise ValueError("视觉位置小步参数不能小于 0")
+        if self.auto_visual_max_step_m <= 0.0:
+            raise ValueError("auto_visual_max_step_m 必须大于 0")
+        if self.auto_visual_min_step_m > self.auto_visual_max_step_m:
+            raise ValueError("auto_visual_min_step_m 不能大于最大步长")
+        if self.auto_forward_sign == 0.0 or self.auto_lateral_sign == 0.0:
+            raise ValueError("视觉前后和左右方向符号不能为 0")
+        if min(
+            self.auto_action_max_horizontal_speed,
+            self.auto_action_max_vertical_speed,
+            self.auto_action_max_yaw_rate,
+            self.auto_action_max_depth_error,
+            self.auto_action_max_yaw_error_deg,
+        ) < 0.0:
+            raise ValueError("动作放行速度和位姿阈值不能小于 0")
+        if not 0.0 <= self.auto_target_center_u_ratio <= 1.0:
+            raise ValueError("auto_target_center_u_ratio 必须在 0 到 1 之间")
+        if not 0.0 <= self.auto_target_center_v_ratio <= 1.0:
+            raise ValueError("auto_target_center_v_ratio 必须在 0 到 1 之间")
+        if min(
+            self.auto_center_tolerance_u_px,
+            self.auto_center_tolerance_v_px,
+        ) < 0.0:
+            raise ValueError("自动居中容差不能小于 0")
+        if min(self.auto_image_width, self.auto_image_height) <= 0.0:
+            raise ValueError("自动控制默认图像尺寸必须大于 0")
 
-    def get_current_pose(self):
+    def get_current_pose(self, context="自动控制"):
         if not self.auto_enabled or self.tf_listener is None:
             return None
-
         try:
             self.tf_listener.waitForTransform(
                 "map", "base_link", rospy.Time(0), rospy.Duration(0.5)
@@ -1009,13 +915,23 @@ class Task3InspectAndDropTest:
             )
         except tf.Exception as exc:
             rospy.logwarn_throttle(
-                2.0,
-                "%s：自动模式无法读取 map -> base_link：%s",
+                self.warning_log_interval,
+                "%s：%s无法读取 map -> base_link：%s",
                 NODE_NAME,
+                context,
                 str(exc),
             )
             return None
 
+        values = tuple(translation) + tuple(rotation)
+        if not all(math.isfinite(value) for value in values):
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：%s读取到非有限 TF，本帧忽略",
+                NODE_NAME,
+                context,
+            )
+            return None
         pose = PoseStamped()
         pose.header.frame_id = "map"
         pose.header.stamp = rospy.Time.now()
@@ -1023,356 +939,712 @@ class Task3InspectAndDropTest:
         pose.pose.orientation = Quaternion(*rotation)
         return pose
 
+    def make_goal(self, x_value, y_value, z_value, yaw):
+        values = (x_value, y_value, z_value, yaw)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("任务生成了非有限运动目标")
+        goal = PoseStamped()
+        goal.header.frame_id = "map"
+        goal.header.stamp = rospy.Time.now()
+        goal.pose.position.x = x_value
+        goal.pose.position.y = y_value
+        goal.pose.position.z = z_value
+        quaternion = quaternion_from_euler(0.0, 0.0, yaw)
+        goal.pose.orientation.x = quaternion[0]
+        goal.pose.orientation.y = quaternion[1]
+        goal.pose.orientation.z = quaternion[2]
+        goal.pose.orientation.w = quaternion[3]
+        return goal
+
+    def set_active_goal(self, x_value, y_value, z_value, yaw, reason):
+        self.active_goal = self.make_goal(
+            x_value, y_value, z_value, yaw
+        )
+        self.active_goal_reason = reason
+        rospy.loginfo(
+            (
+                "%s：设置 motion_supervisor 绝对目标：map=(%.3f,%.3f,%.3f)，"
+                "yaw=%.2fdeg，原因=%s"
+            ),
+            NODE_NAME,
+            x_value,
+            y_value,
+            z_value,
+            math.degrees(yaw),
+            reason,
+        )
+
+    def set_body_offset_goal(self, current, forward, right, reason):
+        goal_x = (
+            current.pose.position.x
+            + math.cos(self.auto_hold_yaw) * forward
+            - math.sin(self.auto_hold_yaw) * right
+        )
+        goal_y = (
+            current.pose.position.y
+            + math.sin(self.auto_hold_yaw) * forward
+            + math.cos(self.auto_hold_yaw) * right
+        )
+        self.set_active_goal(
+            goal_x,
+            goal_y,
+            self.auto_hold_z,
+            self.auto_hold_yaw,
+            reason,
+        )
+        return self.active_goal
+
     def initialize_auto_pose(self):
         if not self.auto_enabled:
             return True
         if self.auto_hold_z is not None and self.auto_hold_yaw is not None:
             return True
 
-        current = self.get_current_pose()
-        if current is None:
+        status = self.get_recent_status("初始化固定悬停点")
+        current = self.get_current_pose("初始化固定悬停点")
+        if status is None or current is None:
             return False
 
         self.auto_hold_z = current.pose.position.z
-        current_yaw = yaw_from_quaternion(current.pose.orientation)
-        self.auto_hold_yaw = current_yaw
-
+        self.auto_hold_yaw = yaw_from_quaternion(current.pose.orientation)
+        self.status_hold_depth = status["depth"]
+        self.status_hold_yaw_deg = status["yaw_deg"]
+        self.set_active_goal(
+            current.pose.position.x,
+            current.pose.position.y,
+            self.auto_hold_z,
+            self.auto_hold_yaw,
+            "只锁存一次启动位置，漂移时仍返回该固定悬停点",
+        )
         rospy.loginfo(
             (
-                "%s：自动控制基准已记录：当前位置=(%.2f, %.2f, %.2f)，"
-                "启动航向=%.1fdeg，后续保持该航向"
+                "%s：固定悬停点已锁存：map=(%.3f,%.3f,%.3f)，yaw=%.2fdeg，"
+                "启动深度=%.3fm；后续不会跟随漂移位置更新"
             ),
             NODE_NAME,
             current.pose.position.x,
             current.pose.position.y,
-            current.pose.position.z,
-            math.degrees(current_yaw),
+            self.auto_hold_z,
+            math.degrees(self.auto_hold_yaw),
+            self.status_hold_depth,
         )
         return True
 
-    @staticmethod
-    def force_value(value):
-        return int(round(clamp(value, -10000.0, 10000.0)))
-
-    def limit_auto_force(self, desired, previous):
-        return int(round(clamp(
-            desired,
-            previous - self.auto_force_step,
-            previous + self.auto_force_step,
-        )))
-
-    @staticmethod
-    def apply_minimum_force(value, minimum, maximum):
-        value = clamp(value, -maximum, maximum)
-        if value == 0.0 or abs(value) >= minimum:
-            return value
-        return math.copysign(minimum, value)
-
-    def publish_auto_motion(self, desired_tx, desired_ty, reason, rate_limit=True):
-        if not self.auto_enabled or self.pose_cmd_pub is None:
+    def publish_active_goal(self):
+        if (
+            not self.auto_enabled
+            or self.goal_pub is None
+            or self.active_goal is None
+        ):
             return False
-        if not self.initialize_auto_pose():
-            return False
-
-        current = self.get_current_pose()
-        if current is None:
-            return False
-
-        if rate_limit:
-            tx = self.limit_auto_force(desired_tx, self.last_auto_tx)
-            ty = self.limit_auto_force(desired_ty, self.last_auto_ty)
-        else:
-            tx = self.force_value(desired_tx)
-            ty = self.force_value(desired_ty)
-        self.last_auto_tx = tx
-        self.last_auto_ty = ty
-
-        command = PoseNEDcmd()
-        command.mode = MODE_DEPTH_HDG
-        command.target.header.frame_id = "map"
-        command.target.header.stamp = rospy.Time.now()
-        command.target.pose.position.x = current.pose.position.x
-        command.target.pose.position.y = current.pose.position.y
-        command.target.pose.position.z = self.auto_hold_z
-        command.target.pose.orientation = Quaternion(*quaternion_from_euler(
-            0.0, 0.0, self.auto_hold_yaw
-        ))
-        command.force.TX = self.force_value(tx)
-        command.force.TY = self.force_value(ty)
-        self.pose_cmd_pub.publish(command)
-
+        self.active_goal.header.stamp = rospy.Time.now()
+        self.goal_pub.publish(self.active_goal)
         rospy.loginfo_throttle(
-            1.0,
+            self.log_interval,
             (
-                "%s：运动指令 mode=3，保持深度=%.2f，保持航向=%.1fdeg，"
-                "TX=%d，TY=%d，TZ/MX/MY/MZ=0，原因=%s"
+                "%s：持续发布运动目标：map=(%.3f,%.3f,%.3f)，"
+                "yaw=%.2fdeg，任务状态=%s，原因=%s"
             ),
             NODE_NAME,
+            self.active_goal.pose.position.x,
+            self.active_goal.pose.position.y,
+            self.active_goal.pose.position.z,
+            math.degrees(yaw_from_quaternion(
+                self.active_goal.pose.orientation
+            )),
+            self.STATE_NAMES.get(self.state, "未知状态"),
+            self.active_goal_reason,
+        )
+        return True
+
+    def motion_state_age(self):
+        if self.latest_motion_state is None:
+            return None
+        stamp = self.latest_motion_state.header.stamp
+        if stamp == rospy.Time(0):
+            return None
+        return max(0.0, (rospy.Time.now() - stamp).to_sec())
+
+    def motion_state_is_fresh(self):
+        if (
+            self.latest_motion_state is None
+            or self.last_motion_state_received is None
+        ):
+            return False
+        receipt_age = (
+            rospy.Time.now() - self.last_motion_state_received
+        ).to_sec()
+        stamp_age = self.motion_state_age()
+        return (
+            receipt_age <= self.motion_state_timeout
+            and stamp_age is not None
+            and stamp_age <= self.motion_state_timeout
+        )
+
+    def goal_match_errors(self):
+        if self.active_goal is None or self.latest_motion_state is None:
+            return None
+        actual_goal = self.latest_motion_state.goal
+        if actual_goal.header.frame_id != "map":
+            return None
+        dx = actual_goal.pose.position.x - self.active_goal.pose.position.x
+        dy = actual_goal.pose.position.y - self.active_goal.pose.position.y
+        dz = actual_goal.pose.position.z - self.active_goal.pose.position.z
+        desired_yaw = yaw_from_quaternion(self.active_goal.pose.orientation)
+        actual_yaw = yaw_from_quaternion(actual_goal.pose.orientation)
+        yaw_error_deg = abs(math.degrees(normalize_angle_rad(
+            actual_yaw - desired_yaw
+        )))
+        return math.hypot(dx, dy), abs(dz), yaw_error_deg
+
+    def goal_matches_motion_state(self):
+        errors = self.goal_match_errors()
+        if errors is None:
+            return False
+        position_error, depth_error, yaw_error_deg = errors
+        return (
+            position_error <= self.goal_match_position_tolerance
+            and depth_error <= self.goal_match_depth_tolerance
+            and yaw_error_deg <= self.goal_match_yaw_tolerance_deg
+        )
+
+    def actual_arrival_checks(self):
+        message = self.latest_motion_state
+        if message is None:
+            return None
+        values = (
+            message.base_position_error,
+            message.yaw_error,
+            message.horizontal_speed,
+            message.yaw_rate,
+        )
+        if not all(math.isfinite(value) for value in values):
+            return None
+        return {
+            "position_error": abs(message.base_position_error),
+            "position_ok": (
+                abs(message.base_position_error)
+                <= self.arrival_position_tolerance
+            ),
+            "yaw_error_deg": abs(math.degrees(message.yaw_error)),
+            "yaw_ok": (
+                abs(math.degrees(message.yaw_error))
+                <= self.arrival_yaw_tolerance_deg
+            ),
+            "horizontal_speed": abs(message.horizontal_speed),
+            "speed_ok": (
+                abs(message.horizontal_speed)
+                <= self.arrival_max_horizontal_speed
+            ),
+            "yaw_rate_deg_s": abs(math.degrees(message.yaw_rate)),
+            "yaw_rate_ok": (
+                abs(math.degrees(message.yaw_rate))
+                <= self.arrival_max_yaw_rate_deg_s
+            ),
+        }
+
+    def actual_arrival_satisfied(self):
+        checks = self.actual_arrival_checks()
+        return (
+            checks is not None
+            and checks["position_ok"]
+            and checks["yaw_ok"]
+            and checks["speed_ok"]
+            and checks["yaw_rate_ok"]
+        )
+
+    def motion_arrived(self):
+        return (
+            self.motion_state_is_fresh()
+            and self.latest_motion_state.state == MotionState.HOVER
+            and self.goal_matches_motion_state()
+            and self.actual_arrival_satisfied()
+        )
+
+    def current_motion_state_name(self):
+        if self.latest_motion_state is None:
+            return "未收到"
+        return self.MOTION_STATE_NAMES.get(
+            self.latest_motion_state.state,
+            "UNKNOWN({})".format(self.latest_motion_state.state),
+        )
+
+    def log_arrival_gate(self, context):
+        message = self.latest_motion_state
+        if message is None:
+            return
+        fresh = self.motion_state_is_fresh()
+        hover = message.state == MotionState.HOVER
+        goal_match = self.goal_matches_motion_state()
+        goal_errors = self.goal_match_errors()
+        actual_checks = self.actual_arrival_checks()
+        if goal_errors is None:
+            goal_error_text = "未知（反馈goal坐标系={}）".format(
+                message.goal.header.frame_id or "空"
+            )
+        else:
+            goal_error_text = (
+                "水平{:.3f}/<={:.3f}m，z{:.3f}/<={:.3f}m，"
+                "yaw{:.2f}/<={:.2f}deg"
+            ).format(
+                goal_errors[0],
+                self.goal_match_position_tolerance,
+                goal_errors[1],
+                self.goal_match_depth_tolerance,
+                goal_errors[2],
+                self.goal_match_yaw_tolerance_deg,
+            )
+        if actual_checks is None:
+            actual_error_text = "未知"
+            actual_ok = False
+        else:
+            actual_ok = self.actual_arrival_satisfied()
+            actual_error_text = (
+                "位置{:.3f}/<={:.3f}m，航向{:.2f}/<={:.2f}deg，"
+                "速度{:.3f}/<={:.3f}m/s，yaw_rate{:.2f}/<={:.2f}deg/s"
+            ).format(
+                actual_checks["position_error"],
+                self.arrival_position_tolerance,
+                actual_checks["yaw_error_deg"],
+                self.arrival_yaw_tolerance_deg,
+                actual_checks["horizontal_speed"],
+                self.arrival_max_horizontal_speed,
+                actual_checks["yaw_rate_deg_s"],
+                self.arrival_max_yaw_rate_deg_s,
+            )
+        rospy.loginfo_throttle(
+            self.log_interval,
+            (
+                "%s：%s：反馈新鲜[%s]，state=%s/HOVER[%s]，"
+                "目标一致[%s]，目标差值=(%s)，实际到达[%s]，"
+                "实际门槛=(%s)，输出=(TX=%d,TY=%d,MZ=%d)"
+            ),
+            NODE_NAME,
+            context,
+            "通过" if fresh else "未通过",
+            self.current_motion_state_name(),
+            "通过" if hover else "未通过",
+            "通过" if goal_match else "未通过",
+            goal_error_text,
+            "通过" if actual_ok else "未通过",
+            actual_error_text,
+            message.tx,
+            message.ty,
+            message.mz,
+        )
+
+    def handle_motion_health(self):
+        elapsed = (rospy.Time.now() - self.task_started).to_sec()
+        if self.latest_motion_state is None:
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：等待运动反馈 %s，已等待 %.1f/%.1fs",
+                NODE_NAME,
+                self.motion_state_topic,
+                elapsed,
+                self.motion_startup_timeout,
+            )
+            if elapsed >= self.motion_startup_timeout:
+                self.finish_task(False, "启动后未收到 /motion/state")
+            return False
+        if not self.motion_state_is_fresh():
+            age = self.motion_state_age()
+            rospy.logerr_throttle(
+                self.warning_log_interval,
+                "%s：运动反馈不新鲜，消息年龄=%s，限制=%.2fs",
+                NODE_NAME,
+                "未知" if age is None else "{:.2f}s".format(age),
+                self.motion_state_timeout,
+            )
+            if self.motion_ready_once or elapsed >= self.motion_startup_timeout:
+                self.finish_task(False, "运动状态反馈超时")
+            return False
+        if self.latest_motion_state.state not in self.MOTION_STATE_NAMES:
+            self.finish_task(
+                False,
+                "motion_supervisor 返回未知状态 {}".format(
+                    self.latest_motion_state.state
+                ),
+            )
+            return False
+        if self.latest_motion_state.state == MotionState.SAFE:
+            rospy.logerr_throttle(
+                self.warning_log_interval,
+                "%s：motion_supervisor 进入 SAFE，原因=%s",
+                NODE_NAME,
+                self.latest_motion_state.reason or "未知",
+            )
+            if self.motion_ready_once or elapsed >= self.motion_startup_timeout:
+                self.finish_task(
+                    False,
+                    "motion_supervisor 进入 SAFE：{}".format(
+                        self.latest_motion_state.reason or "未知原因"
+                    ),
+                )
+            return False
+        return True
+
+    def request_motion_cancel(self, reason, discard_search_resume=False):
+        if not self.auto_enabled or self.cancel_pub is None:
+            return False
+        if discard_search_resume:
+            self.auto_search_resume_goal = None
+            self.auto_search_paused_for_model = False
+        if self.motion_cancel_requested_at is None:
+            self.cancel_pub.publish(Empty())
+            self.motion_cancel_requested_at = rospy.Time.now()
+            rospy.logwarn(
+                "%s：发布 %s，要求 motion_supervisor 主动刹停并进入 HOVER；原因=%s",
+                NODE_NAME,
+                self.motion_cancel_topic,
+                reason,
+            )
+        self.motion_cancel_reason = reason
+        self.active_goal = None
+        return True
+
+    def cancel_has_completed(self):
+        if (
+            self.motion_cancel_requested_at is None
+            or not self.motion_state_is_fresh()
+            or self.latest_motion_state.state != MotionState.HOVER
+        ):
+            return False
+        return (
+            self.latest_motion_state.header.stamp
+            >= self.motion_cancel_requested_at
+        )
+
+    def wait_for_motion_cancel(self, context):
+        if self.motion_cancel_requested_at is None:
+            return True
+        elapsed = (
+            rospy.Time.now() - self.motion_cancel_requested_at
+        ).to_sec()
+        if elapsed >= self.cancel_timeout:
+            self.finish_task(
+                False,
+                "等待 motion_supervisor 主动刹停超时：{}".format(
+                    self.motion_cancel_reason
+                ),
+            )
+            return False
+        if not self.cancel_has_completed():
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：%s，等待刹停进入 HOVER %.1f/%.1fs",
+                NODE_NAME,
+                context,
+                elapsed,
+                self.cancel_timeout,
+            )
+            return False
+
+        current = self.get_current_pose("刹停完成后锁定当前位置")
+        if current is None:
+            return False
+        reason = self.motion_cancel_reason
+        self.motion_cancel_requested_at = None
+        self.motion_cancel_reason = ""
+        self.set_active_goal(
+            current.pose.position.x,
+            current.pose.position.y,
             self.auto_hold_z,
-            math.degrees(self.auto_hold_yaw),
-            command.force.TX,
-            command.force.TY,
+            self.auto_hold_yaw,
+            "主动刹停完成后锁定当前位置",
+        )
+        rospy.loginfo(
+            "%s：主动刹停完成并已锁定固定点，原因为：%s",
+            NODE_NAME,
             reason,
         )
         return True
 
-    def publish_auto_stop(self, reason):
-        if not self.auto_enabled:
-            return
-        self.publish_auto_motion(0.0, 0.0, reason, rate_limit=False)
+    def action_status_is_stable(self, status):
+        pose_errors = self.status_pose_errors(status)
+        checks = self.actual_arrival_checks()
+        if pose_errors is None or checks is None:
+            return False
+        depth_error, yaw_error_deg = pose_errors
+        message = self.latest_motion_state
+        return (
+            self.motion_arrived()
+            and status["control_mode"] == MODE_POSITION
+            and message.horizontal_speed
+            <= self.auto_action_max_horizontal_speed
+            and abs(status["vz"]) <= self.auto_action_max_vertical_speed
+            and abs(message.yaw_rate) <= self.auto_action_max_yaw_rate
+            and abs(depth_error) <= self.auto_action_max_depth_error
+            and abs(yaw_error_deg) <= self.auto_action_max_yaw_error_deg
+        )
+
+    def capture_action_hold_position(self):
+        if self.active_goal is None:
+            current = self.get_current_pose("记录最终动作定点")
+            if current is None:
+                return False
+            self.set_active_goal(
+                current.pose.position.x,
+                current.pose.position.y,
+                self.auto_hold_z,
+                self.auto_hold_yaw,
+                "记录开灯和夹爪动作期间的固定定点",
+            )
+        self.auto_action_hold_position = (
+            self.active_goal.pose.position.x,
+            self.active_goal.pose.position.y,
+        )
+        rospy.loginfo(
+            "%s：最终动作定点已锁定：map=(%.3f,%.3f,%.3f)，后续只重发同一目标",
+            NODE_NAME,
+            self.auto_action_hold_position[0],
+            self.auto_action_hold_position[1],
+            self.active_goal.pose.position.z,
+        )
+        return True
+
+    def publish_action_position_hold(self, reason):
+        if self.auto_action_hold_position is None or self.active_goal is None:
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：%s时最终动作定点尚未记录",
+                NODE_NAME,
+                reason,
+            )
+            return False
+        published = self.publish_active_goal()
+        rospy.loginfo_throttle(
+            self.log_interval,
+            "%s：motion_supervisor 最终定点保持：map=(%.3f,%.3f)，阶段=%s",
+            NODE_NAME,
+            self.auto_action_hold_position[0],
+            self.auto_action_hold_position[1],
+            reason,
+        )
+        return published
 
     def reset_auto_search_step(self):
         self.auto_search_step_started = None
-        self.auto_search_step_origin = None
-        self.auto_search_step_braking = False
+        self.auto_search_step_goal = None
+        self.auto_search_resume_goal = None
+        self.auto_search_paused_for_model = False
 
     def complete_auto_search_step(self, step_kind, step_amount):
-        step_number = self.auto_search_index + 1
         rospy.loginfo(
-            "%s：搜索步骤 %d/%d 完成：%s %.2f%s",
+            "%s：搜索步骤 %d/%d 完成并由 HOVER 确认：%s %.2f%s",
             NODE_NAME,
-            step_number,
+            self.auto_search_index + 1,
             len(self.auto_search_plan),
             self.SEARCH_STEP_NAMES[step_kind],
             step_amount,
             "s" if step_kind == "hover" else "m",
         )
-        self.publish_auto_stop("当前搜索步骤完成，切换前先停止")
         self.auto_search_index += 1
         self.reset_auto_search_step()
-
         if self.auto_search_index >= len(self.auto_search_plan):
             rospy.logwarn(
-                "%s：预设搜索路径已经执行完毕，仍未稳定识别方框，原地悬停等待",
+                "%s：预设搜索路径已经执行完毕，仍未稳定识别方框，保持最后定点等待",
                 NODE_NAME,
             )
+
+    def pause_search_for_model(self):
+        if not self.auto_search_paused_for_model:
+            if self.auto_search_step_goal is not None:
+                self.auto_search_resume_goal = copy.deepcopy(
+                    self.auto_search_step_goal
+                )
+            self.auto_search_paused_for_model = True
+            self.request_motion_cancel(
+                "模型话题未就绪或已超时，暂停当前搜索位移"
+            )
+        self.wait_for_motion_cancel("模型不可用，搜索暂停")
+
+    def resume_search_after_model_ready(self):
+        if not self.auto_search_paused_for_model:
+            return True
+        if not self.wait_for_motion_cancel("等待模型恢复前先完成刹停"):
+            return False
+        if self.auto_search_resume_goal is None:
+            self.auto_search_paused_for_model = False
+            return True
+        self.active_goal = copy.deepcopy(self.auto_search_resume_goal)
+        self.active_goal_reason = "模型恢复，继续原搜索目标"
+        self.auto_search_paused_for_model = False
+        self.auto_search_resume_goal = None
+        rospy.loginfo(
+            "%s：模型话题恢复，继续当前搜索步骤的原绝对目标",
+            NODE_NAME,
+        )
+        return True
 
     def search_target_automatically(self, model_ready):
         self.auto_centered_frame_count = 0
         if self.state != self.WAIT_FOR_TARGET:
-            self.publish_auto_stop("已退出搜索状态，停止搜索推力")
             return
-
+        if not self.wait_for_motion_cancel("搜索阶段等待主动刹停"):
+            return
         if self.auto_search_index >= len(self.auto_search_plan):
-            self.publish_velocity_brake(
-                "预设搜索路径完成，速度闭环悬停等待识别",
-                self.auto_search_stop_speed,
-            )
             rospy.logwarn_throttle(
-                2.0,
-                "%s：搜索路径已完成，等待 %s 方框，任务总超时为 %.1fs",
+                self.warning_log_interval,
+                "%s：搜索路径已完成，保持最后定点等待 %s 方框，任务总超时 %.1fs",
                 NODE_NAME,
                 self.target_color,
                 self.max_wait_seconds,
             )
             return
 
-        current = self.get_current_pose()
-        if current is None:
+        step_kind, step_amount = self.auto_search_plan[self.auto_search_index]
+        if step_kind == "hover":
+            status = self.get_recent_status("启动固定点悬停")
+            if status is None:
+                return
+            stable = self.action_status_is_stable(status)
+            if not stable:
+                if self.auto_search_step_started is not None:
+                    rospy.logwarn(
+                        "%s：启动悬停稳定条件中断，10秒计时重新开始",
+                        NODE_NAME,
+                    )
+                self.auto_search_step_started = None
+                checks = self.actual_arrival_checks()
+                pose_errors = self.status_pose_errors(status)
+                depth_error = 0.0 if pose_errors is None else pose_errors[0]
+                yaw_error_deg = 0.0 if pose_errors is None else pose_errors[1]
+                rospy.loginfo_throttle(
+                    self.log_interval,
+                    (
+                        "%s：等待 motion_supervisor 在固定启动点进入 HOVER；"
+                        "state=%s，base误差=%s，水平速度=%s；"
+                        "附加门槛：mode=%d/4，下向速度=%.3f/<=%.3fm/s，"
+                        "深度误差=%.3f/<=%.3fm，航向误差=%.2f/<=%.2fdeg"
+                    ),
+                    NODE_NAME,
+                    self.MOTION_STATE_NAMES.get(
+                        self.latest_motion_state.state, "未知"
+                    ),
+                    "未知" if checks is None else "{:.3f}m".format(
+                        checks["position_error"]
+                    ),
+                    "未知" if checks is None else "{:.3f}m/s".format(
+                        checks["horizontal_speed"]
+                    ),
+                    status["control_mode"],
+                    abs(status["vz"]),
+                    self.auto_action_max_vertical_speed,
+                    abs(depth_error),
+                    self.auto_action_max_depth_error,
+                    abs(yaw_error_deg),
+                    self.auto_action_max_yaw_error_deg,
+                )
+                self.log_arrival_gate("启动固定点悬停到达判定")
+                return
+            if self.auto_search_step_started is None:
+                self.auto_search_step_started = rospy.Time.now()
+                rospy.loginfo(
+                    "%s：固定启动点已稳定接管，开始连续悬停 %.1fs",
+                    NODE_NAME,
+                    step_amount,
+                )
+            elapsed = (
+                rospy.Time.now() - self.auto_search_step_started
+            ).to_sec()
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：启动固定点悬停 %.1f/%.1fs，HOVER和动作门槛均通过",
+                NODE_NAME,
+                min(elapsed, step_amount),
+                step_amount,
+            )
+            if elapsed >= step_amount:
+                self.complete_auto_search_step(step_kind, step_amount)
             return
 
-        step_kind, step_amount = self.auto_search_plan[self.auto_search_index]
-        hover_status = None
-        if step_kind == "hover":
-            hover_status = self.get_recent_status("启动悬停")
-            if hover_status is None:
-                self.publish_auto_stop("等待 /status/auv，尚未开始10秒悬停计时")
-                return
-
-        if self.auto_search_step_started is None:
-            self.auto_search_step_started = rospy.Time.now()
-            self.auto_search_step_origin = (
-                current.pose.position.x,
-                current.pose.position.y,
+        if not model_ready:
+            self.pause_search_for_model()
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：模型话题未就绪，搜索步骤 %d/%d 已主动刹停暂停",
+                NODE_NAME,
+                self.auto_search_index + 1,
+                len(self.auto_search_plan),
             )
+            return
+        if not self.resume_search_after_model_ready():
+            return
+        if self.state != self.WAIT_FOR_TARGET:
+            return
+
+        if self.auto_search_step_goal is None:
+            current = self.get_current_pose("生成搜索绝对目标")
+            if current is None:
+                return
+            forward = step_amount if step_kind == "forward" else 0.0
+            right = 0.0
+            if step_kind == "left":
+                right = -step_amount
+            elif step_kind == "right":
+                right = step_amount
+            self.auto_search_step_goal = copy.deepcopy(
+                self.set_body_offset_goal(
+                    current,
+                    forward,
+                    right,
+                    "搜索步骤 {}/{}：{} {:.2f}m".format(
+                        self.auto_search_index + 1,
+                        len(self.auto_search_plan),
+                        self.SEARCH_STEP_NAMES[step_kind],
+                        step_amount,
+                    ),
+                )
+            )
+            if self.state != self.WAIT_FOR_TARGET:
+                self.active_goal = None
+                self.auto_search_step_goal = None
+                return
             rospy.loginfo(
-                "%s：开始搜索步骤 %d/%d：%s %.2f%s",
+                "%s：开始搜索步骤 %d/%d：%s %.2fm，等待匹配目标的 HOVER",
                 NODE_NAME,
                 self.auto_search_index + 1,
                 len(self.auto_search_plan),
                 self.SEARCH_STEP_NAMES[step_kind],
                 step_amount,
-                "s" if step_kind == "hover" else "m",
             )
-
-        if step_kind == "hover":
-            self.publish_velocity_brake(
-                "任务启动后速度闭环悬停，等待人工放置方框",
-                self.auto_search_stop_speed,
-            )
-            elapsed = (rospy.Time.now() - self.auto_search_step_started).to_sec()
-            horizontal_speed = self.horizontal_speed(hover_status)
-            rospy.loginfo_throttle(
-                1.0,
-                "%s：启动悬停 %.1f/%.1fs，水平速度=%.3fm/s",
-                NODE_NAME,
-                min(elapsed, step_amount),
-                step_amount,
-                horizontal_speed,
-            )
-            if (
-                elapsed >= step_amount
-                and horizontal_speed <= self.auto_search_stop_speed
-                and self.last_auto_tx == 0
-                and self.last_auto_ty == 0
-            ):
-                self.complete_auto_search_step(step_kind, step_amount)
-            elif elapsed >= step_amount:
-                rospy.loginfo_throttle(
-                    1.0,
-                    "%s：悬停时间已到，等待速度降至 %.3fm/s 以下再开始搜索",
-                    NODE_NAME,
-                    self.auto_search_stop_speed,
-                )
-            return
-
-        if not model_ready:
-            self.publish_velocity_brake(
-                "模型话题未就绪或已超时，速度闭环暂停搜索",
-                self.auto_search_stop_speed,
-            )
-            rospy.logwarn_throttle(
-                2.0,
-                "%s：模型话题未就绪，搜索步骤 %d/%d 暂停",
-                NODE_NAME,
-                self.auto_search_index + 1,
-                len(self.auto_search_plan),
-            )
-            return
-
-        status = self.get_recent_status("自动搜索")
-        if status is None:
-            self.publish_auto_stop("/status/auv 不可用，暂停搜索位移")
-            return
-
-        origin_x, origin_y = self.auto_search_step_origin
-        dx = current.pose.position.x - origin_x
-        dy = current.pose.position.y - origin_y
-        forward_displacement = (
-            dx * math.cos(self.auto_hold_yaw)
-            + dy * math.sin(self.auto_hold_yaw)
-        )
-        right_displacement = (
-            -dx * math.sin(self.auto_hold_yaw)
-            + dy * math.cos(self.auto_hold_yaw)
-        )
-
-        if step_kind == "forward":
-            progress = forward_displacement
-            base_forward_force = self.auto_search_forward_force
-            base_right_force = 0.0
-            braking_distance = self.auto_search_forward_braking_distance
-        elif step_kind == "left":
-            progress = -right_displacement
-            base_forward_force = 0.0
-            base_right_force = -self.auto_search_lateral_force
-            braking_distance = self.auto_search_lateral_braking_distance
-        else:
-            progress = right_displacement
-            base_forward_force = 0.0
-            base_right_force = self.auto_search_lateral_force
-            braking_distance = self.auto_search_lateral_braking_distance
-
-        remaining_distance = max(step_amount - progress, 0.0)
-        if remaining_distance <= braking_distance:
-            force_ratio = clamp(
-                remaining_distance / braking_distance,
-                0.0,
-                1.0,
-            )
-            base_forward_force *= force_ratio
-            base_right_force *= force_ratio
-            rospy.loginfo_throttle(
-                1.0,
-                (
-                    "%s：进入提前减速区：剩余=%.3fm/%.3fm，"
-                    "基础推力比例=%.2f，速度阻尼将根据惯性自动补反向力"
-                ),
-                NODE_NAME,
-                remaining_distance,
-                braking_distance,
-                force_ratio,
-            )
-
-        if progress >= step_amount - self.auto_search_distance_tolerance:
-            if not self.auto_search_step_braking:
-                self.auto_search_step_braking = True
-                rospy.loginfo(
-                    "%s：搜索步骤达到距离目标，进入速度反馈刹停阶段",
-                    NODE_NAME,
-                )
-
-        if self.auto_search_step_braking:
-            desired_tx, desired_ty = self.velocity_feedback_command(
-                0.0,
-                0.0,
-                status,
-                self.auto_search_stop_speed,
-            )
-            if not self.publish_auto_motion(
-                desired_tx,
-                desired_ty,
-                "搜索步骤达到目标距离，依据速度反馈刹停",
-            ):
-                return
-            horizontal_speed = self.horizontal_speed(status)
-            if (
-                horizontal_speed <= self.auto_search_stop_speed
-                and self.last_auto_tx == 0
-                and self.last_auto_ty == 0
-            ):
-                self.complete_auto_search_step(step_kind, step_amount)
-            else:
-                rospy.loginfo_throttle(
-                    1.0,
-                    (
-                        "%s：搜索刹停中：位移=%.3f/%.3fm，"
-                        "速度=(前%+.3f,右%+.3f)m/s，指令=(TX=%d,TY=%d)"
-                    ),
-                    NODE_NAME,
-                    progress,
-                    step_amount,
-                    status["vx"],
-                    status["vy"],
-                    self.last_auto_tx,
-                    self.last_auto_ty,
-                )
-            return
-
-        desired_tx, desired_ty = self.velocity_feedback_command(
-            base_forward_force,
-            base_right_force,
-            status,
-            self.auto_search_stop_speed,
-        )
 
         if self.state != self.WAIT_FOR_TARGET:
-            self.publish_auto_stop("识别状态已切换，停止搜索推力")
+            return
+        if self.motion_arrived():
+            if self.state != self.WAIT_FOR_TARGET:
+                return
+            self.complete_auto_search_step(step_kind, step_amount)
             return
 
-        if not self.publish_auto_motion(
-            desired_tx,
-            desired_ty,
-            "执行分段方框搜索路径",
-        ):
-            return
-
+        checks = self.actual_arrival_checks()
         rospy.loginfo_throttle(
-            1.0,
+            self.log_interval,
             (
-                "%s：搜索步骤 %d/%d：%s，位移=%.3f/%.3fm，"
-                "速度=(前%+.3f,右%+.3f)m/s，目标力=(TX=%+.0f,TY=%+.0f)"
+                "%s：搜索步骤 %d/%d 进行中：%s %.2fm，motion=%s，"
+                "base误差=%s，水平速度=%s"
             ),
             NODE_NAME,
             self.auto_search_index + 1,
             len(self.auto_search_plan),
             self.SEARCH_STEP_NAMES[step_kind],
-            progress,
             step_amount,
-            status["vx"],
-            status["vy"],
-            desired_tx,
-            desired_ty,
+            self.MOTION_STATE_NAMES.get(
+                self.latest_motion_state.state, "未知"
+            ),
+            "未知" if checks is None else "{:.3f}m".format(
+                checks["position_error"]
+            ),
+            "未知" if checks is None else "{:.3f}m/s".format(
+                checks["horizontal_speed"]
+            ),
+        )
+        self.log_arrival_gate(
+            "搜索步骤 {}/{} 到达判定".format(
+                self.auto_search_index + 1,
+                len(self.auto_search_plan),
+            )
         )
 
     def auto_target_errors(self, target):
@@ -1386,180 +1658,248 @@ class Task3InspectAndDropTest:
         normalized_v = error_v_px / max(image_height * 0.5, 1.0)
         return error_u_px, error_v_px, normalized_u, normalized_v
 
+    def visual_step(self, normalized_error, gain, sign):
+        raw_step = gain * normalized_error * sign
+        raw_step = clamp(
+            raw_step,
+            -self.auto_visual_max_step_m,
+            self.auto_visual_max_step_m,
+        )
+        if raw_step == 0.0 or abs(raw_step) >= self.auto_visual_min_step_m:
+            return raw_step
+        return math.copysign(self.auto_visual_min_step_m, raw_step)
+
+    def visual_goal_interval_ready(self, frame_index):
+        if frame_index <= self.last_visual_goal_frame:
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：模型帧#%d已经生成过视觉目标，本周期不重复叠加",
+                NODE_NAME,
+                frame_index,
+            )
+            return False
+        if self.last_visual_goal_time is None:
+            return True
+        interval = (
+            rospy.Time.now() - self.last_visual_goal_time
+        ).to_sec()
+        if interval >= self.auto_visual_goal_min_interval:
+            return True
+        rospy.loginfo_throttle(
+            self.log_interval,
+            "%s：视觉目标更新间隔%.2f/%.2fs，本帧只更新识别结果",
+            NODE_NAME,
+            interval,
+            self.auto_visual_goal_min_interval,
+        )
+        return False
+
     def approach_target_automatically(self):
         now = rospy.Time.now()
         status = self.get_recent_status("方框细对准")
         if status is None:
-            self.publish_auto_stop("/status/auv 不可用，暂停方框细对准")
+            if not self.visual_stop_locked:
+                self.request_motion_cancel(
+                    "/status/auv 不可用，暂停方框细对准"
+                )
+                self.visual_stop_locked = True
             self.reset_auto_center_stability("/status/auv 不可用或超时")
             return
+        if not self.wait_for_motion_cancel("细对准等待主动刹停"):
+            return
 
-        if (
-            self.last_target_time is not None
-            and (now - self.last_target_time).to_sec() > self.detection_timeout
-        ):
+        target_age = None
+        if self.last_target_time is not None:
+            target_age = (now - self.last_target_time).to_sec()
+        if target_age is not None and target_age > self.detection_timeout:
             self.current_auto_target = None
-            self.publish_auto_stop("目标识别结果已超时，立即停止水平运动")
+            if not self.visual_stop_locked:
+                self.request_motion_cancel(
+                    "目标识别结果超时，停止细对准",
+                    discard_search_resume=True,
+                )
+                self.visual_stop_locked = True
+            if not self.wait_for_motion_cancel("目标超时后等待定点接管"):
+                return
             self.reset_auto_center_stability("目标识别结果超时")
             self.reset_stability()
             self.reset_auto_search_step()
-            self.set_state(self.WAIT_FOR_TARGET, "目标丢失超时，重新向前搜索")
+            self.set_state(self.WAIT_FOR_TARGET, "目标丢失超时，重新执行当前搜索步骤")
             return
 
-        if self.current_auto_target is None:
-            self.publish_auto_stop("当前模型帧未识别到目标，立即停止水平运动")
+        target = self.current_auto_target
+        if target is None:
+            if not self.visual_stop_locked:
+                self.request_motion_cancel(
+                    "当前模型帧未识别到目标，停止水平运动",
+                    discard_search_resume=True,
+                )
+                self.visual_stop_locked = True
             self.reset_auto_center_stability("当前模型帧未识别到目标")
-            if (
-                self.last_target_time is not None
-                and (now - self.last_target_time).to_sec() > self.detection_timeout
-            ):
-                self.reset_stability()
-                self.reset_auto_search_step()
-                self.set_state(self.WAIT_FOR_TARGET, "目标丢失超时，重新向前搜索")
             return
 
+        self.visual_stop_locked = False
         error_u_px, error_v_px, normalized_u, normalized_v = (
-            self.auto_target_errors(self.current_auto_target)
+            self.auto_target_errors(target)
         )
         centered_u = abs(error_u_px) <= self.auto_center_tolerance_u_px
         centered_v = abs(error_v_px) <= self.auto_center_tolerance_v_px
+        centered = centered_u and centered_v
+        frame_index = int(target.get("frame_index", 0))
 
-        visual_forward_force = 0.0
-        if not centered_v:
-            visual_forward_force = self.apply_minimum_force(
-                -self.auto_forward_gain * normalized_v,
-                self.auto_min_correction_force,
-                self.auto_max_forward_force,
+        if not centered:
+            self.visual_center_hold_requested = False
+            if self.visual_goal_interval_ready(frame_index):
+                current = self.get_current_pose("生成方框视觉小步目标")
+                if current is None or self.current_auto_target is None:
+                    self.reset_auto_center_stability(
+                        "无法读取当前位姿或最新模型帧已丢失目标"
+                    )
+                    return
+                forward_step = 0.0
+                if not centered_v:
+                    forward_step = self.visual_step(
+                        -normalized_v,
+                        self.auto_visual_forward_gain_m,
+                        self.auto_forward_sign,
+                    )
+                right_step = 0.0
+                if not centered_u:
+                    right_step = self.visual_step(
+                        normalized_u,
+                        self.auto_visual_lateral_gain_m,
+                        self.auto_lateral_sign,
+                    )
+                self.set_body_offset_goal(
+                    current,
+                    forward_step,
+                    right_step,
+                    "依据方框中心像素生成细对准位置小步",
+                )
+                self.last_visual_goal_frame = frame_index
+                self.last_visual_goal_time = now
+                rospy.loginfo(
+                    (
+                        "%s：[模型帧 #%d] 视觉位置小步已发布："
+                        "像素误差=(u=%+.1f,v=%+.1f)，本体偏置=(前%+.3f,右%+.3f)m"
+                    ),
+                    NODE_NAME,
+                    frame_index,
+                    error_u_px,
+                    error_v_px,
+                    forward_step,
+                    right_step,
+                )
+        elif not self.visual_center_hold_requested:
+            current = self.get_current_pose("方框进入中心后锁定当前位置")
+            if current is None or self.current_auto_target is None:
+                return
+            self.set_active_goal(
+                current.pose.position.x,
+                current.pose.position.y,
+                self.auto_hold_z,
+                self.auto_hold_yaw,
+                "方框进入中心容差，锁定固定点等待 HOVER",
             )
+            self.visual_center_hold_requested = True
 
-        visual_right_force = 0.0
-        if not centered_u:
-            visual_right_force = self.apply_minimum_force(
-                self.auto_lateral_gain * normalized_u,
-                self.auto_min_correction_force,
-                self.auto_max_lateral_force,
-            )
-
-        desired_tx, desired_ty = self.velocity_feedback_command(
-            visual_forward_force,
-            visual_right_force,
-            status,
-            self.auto_action_max_horizontal_speed,
-        )
-
-        if not self.publish_auto_motion(
-            desired_tx,
-            desired_ty,
-            "依据方框中心像素进行前后和左右修正",
-        ):
-            self.reset_auto_center_stability("自动运动指令未能发布")
-            return
-        depth_error, yaw_error_deg = self.status_pose_errors(status)
+        pose_errors = self.status_pose_errors(status)
+        depth_error = 0.0 if pose_errors is None else pose_errors[0]
+        yaw_error_deg = 0.0 if pose_errors is None else pose_errors[1]
+        message = self.latest_motion_state
         rospy.loginfo_throttle(
-            1.0,
+            self.log_interval,
             (
                 "%s：自动对齐：中心=(%.1f,%.1f)，像素误差=(u=%+.1f,v=%+.1f)，"
-                "速度=(前%+.3f,右%+.3f,下%+.3f)m/s，航向角速度=%+.3frad/s，"
-                "mode=%d，深度误差=%+.3fm，航向误差=%+.2fdeg，"
-                "目标力=(TX=%+.0f,TY=%+.0f)"
+                "motion=%s，base误差=%.3fm，水平速度=%.3fm/s，"
+                "航向角速度=%+.2fdeg/s，mode=%d，深度误差=%+.3fm，"
+                "航向误差=%+.2fdeg"
             ),
             NODE_NAME,
-            self.current_auto_target["center_u"],
-            self.current_auto_target["center_v"],
+            target["center_u"],
+            target["center_v"],
             error_u_px,
             error_v_px,
-            status["vx"],
-            status["vy"],
-            status["vz"],
-            status["wz"],
+            self.MOTION_STATE_NAMES.get(message.state, "未知"),
+            message.base_position_error,
+            message.horizontal_speed,
+            math.degrees(message.yaw_rate),
             status["control_mode"],
             depth_error,
             yaw_error_deg,
-            desired_tx,
-            desired_ty,
         )
 
-        horizontal_command_stopped = (
-            self.last_auto_tx == 0 and self.last_auto_ty == 0
-        )
-        physical_motion_stopped = self.action_status_is_stable(status)
-        if not (centered_u and centered_v):
+        if not centered:
             self.reset_auto_center_stability("方框中心超出允许范围")
-        elif (
+            return
+        if (
             self.auto_centered_frame_count
             < self.auto_center_stable_detection_count
         ):
             rospy.loginfo_throttle(
-                1.0,
+                self.log_interval,
                 "%s：方框已进入中心范围，等待连续居中识别 %d/%d 帧",
                 NODE_NAME,
                 self.auto_centered_frame_count,
                 self.auto_center_stable_detection_count,
             )
-        elif not horizontal_command_stopped or not physical_motion_stopped:
-            horizontal_speed = self.horizontal_speed(status)
-            mode_ok = status["control_mode"] == MODE_DEPTH_HDG
-            horizontal_speed_ok = (
-                horizontal_speed <= self.auto_action_max_horizontal_speed
-            )
-            vertical_speed_ok = (
-                abs(status["vz"]) <= self.auto_action_max_vertical_speed
-            )
-            yaw_rate_ok = abs(status["wz"]) <= self.auto_action_max_yaw_rate
-            depth_ok = abs(depth_error) <= self.auto_action_max_depth_error
-            yaw_ok = abs(yaw_error_deg) <= self.auto_action_max_yaw_error_deg
+            return
+        if not self.action_status_is_stable(status):
+            self.log_arrival_gate("方框居中后的动作放行到达判定")
+            checks = self.actual_arrival_checks()
+            goal_errors = self.goal_match_errors()
             rospy.loginfo_throttle(
-                1.0,
+                self.log_interval,
                 (
-                    "%s：动作放行门槛：居中=%d/%d帧；"
-                    "mode=%d/3[%s]；水平速度=%.3f<=%.3f[%s]；"
-                    "下向速度=%.3f<=%.3f[%s]；航向角速度=%.3f<=%.3f[%s]；"
-                    "深度误差=%.3f<=%.3f[%s]；航向误差=%.2f<=%.2f[%s]；"
-                    "水平指令=(TX=%d,TY=%d)[%s]"
+                    "%s：动作放行等待：居中=%d/%d帧；motion=%s/HOVER；"
+                    "目标匹配误差=%s；base误差=%s；水平速度=%s；"
+                    "动作水平速度=%.3f<=%.3f；下向速度=%.3f<=%.3f；"
+                    "航向角速度=%.3f<=%.3frad/s；深度误差=%.3f<=%.3f；"
+                    "航向误差=%.2f<=%.2f；mode=%d/4"
                 ),
                 NODE_NAME,
                 self.auto_centered_frame_count,
                 self.auto_center_stable_detection_count,
-                status["control_mode"],
-                "通过" if mode_ok else "未通过",
-                horizontal_speed,
+                self.MOTION_STATE_NAMES.get(message.state, "未知"),
+                "未知" if goal_errors is None else (
+                    "水平{:.3f}m/深度{:.3f}m/航向{:.2f}deg".format(
+                        goal_errors[0], goal_errors[1], goal_errors[2]
+                    )
+                ),
+                "未知" if checks is None else "{:.3f}m".format(
+                    checks["position_error"]
+                ),
+                "未知" if checks is None else "{:.3f}m/s".format(
+                    checks["horizontal_speed"]
+                ),
+                abs(message.horizontal_speed),
                 self.auto_action_max_horizontal_speed,
-                "通过" if horizontal_speed_ok else "未通过",
                 abs(status["vz"]),
                 self.auto_action_max_vertical_speed,
-                "通过" if vertical_speed_ok else "未通过",
-                abs(status["wz"]),
+                abs(message.yaw_rate),
                 self.auto_action_max_yaw_rate,
-                "通过" if yaw_rate_ok else "未通过",
                 abs(depth_error),
                 self.auto_action_max_depth_error,
-                "通过" if depth_ok else "未通过",
                 abs(yaw_error_deg),
                 self.auto_action_max_yaw_error_deg,
-                "通过" if yaw_ok else "未通过",
-                self.last_auto_tx,
-                self.last_auto_ty,
-                "通过" if horizontal_command_stopped else "未通过",
+                status["control_mode"],
             )
-        else:
-            if not self.capture_action_hold_position():
-                self.publish_auto_stop("无法记录最终定点位置，暂不执行夹爪动作")
-                rospy.logwarn_throttle(
-                    1.0,
-                    "%s：等待 TF 可用后记录最终定点位置",
-                    NODE_NAME,
-                )
-                return
-            self.publish_auto_stop(
-                "方框已连续%d帧居中，准备同时开灯和打开夹爪"
-                % self.auto_center_stable_detection_count
+            return
+
+        if not self.capture_action_hold_position():
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：无法记录最终定点位置，暂不执行夹爪动作",
+                NODE_NAME,
             )
-            self.publish_actuator(self.clamp_open, self.target_color)
-            self.set_state(
-                self.OPEN_CLAMP,
-                "方框中心连续稳定识别达到 %d 帧"
-                % self.auto_center_stable_detection_count,
-            )
+            return
+        self.publish_actuator(self.clamp_open, self.target_color)
+        self.set_state(
+            self.OPEN_CLAMP,
+            "方框连续居中 {} 帧且 motion_supervisor 已稳定 HOVER".format(
+                self.auto_center_stable_detection_count
+            ),
+        )
 
     def label_matches(self, class_name):
         normalized = self.normalize_label(class_name)
@@ -1652,7 +1992,7 @@ class Task3InspectAndDropTest:
             payload = json.loads(message.data)
         except (TypeError, ValueError) as exc:
             rospy.logwarn_throttle(
-                2.0,
+                self.warning_log_interval,
                 "%s：无法解析模型 JSON：%s",
                 NODE_NAME,
                 str(exc),
@@ -1665,7 +2005,11 @@ class Task3InspectAndDropTest:
             return
 
         if not isinstance(payload, dict):
-            rospy.logwarn_throttle(2.0, "%s：模型 JSON 根节点不是对象", NODE_NAME)
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：模型 JSON 根节点不是对象",
+                NODE_NAME,
+            )
             if self.state == self.AUTO_APPROACH:
                 self.current_auto_target = None
                 self.reset_auto_center_stability("模型 JSON 根节点无效")
@@ -1676,7 +2020,9 @@ class Task3InspectAndDropTest:
         raw_detections = payload.get("detections", [])
         if not isinstance(raw_detections, list):
             rospy.logwarn_throttle(
-                2.0, "%s：模型 JSON 的 detections 不是数组", NODE_NAME
+                self.warning_log_interval,
+                "%s：模型 JSON 的 detections 不是数组",
+                NODE_NAME,
             )
             if self.state == self.AUTO_APPROACH:
                 self.current_auto_target = None
@@ -1702,7 +2048,7 @@ class Task3InspectAndDropTest:
 
         summaries = [self.detection_summary(item) for item in detections]
         rospy.loginfo_throttle(
-            1.0,
+            self.log_interval,
             "%s：模型有效候选=%d：%s",
             NODE_NAME,
             len(detections),
@@ -1725,7 +2071,7 @@ class Task3InspectAndDropTest:
                 rospy.loginfo(
                     (
                         "%s：[模型帧 #%d] 自动跟踪帧无效：没有找到 %s 方框，"
-                        "当前水平推力将停止"
+                        "将请求 motion_supervisor 主动刹停并锁定当前位置"
                     ),
                     NODE_NAME,
                     frame_index,
@@ -1756,7 +2102,7 @@ class Task3InspectAndDropTest:
         ):
             self.reset_stability()
             rospy.loginfo_throttle(
-                1.0,
+                self.log_interval,
                 (
                     "%s：[模型帧 #%d] 启动悬停尚未结束，暂不锁定目标：%s；"
                     "悬停完成后重新累计稳定帧"
@@ -1768,8 +2114,10 @@ class Task3InspectAndDropTest:
             return
 
         if self.state == self.AUTO_APPROACH:
+            best["frame_index"] = frame_index
             self.current_auto_target = best
             self.last_target_time = now
+            self.visual_stop_locked = False
             error_u_px, error_v_px, _, _ = self.auto_target_errors(best)
             self.update_auto_center_stability(
                 best,
@@ -1990,7 +2338,11 @@ class Task3InspectAndDropTest:
             latest["center_v"] = latest["mean_center_v"]
             self.current_auto_target = latest
             self.reset_auto_center_stability()
-            self.publish_auto_stop("搜索阶段稳定识别目标，停止搜索后进入细对准")
+            self.visual_stop_locked = False
+            self.request_motion_cancel(
+                "搜索阶段稳定识别目标，主动刹停后进入细对准",
+                discard_search_resume=True,
+            )
             self.set_state(
                 self.AUTO_APPROACH,
                 "模型目标已稳定确认，开始依据中心像素自动对齐",
@@ -2079,7 +2431,14 @@ class Task3InspectAndDropTest:
         if self.finished:
             return
         self.finished = True
-        self.publish_auto_stop("任务结束，清零水平推力")
+        if self.auto_enabled and self.cancel_pub is not None:
+            self.cancel_pub.publish(Empty())
+            self.active_goal = None
+            rospy.loginfo(
+                "%s：任务结束，已发布 %s 请求主动刹停并定点接管",
+                NODE_NAME,
+                self.motion_cancel_topic,
+            )
         self.publish_actuator(self.clamp_closed, "off")
 
         if success:
@@ -2099,8 +2458,12 @@ class Task3InspectAndDropTest:
         rospy.signal_shutdown(message)
 
     def on_shutdown(self):
-        if getattr(self, "auto_enabled", False):
-            self.publish_auto_stop("节点关闭，清零水平推力")
+        if (
+            getattr(self, "auto_enabled", False)
+            and getattr(self, "cancel_pub", None) is not None
+        ):
+            self.cancel_pub.publish(Empty())
+            self.active_goal = None
         if hasattr(self, "actuator_pub"):
             self.publish_actuator(self.clamp_closed, "off")
 
@@ -2115,6 +2478,12 @@ class Task3InspectAndDropTest:
         while not rospy.is_shutdown():
             now = rospy.Time.now()
             elapsed = (now - self.task_started).to_sec()
+
+            if self.auto_enabled and not self.handle_motion_health():
+                if self.finished:
+                    return
+                self.rate.sleep()
+                continue
 
             if (
                 self.state in (self.WAIT_FOR_TARGET, self.AUTO_APPROACH)
@@ -2135,7 +2504,7 @@ class Task3InspectAndDropTest:
                 model_ready = False
                 if self.last_model_message_time is None:
                     rospy.logwarn_throttle(
-                        2.0,
+                        self.warning_log_interval,
                         "%s：等待模型话题 %s，已等待 %.1fs",
                         NODE_NAME,
                         self.detection_topic,
@@ -2146,7 +2515,7 @@ class Task3InspectAndDropTest:
                     if model_age > self.detection_timeout:
                         self.reset_stability()
                         rospy.logwarn_throttle(
-                            2.0,
+                            self.warning_log_interval,
                             "%s：模型话题已 %.1fs 没有新消息",
                             NODE_NAME,
                             model_age,
@@ -2185,7 +2554,7 @@ class Task3InspectAndDropTest:
                 self.publish_actuator(self.clamp_open, self.target_color)
                 open_elapsed = self.state_elapsed()
                 rospy.loginfo_throttle(
-                    1.0,
+                    self.log_interval,
                     "%s：已开%s灯并打开夹爪，最终定点保持 %.1f/%.1fs",
                     NODE_NAME,
                     self.target_color,
@@ -2211,6 +2580,8 @@ class Task3InspectAndDropTest:
                     self.finish_task(True, "识别和投放动作执行完成")
                     return
 
+            if self.auto_enabled and not self.finished:
+                self.publish_active_goal()
             self.rate.sleep()
 
 
