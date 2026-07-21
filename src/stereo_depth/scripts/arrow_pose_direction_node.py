@@ -14,6 +14,9 @@ Outputs:
     /arrow/discrete_direction             std_msgs/String
     /arrow/direction_vector               geometry_msgs/Vector3Stamped
     /arrow/annotated_image                sensor_msgs/Image
+    /yolo_unified/arrow_center            geometry_msgs/PointStamped
+        point.x/point.y: depth representative pixel (u, v)
+        point.z: combined arrow confidence
 
 Angle convention:
     image right = 0 deg
@@ -33,7 +36,7 @@ import cv2
 import numpy as np
 import rospy
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Vector3Stamped
+from geometry_msgs.msg import PointStamped, Vector3Stamped
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float32, String
 
@@ -71,6 +74,39 @@ class ArrowPoseDirectionNode:
         self.vector_topic = rospy.get_param(
             "~vector_topic",
             "/arrow/direction_vector",
+        )
+
+        # The 2D representative pixel passed to stereo_depth_node.py.
+        self.center_topic = rospy.get_param(
+            "~center_topic",
+            "/yolo_unified/arrow_center",
+        )
+        self.center_mode = str(
+            rospy.get_param(
+                "~center_mode",
+                "keypoint_centroid",
+            )
+        ).strip().lower()
+        if self.center_mode not in (
+            "keypoint_centroid",
+            "axis_midpoint",
+        ):
+            raise ValueError(
+                "center_mode must be keypoint_centroid or axis_midpoint"
+            )
+
+        self.depth_window_size = max(
+            1,
+            int(rospy.get_param("~depth_window_size", 25)),
+        )
+        if self.depth_window_size % 2 == 0:
+            self.depth_window_size += 1
+
+        self.publish_center_once_per_keypoint = bool(
+            rospy.get_param(
+                "~publish_center_once_per_keypoint",
+                True,
+            )
         )
 
         self.target_class_name = str(
@@ -114,6 +150,8 @@ class ArrowPoseDirectionNode:
         self.latest_keypoints = None
         self.latest_keypoint_receive_wall = 0.0
 
+        self.last_center_stamp_nsec = None
+
         self.image_sub = rospy.Subscriber(
             self.image_topic,
             Image,
@@ -153,6 +191,11 @@ class ArrowPoseDirectionNode:
             Vector3Stamped,
             queue_size=1,
         )
+        self.center_pub = rospy.Publisher(
+            self.center_topic,
+            PointStamped,
+            queue_size=1,
+        )
 
         self.timer = rospy.Timer(
             rospy.Duration(1.0 / self.publish_rate),
@@ -163,6 +206,12 @@ class ArrowPoseDirectionNode:
         rospy.loginfo("image_topic=%s", self.image_topic)
         rospy.loginfo("keypoint_topic=%s", self.keypoint_topic)
         rospy.loginfo("direction_topic=%s", self.direction_topic)
+        rospy.loginfo("center_topic=%s", self.center_topic)
+        rospy.loginfo(
+            "center_mode=%s, depth_window_size=%d",
+            self.center_mode,
+            self.depth_window_size,
+        )
         rospy.loginfo(
             "publish_rate=%.2f Hz, keypoint_timeout=%.2f s",
             self.publish_rate,
@@ -390,7 +439,27 @@ class ArrowPoseDirectionNode:
         if angle_deg < 0.0:
             angle_deg += 360.0
 
-        center = 0.5 * (tip + tail)
+        # center = 0.5 * (tip + tail)
+        # confidence = min(
+        #     float(msg.detection_confidence),
+        #     confidences[0],
+        #     confidences[1],
+        #     confidences[2],
+        # )
+
+        # Keep the original axis midpoint for direction visualization.
+        axis_center = 0.5 * (tip + tail)
+
+        # Representative pixel for stereo depth:
+        # - keypoint_centroid: arithmetic mean of tip/tail_left/tail_right
+        # - axis_midpoint: midpoint between tip and tail center
+        if self.center_mode == "keypoint_centroid":
+            depth_center = (
+                tip + tail_left + tail_right
+            ) / 3.0
+        else:
+            depth_center = axis_center.copy()
+
         confidence = min(
             float(msg.detection_confidence),
             confidences[0],
@@ -416,9 +485,14 @@ class ArrowPoseDirectionNode:
                 int(round(tail[1])),
             ),
             "center": (
-                int(round(center[0])),
-                int(round(center[1])),
+                int(round(axis_center[0])),
+                int(round(axis_center[1])),
             ),
+            "depth_center": (
+                int(round(depth_center[0])),
+                int(round(depth_center[1])),
+            ),
+            "depth_center_mode": self.center_mode,
             "direction_x": dir_x,
             "direction_y": dir_y,
             "angle_rad": angle_rad,
@@ -488,6 +562,12 @@ class ArrowPoseDirectionNode:
                 "u": int(result["center"][0]),
                 "v": int(result["center"][1]),
             },
+            "depth_center": {
+                "u": int(result["depth_center"][0]),
+                "v": int(result["depth_center"][1]),
+                "mode": result["depth_center_mode"],
+                "window_size": int(self.depth_window_size),
+            },
             "direction_2d": {
                 "x": float(result["direction_x"]),
                 "y": float(result["direction_y"]),
@@ -528,6 +608,12 @@ class ArrowPoseDirectionNode:
         vector.vector.z = 0.0
         self.vector_pub.publish(vector)
 
+        self.publish_depth_center(
+            keypoints=keypoints,
+            image_stamp=stamp,
+            result=result,
+        )
+
         self.publish_annotated_image(
             image,
             image_header,
@@ -540,6 +626,48 @@ class ArrowPoseDirectionNode:
             result["discrete_direction"],
             result["angle_deg"],
             result["direction_confidence"],
+        )
+
+    def publish_depth_center(
+        self,
+        keypoints,
+        image_stamp,
+        result,
+    ):
+        """
+        Publish one representative 2D pixel for stereo depth.
+
+        The downstream UnifiedStereoDepthNode subscribes to this PointStamped
+        in task_mode=center. Its point.z field is used as confidence.
+        """
+        stamp = self.valid_stamp(keypoints.header.stamp)
+        if keypoints.header.stamp == rospy.Time():
+            stamp = image_stamp
+
+        stamp_nsec = stamp.to_nsec()
+        if (
+            self.publish_center_once_per_keypoint
+            and self.last_center_stamp_nsec == stamp_nsec
+        ):
+            return
+
+        msg = PointStamped()
+        msg.header.stamp = stamp
+        msg.header.frame_id = self.target_class_name
+        msg.point.x = float(result["depth_center"][0])
+        msg.point.y = float(result["depth_center"][1])
+        msg.point.z = float(result["direction_confidence"])
+
+        self.center_pub.publish(msg)
+        self.last_center_stamp_nsec = stamp_nsec
+
+        rospy.loginfo_throttle(
+            1.0,
+            "Arrow depth center: pixel=(%d,%d), mode=%s, window=%d",
+            result["depth_center"][0],
+            result["depth_center"][1],
+            result["depth_center_mode"],
+            self.depth_window_size,
         )
 
     def publish_invalid(
@@ -589,6 +717,7 @@ class ArrowPoseDirectionNode:
             "tail_right": None,
             "tail": None,
             "center": None,
+            "depth_center": None,
             "direction_2d": None,
             "angle_rad": None,
             "angle_deg": None,
