@@ -23,6 +23,7 @@ __pycache__/
 # 忽略某个具体文件
 secret_config.py
 CLAUDE.md
+AGENTS.md
 
 # 忽略特定文件夹
 packages/

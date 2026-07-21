@@ -20,6 +20,10 @@
 2026.7.15
     新增 ActuatorControl.mode 分流：mode=1 仅更新补光灯，mode=2 仅更新执行器。
     mode=0 和其他值不响应，/status/actuator 状态消息固定使用 mode=0。
+2026.7.21
+    补光灯与执行器控制帧改为各自 0.5Hz 持续下发，执行器帧固定错开 0.25 秒。
+    下发不再等待 ACK；ACTUATOR_FB 仅更新锁存状态，/status/actuator 改为 5Hz 持续发布。
+    按协议将 result=0x03 识别为 EXEC_OK，当前执行器状态使用 5 秒节流日志输出。
 """
 
 import socket
