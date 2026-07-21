@@ -1,6 +1,10 @@
 #!/home/xhy/xhy_env/bin/python3.8
 # -*- coding: utf-8 -*-
 
+"""
+加速目标区域的深度计算过程
+"""
+
 import json
 import threading
 from collections import deque
@@ -164,6 +168,18 @@ class UnifiedStereoDepthNode:
         if self.block_size < 3 or self.block_size % 2 == 0:
             raise ValueError("block_size must be an odd integer >= 3")
 
+        # Keep every existing ROS parameter and topic unchanged.  The speed-up
+        # is entirely internal:
+        #   1. run SGBM only in the ROI containing the requested pixels;
+        #   2. use OpenCV's 3-way SGBM implementation when available.
+        cv2.setUseOptimized(True)
+
+        self.sgbm_mode = getattr(
+            cv2,
+            "STEREO_SGBM_MODE_SGBM_3WAY",
+            cv2.STEREO_SGBM_MODE_SGBM,
+        )
+
         channels = 1
         self.stereo_matcher = cv2.StereoSGBM_create(
             minDisparity=self.min_disparity,
@@ -175,12 +191,21 @@ class UnifiedStereoDepthNode:
             uniquenessRatio=10,
             speckleWindowSize=100,
             speckleRange=32,
+            mode=self.sgbm_mode,
         )
 
+        self.last_depth_roi = None
+        self.last_depth_roi_ratio = 1.0
+
         rospy.loginfo(
-            "Depth node initialized: task=%s, max_sync_dt=%.3f",
+            "Depth node initialized: task=%s, max_sync_dt=%.3f, "
+            "sgbm_mode=%s",
             self.task_mode,
             self.max_sync_dt,
+            "3WAY"
+            if self.sgbm_mode
+            == getattr(cv2, "STEREO_SGBM_MODE_SGBM_3WAY", -1)
+            else "SGBM",
         )
 
     def load_camera_parameters(self):
@@ -308,21 +333,223 @@ class UnifiedStereoDepthNode:
 
         return target, frame, sync_dt
 
-    def compute_depth(self, left, right):
-        if left.shape[:2] != right.shape[:2]:
-            raise ValueError("left and right image sizes differ")
+    @staticmethod
+    def _expand_interval(start, end, minimum_size, limit):
+        """
+        Expand [start, end) to at least minimum_size while remaining inside
+        [0, limit).  This helper is used only for the internal SGBM ROI.
+        """
+        start = int(max(0, min(start, limit)))
+        end = int(max(start, min(end, limit)))
 
-        gray_left = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
-        gray_right = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
+        current_size = end - start
+        if current_size >= minimum_size or current_size >= limit:
+            return start, end
+
+        missing = int(minimum_size - current_size)
+        grow_before = missing // 2
+        grow_after = missing - grow_before
+
+        start -= grow_before
+        end += grow_after
+
+        if start < 0:
+            end = min(limit, end - start)
+            start = 0
+
+        if end > limit:
+            start = max(0, start - (end - limit))
+            end = limit
+
+        return int(start), int(end)
+
+    def calculate_depth_roi(self, image_shape, pixels):
+        """
+        Build a safe rectified-stereo ROI around all requested pixels.
+
+        The same crop origin is used for the left and right images, therefore
+        disparity values remain in the original pixel coordinate system.
+        Extra space on the left covers the complete positive disparity search
+        range.  No public ROS parameter or message format is changed.
+        """
+        height, width = image_shape[:2]
+
+        valid_pixels = [
+            (int(u), int(v))
+            for u, v in (pixels or [])
+            if 0 <= int(u) < width and 0 <= int(v) < height
+        ]
+
+        if not valid_pixels:
+            return 0, 0, width, height
+
+        u_values = [point[0] for point in valid_pixels]
+        v_values = [point[1] for point in valid_pixels]
+
+        half_window = max(1, self.window_size // 2)
+        block_margin = max(8, self.block_size * 2)
+
+        # For the usual positive-disparity setup, a left-image pixel at u can
+        # match a right-image pixel near u-d.  Keeping max_disparity pixels on
+        # the left of the target ROI preserves that search range.
+        max_positive_disparity = max(
+            0,
+            self.min_disparity + self.num_disparities - 1,
+        )
+        max_negative_disparity = max(0, -self.min_disparity)
+
+        x0 = (
+            min(u_values)
+            - half_window
+            - block_margin
+            - max_positive_disparity
+        )
+        x1 = (
+            max(u_values)
+            + half_window
+            + block_margin
+            + max_negative_disparity
+            + 1
+        )
+
+        vertical_margin = half_window + max(16, self.block_size * 3)
+        y0 = min(v_values) - vertical_margin
+        y1 = max(v_values) + vertical_margin + 1
+
+        x0 = max(0, int(x0))
+        x1 = min(width, int(x1))
+        y0 = max(0, int(y0))
+        y1 = min(height, int(y1))
+
+        # StereoSGBM needs enough horizontal support for numDisparities and
+        # enough vertical context for stable aggregation.
+        minimum_width = min(
+            width,
+            self.num_disparities + 2 * block_margin + 16,
+        )
+        minimum_height = min(
+            height,
+            max(64, self.window_size + 2 * vertical_margin),
+        )
+
+        x0, x1 = self._expand_interval(
+            x0,
+            x1,
+            minimum_width,
+            width,
+        )
+        y0, y1 = self._expand_interval(
+            y0,
+            y1,
+            minimum_height,
+            height,
+        )
+
+        roi_area = max(0, x1 - x0) * max(0, y1 - y0)
+        full_area = max(1, width * height)
+
+        # A nearly full-frame ROI gives little benefit and can slightly alter
+        # border behavior, so use the original full frame in that case.
+        if float(roi_area) / float(full_area) >= 0.90:
+            return 0, 0, width, height
+
+        return int(x0), int(y0), int(x1), int(y1)
+
+    def _compute_depth_crop(self, left, right, roi):
+        x0, y0, x1, y1 = roi
+
+        left_roi = np.ascontiguousarray(
+            left[y0:y1, x0:x1]
+        )
+        right_roi = np.ascontiguousarray(
+            right[y0:y1, x0:x1]
+        )
+
+        if left_roi.size == 0 or right_roi.size == 0:
+            raise ValueError("empty stereo ROI")
+
+        gray_left = cv2.cvtColor(
+            left_roi,
+            cv2.COLOR_BGR2GRAY,
+        )
+        gray_right = cv2.cvtColor(
+            right_roi,
+            cv2.COLOR_BGR2GRAY,
+        )
 
         disparity = (
-            self.stereo_matcher.compute(gray_left, gray_right).astype(np.float32)
+            self.stereo_matcher.compute(
+                gray_left,
+                gray_right,
+            ).astype(np.float32)
             / 16.0
         )
 
-        depth = np.full(disparity.shape, np.nan, dtype=np.float32)
+        depth_roi = np.full(
+            disparity.shape,
+            np.nan,
+            dtype=np.float32,
+        )
         valid = disparity > 0.0
-        depth[valid] = self.fx * self.baseline / disparity[valid]
+        depth_roi[valid] = (
+            self.fx * self.baseline / disparity[valid]
+        )
+        return depth_roi
+
+    def compute_depth(self, left, right, pixels=None):
+        """
+        Compute a full-size depth array while running SGBM only in the target
+        ROI.  Pixels outside the ROI remain NaN, which is fully compatible
+        with the existing pixel_to_3d(), process_single(), process_line(),
+        publishers, topics, and Web JSON.
+        """
+        if left.shape[:2] != right.shape[:2]:
+            raise ValueError("left and right image sizes differ")
+
+        height, width = left.shape[:2]
+        roi = self.calculate_depth_roi(
+            left.shape,
+            pixels,
+        )
+
+        try:
+            depth_roi = self._compute_depth_crop(
+                left,
+                right,
+                roi,
+            )
+        except cv2.error as exc:
+            full_roi = (0, 0, width, height)
+
+            if roi == full_roi:
+                raise
+
+            rospy.logwarn_throttle(
+                2.0,
+                "ROI SGBM failed (%s); falling back to full frame",
+                str(exc),
+            )
+            roi = full_roi
+            depth_roi = self._compute_depth_crop(
+                left,
+                right,
+                roi,
+            )
+
+        x0, y0, x1, y1 = roi
+        depth = np.full(
+            (height, width),
+            np.nan,
+            dtype=np.float32,
+        )
+        depth[y0:y1, x0:x1] = depth_roi
+
+        self.last_depth_roi = roi
+        self.last_depth_roi_ratio = (
+            float((x1 - x0) * (y1 - y0))
+            / float(max(1, width * height))
+        )
+
         return depth
 
     def pixel_to_3d(self, u, v, depth):
@@ -620,7 +847,11 @@ class UnifiedStereoDepthNode:
 
             try:
                 t0 = time.perf_counter()
-                depth = self.compute_depth(frame["left"], frame["right"])
+                depth = self.compute_depth(
+                    frame["left"],
+                    frame["right"],
+                    target["pixels"],
+                )
                 t1 = time.perf_counter()
             except Exception as exc:
                 rospy.logerr_throttle(2.0, "depth computation failed: %s", str(exc))
@@ -641,11 +872,14 @@ class UnifiedStereoDepthNode:
                     "DEPTH timing: "
                     "sgbm=%.1f ms, "
                     "point_process=%.1f ms, "
-                    "total=%.1f ms"
+                    "total=%.1f ms, "
+                    "roi=%s, roi_ratio=%.3f"
                 ),
                 (t1 - t0) * 1000.0,
                 (t2 - t1) * 1000.0,
                 (t2 - t0) * 1000.0,
+                str(self.last_depth_roi),
+                float(self.last_depth_roi_ratio),
             )
 
             if self.visualization:

@@ -6,6 +6,8 @@ import heapq
 import json
 import os
 import threading
+import time
+import torch
 
 import cv2
 import numpy as np
@@ -696,6 +698,18 @@ class UnifiedYOLODetector:
                 self.rate.sleep()
                 continue
 
+            # 推理前
+            model_device = next(
+                self.model.model.parameters()
+            ).device
+
+            use_cuda = model_device.type == "cuda"
+
+            if use_cuda:
+                torch.cuda.synchronize()
+
+            t0 = time.perf_counter()
+
             try:
                 results = self.model(
                     image,
@@ -711,6 +725,12 @@ class UnifiedYOLODetector:
                 )
                 self.rate.sleep()
                 continue
+            
+            # 模型推理
+            if use_cuda:
+                torch.cuda.synchronize()
+
+            t1 = time.perf_counter()
 
             self.processed_version = version
 
@@ -724,6 +744,9 @@ class UnifiedYOLODetector:
                 result,
                 image,
             )
+
+            # 管线后处理
+            t2 = time.perf_counter()
 
             self.publish_best_target(
                 detections[0] if detections else None,
@@ -752,6 +775,8 @@ class UnifiedYOLODetector:
                 )
             )
 
+            # 发布管线点和JSON
+            t3 = time.perf_counter()
             annotated = None
 
             try:
@@ -807,12 +832,31 @@ class UnifiedYOLODetector:
                     annotated_msg
                 )
 
+                t4 = time.perf_counter()
+
             except Exception as exc:
                 rospy.logerr_throttle(
                     2.0,
                     "failed to publish annotated image: %s",
                     str(exc),
                 )
+            
+            # rospy.loginfo_throttle(
+            #     2.0,
+            #     (
+            #         "YOLO timing: "
+            #         "infer=%.1f ms, "
+            #         "line_post=%.1f ms, "
+            #         "message=%.1f ms, "
+            #         "plot_publish=%.1f ms, "
+            #         "total=%.1f ms"
+            #     ),
+            #     (t1 - t0) * 1000.0,
+            #     (t2 - t1) * 1000.0,
+            #     (t3 - t2) * 1000.0,
+            #     (t4 - t3) * 1000.0,
+            #     (t4 - t0) * 1000.0,
+            # )
 
             if (
                 self.visualization == 1
