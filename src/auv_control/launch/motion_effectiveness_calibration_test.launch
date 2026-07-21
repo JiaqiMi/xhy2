@@ -1,0 +1,22 @@
+<launch>
+    <!-- 仅通过 motion_supervisor 发布目标，采集三轴有效性矩阵的闭环标定数据。 -->
+    <arg name="target_z" default="-0.9" />
+    <arg name="repetitions" default="2" />
+    <arg name="translation_magnitude" default="0.4" />
+    <arg name="yaw_magnitude_deg" default="30.0" />
+    <arg name="action_timeout" default="90.0" />
+    <arg name="settle_seconds" default="8.0" />
+    <arg name="log_directory"
+         default="$(env HOME)/.ros/auv_logs/motion_effectiveness_calibration" />
+
+    <node pkg="auv_control" type="motion_effectiveness_calibration_test.py"
+          name="motion_effectiveness_calibration_test" output="screen">
+        <param name="target_z" value="$(arg target_z)" />
+        <param name="repetitions" value="$(arg repetitions)" />
+        <param name="translation_magnitude" value="$(arg translation_magnitude)" />
+        <param name="yaw_magnitude_deg" value="$(arg yaw_magnitude_deg)" />
+        <param name="action_timeout" value="$(arg action_timeout)" />
+        <param name="settle_seconds" value="$(arg settle_seconds)" />
+        <param name="log_directory" value="$(arg log_directory)" />
+    </node>
+</launch>
