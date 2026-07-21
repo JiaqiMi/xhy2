@@ -17,22 +17,23 @@
     <arg name="warning_log_interval" default="2.0" />
 
     <!-- 默认包含彩色方框模型；模型已在其他终端启动时设为false。 -->
-    <arg name="start_rectangle_model" default="true" />
+    <arg name="start_rectangle_model" default="false" />
 
     <!--
       模型识别参数。target_color可设为yellow、green或red。
       min_confidence调大可减少误检，调小可增加弱目标召回。
     -->
     <arg name="model_detection_topic" default="/web/detections" />
-    <arg name="target_color" default="red" />
-    <arg name="min_confidence" default="0.35" />
+    <arg name="target_color" default="yellow" />
+    <arg name="min_confidence" default="0.20" />
     <!-- 人工模式连续稳定识别帧数。 -->
     <arg name="stable_detection_count" default="5" />
     <!-- 自动搜索连续3帧锁定，中心连续5帧后才允许执行动作。 -->
-    <arg name="auto_search_stable_detection_count" default="3" />
-    <arg name="auto_center_stable_detection_count" default="5" />
+    <arg name="auto_search_stable_detection_count" default="2" />
+    <arg name="auto_center_stable_detection_count" default="3" />
     <!-- 搜索锁定阶段的中心抖动与检测框面积变化上限。 -->
     <arg name="stable_center_tolerance_px" default="40.0" />
+
     <arg name="stable_area_tolerance_ratio" default="0.35" />
     <!-- 目标或模型消息最大允许间隔，以及任务搜索/对齐总超时。 -->
     <arg name="detection_timeout" default="2.0" />
@@ -44,7 +45,7 @@
     <arg name="motion_state_topic" default="/motion/state" />
     <arg name="motion_state_timeout" default="0.5" />
     <arg name="motion_startup_timeout" default="10.0" />
-    <arg name="cancel_timeout" default="15.0" />
+    <arg name="cancel_timeout" default="50.0" />
 
     <!--
       HOVER必须匹配任务最近发布的绝对目标，避免把旧阶段HOVER误判为到达。
@@ -79,11 +80,11 @@
       前进0.10m，左0.20m、右0.20m。
       每一段都发送一个map绝对目标，并等待匹配目标的HOVER后进入下一段。
     -->
-    <arg name="auto_initial_hover_seconds" default="10.0" />
-    <arg name="auto_search_first_forward_distance" default="0.30" />
-    <arg name="auto_search_second_forward_distance" default="0.20" />
-    <arg name="auto_search_third_forward_distance" default="0.10" />
-    <arg name="auto_search_lateral_distance" default="0.20" />
+    <arg name="auto_initial_hover_seconds" default="5.0" />
+    <arg name="auto_search_first_forward_distance" default="0.50" />
+    <arg name="auto_search_second_forward_distance" default="0.40" />
+    <arg name="auto_search_third_forward_distance" default="0.30" />
+    <arg name="auto_search_lateral_distance" default="0.35" />
 
     <!--
       视觉细对准把归一化像素误差换算成前后、左右位置小步，单位均为m。
