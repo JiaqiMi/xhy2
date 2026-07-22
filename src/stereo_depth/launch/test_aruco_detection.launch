@@ -1,9 +1,19 @@
 <launch>
+    <!--
+    名称：test_aruco_detection.launch
+    功能：启动左目 ArUco 检测及可选的单任务 Web 调试
+    作者：xhy
+    监听：/left/image_raw
+    发布：/vision/aruco_left/*
+    记录：
+    2026.7.22
+        隔离左目 ArUco 话题，并默认关闭独立 vision_web。
+    -->
     <!-- ArUco识别：标记检测 -> 位姿估计 -> ROS话题 -> Web -->
 
     <arg name="start_camera" default="true" />
     <arg name="start_splitter" default="true" />
-    <arg name="start_web" default="true" />
+    <arg name="start_web" default="false" />
 
     <arg name="image_topic" default="/left/image_raw" />
     <arg name="exp_env" default="air" />
@@ -12,13 +22,13 @@
     <arg name="infer_rate" default="5.0" />
     <arg name="visualization" default="0" />
 
-    <arg name="pose_topic" default="/aruco/pose" />
+    <arg name="pose_topic" default="/vision/aruco_left/pose_stamped" />
     <arg name="annotated_topic"
-         default="/aruco/annotated_image" />
+         default="/vision/aruco_left/annotated_image" />
     <arg name="web_detection_topic"
-         default="/web/detections" />
+         default="/vision/aruco_left/detections" />
     <arg name="web_pose_topic"
-         default="/web/pose" />
+         default="/vision/aruco_left/pose" />
 
     <arg name="web_port" default="8080" />
 
