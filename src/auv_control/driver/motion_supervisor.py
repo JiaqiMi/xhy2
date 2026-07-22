@@ -43,6 +43,10 @@
     支持纯定深上位机保持模式，HOVER 状态下继续发布 mode=2 三轴控制量。
 2026.7.22
     修正纯定深启动提示，并在诊断消息中明确发布当前指令模式和控制架构。
+2026.7.22
+    增加水平计划制动减速度与推进器有效减速度诊断，支持 data5 后续复测核验。
+2026.7.22
+    根据 data6 增加启动首帧三轴主动刹停，记录航向计划与有效角减速度，并收紧纯定深保持死区。
 """
 
 from __future__ import division
@@ -151,6 +155,7 @@ class MotionSupervisorNode(object):
         'closing_speed',
         'xy_stop_distance',
         'xy_brake_acceleration',
+        'xy_brake_effective_acceleration',
         'xy_brake_margin',
         'xy_brake_entry',
         'xy_brake_entered',
@@ -162,6 +167,8 @@ class MotionSupervisorNode(object):
         'xy_braking',
         'yaw_rate_reference_deg_s',
         'yaw_reference_acceleration_deg_s2',
+        'yaw_brake_reference_acceleration_deg_s2',
+        'yaw_brake_effective_acceleration_deg_s2',
         'brake_feedforward_mz',
         'map_yaw_rate_deg_s',
         'yaw_stop_angle_deg',
@@ -380,7 +387,12 @@ class MotionSupervisorNode(object):
         degree_parameters = {
             'yaw_brake_margin_positive': 'yaw_brake_margin_positive_deg',
             'yaw_brake_margin_negative': 'yaw_brake_margin_negative_deg',
+            'angular_brake_reference_acceleration_mz_positive': (
+                'angular_brake_reference_acceleration_mz_positive_deg_s2'),
+            'angular_brake_reference_acceleration_mz_negative': (
+                'angular_brake_reference_acceleration_mz_negative_deg_s2'),
             'yaw_tolerance': 'yaw_tolerance_deg',
+            'yaw_control_tolerance': 'yaw_control_tolerance_deg',
             'yaw_rate_threshold': 'yaw_rate_threshold_deg_s',
             'hover_fault_yaw_rate': 'hover_fault_yaw_rate_deg_s',
             'hover_fault_yaw_error': 'hover_fault_yaw_error_deg',
@@ -693,6 +705,8 @@ class MotionSupervisorNode(object):
             'closing_speed': diagnostics.get('closing_speed', ''),
             'xy_stop_distance': diagnostics.get('xy_stop_distance', ''),
             'xy_brake_acceleration': diagnostics.get('xy_brake_acceleration', ''),
+            'xy_brake_effective_acceleration': diagnostics.get(
+                'xy_brake_effective_acceleration', ''),
             'xy_brake_margin': diagnostics.get('xy_brake_margin', ''),
             'xy_brake_entry': int(bool(
                 diagnostics.get('xy_brake_entry', False))),
@@ -715,6 +729,14 @@ class MotionSupervisorNode(object):
             'yaw_reference_acceleration_deg_s2': (
                 math.degrees(diagnostics['yaw_reference_acceleration'])
                 if 'yaw_reference_acceleration' in diagnostics else ''),
+            'yaw_brake_reference_acceleration_deg_s2': (
+                math.degrees(
+                    diagnostics['yaw_brake_reference_acceleration'])
+                if 'yaw_brake_reference_acceleration' in diagnostics else ''),
+            'yaw_brake_effective_acceleration_deg_s2': (
+                math.degrees(
+                    diagnostics['yaw_brake_effective_acceleration'])
+                if 'yaw_brake_effective_acceleration' in diagnostics else ''),
             'brake_feedforward_mz': diagnostics.get(
                 'brake_feedforward_mz', ''),
             'map_yaw_rate_deg_s': (
@@ -914,7 +936,7 @@ class MotionSupervisorNode(object):
             return
         vehicle = self._build_vehicle_state(now, feedback_fresh)
         if not self.startup_latched:
-            self.core.set_goal(MotionGoal(
+            self.core.set_initial_hold_goal(MotionGoal(
                 vehicle.x,
                 vehicle.y,
                 vehicle.z,
