@@ -1,8 +1,9 @@
 <launch>
     <!--
       Yaw 单轴自动测试：±30°、±60°、±90°，每个幅值重复三次。
-      每一步均返回初始航向，并等待 HOVER 稳定接管后再继续。
+      每一步均返回初始航向，并等待上位机 HOVER 稳定保持后再继续。
     -->
+    <arg name="pure_depth_control" default="true" />
     <arg name="target_z" default="-0.9" />
     <arg name="repetitions" default="2" />
     <arg name="action_timeout" default="120.0" />
@@ -12,6 +13,7 @@
 
     <include file="$(find auv_control)/launch/motion_axis_auto_test.launch">
         <arg name="axis" value="yaw" />
+        <arg name="pure_depth_control" value="$(arg pure_depth_control)" />
         <arg name="target_z" value="$(arg target_z)" />
         <arg name="repetitions" value="$(arg repetitions)" />
         <arg name="action_timeout" value="$(arg action_timeout)" />
