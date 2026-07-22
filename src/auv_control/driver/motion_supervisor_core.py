@@ -54,6 +54,8 @@
     根据 data5 将水平制动参考减速度与推进器有效减速度解耦，避免负 TX 前馈饱和导致反向回退。
 2026.7.22
     根据 data6 增加启动首帧三轴主动刹停，收紧纯定深位置和航向保持死区，并解耦航向计划角减速度。
+2026.7.22
+    根据 data8 在航向制动锁存期间固定原刹转方向的模型，避免角速度反号后切换正负 MZ 参数。
 """
 
 from __future__ import division
@@ -1042,10 +1044,15 @@ class MotionSupervisorCore(object):
             'brake_kv_y', reference_body_y - vehicle.lateral_velocity
         ) * (reference_body_y - vehicle.lateral_velocity)
 
+        yaw_brake_mz_direction = (
+            -self.yaw_brake_direction
+            if self.yaw_brake_direction != 0.0
+            else -map_yaw_rate)
         yaw_brake_effective_acceleration = self._directional_parameter(
-            'angular_brake_acceleration_mz', -map_yaw_rate)
+            'angular_brake_acceleration_mz', yaw_brake_mz_direction)
         yaw_brake_acceleration = self._directional_parameter(
-            'angular_brake_reference_acceleration_mz', -map_yaw_rate)
+            'angular_brake_reference_acceleration_mz',
+            yaw_brake_mz_direction)
         yaw_brake_rate_reversed = False
         if (
                 not self.yaw_brake_reversal_detected
@@ -1272,8 +1279,12 @@ class MotionSupervisorCore(object):
         # 位置误差和期望角速度属于 map 航向约定；原始 r 与其方向相反。
         map_yaw_rate = (
             self.parameters['yaw_rate_to_map_sign'] * vehicle.yaw_rate)
-        # 刹车 MZ 与 map 航向角速度反向，按最终刹车 MZ 的符号选择模型。
-        yaw_brake_mz_direction = -map_yaw_rate
+        # 刹车 MZ 与 map 航向角速度反向。进入制动后固定首次刹转方向，
+        # 角速度轻微反号时不得切换另一组计划/有效减速度和停车余量。
+        yaw_brake_mz_direction = (
+            -self.yaw_brake_direction
+            if self.yaw_brake_latched and self.yaw_brake_direction != 0.0
+            else -map_yaw_rate)
         yaw_brake_effective_acceleration = self._directional_parameter(
             'angular_brake_acceleration_mz', yaw_brake_mz_direction)
         yaw_brake_acceleration = self._directional_parameter(

@@ -58,22 +58,22 @@ kp_yaw_negative: 11200.0    # 60 deg 阶跃静态控制核验证可触发负 MZ 
 # 各轴独立停车距离模型；后缀表示实际刹车输出力或力矩的符号
 brake_acceleration_tx_positive: 0.05 # data7 正 TX 满输出等效减速度约 0.050 m/s^2；对应 X 负向运动
 brake_acceleration_tx_negative: 0.04 # 输出负 TX 刹车时的保守有效减速度；对应 X 正向运动
-brake_acceleration_ty_positive: 0.011 # data6 正 TY 实测平均约 0.0110 m/s^2；对应 Y 负向运动
-brake_acceleration_ty_negative: 0.011 # data6 负 TY 实测平均约 0.0115 m/s^2；对应 Y 正向运动
+brake_acceleration_ty_positive: 0.017 # data8 正 TY 满输出等效减速度约 0.017 m/s^2；对应 Y 负向运动
+brake_acceleration_ty_negative: 0.019 # data8 负 TY 满输出等效减速度约 0.019 m/s^2；对应 Y 正向运动
 # 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
 brake_reference_acceleration_tx_positive: 0.025 # data7 正 TX 制动能力较强，降低计划值和前馈以平滑停车
 brake_reference_acceleration_tx_negative: 0.02 # 负 TX 制动改为缓减速，避免前馈持续饱和
 brake_reference_acceleration_ty_positive: 0.008 # 低于实测有效减速度，提前规划并降低正 TY 制动前馈
 brake_reference_acceleration_ty_negative: 0.008 # 低于实测有效减速度，提前规划并降低负 TY 制动前馈
-angular_brake_acceleration_mz_positive: 0.025 # 输出正 MZ 刹转时的保守有效角减速度；对应负向 yaw 运动
-angular_brake_acceleration_mz_negative: 0.08 # data4 实测约 0.108 rad/s^2，保守取 0.08；对应正向 yaw 运动
-angular_brake_reference_acceleration_mz_positive_deg_s2: 0.70 # 航向计划角减速度与正 MZ 有效角减速度解耦，抑制反向加速
-angular_brake_reference_acceleration_mz_negative_deg_s2: 1.15 # 负 MZ 推力较强，使用较低计划角减速度限制前馈
+angular_brake_acceleration_mz_positive: 0.085 # data8 正 MZ 满输出等效约 4.89 deg/s^2；对应负向 yaw 运动
+angular_brake_acceleration_mz_negative: 0.10 # data8 负 MZ 满输出等效约 5.74 deg/s^2；对应正向 yaw 运动
+angular_brake_reference_acceleration_mz_positive_deg_s2: 1.80 # 正 MZ 按实测能力规划，目标在 1.5 deg 余量内一次刹停
+angular_brake_reference_acceleration_mz_negative_deg_s2: 1.80 # 负 MZ 与正向统一计划角减速度，方向差异由有效值和限幅保留
 control_delay: 0.45          # 反馈、计算、通信和执行的综合延迟估计，单位 s
 brake_margin_tx_positive: 0.03 # data7 原 0.18 m 导致距目标约 0.12 m 已停低速并重复制动
 brake_margin_tx_negative: 0.03 # 与内部位置死区一致，并保留实测减速度偏差的防超调余量
-brake_margin_ty_positive: 0.02 # 小于纯定深内部位置死区，避免提前停住后反复追踪
-brake_margin_ty_negative: 0.02 # 小于纯定深内部位置死区，避免提前停住后反复追踪
+brake_margin_ty_positive: 0.03 # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
+brake_margin_ty_negative: 0.03 # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
 yaw_brake_margin_positive_deg: 1.5 # 小于纯定深航向保持容差，避免刹停与重新追踪循环
 yaw_brake_margin_negative_deg: 1.5 # 小于纯定深航向保持容差，避免刹停与重新追踪循环
 
