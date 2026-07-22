@@ -43,6 +43,8 @@
     支持纯定深上位机保持模式，HOVER 状态下继续发布 mode=2 三轴控制量。
 2026.7.22
     修正纯定深启动提示，并在诊断消息中明确发布当前指令模式和控制架构。
+2026.7.22
+    增加水平计划制动减速度与推进器有效减速度诊断，支持 data5 后续复测核验。
 """
 
 from __future__ import division
@@ -151,6 +153,7 @@ class MotionSupervisorNode(object):
         'closing_speed',
         'xy_stop_distance',
         'xy_brake_acceleration',
+        'xy_brake_effective_acceleration',
         'xy_brake_margin',
         'xy_brake_entry',
         'xy_brake_entered',
@@ -693,6 +696,8 @@ class MotionSupervisorNode(object):
             'closing_speed': diagnostics.get('closing_speed', ''),
             'xy_stop_distance': diagnostics.get('xy_stop_distance', ''),
             'xy_brake_acceleration': diagnostics.get('xy_brake_acceleration', ''),
+            'xy_brake_effective_acceleration': diagnostics.get(
+                'xy_brake_effective_acceleration', ''),
             'xy_brake_margin': diagnostics.get('xy_brake_margin', ''),
             'xy_brake_entry': int(bool(
                 diagnostics.get('xy_brake_entry', False))),

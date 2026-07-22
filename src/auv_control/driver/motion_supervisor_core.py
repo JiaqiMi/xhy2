@@ -50,6 +50,8 @@
     航向刹转检测实测角速度反号，反号后清零参考加速度并关闭前馈，消除跟踪与刹转极限环。
 2026.7.22
     新增纯定深统一控制模式，稳定后进入内部 HOVER 并继续由上位机以 mode=2 保持三轴位姿。
+2026.7.22
+    根据 data5 将水平制动参考减速度与推进器有效减速度解耦，避免负 TX 前馈饱和导致反向回退。
 """
 
 from __future__ import division
@@ -292,6 +294,10 @@ DEFAULT_PARAMETERS = {
     'brake_acceleration_tx_negative': 0.10,
     'brake_acceleration_ty_positive': 0.05,
     'brake_acceleration_ty_negative': 0.05,
+    'brake_reference_acceleration_tx_positive': 0.10,
+    'brake_reference_acceleration_tx_negative': 0.10,
+    'brake_reference_acceleration_ty_positive': 0.05,
+    'brake_reference_acceleration_ty_negative': 0.05,
     'angular_brake_acceleration_mz_positive': 0.025,
     'angular_brake_acceleration_mz_negative': 0.040,
     'control_delay': 0.35,
@@ -418,6 +424,10 @@ class MotionSupervisorCore(object):
             'brake_acceleration_tx_negative',
             'brake_acceleration_ty_positive',
             'brake_acceleration_ty_negative',
+            'brake_reference_acceleration_tx_positive',
+            'brake_reference_acceleration_tx_negative',
+            'brake_reference_acceleration_ty_positive',
+            'brake_reference_acceleration_ty_negative',
             'angular_brake_acceleration_mz_positive',
             'angular_brake_acceleration_mz_negative', 'capture_radius',
             'capture_exit_radius', 'control_center_hold_tolerance',
@@ -743,20 +753,31 @@ class MotionSupervisorCore(object):
         )
 
     def _directional_xy_brake_model(self, direction_body_x, direction_body_y):
-        """沿目标方向估计可达二维减速度和停止余量。"""
+        """沿目标方向计算计划减速度、有效减速度和停止余量。"""
         tx_brake = -direction_body_x
         ty_brake = -direction_body_y
-        ax = self._directional_parameter('brake_acceleration_tx', tx_brake)
-        ay = self._directional_parameter('brake_acceleration_ty', ty_brake)
+        effective_ax = self._directional_parameter(
+            'brake_acceleration_tx', tx_brake)
+        effective_ay = self._directional_parameter(
+            'brake_acceleration_ty', ty_brake)
+        reference_ax = self._directional_parameter(
+            'brake_reference_acceleration_tx', tx_brake)
+        reference_ay = self._directional_parameter(
+            'brake_reference_acceleration_ty', ty_brake)
         mx = self._directional_parameter('brake_margin_tx', tx_brake)
         my = self._directional_parameter('brake_margin_ty', ty_brake)
-        denominator = math.sqrt(
-            (direction_body_x / max(ax, 1e-6)) ** 2
-            + (direction_body_y / max(ay, 1e-6)) ** 2
-        )
-        acceleration = 1.0 / max(denominator, 1e-6)
+        reference_denominator = math.sqrt(
+            (direction_body_x / max(reference_ax, 1e-6)) ** 2
+            + (direction_body_y / max(reference_ay, 1e-6)) ** 2)
+        effective_denominator = math.sqrt(
+            (direction_body_x / max(effective_ax, 1e-6)) ** 2
+            + (direction_body_y / max(effective_ay, 1e-6)) ** 2)
+        reference_acceleration = 1.0 / max(
+            reference_denominator, 1e-6)
+        effective_acceleration = 1.0 / max(
+            effective_denominator, 1e-6)
         margin = math.hypot(direction_body_x * mx, direction_body_y * my)
-        return acceleration, margin
+        return reference_acceleration, effective_acceleration, margin
 
     def _slew_velocity_reference(
             self, desired_x, desired_y, dt, max_acceleration=None,
@@ -961,8 +982,13 @@ class MotionSupervisorCore(object):
             direction_y = 0.0
         direction_body_x, direction_body_y = map_vector_to_body(
             direction_x, direction_y, vehicle.yaw)
-        brake_acceleration, _ = self._directional_xy_brake_model(
+        (
+            brake_acceleration,
+            unused_effective_acceleration,
+            unused_margin,
+        ) = self._directional_xy_brake_model(
             direction_body_x, direction_body_y)
+        del unused_effective_acceleration, unused_margin
         reference_vx, reference_vy = self._slew_velocity_reference(
             0.0,
             0.0,
@@ -1083,7 +1109,11 @@ class MotionSupervisorCore(object):
         direction_body_x, direction_body_y = map_vector_to_body(
             direction_x, direction_y, vehicle.yaw)
         closing_speed = max(0.0, map_vx * direction_x + map_vy * direction_y)
-        brake_acceleration, brake_margin = self._directional_xy_brake_model(
+        (
+            brake_acceleration,
+            brake_effective_acceleration,
+            brake_margin,
+        ) = self._directional_xy_brake_model(
             direction_body_x, direction_body_y)
         stop_distance = stopping_distance(
             closing_speed,
@@ -1362,6 +1392,8 @@ class MotionSupervisorCore(object):
                 'closing_speed': closing_speed,
                 'xy_stop_distance': stop_distance,
                 'xy_brake_acceleration': brake_acceleration,
+                'xy_brake_effective_acceleration': (
+                    brake_effective_acceleration),
                 'xy_brake_margin': brake_margin,
                 'xy_brake_entry': xy_brake_entry,
                 'xy_brake_entered': xy_brake_entered,
