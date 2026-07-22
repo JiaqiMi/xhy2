@@ -1,4 +1,14 @@
 <launch>
+    <!--
+    名称：test_aruco_detection_fisheye.launch
+    功能：启动鱼眼 ArUco 检测并向 state_web 发布标注数据
+    作者：xhy
+    监听：/fisheye_camera/image_raw
+    发布：/vision/aruco/*
+    记录：
+    2026.7.22
+        隔离原始位姿与目标消息话题，补全节点参数传递。
+    -->
     <!-- RTSP鱼眼相机 -> 畸变校正 -> ArUco检测/位姿 -> Web -->
 
     <!-- 鱼眼相机驱动 -->
@@ -32,15 +42,17 @@
     <arg name="fisheye_balance" default="0.25" />
 
     <!-- 输出 -->
-    <arg name="pose_topic" default="/aruco/pose" />
+    <arg name="pose_topic" default="/vision/aruco/pose_stamped" />
     <arg name="annotated_topic" default="/vision/aruco/annotated_image" />
     <arg name="rectified_topic" default="/vision/aruco/image_rect" />
     <arg name="web_detection_topic" default="/vision/aruco/detections" />
     <arg name="web_pose_topic" default="/vision/aruco/pose" />
+    <arg name="target_output_topic"
+         default="/vision/aruco/target_message" />
 
     <!-- 避免与test_web.launch的8081冲突 -->
-    <arg name="start_web" default="false" />
-    <arg name="web_port" default="8082" />
+    <arg name="start_web" default="true" />
+    <arg name="web_port" default="8085" />
 
     <include if="$(arg start_driver)"
              file="$(find fisheye_camera_driver)/launch/driver.launch">
@@ -80,6 +92,8 @@
         <param name="web_detection_topic"
                value="$(arg web_detection_topic)" />
         <param name="web_pose_topic" value="$(arg web_pose_topic)" />
+        <param name="target_output_topic"
+               value="$(arg target_output_topic)" />
     </node>
 
     <include if="$(arg start_web)"
