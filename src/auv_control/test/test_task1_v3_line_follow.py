@@ -103,6 +103,8 @@
 2026.7.20
     结构化测试数据由 JSONL 改为带启动时间戳的 YAML 文档流；每条感知、目标、
     状态和控制周期记录都保留独立墙钟时间与 ROS 时间，便于复现实测过程。
+2026.7.22
+    增加参考深度参数；-1 使用启动时深度，其他值作为全程运动深度。
 """
 
 import copy
@@ -265,6 +267,7 @@ class Task1LineFollowTest:
             "~motion_state_timeout", 0.5
         )))
         self.map_frame = rospy.get_param("~map_frame", "map")
+        self.reference_depth = float(rospy.get_param("~reference_depth", -1.0))
         self.line_topic = rospy.get_param("~line_topic", "/obj/line_message")
         self.finished_topic = rospy.get_param("~finished_topic", "/finished")
         self.camera_topic = rospy.get_param("~camera_topic", "/left/image_raw")
@@ -641,15 +644,23 @@ class Task1LineFollowTest:
         if current is None:
             return False
         self.start_pose = copy.deepcopy(current)
-        self.hold_z = current.pose.position.z
+        self.hold_z = (
+            current.pose.position.z
+            if self.reference_depth == -1.0
+            else self.reference_depth
+        )
+        self.start_pose.pose.position.z = self.hold_z
         self.search_base_yaw = yaw_from_quaternion(current.pose.orientation)
         self.startup_hold_started = rospy.Time.now()
         rospy.loginfo(
-            "%s: 当前位姿=(%.2f, %.2f, %.2f)，启动航向=%.1f deg",
+            "%s: 当前位姿=(%.2f, %.2f, %.2f)，参考深度=%.2f m（%s），"
+            "启动航向=%.1f deg",
             NODE_NAME,
             current.pose.position.x,
             current.pose.position.y,
             current.pose.position.z,
+            self.hold_z,
+            "当前深度" if self.reference_depth == -1.0 else "launch 设置",
             math.degrees(self.search_base_yaw),
         )
         return True

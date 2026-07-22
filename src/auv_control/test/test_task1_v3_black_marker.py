@@ -7,9 +7,9 @@
 流程：
     1. 定点保持启动位姿一段可调时间，等待相机和识别模块启动；
     2. 未识别到黑色方形时，依次定点左转、右转、回正，再向前移动后重复；
-    3. 最近多条识别消息中达到可调有效帧数和置信度后确认位置；
+    3. 最近 N 条有效识别中有 K 条位置聚类后确认位置；
     4. 发布 map 绝对目标前往黑色方形中心，以 HOVER 确认到达；
-    5. 到达后亮绿灯，把累计旋转拆成多个绝对航向子目标完成默认两圈旋转；
+    5. 到达后亮绿灯，持续发布相对当前航向超前 90 度的目标完成默认一圈旋转；
     6. 动作完成后发布完成消息。
 
 监听：/obj/target_message，/left/image_raw，/motion/state，/tf
@@ -29,6 +29,8 @@
     绝对航向目标，每个子目标均等待新鲜 HOVER 后才进入下一段。
 2026.7.20
     复用黄色子任务的 YAML 数据记录，并增加黑色旋转阶段及累计角度数据。
+2026.7.22
+    默认旋转改为 360 度；旋转期间持续更新超前航向，最后一段固定终点并等待 HOVER。
 """
 
 import math
@@ -65,7 +67,7 @@ class BlackMarkerTest(YellowMarkerTest):
             "~black_light_count", 2
         )))
         self.black_rotation_angle = math.radians(abs(float(rospy.get_param(
-            "~black_rotation_angle_deg", 720.0
+            "~black_rotation_angle_deg", 360.0
         ))))
         direction = float(rospy.get_param("~black_rotation_direction", 1.0))
         self.black_rotation_direction = 1.0 if direction >= 0.0 else -1.0
@@ -75,9 +77,6 @@ class BlackMarkerTest(YellowMarkerTest):
                 "~black_rotation_step_deg", 90.0
             )))),
         ))
-        self.black_rotation_step_hold_seconds = max(0.0, float(rospy.get_param(
-            "~black_rotation_step_hold_seconds", 0.5
-        )))
         self.black_return_hold_seconds = float(rospy.get_param(
             "~black_return_hold_seconds", 2.0
         ))
@@ -95,7 +94,7 @@ class BlackMarkerTest(YellowMarkerTest):
         )
 
     def target_callback(self, message):
-        """最近 N 条识别输出中有 K 条有效结果时确认黑色 rectangle。"""
+        """最近 N 条有效识别中有 K 条位置聚类时确认黑色 rectangle。"""
         if self.hold_z is None and not self.initialize_start_pose():
             self.record_target_message(message, "robot_pose_unavailable")
             return
@@ -212,7 +211,7 @@ class BlackMarkerTest(YellowMarkerTest):
         self.publish_lights(1 if cycle_elapsed < self.light_seconds else 0)
 
     def run_black_rotation(self):
-        """以多个小于 180 度的绝对航向目标表达累计旋转角。"""
+        """持续保持超前航向；进入最后一段后固定最终航向并等待到达。"""
         current = self.get_current_pose()
         if current is None:
             return False
@@ -221,49 +220,83 @@ class BlackMarkerTest(YellowMarkerTest):
         if self.rotation_state is None:
             self.rotation_state = {
                 "start_yaw": current_yaw,
+                "last_yaw": current_yaw,
                 "completed": 0.0,
-                "step_angle": 0.0,
                 "goal": None,
+                "final_goal_active": False,
                 "hover_started": None,
             }
             rospy.loginfo(
                 "%s: 黑色方形旋转开始；起始航向=%.1f 度，"
-                "累计目标=%.1f 度，单段最大=%.1f 度",
+                "累计目标=%.1f 度，实时超前=%.1f 度",
                 self.node_name,
                 math.degrees(current_yaw),
                 math.degrees(self.black_rotation_angle),
                 math.degrees(self.black_rotation_step),
             )
 
-        if self.rotation_state["goal"] is None:
-            remaining = max(
-                0.0,
-                self.black_rotation_angle - self.rotation_state["completed"],
-            )
-            step_angle = min(self.black_rotation_step, remaining)
-            cumulative_target = self.rotation_state["completed"] + step_angle
-            target_yaw = wrap_angle(
+        yaw_delta = wrap_angle(
+            current_yaw - self.rotation_state["last_yaw"]
+        )
+        directed_delta = self.black_rotation_direction * yaw_delta
+        self.rotation_state["completed"] = max(
+            0.0, self.rotation_state["completed"] + directed_delta
+        )
+        self.rotation_state["last_yaw"] = current_yaw
+
+        final_phase_start = max(
+            0.0, self.black_rotation_angle - self.black_rotation_step
+        )
+        if (
+            not self.rotation_state["final_goal_active"]
+            and self.rotation_state["completed"] >= final_phase_start - 1e-6
+        ):
+            final_yaw = wrap_angle(
                 self.rotation_state["start_yaw"]
-                + self.black_rotation_direction * cumulative_target
+                + self.black_rotation_direction * self.black_rotation_angle
             )
-            self.rotation_state["step_angle"] = step_angle
+            self.rotation_state["goal"] = self.make_pose(
+                self.move_target.x,
+                self.move_target.y,
+                self.hold_z,
+                final_yaw,
+            )
+            self.rotation_state["final_goal_active"] = True
+            self.rotation_state["hover_started"] = None
+            rospy.loginfo(
+                "%s: 已转 %.1f/%.1f 度，固定最后航向=%.1f 度并等待 HOVER",
+                self.node_name,
+                math.degrees(self.rotation_state["completed"]),
+                math.degrees(self.black_rotation_angle),
+                math.degrees(final_yaw),
+            )
+        elif not self.rotation_state["final_goal_active"]:
+            target_yaw = wrap_angle(
+                current_yaw
+                + self.black_rotation_direction * self.black_rotation_step
+            )
             self.rotation_state["goal"] = self.make_pose(
                 self.move_target.x,
                 self.move_target.y,
                 self.hold_z,
                 target_yaw,
             )
-            self.rotation_state["hover_started"] = None
-            rospy.loginfo(
-                "%s: 发布旋转子目标 %.1f/%.1f 度，目标航向=%.1f 度",
-                self.node_name,
-                math.degrees(cumulative_target),
-                math.degrees(self.black_rotation_angle),
-                math.degrees(target_yaw),
-            )
 
         goal = self.rotation_state["goal"]
         self.publish_motion_goal(goal)
+        if not self.rotation_state["final_goal_active"]:
+            rospy.loginfo_throttle(
+                2.0,
+                "%s: 连续旋转=%.1f/%.1f 度，当前航向=%.1f 度，"
+                "动态目标航向=%.1f 度",
+                self.node_name,
+                math.degrees(self.rotation_state["completed"]),
+                math.degrees(self.black_rotation_angle),
+                math.degrees(current_yaw),
+                math.degrees(yaw_from_quaternion(goal.pose.orientation)),
+            )
+            return False
+
         arrived = self.motion_arrived(goal)
         if arrived:
             if self.rotation_state["hover_started"] is None:
@@ -271,18 +304,6 @@ class BlackMarkerTest(YellowMarkerTest):
         else:
             self.rotation_state["hover_started"] = None
 
-        completed_after_step = (
-            self.rotation_state["completed"]
-            + self.rotation_state["step_angle"]
-        )
-        final_step = (
-            completed_after_step >= self.black_rotation_angle - 1e-6
-        )
-        required_hold = (
-            self.black_return_hold_seconds
-            if final_step
-            else self.black_rotation_step_hold_seconds
-        )
         held_seconds = (
             (rospy.Time.now() - self.rotation_state["hover_started"]).to_sec()
             if self.rotation_state["hover_started"] is not None
@@ -290,26 +311,21 @@ class BlackMarkerTest(YellowMarkerTest):
         )
         rospy.loginfo_throttle(
             2.0,
-            "%s: 旋转子目标累计=%.1f/%.1f 度，当前=%.1f 度，"
+            "%s: 最后旋转目标；累计=%.1f/%.1f 度，当前=%.1f 度，"
             "HOVER=%s，保持=%.1f/%.1f s",
             self.node_name,
-            math.degrees(completed_after_step),
+            math.degrees(self.rotation_state["completed"]),
             math.degrees(self.black_rotation_angle),
             math.degrees(current_yaw),
             "是" if arrived else "否",
             held_seconds,
-            required_hold,
+            self.black_return_hold_seconds,
         )
 
-        if not arrived or held_seconds < required_hold:
+        if not arrived or held_seconds < self.black_return_hold_seconds:
             return False
-        self.rotation_state["completed"] = completed_after_step
-        if final_step:
-            self.publish_lights(0)
-            return True
-        self.rotation_state["goal"] = None
-        self.rotation_state["hover_started"] = None
-        return False
+        self.publish_lights(0)
+        return True
 
     def finish(self):
         self.publish_lights(0)

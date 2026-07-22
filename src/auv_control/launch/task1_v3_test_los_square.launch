@@ -11,6 +11,8 @@
 
     <!-- 基础坐标系和主循环频率。 -->
     <arg name="rate" default="5.0" />
+    <!-- 全程参考深度（m）；-1 表示使用节点启动时的机器人当前深度。 -->
+    <arg name="reference_depth" default="-1.0" />
     <arg name="map_frame" default="map" />
     <arg name="robot_frame" default="base_link" />
     <!-- 固定正方形和 LOS 使用的双目摄像头坐标系。 -->
@@ -72,6 +74,7 @@
         <env name="ROS_PYTHON_LOG_CONFIG_FILE"
              value="$(find auv_control)/config/task1_v3_python_logging.conf" />
         <param name="rate" type="double" value="$(arg rate)" />
+        <param name="reference_depth" type="double" value="$(arg reference_depth)" />
         <param name="map_frame" type="string" value="$(arg map_frame)" />
         <param name="robot_frame" type="string" value="$(arg robot_frame)" />
         <param name="line_tracking_frame" type="string" value="$(arg line_tracking_frame)" />
