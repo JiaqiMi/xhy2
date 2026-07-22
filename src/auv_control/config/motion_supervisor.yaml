@@ -58,29 +58,32 @@ kp_yaw_negative: 11200.0    # 60 deg 阶跃静态控制核验证可触发负 MZ 
 # 各轴独立停车距离模型；后缀表示实际刹车输出力或力矩的符号
 brake_acceleration_tx_positive: 0.08 # 输出正 TX 刹车时的保守有效减速度；对应 X 负向运动
 brake_acceleration_tx_negative: 0.04 # 输出负 TX 刹车时的保守有效减速度；对应 X 正向运动
-brake_acceleration_ty_positive: 0.06 # 输出正 TY 刹车时的保守有效减速度；对应 Y 负向运动
-brake_acceleration_ty_negative: 0.04 # 输出负 TY 刹车时的保守有效减速度；对应 Y 正向运动
-# 制动速度轨迹的计划减速度与推进器有效减速度分开配置；Y 保持原值，行为不变。
+brake_acceleration_ty_positive: 0.011 # data6 正 TY 实测平均约 0.0110 m/s^2；对应 Y 负向运动
+brake_acceleration_ty_negative: 0.011 # data6 负 TY 实测平均约 0.0115 m/s^2；对应 Y 正向运动
+# 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
 brake_reference_acceleration_tx_positive: 0.08 # 正 TX 制动在 data5 中单次稳定停车，保持原计划
 brake_reference_acceleration_tx_negative: 0.02 # 负 TX 制动改为缓减速，避免前馈持续饱和
-brake_reference_acceleration_ty_positive: 0.06
-brake_reference_acceleration_ty_negative: 0.04
+brake_reference_acceleration_ty_positive: 0.008 # 低于实测有效减速度，提前规划并降低正 TY 制动前馈
+brake_reference_acceleration_ty_negative: 0.008 # 低于实测有效减速度，提前规划并降低负 TY 制动前馈
 angular_brake_acceleration_mz_positive: 0.025 # 输出正 MZ 刹转时的保守有效角减速度；对应负向 yaw 运动
 angular_brake_acceleration_mz_negative: 0.08 # data4 实测约 0.108 rad/s^2，保守取 0.08；对应正向 yaw 运动
+angular_brake_reference_acceleration_mz_positive_deg_s2: 0.70 # 航向计划角减速度与正 MZ 有效角减速度解耦，抑制反向加速
+angular_brake_reference_acceleration_mz_negative_deg_s2: 1.15 # 负 MZ 推力较强，使用较低计划角减速度限制前馈
 control_delay: 0.45          # 反馈、计算、通信和执行的综合延迟估计，单位 s
 brake_margin_tx_positive: 0.18 # 输出正 TX 刹车时的附加停车余量，单位 m
 brake_margin_tx_negative: 0.05 # 必须小于 0.07 m 捕获半径，避免每次都提前停下再重新加速
-brake_margin_ty_positive: 0.20 # 输出正 TY 刹车时的附加停车余量，单位 m；对应 Y 负向运动
-brake_margin_ty_negative: 0.18 # 输出负 TY 刹车时的附加停车余量，单位 m
-yaw_brake_margin_positive_deg: 4.0 # 输出正 MZ 刹转时的附加角度余量，单位 deg
-yaw_brake_margin_negative_deg: 4.0 # 输出负 MZ 刹转时的附加角度余量，单位 deg
+brake_margin_ty_positive: 0.02 # 小于纯定深内部位置死区，避免提前停住后反复追踪
+brake_margin_ty_negative: 0.02 # 小于纯定深内部位置死区，避免提前停住后反复追踪
+yaw_brake_margin_positive_deg: 1.5 # 小于纯定深航向保持容差，避免刹停与重新追踪循环
+yaw_brake_margin_negative_deg: 1.5 # 小于纯定深航向保持容差，避免刹停与重新追踪循环
 
 # 捕获、接管和异常回退阈值
-capture_radius: 0.07                # 允许进入 mode=4 接管等待的水平位置误差，单位 m
+capture_radius: 0.07                # 到达 HOVER 的外层水平位置误差；旧模式下也用于 mode=4 接管
 capture_exit_radius: 0.25           # mode=4 接管等待期间触发重新跟踪的水平位置误差，单位 m
 control_center_hold_tolerance: 0.03 # 当前锁存控制中心的二维圆形位置死区，单位 m
-horizontal_speed_threshold: 0.015   # 判定水平停稳的合速度上限，单位 m/s
+horizontal_speed_threshold: 0.008   # data6 中 0.01 m/s 仍持续漂移，收紧三轴停稳判定
 yaw_tolerance_deg: 5.0              # 最终航向允许误差，单位 deg
+yaw_control_tolerance_deg: 2.0      # 纯定深内部航向保持死区；旧 mode=4 兼容逻辑仍使用 5 deg
 yaw_rate_threshold_deg_s: 0.3       # 判定转动停稳的角速度上限，单位 deg/s
 stable_frames: 5                    # 捕获或停稳条件需连续满足的控制帧数，20 Hz 下约为 0.25 s
 hover_fault_position_error: 0.40    # mode=4 接管后才触发回退的水平位置误差，单位 m；必须大于 capture_exit_radius

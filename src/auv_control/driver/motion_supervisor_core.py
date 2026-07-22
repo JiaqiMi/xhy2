@@ -52,6 +52,8 @@
     新增纯定深统一控制模式，稳定后进入内部 HOVER 并继续由上位机以 mode=2 保持三轴位姿。
 2026.7.22
     根据 data5 将水平制动参考减速度与推进器有效减速度解耦，避免负 TX 前馈饱和导致反向回退。
+2026.7.22
+    根据 data6 增加启动首帧三轴主动刹停，收紧纯定深位置和航向保持死区，并解耦航向计划角减速度。
 """
 
 from __future__ import division
@@ -300,6 +302,8 @@ DEFAULT_PARAMETERS = {
     'brake_reference_acceleration_ty_negative': 0.05,
     'angular_brake_acceleration_mz_positive': 0.025,
     'angular_brake_acceleration_mz_negative': 0.040,
+    'angular_brake_reference_acceleration_mz_positive': 0.025,
+    'angular_brake_reference_acceleration_mz_negative': 0.040,
     'control_delay': 0.35,
     'brake_margin_tx_positive': 0.10,
     'brake_margin_tx_negative': 0.10,
@@ -312,6 +316,7 @@ DEFAULT_PARAMETERS = {
     'control_center_hold_tolerance': 0.03,
     'horizontal_speed_threshold': 0.015,
     'yaw_tolerance': math.radians(5.0),
+    'yaw_control_tolerance': math.radians(5.0),
     'yaw_rate_threshold': math.radians(0.3),
     'stable_frames': 5,
     'hover_fault_position_error': 0.40,
@@ -429,10 +434,13 @@ class MotionSupervisorCore(object):
             'brake_reference_acceleration_ty_positive',
             'brake_reference_acceleration_ty_negative',
             'angular_brake_acceleration_mz_positive',
-            'angular_brake_acceleration_mz_negative', 'capture_radius',
+            'angular_brake_acceleration_mz_negative',
+            'angular_brake_reference_acceleration_mz_positive',
+            'angular_brake_reference_acceleration_mz_negative',
+            'capture_radius',
             'capture_exit_radius', 'control_center_hold_tolerance',
             'horizontal_speed_threshold',
-            'yaw_tolerance', 'yaw_rate_threshold',
+            'yaw_tolerance', 'yaw_control_tolerance', 'yaw_rate_threshold',
             'stable_frames', 'hover_fault_position_error',
             'hover_fault_speed', 'hover_fault_yaw_rate',
             'hover_fault_yaw_error', 'mode_ack_timeout',
@@ -471,6 +479,9 @@ class MotionSupervisorCore(object):
                 self.parameters['yaw_brake_margin_negative'] >=
                 self.parameters['yaw_tolerance']):
             raise ValueError('yaw_brake_margin 必须小于 yaw_tolerance')
+        if self.parameters['yaw_control_tolerance'] > (
+                self.parameters['yaw_tolerance']):
+            raise ValueError('yaw_control_tolerance 不能大于 yaw_tolerance')
         if self.parameters['capture_exit_radius'] <= self.parameters['capture_radius']:
             raise ValueError('capture_exit_radius 必须大于 capture_radius')
         if self.parameters['control_center_hold_tolerance'] >= (
@@ -568,6 +579,23 @@ class MotionSupervisorCore(object):
             self._reset_motion_references()
             self.reason = '采用最新目标，恢复统一三轴跟踪'
         return changed
+
+    def set_initial_hold_goal(self, goal):
+        """锁定启动位姿并先执行三轴主动刹停，再进入统一位姿跟踪。"""
+        if not isinstance(goal, MotionGoal):
+            raise TypeError('goal 必须是 MotionGoal')
+        self.goal = goal
+        self.pending_goal = None
+        self.cancel_requested = False
+        self.recovery_brake_requested = False
+        self._reset_motion_references()
+        self.cancel_brake_requested = True
+        self.goal_changed_pending = False
+        self.goal_changed_at = None
+        self.x_axis_state = AXIS_BRAKE
+        self.y_axis_state = AXIS_BRAKE
+        self.yaw_axis_state = AXIS_BRAKE
+        self._transition(TRANSLATE_BRAKE, '启动首帧锁定，先执行三轴主动刹停')
 
     def cancel(self):
         """取消当前运动；停稳后以当前位置进入悬停。"""
@@ -954,7 +982,7 @@ class MotionSupervisorCore(object):
         )
 
     def _brake_output(self, vehicle):
-        """反馈恢复时按三轴定点制动模型平滑减速，不使用旧比例刹车增益。"""
+        """启动、取消或反馈恢复时按三轴受限轨迹主动刹停。"""
         self.x_axis_state = AXIS_BRAKE
         self.y_axis_state = AXIS_BRAKE
         self.yaw_axis_state = AXIS_BRAKE
@@ -1014,8 +1042,10 @@ class MotionSupervisorCore(object):
             'brake_kv_y', reference_body_y - vehicle.lateral_velocity
         ) * (reference_body_y - vehicle.lateral_velocity)
 
-        yaw_brake_acceleration = self._directional_parameter(
+        yaw_brake_effective_acceleration = self._directional_parameter(
             'angular_brake_acceleration_mz', -map_yaw_rate)
+        yaw_brake_acceleration = self._directional_parameter(
+            'angular_brake_reference_acceleration_mz', -map_yaw_rate)
         yaw_brake_rate_reversed = False
         if (
                 not self.yaw_brake_reversal_detected
@@ -1065,6 +1095,9 @@ class MotionSupervisorCore(object):
                 'brake_feedforward_ty': brake_feedforward_ty,
                 'yaw_rate_reference': reference_yaw_rate,
                 'yaw_reference_acceleration': self.last_yaw_acceleration,
+                'yaw_brake_reference_acceleration': yaw_brake_acceleration,
+                'yaw_brake_effective_acceleration': (
+                    yaw_brake_effective_acceleration),
                 'map_yaw_rate': map_yaw_rate,
                 'brake_feedforward_mz': brake_feedforward_mz,
                 'yaw_brake_direction': self.yaw_brake_direction,
@@ -1139,9 +1172,13 @@ class MotionSupervisorCore(object):
             xy_stopped = (
                 math.hypot(map_vx, map_vy)
                 <= self.parameters['xy_brake_exit_speed'])
-            # 已落入捕获半径时保持零速度参考，直接等待 CAPTURE；否则
-            # 仅在连续低速一段时间后重新允许位置跟踪，避免反馈抖动反复切换。
-            if xy_stopped and distance <= self.parameters['capture_radius']:
+            # 已落入内部保持死区时保持零速度参考；否则仅在连续低速
+            # 一段时间后重新允许位置跟踪，避免反馈抖动反复切换。
+            position_control_radius = (
+                self.parameters['control_center_hold_tolerance']
+                if self.parameters['pure_depth_control']
+                else self.parameters['capture_radius'])
+            if xy_stopped and distance <= position_control_radius:
                 self.xy_brake_release_started_at = None
             elif xy_stopped:
                 if self.xy_brake_release_started_at is None:
@@ -1155,10 +1192,13 @@ class MotionSupervisorCore(object):
             else:
                 self.xy_brake_release_started_at = None
         braking_xy = self.xy_brake_latched
-        # 接近 capture_radius 时把位置速度参考降为零，避免刚解除制动就
-        # 以较高速度重新穿越目标。
-        capture_error = max(
-            distance - self.parameters['capture_radius'], 0.0)
+        # 接近内部位置死区时把速度参考降为零，避免刚解除制动就以较高
+        # 速度重新穿越目标；旧 mode=4 模式继续使用 capture_radius。
+        position_control_radius = (
+            self.parameters['control_center_hold_tolerance']
+            if self.parameters['pure_depth_control']
+            else self.parameters['capture_radius'])
+        capture_error = max(distance - position_control_radius, 0.0)
         position_speed = self.parameters['xy_position_gain'] * capture_error
         stopping_speed = math.sqrt(
             2.0 * brake_acceleration * max(distance - brake_margin, 0.0)
@@ -1234,8 +1274,11 @@ class MotionSupervisorCore(object):
             self.parameters['yaw_rate_to_map_sign'] * vehicle.yaw_rate)
         # 刹车 MZ 与 map 航向角速度反向，按最终刹车 MZ 的符号选择模型。
         yaw_brake_mz_direction = -map_yaw_rate
-        yaw_brake_acceleration = self._directional_parameter(
+        yaw_brake_effective_acceleration = self._directional_parameter(
             'angular_brake_acceleration_mz', yaw_brake_mz_direction)
+        yaw_brake_acceleration = self._directional_parameter(
+            'angular_brake_reference_acceleration_mz',
+            yaw_brake_mz_direction)
         yaw_margin = self._directional_parameter(
             'yaw_brake_margin', yaw_brake_mz_direction)
         yaw_stop_angle = stopping_distance(
@@ -1266,7 +1309,11 @@ class MotionSupervisorCore(object):
                 <= self.parameters['yaw_brake_exit_rate'])
             # 已满足航向捕获误差时维持零角速度参考直至接管；若仍未到位，
             # 则等待连续低速确认后才恢复跟踪，防止 7 Hz 左右反馈反复触发。
-            if yaw_stopped and abs(yaw_error) <= self.parameters['yaw_tolerance']:
+            yaw_control_tolerance = (
+                self.parameters['yaw_control_tolerance']
+                if self.parameters['pure_depth_control']
+                else self.parameters['yaw_tolerance'])
+            if yaw_stopped and abs(yaw_error) <= yaw_control_tolerance:
                 self.yaw_brake_release_started_at = None
             elif yaw_stopped:
                 if self.yaw_brake_release_started_at is None:
@@ -1298,10 +1345,14 @@ class MotionSupervisorCore(object):
             2.0 * yaw_brake_acceleration * max(
                 abs(yaw_error) - yaw_margin, 0.0)
         )
-        # yaw_tolerance 内不再产生新的角速度目标，容差外的速度随剩余
-        # 误差连续减小，防止在制动释放后从约 5 deg 误差重新加速。
+        # 内部航向容差内不再产生新的角速度目标，容差外的速度随剩余
+        # 误差连续减小；旧 mode=4 模式仍使用 yaw_tolerance。
+        yaw_control_tolerance = (
+            self.parameters['yaw_control_tolerance']
+            if self.parameters['pure_depth_control']
+            else self.parameters['yaw_tolerance'])
         yaw_capture_error = max(
-            abs(yaw_error) - self.parameters['yaw_tolerance'], 0.0)
+            abs(yaw_error) - yaw_control_tolerance, 0.0)
         yaw_close_rate = self.parameters['yaw_position_gain'] * min(
             yaw_capture_error, yaw_margin)
         desired_yaw_rate = math.copysign(
@@ -1350,7 +1401,7 @@ class MotionSupervisorCore(object):
             self.y_axis_state = self.x_axis_state
         self.yaw_axis_state = (
             AXIS_HOLD if (
-                abs(yaw_error) <= self.parameters['yaw_tolerance']
+                abs(yaw_error) <= yaw_control_tolerance
                 and abs(vehicle.yaw_rate) <= self.parameters['yaw_rate_threshold']
             ) else (AXIS_BRAKE if braking_yaw else AXIS_TRACK)
         )
@@ -1408,6 +1459,9 @@ class MotionSupervisorCore(object):
                 'xy_braking': braking_xy,
                 'yaw_rate_reference': reference_yaw_rate,
                 'yaw_reference_acceleration': self.last_yaw_acceleration,
+                'yaw_brake_reference_acceleration': yaw_brake_acceleration,
+                'yaw_brake_effective_acceleration': (
+                    yaw_brake_effective_acceleration),
                 'brake_feedforward_mz': brake_feedforward_mz,
                 'map_yaw_rate': map_yaw_rate,
                 'yaw_stop_angle': yaw_stop_angle,
@@ -1511,6 +1565,8 @@ class MotionSupervisorCore(object):
                 output.diagnostics.get('goal_static_seconds', 0.0)
                 >= self.parameters['goal_static_capture_seconds']
             )
+            # HOVER 是到达状态，仍沿用外层捕获容差；纯定深进入 HOVER 后
+            # 不切换控制器，继续按更小的内部位置/航向死区收敛并保持。
             captured = (
                 output.position_error <= self.parameters['capture_radius']
                 and abs(output.yaw_error) <= self.parameters['yaw_tolerance']
