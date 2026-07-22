@@ -1,0 +1,336 @@
+<launch>
+    <!--
+      任务3子任务2、3联调：启动时无条件清理任务级节点、模型和模型Web；两个视觉模型同时启动并持续预热；
+      begin.launch公共节点、相机驱动、导航融合和motion_supervisor始终保留，执行节点按阶段运行和关闭。
+      流程：任务级清场与控制权复核 -> 同时启动两个模型 -> 锁存启动点定点 -> 子任务2识别、生成目标颜色并亮灯
+            -> 关闭并核对子任务2执行launch -> 固定点复稳 -> 按配置原地转向
+            -> 方框模型连续帧复查 -> 子任务3目标握手接管 -> 自动搜索和投放
+            -> 关闭并核对子任务3执行launch -> 主动刹停并确认HOVER
+            -> 统一关闭两个模型并确认无残留后结束。
+      motion_supervisor由基础控制系统统一启动，本launch不重复启动。
+    -->
+
+    <!-- 内部递归模式，仅供协调节点托管双模型进程组；正常启动时不要手动修改。 -->
+    <arg name="model_bundle_only" default="false" />
+
+    <!-- 相机驱动已在外部启动时保持false，避免重复占用设备。 -->
+    <arg name="start_fisheye_driver" default="false" />
+    <arg name="start_down_camera" default="false" />
+    <arg name="start_down_splitter" default="false" />
+
+    <!-- 两个模型同时启动并常驻到总任务结束；子任务切换时只关闭执行launch。 -->
+    <arg name="start_aruco_model" default="true" />
+    <arg name="start_rectangle_model" default="true" />
+    <arg name="start_aruco_web" default="true" />
+    <arg name="start_rectangle_web" default="true" />
+    <arg name="aruco_web_port" default="8082" />
+    <arg name="rectangle_web_port" default="8080" />
+
+    <!-- 使用最新模型公共输出名；ArUco和方框具有独立命名空间，不会互相串流。 -->
+    <arg name="aruco_topic"
+         default="/obj/target_message" />
+    <arg name="aruco_web_detection_topic"
+         default="/vision/aruco/detections" />
+    <arg name="aruco_web_pose_topic"
+         default="/vision/aruco/pose" />
+    <arg name="rectangle_target_topic"
+         default="/vision/rectangle/target_message" />
+    <arg name="rectangle_detection_topic"
+         default="/vision/rectangle/detections" />
+    <arg name="rectangle_pose_topic"
+         default="/vision/rectangle/pose" />
+
+    <!--
+      仅模型模式由协调节点作为一个独立进程组启动。ArUco链路使用命名空间，
+      方框链路保持根命名空间以兼容YOLO按绝对节点名读取参数的方式。
+    -->
+    <group if="$(arg model_bundle_only)">
+        <group if="$(arg start_aruco_model)" ns="task3_sequence/aruco_pipeline">
+            <remap from="/obj/target_message" to="$(arg aruco_topic)" />
+            <include file="$(find stereo_depth)/launch/test_aruco_detection_fisheye.launch">
+                <arg name="start_driver" value="$(arg start_fisheye_driver)" />
+                <arg name="web_detection_topic"
+                     value="$(arg aruco_web_detection_topic)" />
+                <arg name="web_pose_topic" value="$(arg aruco_web_pose_topic)" />
+                <arg name="start_web" value="$(arg start_aruco_web)" />
+                <arg name="web_port" value="$(arg aruco_web_port)" />
+            </include>
+        </group>
+
+        <group if="$(arg start_rectangle_model)">
+            <remap from="/vision/rectangle/target_message" to="$(arg rectangle_target_topic)" />
+            <remap from="/vision/rectangle/detections" to="$(arg rectangle_detection_topic)" />
+            <remap from="/vision/rectangle/pose" to="$(arg rectangle_pose_topic)" />
+            <include file="$(find stereo_depth)/launch/test_rectangles_detection.launch">
+                <arg name="start_camera" value="$(arg start_down_camera)" />
+                <arg name="start_splitter" value="$(arg start_down_splitter)" />
+                <arg name="start_web" value="$(arg start_rectangle_web)" />
+                <arg name="web_port" value="$(arg rectangle_web_port)" />
+            </include>
+        </group>
+    </group>
+
+    <!--
+      联调主循环和模型预热。模型约40秒才能启动时，可增大model_ready_timeout。
+      连续出帧后还会核对六个隔离话题的实际发布者、消息类型、Web节点和端口；
+      任一话题出现额外发布者或串流时，不会启动子任务2。
+    -->
+    <arg name="rate" default="10.0" />
+    <arg name="model_ready_timeout" default="90.0" />
+    <arg name="model_settle_seconds" default="1.0" />
+    <!-- 模型消息超过该时间视为掉线；阶段交接前最多等待恢复的时间。 -->
+    <arg name="model_output_timeout" default="2.0" />
+    <arg name="model_recovery_timeout" default="10.0" />
+    <arg name="model_handoff_required_frames" default="3" />
+
+    <!-- motion_supervisor接口与启动定点参数。 -->
+    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
+    <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
+    <arg name="motion_state_topic" default="/motion/state" />
+    <arg name="map_frame" default="map" />
+    <arg name="base_frame" default="base_link" />
+    <arg name="tf_timeout" default="8.0" />
+    <arg name="motion_state_timeout" default="0.5" />
+    <arg name="initial_hold_timeout" default="30.0" />
+
+    <!--
+      联调转向参数：direction只能填right或left，angle填写正数角度。
+      项目采用NED航向约定，right对应航向正方向，left对应航向负方向。
+      例如右转90度：right + 90.0；左转120度：left + 120.0。
+      单个绝对航向目标按最短方向旋转，180度方向存在二义性，因此角度范围为(0,180)度。
+    -->
+    <arg name="transition_turn_direction" default="right" />
+    <arg name="transition_turn_angle_deg" default="90.0" />
+    <arg name="transition_timeout" default="90.0" />
+    <arg name="transition_stable_seconds" default="1.0" />
+    <arg name="transition_hold_seconds" default="1.0" />
+    <!-- 子任务2退出后，先回到并稳定在原启动点，再开始转向。 -->
+    <arg name="post_task2_hold_timeout" default="30.0" />
+    <arg name="post_task2_stable_seconds" default="1.0" />
+
+    <!-- 到达判定：先核对motion状态中的目标确实是本节点最新目标。 -->
+    <arg name="goal_match_position_tolerance" default="0.03" />
+    <arg name="goal_match_depth_tolerance" default="0.03" />
+    <arg name="goal_match_yaw_tolerance_deg" default="2.0" />
+    <arg name="arrival_position_tolerance" default="0.05" />
+    <arg name="arrival_yaw_tolerance_deg" default="5.0" />
+    <arg name="arrival_max_horizontal_speed" default="0.03" />
+    <arg name="arrival_max_yaw_rate" default="0.05" />
+
+    <!--
+      联调内部参数：隔离子任务2的旧/cmd/pose/ned输出，并限制两个阶段的总时间。
+      修改子任务内部超时后，要同步保证这里的阶段总时间更长；
+      子任务2总时间至少覆盖悬停+识别+亮灯，子任务3总时间至少覆盖其max_wait_seconds和动作时间。
+    -->
+    <arg name="task2_pose_cmd_topic"
+         default="/task3_sequence/task2_isolated_pose_cmd" />
+    <arg name="task2_stage_timeout" default="100.0" />
+    <arg name="task3_stage_timeout" default="360.0" />
+
+    <!--
+      子任务3颜色来源：
+      task2（默认）=从子任务2成功消息提取ArUco对应颜色，并覆盖子任务3的target_color；
+      manual=不传颜色，继续使用task3_subtask3_inspect_and_drop.launch中的手动target_color。
+    -->
+    <arg name="task3_color_source" default="task2" />
+
+    <!--
+      子任务3控制权交接：协调节点保持转向完成点，直到子任务3连续发布指定数量的合法目标。
+      首批目标与转向完成点的水平、深度或航向差超过阈值时，立即取消并安全刹停。
+    -->
+    <arg name="task3_handoff_timeout" default="10.0" />
+    <arg name="task3_handoff_goal_count" default="2" />
+    <arg name="handoff_goal_position_tolerance" default="0.10" />
+    <arg name="handoff_goal_depth_tolerance" default="0.10" />
+    <arg name="handoff_goal_yaw_tolerance_deg" default="10.0" />
+
+    <!-- 成功、失败或中止都先主动取消运动，并等待HOVER连续稳定后再退出。 -->
+    <arg name="safe_stop_timeout" default="30.0" />
+    <arg name="safe_stop_stable_seconds" default="1.0" />
+    <!-- 子任务2定点状态连续异常超过该时间，立即中止并安全刹停。 -->
+    <arg name="control_health_grace_timeout" default="3.0" />
+
+    <!--
+      子任务参数不在联调launch重复声明：
+      子任务2的悬停、3/10帧、置信度、识别超时和亮灯时间，
+      在task3_subtask2_get_task.launch中调整。
+      子任务3的颜色、识别阈值、搜索距离、之字形和细对准参数，
+      在task3_subtask3_inspect_and_drop.launch中调整。
+    -->
+
+    <!-- 子任务仍发布原/finished；联调总结果单独发布，避免自己接收到自己。 -->
+    <arg name="finished_topic" default="/finished" />
+    <arg name="sequence_finished_topic"
+         default="/task3_sequence/finished" />
+    <!-- 子任务执行launch退出后额外等待的时间，给ROS Master注销节点和话题；通常保持1秒。 -->
+    <arg name="stage_shutdown_grace" default="1.0" />
+
+    <!--
+      进程清理参数：启动后固定关闭任务1至任务5、任务测试节点、识别模型及模型Web，
+      并复核/cmd/motion/goal、/cmd/motion/cancel、/cmd/pose/ned和/cmd/actuator发布者。
+      begin.launch启动的传感器、TF、相机、网页状态节点以及motion_supervisor不会被关闭。
+      每个子任务结束后检查其执行节点，总任务结束后关闭双模型进程组。
+      SIGINT超时后自动升级为SIGTERM和SIGKILL；启动清场不可跳过。
+    -->
+    <!--
+      单轮ROS节点清理或控制发布者清理的最长时间，单位秒。
+      若日志持续显示节点正在注销或被respawn，可增大到15~20；不建议小于5。
+    -->
+    <arg name="cleanup_timeout" default="10.0" />
+    <!--
+      清场后等待外部motion_supervisor完整注册控制接口的时间，单位秒。
+      如果begin和motion_supervisor同时刚启动，可增大到20~30；超时不会启动模型。
+    -->
+    <arg name="control_backbone_timeout" default="10.0" />
+    <!--
+      节点、控制发布者和公共控制接口的检查周期，单位秒。
+      调小响应更快但ROS Master查询更频繁，建议0.1~0.5，默认0.2。
+    -->
+    <arg name="cleanup_poll_interval" default="0.2" />
+    <!--
+      节点或冲突发布者连续消失达到该时间才算清理完成，单位秒。
+      若旧launch带respawn且重新出现较慢，可增大到2~3；设为0会立即通过。
+    -->
+    <arg name="cleanup_stable_seconds" default="1.0" />
+    <!--
+      关闭任务roslaunch时先等待其响应SIGINT的时间，单位秒。
+      模型退出较慢时可增大到8~10，超时后会升级为SIGTERM。
+    -->
+    <arg name="process_sigint_timeout" default="5.0" />
+    <!-- 等待SIGTERM的时间，单位秒；超时后升级为SIGKILL，建议保持2~5。 -->
+    <arg name="process_sigterm_timeout" default="2.0" />
+
+    <node unless="$(arg model_bundle_only)"
+          pkg="auv_control"
+          type="test_task3_2_3_sequence.py"
+          name="test_task3_2_3_sequence"
+          output="screen"
+          required="true">
+        <param name="rate" type="double" value="$(arg rate)" />
+        <param name="map_frame" type="string" value="$(arg map_frame)" />
+        <param name="base_frame" type="string" value="$(arg base_frame)" />
+        <param name="tf_timeout" type="double" value="$(arg tf_timeout)" />
+        <param name="aruco_topic" type="string" value="$(arg aruco_topic)" />
+        <param name="aruco_web_detection_topic" type="string"
+               value="$(arg aruco_web_detection_topic)" />
+        <param name="aruco_web_pose_topic" type="string"
+               value="$(arg aruco_web_pose_topic)" />
+        <param name="rectangle_target_topic" type="string"
+               value="$(arg rectangle_target_topic)" />
+        <param name="rectangle_detection_topic" type="string"
+               value="$(arg rectangle_detection_topic)" />
+        <param name="rectangle_pose_topic" type="string"
+               value="$(arg rectangle_pose_topic)" />
+        <param name="start_aruco_model" type="bool"
+               value="$(arg start_aruco_model)" />
+        <param name="start_rectangle_model" type="bool"
+               value="$(arg start_rectangle_model)" />
+        <param name="start_fisheye_driver" type="bool"
+               value="$(arg start_fisheye_driver)" />
+        <param name="start_down_camera" type="bool"
+               value="$(arg start_down_camera)" />
+        <param name="start_down_splitter" type="bool"
+               value="$(arg start_down_splitter)" />
+        <param name="start_aruco_web" type="bool"
+               value="$(arg start_aruco_web)" />
+        <param name="start_rectangle_web" type="bool"
+               value="$(arg start_rectangle_web)" />
+        <param name="aruco_web_port" type="int"
+               value="$(arg aruco_web_port)" />
+        <param name="rectangle_web_port" type="int"
+               value="$(arg rectangle_web_port)" />
+        <param name="model_ready_timeout" type="double"
+               value="$(arg model_ready_timeout)" />
+        <param name="model_settle_seconds" type="double"
+               value="$(arg model_settle_seconds)" />
+        <param name="model_output_timeout" type="double"
+               value="$(arg model_output_timeout)" />
+        <param name="model_recovery_timeout" type="double"
+               value="$(arg model_recovery_timeout)" />
+        <param name="model_handoff_required_frames" type="int"
+               value="$(arg model_handoff_required_frames)" />
+
+        <param name="motion_goal_topic" type="string"
+               value="$(arg motion_goal_topic)" />
+        <param name="motion_cancel_topic" type="string"
+               value="$(arg motion_cancel_topic)" />
+        <param name="motion_state_topic" type="string"
+               value="$(arg motion_state_topic)" />
+        <param name="motion_state_timeout" type="double"
+               value="$(arg motion_state_timeout)" />
+        <param name="initial_hold_timeout" type="double"
+               value="$(arg initial_hold_timeout)" />
+        <param name="transition_turn_direction" type="string"
+               value="$(arg transition_turn_direction)" />
+        <param name="transition_turn_angle_deg" type="double"
+               value="$(arg transition_turn_angle_deg)" />
+        <param name="transition_timeout" type="double"
+               value="$(arg transition_timeout)" />
+        <param name="transition_stable_seconds" type="double"
+               value="$(arg transition_stable_seconds)" />
+        <param name="transition_hold_seconds" type="double"
+               value="$(arg transition_hold_seconds)" />
+        <param name="post_task2_hold_timeout" type="double"
+               value="$(arg post_task2_hold_timeout)" />
+        <param name="post_task2_stable_seconds" type="double"
+               value="$(arg post_task2_stable_seconds)" />
+        <param name="goal_match_position_tolerance" type="double"
+               value="$(arg goal_match_position_tolerance)" />
+        <param name="goal_match_depth_tolerance" type="double"
+               value="$(arg goal_match_depth_tolerance)" />
+        <param name="goal_match_yaw_tolerance_deg" type="double"
+               value="$(arg goal_match_yaw_tolerance_deg)" />
+        <param name="arrival_position_tolerance" type="double"
+               value="$(arg arrival_position_tolerance)" />
+        <param name="arrival_yaw_tolerance_deg" type="double"
+               value="$(arg arrival_yaw_tolerance_deg)" />
+        <param name="arrival_max_horizontal_speed" type="double"
+               value="$(arg arrival_max_horizontal_speed)" />
+        <param name="arrival_max_yaw_rate" type="double"
+               value="$(arg arrival_max_yaw_rate)" />
+
+        <param name="task2_pose_cmd_topic" type="string"
+               value="$(arg task2_pose_cmd_topic)" />
+        <param name="task2_stage_timeout" type="double"
+               value="$(arg task2_stage_timeout)" />
+        <param name="task3_stage_timeout" type="double"
+               value="$(arg task3_stage_timeout)" />
+        <param name="task3_color_source" type="string"
+               value="$(arg task3_color_source)" />
+        <param name="task3_handoff_timeout" type="double"
+               value="$(arg task3_handoff_timeout)" />
+        <param name="task3_handoff_goal_count" type="int"
+               value="$(arg task3_handoff_goal_count)" />
+        <param name="handoff_goal_position_tolerance" type="double"
+               value="$(arg handoff_goal_position_tolerance)" />
+        <param name="handoff_goal_depth_tolerance" type="double"
+               value="$(arg handoff_goal_depth_tolerance)" />
+        <param name="handoff_goal_yaw_tolerance_deg" type="double"
+               value="$(arg handoff_goal_yaw_tolerance_deg)" />
+        <param name="safe_stop_timeout" type="double"
+               value="$(arg safe_stop_timeout)" />
+        <param name="safe_stop_stable_seconds" type="double"
+               value="$(arg safe_stop_stable_seconds)" />
+        <param name="control_health_grace_timeout" type="double"
+               value="$(arg control_health_grace_timeout)" />
+
+        <param name="finished_topic" type="string"
+               value="$(arg finished_topic)" />
+        <param name="sequence_finished_topic" type="string"
+               value="$(arg sequence_finished_topic)" />
+        <param name="stage_shutdown_grace" type="double"
+               value="$(arg stage_shutdown_grace)" />
+        <param name="cleanup_timeout" type="double"
+               value="$(arg cleanup_timeout)" />
+        <param name="control_backbone_timeout" type="double"
+               value="$(arg control_backbone_timeout)" />
+        <param name="cleanup_poll_interval" type="double"
+               value="$(arg cleanup_poll_interval)" />
+        <param name="cleanup_stable_seconds" type="double"
+               value="$(arg cleanup_stable_seconds)" />
+        <param name="process_sigint_timeout" type="double"
+               value="$(arg process_sigint_timeout)" />
+        <param name="process_sigterm_timeout" type="double"
+               value="$(arg process_sigterm_timeout)" />
+    </node>
+</launch>

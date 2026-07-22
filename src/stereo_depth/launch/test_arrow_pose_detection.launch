@@ -9,7 +9,7 @@
 
     <arg name="start_camera" default="false" />
     <arg name="start_splitter" default="false" />
-    <arg name="start_web" default="false" />
+    <arg name="start_web" default="true" />
     <arg name="start_depth" default="true" />
 
     <!-- 请将训练得到的best.pt复制并重命名到该位置 -->

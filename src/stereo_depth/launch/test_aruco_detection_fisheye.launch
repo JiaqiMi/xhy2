@@ -51,8 +51,8 @@
          default="/vision/aruco/target_message" />
 
     <!-- 避免与test_web.launch的8081冲突 -->
-    <arg name="start_web" default="false" />
-    <arg name="web_port" default="8082" />
+    <arg name="start_web" default="true" />
+    <arg name="web_port" default="8085" />
 
     <include if="$(arg start_driver)"
              file="$(find fisheye_camera_driver)/launch/driver.launch">

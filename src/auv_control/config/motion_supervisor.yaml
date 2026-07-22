@@ -71,7 +71,7 @@ yaw_brake_margin_positive_deg: 4.0 # 输出正 MZ 刹转时的附加角度余量
 yaw_brake_margin_negative_deg: 4.0 # 输出负 MZ 刹转时的附加角度余量，单位 deg
 
 # 捕获、接管和异常回退阈值
-capture_radius: 0.04                # 允许进入 mode=4 接管等待的水平位置误差，单位 m
+capture_radius: 0.07                # 允许进入 mode=4 接管等待的水平位置误差，单位 m
 capture_exit_radius: 0.25           # mode=4 接管等待期间触发重新跟踪的水平位置误差，单位 m
 control_center_hold_tolerance: 0.03 # 当前锁存控制中心的二维圆形位置死区，单位 m
 horizontal_speed_threshold: 0.015   # 判定水平停稳的合速度上限，单位 m/s

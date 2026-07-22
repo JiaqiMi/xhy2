@@ -28,7 +28,7 @@
       arrow_topic：Pose箭头方向JSON，需包含valid、confidence、center、bbox和angle_deg；
       新模型还会提供tip、tail_left、tail_right和direction_confidence，当前任务无需额外解析。
     -->
-    <arg name="arrow_topic" default="/arrow/direction" />
+    <arg name="arrow_topic" default="/vision/arrow/direction" />
     <!--
       min_confidence：Pose方向JSON中的confidence下限；该值是检测框与三个关键点
       置信度的最小值。调大可减少不可靠方向，调小可增加弱目标召回。
@@ -78,9 +78,9 @@
       再前0.3m，第二层左右各0.2m。任意一帧位置有效就立即cancel退出搜索。
       三个距离依次控制第一层前进量、每层左右距离和第二次追加前进量。
     -->
-    <arg name="search_initial_forward_distance" default="0.50" />
+    <arg name="search_initial_forward_distance" default="0.30" />
     <arg name="search_lateral_distance" default="0.20" />
-    <arg name="search_second_forward_distance" default="0.30" />
+    <arg name="search_second_forward_distance" default="0.20" />
     <!-- max_wait_seconds：除最终悬停外，搜索与对准全过程的总超时。 -->
     <arg name="max_wait_seconds" default="300.0" />
 

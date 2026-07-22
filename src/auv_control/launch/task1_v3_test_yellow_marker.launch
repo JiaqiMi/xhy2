@@ -10,6 +10,8 @@
 
     <!-- 基础：控制循环频率（Hz）。搜索方向直接采用节点启动时读取的机器人当前航向。 -->
     <arg name="rate" default="5.0" />
+    <!-- 全程参考深度（m）；-1 表示使用节点启动时的机器人当前深度。 -->
+    <arg name="reference_depth" default="-1.0" />
 
     <!-- motion_supervisor 接口：绝对目标、取消、状态反馈及状态新鲜度。 -->
     <arg name="motion_goal_topic" default="/cmd/motion/goal" />
@@ -46,15 +48,15 @@
     <!-- 到达判断：定点前进和前往黄色图形共用的水平位置容差（m）。 -->
     <arg name="position_tolerance" default="0.15" />
 
-    <!-- 黄色图形过滤：最近 marker_window_size 条目标识别输出中，至少
-         marker_required_valid 条同类消息达到置信度和位置聚类要求。
-         当前 TargetDetection 不发布逐图像帧的“未检出”消息，因此窗口按识别输出计数。 -->
+    <!-- 黄色图形过滤：只保存最近 marker_window_size 条有效识别，至少
+         marker_required_valid 条位置聚类；无效识别不入窗也不清窗。
+         每条有效样本最多保存 marker_sample_timeout 秒。 -->
     <arg name="yellow_classes" default="triangle,circle" />
     <arg name="yellow_min_confidence" default="0.30" />
     <arg name="max_camera_distance" default="5.0" />
     <arg name="marker_window_size" default="10" />
     <arg name="marker_required_valid" default="3" />
-    <arg name="marker_sample_timeout" default="5.0" />
+    <arg name="marker_sample_timeout" default="10.0" />
     <arg name="marker_cluster_distance" default="0.25" />
 
     <!-- 启动与消息有效期：启动后先锁定初始位姿悬停；相机超时单位为 s。 -->
@@ -81,6 +83,7 @@
           name="test_task1_v3_yellow_marker"
           output="screen">
         <param name="rate" type="double" value="$(arg rate)" />
+        <param name="reference_depth" type="double" value="$(arg reference_depth)" />
         <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
         <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
         <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />

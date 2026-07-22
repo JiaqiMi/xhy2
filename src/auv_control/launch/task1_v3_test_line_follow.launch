@@ -13,6 +13,8 @@
 
     <!-- 基础：主循环频率，单位 Hz。 -->
     <arg name="rate" default="5.0" />
+    <!-- 全程参考深度（m）；-1 表示使用节点启动时的机器人当前深度。 -->
+    <arg name="reference_depth" default="-1.0" />
     <!-- 红线识别点统一转换到的世界坐标系。 -->
     <arg name="map_frame" default="map" />
 
@@ -129,6 +131,7 @@
         <env name="ROS_PYTHON_LOG_CONFIG_FILE"
              value="$(find auv_control)/config/task1_v3_python_logging.conf" />
         <param name="rate" type="double" value="$(arg rate)" />
+        <param name="reference_depth" type="double" value="$(arg reference_depth)" />
         <param name="map_frame" type="string" value="$(arg map_frame)" />
 
         <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
