@@ -56,19 +56,19 @@ kp_yaw_negative: 11200.0    # 60 deg 阶跃静态控制核验证可触发负 MZ 
 # brake_min_mz: 100.0
 
 # 各轴独立停车距离模型；后缀表示实际刹车输出力或力矩的符号
-brake_acceleration_tx_positive: 0.05 # data7 正 TX 满输出等效减速度约 0.050 m/s^2；对应 X 负向运动
-brake_acceleration_tx_negative: 0.04 # 输出负 TX 刹车时的保守有效减速度；对应 X 正向运动
-brake_acceleration_ty_positive: 0.017 # data8 正 TY 满输出等效减速度约 0.017 m/s^2；对应 Y 负向运动
-brake_acceleration_ty_negative: 0.019 # data8 负 TY 满输出等效减速度约 0.019 m/s^2；对应 Y 正向运动
+brake_acceleration_tx_positive: 0.04 # data7/data1 正 TX 满输出等效约 0.050/0.030 m/s^2，取跨批次保守值
+brake_acceleration_tx_negative: 0.03 # data7/data1 负 TX 满输出等效约 0.030/0.025 m/s^2，避免低估制动前馈
+brake_acceleration_ty_positive: 0.016 # data1 正 TY 满输出等效约 0.016 m/s^2；对应 Y 负向运动
+brake_acceleration_ty_negative: 0.019 # data1 负 TY 满输出等效约 0.019 m/s^2；对应 Y 正向运动
 # 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
-brake_reference_acceleration_tx_positive: 0.025 # data7 正 TX 制动能力较强，降低计划值和前馈以平滑停车
-brake_reference_acceleration_tx_negative: 0.02 # 负 TX 制动改为缓减速，避免前馈持续饱和
-brake_reference_acceleration_ty_positive: 0.008 # 低于实测有效减速度，提前规划并降低正 TY 制动前馈
-brake_reference_acceleration_ty_negative: 0.008 # 低于实测有效减速度，提前规划并降低负 TY 制动前馈
-angular_brake_acceleration_mz_positive: 0.085 # data8 正 MZ 满输出等效约 4.89 deg/s^2；对应负向 yaw 运动
-angular_brake_acceleration_mz_negative: 0.10 # data8 负 MZ 满输出等效约 5.74 deg/s^2；对应正向 yaw 运动
-angular_brake_reference_acceleration_mz_positive_deg_s2: 1.80 # 正 MZ 按实测能力规划，目标在 1.5 deg 余量内一次刹停
-angular_brake_reference_acceleration_mz_negative_deg_s2: 1.80 # 负 MZ 与正向统一计划角减速度，方向差异由有效值和限幅保留
+brake_reference_acceleration_tx_positive: 0.018 # data1 正 TX 实际平均减速度约 0.014，较旧值提前约 4 cm 制动
+brake_reference_acceleration_tx_negative: 0.015 # data1 负 TX 实际平均减速度约 0.013，较旧值提前约 2~5 cm 制动
+brake_reference_acceleration_ty_positive: 0.007 # data1 Y 超调均值 0.037 m，配合 0.03 m 余量提前平滑减速
+brake_reference_acceleration_ty_negative: 0.007 # 两向统一计划减速度，推进器差异由有效值和方向限幅保留
+angular_brake_acceleration_mz_positive: 0.074 # data1 正 MZ 满输出等效约 4.24 deg/s^2；对应负向 yaw 运动
+angular_brake_acceleration_mz_negative: 0.088 # data1 负 MZ 满输出等效约 5.04 deg/s^2；对应正向 yaw 运动
+angular_brake_reference_acceleration_mz_positive_deg_s2: 1.40 # 与正 MZ 实测平均减速度匹配，减少制动后角速度反向
+angular_brake_reference_acceleration_mz_negative_deg_s2: 1.40 # 与负 MZ 实测平均减速度匹配，避免 1.8 deg/s^2 晚刹
 control_delay: 0.45          # 反馈、计算、通信和执行的综合延迟估计，单位 s
 brake_margin_tx_positive: 0.03 # data7 原 0.18 m 导致距目标约 0.12 m 已停低速并重复制动
 brake_margin_tx_negative: 0.03 # 与内部位置死区一致，并保留实测减速度偏差的防超调余量
