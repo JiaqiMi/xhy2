@@ -23,17 +23,32 @@
       模型识别参数。target_color可设为yellow、green或red。
       min_confidence调大可减少误检，调小可增加弱目标召回。
     -->
-    <arg name="model_detection_topic" default="/web/detections" />
+    <arg name="model_detection_topic" default="/vision/rectangle/detections" />
     <arg name="target_color" default="yellow" />
     <arg name="min_confidence" default="0.20" />
-    <!-- 人工模式连续稳定识别帧数。 -->
+    <!-- 人工模式下，同一位置候选组达到该帧数后确认。 -->
     <arg name="stable_detection_count" default="5" />
-    <!-- 自动搜索连续3帧锁定，中心连续5帧后才允许执行动作。 -->
-    <arg name="auto_search_stable_detection_count" default="2" />
+    <!--
+      搜索和刹停后的悬停复核都使用最近10个模型帧的滑动窗口。
+      无效帧不会清空窗口内的旧有效帧；任意位置候选组累计3帧后立即通过。
+      搜索中第一次通过只触发刹停；收到新的HOVER后清空旧窗口重新识别，
+      第二次3/10帧通过才进入现有细对准。
+    -->
+    <arg name="stable_detection_window_size" default="10" />
+    <arg name="auto_search_stable_detection_count" default="3" />
+    <!--
+      首次识别触发刹停后，先等待画面稳定再开始第二轮识别。
+      第二轮超时会恢复被打断的原搜索目标，不会结束任务或跳到下一搜索步骤。
+    -->
+    <arg name="auto_hover_confirm_settle_seconds" default="0.5" />
+    <arg name="auto_hover_confirm_timeout" default="4.0" />
+    <!-- 下面这个参数只控制现有细对准的最终居中确认，不参与搜索候选组判别。 -->
     <arg name="auto_center_stable_detection_count" default="3" />
-    <!-- 搜索锁定阶段的中心抖动与检测框面积变化上限。 -->
+    <!--
+      新有效帧相对候选组中心中位数的最大二维距离，以及相对面积中位数的变化上限。
+      位置容差调大更容易快速成组但可能混入误检；面积容差调大可适应运动时框大小变化。
+    -->
     <arg name="stable_center_tolerance_px" default="40.0" />
-
     <arg name="stable_area_tolerance_ratio" default="0.35" />
     <!-- 目标或模型消息最大允许间隔，以及任务搜索/对齐总超时。 -->
     <arg name="detection_timeout" default="2.0" />
@@ -73,18 +88,28 @@
     <arg name="status_linear_velocity_scale" default="1.0" />
 
     <!--
-      自动搜索顺序保持不变：
-      固定启动点稳定悬停10秒；
-      前进0.30m，左0.20m、右0.20m；
-      前进0.20m，左0.20m、右0.20m；
-      前进0.10m，左0.20m、右0.20m。
+      自动搜索顺序：固定启动点悬停；第一段前进后左右搜索；
+      第二段前进后左右搜索；第三段前进后左右搜索。
+      悬停时间、三段前进距离以及左右横移距离均可在下面独立调整。
       每一段都发送一个map绝对目标，并等待匹配目标的HOVER后进入下一段。
     -->
     <arg name="auto_initial_hover_seconds" default="5.0" />
     <arg name="auto_search_first_forward_distance" default="0.50" />
     <arg name="auto_search_second_forward_distance" default="0.40" />
     <arg name="auto_search_third_forward_distance" default="0.30" />
-    <arg name="auto_search_lateral_distance" default="0.35" />
+    <!--
+      仅控制第一段搜索。false保持“直线前进、左移、右移”；true改为三段之字形：
+      前进并左移、前进并跨到右侧、前进并自动回到中线。三段前进距离之和等于
+      auto_search_first_forward_distance，航向始终保持任务启动时锁定的当前航向。
+    -->
+    <arg name="auto_first_segment_zigzag_enabled" default="false" />
+    <!--
+      左移距离从当前搜索点开始计算；右移距离从左移结束位置开始计算。
+      例如左移0.20m后，右移0.20m表示回到原横向位置；
+      若希望从左侧-0.20m扫到右侧+0.20m，可将右移距离设为0.40m。
+    -->
+    <arg name="auto_search_left_distance" default="0.20" />
+    <arg name="auto_search_right_distance" default="0.40" />
 
     <!--
       视觉细对准把归一化像素误差换算成前后、左右位置小步，单位均为m。
@@ -155,7 +180,10 @@
         <param name="target_color" type="string" value="$(arg target_color)" />
         <param name="min_confidence" type="double" value="$(arg min_confidence)" />
         <param name="stable_detection_count" type="int" value="$(arg stable_detection_count)" />
+        <param name="stable_detection_window_size" type="int" value="$(arg stable_detection_window_size)" />
         <param name="auto_search_stable_detection_count" type="int" value="$(arg auto_search_stable_detection_count)" />
+        <param name="auto_hover_confirm_settle_seconds" type="double" value="$(arg auto_hover_confirm_settle_seconds)" />
+        <param name="auto_hover_confirm_timeout" type="double" value="$(arg auto_hover_confirm_timeout)" />
         <param name="auto_center_stable_detection_count" type="int" value="$(arg auto_center_stable_detection_count)" />
         <param name="stable_center_tolerance_px" type="double" value="$(arg stable_center_tolerance_px)" />
         <param name="stable_area_tolerance_ratio" type="double" value="$(arg stable_area_tolerance_ratio)" />
@@ -184,7 +212,9 @@
         <param name="auto_search_first_forward_distance" type="double" value="$(arg auto_search_first_forward_distance)" />
         <param name="auto_search_second_forward_distance" type="double" value="$(arg auto_search_second_forward_distance)" />
         <param name="auto_search_third_forward_distance" type="double" value="$(arg auto_search_third_forward_distance)" />
-        <param name="auto_search_lateral_distance" type="double" value="$(arg auto_search_lateral_distance)" />
+        <param name="auto_first_segment_zigzag_enabled" type="bool" value="$(arg auto_first_segment_zigzag_enabled)" />
+        <param name="auto_search_left_distance" type="double" value="$(arg auto_search_left_distance)" />
+        <param name="auto_search_right_distance" type="double" value="$(arg auto_search_right_distance)" />
 
         <param name="auto_visual_forward_gain_m" type="double" value="$(arg auto_visual_forward_gain_m)" />
         <param name="auto_visual_lateral_gain_m" type="double" value="$(arg auto_visual_lateral_gain_m)" />
