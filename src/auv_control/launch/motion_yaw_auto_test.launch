@@ -4,7 +4,7 @@
       每一步均返回初始航向，并等待 HOVER 稳定接管后再继续。
     -->
     <arg name="target_z" default="-0.9" />
-    <arg name="repetitions" default="3" />
+    <arg name="repetitions" default="2" />
     <arg name="action_timeout" default="120.0" />
     <arg name="hover_hold_seconds" default="2.0" />
     <arg name="acceptance_yaw_tolerance_deg" default="5.0" />
