@@ -78,9 +78,9 @@
       再前0.3m，第二层左右各0.2m。任意一帧位置有效就立即cancel退出搜索。
       三个距离依次控制第一层前进量、每层左右距离和第二次追加前进量。
     -->
-    <arg name="search_initial_forward_distance" default="0.50" />
+    <arg name="search_initial_forward_distance" default="0.30" />
     <arg name="search_lateral_distance" default="0.20" />
-    <arg name="search_second_forward_distance" default="0.30" />
+    <arg name="search_second_forward_distance" default="0.20" />
     <!-- max_wait_seconds：除最终悬停外，搜索与对准全过程的总超时。 -->
     <arg name="max_wait_seconds" default="300.0" />
 

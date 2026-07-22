@@ -17,14 +17,14 @@
     <arg name="warning_log_interval" default="2.0" />
 
     <!-- 默认包含彩色方框模型；模型已在其他终端启动时设为false。 -->
-    <arg name="start_rectangle_model" default="false" />
+    <arg name="start_rectangle_model" default="true" />
 
     <!--
       模型识别参数。target_color可设为yellow、green或red。
       min_confidence调大可减少误检，调小可增加弱目标召回。
     -->
     <arg name="model_detection_topic" default="/vision/rectangle/detections" />
-    <arg name="target_color" default="yellow" />
+    <arg name="target_color" default="red" />
     <arg name="min_confidence" default="0.20" />
     <!-- 人工模式下，同一位置候选组达到该帧数后确认。 -->
     <arg name="stable_detection_count" default="5" />
@@ -94,9 +94,9 @@
       每一段都发送一个map绝对目标，并等待匹配目标的HOVER后进入下一段。
     -->
     <arg name="auto_initial_hover_seconds" default="5.0" />
-    <arg name="auto_search_first_forward_distance" default="0.50" />
-    <arg name="auto_search_second_forward_distance" default="0.40" />
-    <arg name="auto_search_third_forward_distance" default="0.30" />
+    <arg name="auto_search_first_forward_distance" default="2.0" />
+    <arg name="auto_search_second_forward_distance" default="0.30" />
+    <arg name="auto_search_third_forward_distance" default="0.20" />
     <!--
       仅控制第一段搜索。false保持“直线前进、左移、右移”；true改为三段之字形：
       前进并左移、前进并跨到右侧、前进并自动回到中线。三段前进距离之和等于
@@ -108,8 +108,8 @@
       例如左移0.20m后，右移0.20m表示回到原横向位置；
       若希望从左侧-0.20m扫到右侧+0.20m，可将右移距离设为0.40m。
     -->
-    <arg name="auto_search_left_distance" default="0.20" />
-    <arg name="auto_search_right_distance" default="0.40" />
+    <arg name="auto_search_left_distance" default="0.40" />
+    <arg name="auto_search_right_distance" default="0.80" />
 
     <!--
       视觉细对准把归一化像素误差换算成前后、左右位置小步，单位均为m。
@@ -120,8 +120,8 @@
     -->
     <arg name="auto_visual_forward_gain_m" default="0.10" />
     <arg name="auto_visual_lateral_gain_m" default="0.10" />
-    <arg name="auto_visual_min_step_m" default="0.005" />
-    <arg name="auto_visual_max_step_m" default="0.03" />
+    <arg name="auto_visual_min_step_m" default="0.1" />
+    <arg name="auto_visual_max_step_m" default="0.2" />
     <arg name="auto_visual_goal_min_interval" default="0.50" />
     <!-- 现场前后或左右方向相反时，将对应符号改为-1.0。 -->
     <arg name="auto_forward_sign" default="1.0" />
