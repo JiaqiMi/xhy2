@@ -4,7 +4,7 @@
       运行前必须单独启动 motion_supervisor，并保证前后方向均不会碰壁。
     -->
     <arg name="pure_depth_control" default="true" />
-    <arg name="target_z" default="-0.9" />
+    <arg name="target_z" default="-0.95" />
     <arg name="repetitions" default="2" />
     <arg name="action_timeout" default="120.0" />
     <arg name="hover_hold_seconds" default="2.0" />
