@@ -7,12 +7,13 @@
   1. manual：人工控制机器人到方框上方，本节点只识别并执行灯光、夹爪动作；
   2. auto：向 motion_supervisor 发布绝对位置目标，自动搜索并根据方框中心像素对齐。
 
-两种模式共用颜色过滤、连续帧稳定判断和执行器动作流程。
+两种模式共用颜色过滤、滑动窗口候选组判断和执行器动作流程。
 """
 
 import copy
 import json
 import math
+import statistics
 
 import rospy
 import tf
@@ -45,12 +46,15 @@ def normalize_angle_rad(angle):
 
 # 模型识别参数。
 DEFAULT_RATE = 10.0
-DEFAULT_DETECTION_TOPIC = "/web/detections"
+DEFAULT_DETECTION_TOPIC = "/vision/rectangle/detections"
 DEFAULT_TARGET_COLOR = "yellow"
 DEFAULT_MIN_CONFIDENCE = 0.35
 DEFAULT_STABLE_DETECTION_COUNT = 5
 DEFAULT_AUTO_SEARCH_STABLE_DETECTION_COUNT = 3
 DEFAULT_AUTO_CENTER_STABLE_DETECTION_COUNT = 5
+DEFAULT_STABLE_DETECTION_WINDOW_SIZE = 10
+DEFAULT_AUTO_HOVER_CONFIRM_SETTLE_SECONDS = 0.5
+DEFAULT_AUTO_HOVER_CONFIRM_TIMEOUT = 4.0
 DEFAULT_STABLE_CENTER_TOLERANCE_PX = 40.0
 DEFAULT_STABLE_AREA_TOLERANCE_RATIO = 0.35
 DEFAULT_DETECTION_TIMEOUT = 2.0
@@ -78,7 +82,9 @@ DEFAULT_AUTO_INITIAL_HOVER_SECONDS = 10.0
 DEFAULT_AUTO_SEARCH_FIRST_FORWARD_DISTANCE = 0.30
 DEFAULT_AUTO_SEARCH_SECOND_FORWARD_DISTANCE = 0.20
 DEFAULT_AUTO_SEARCH_THIRD_FORWARD_DISTANCE = 0.10
-DEFAULT_AUTO_SEARCH_LATERAL_DISTANCE = 0.20
+DEFAULT_AUTO_FIRST_SEGMENT_ZIGZAG_ENABLED = False
+DEFAULT_AUTO_SEARCH_LEFT_DISTANCE = 0.20
+DEFAULT_AUTO_SEARCH_RIGHT_DISTANCE = 0.40
 DEFAULT_AUTO_VISUAL_FORWARD_GAIN_M = 0.10
 DEFAULT_AUTO_VISUAL_LATERAL_GAIN_M = 0.10
 DEFAULT_AUTO_VISUAL_MIN_STEP_M = 0.005
@@ -119,13 +125,15 @@ DEFAULT_LIGHT2 = 0
 
 class Task3InspectAndDropTest:
     WAIT_FOR_TARGET = 0
-    AUTO_APPROACH = 1
-    HOLD_BEFORE_ACTION = 2
-    OPEN_CLAMP = 3
-    CLOSE_CLAMP = 4
+    AUTO_HOVER_CONFIRM = 1
+    AUTO_APPROACH = 2
+    HOLD_BEFORE_ACTION = 3
+    OPEN_CLAMP = 4
+    CLOSE_CLAMP = 5
 
     STATE_NAMES = {
         WAIT_FOR_TARGET: "等待目标颜色方框",
+        AUTO_HOVER_CONFIRM: "刹停后悬停复核方框",
         AUTO_APPROACH: "自动靠近并对齐方框",
         HOLD_BEFORE_ACTION: "识别确认后保持",
         OPEN_CLAMP: "打开夹爪",
@@ -137,6 +145,9 @@ class Task3InspectAndDropTest:
         "forward": "向前移动",
         "left": "向左横移",
         "right": "向右横移",
+        "zigzag_left": "之字形向前并左移",
+        "zigzag_right": "之字形向前并右移",
+        "zigzag_center": "之字形向前并回中线",
     }
 
     MOTION_STATE_NAMES = {
@@ -192,6 +203,18 @@ class Task3InspectAndDropTest:
         self.auto_center_stable_detection_count = int(rospy.get_param(
             "~auto_center_stable_detection_count",
             DEFAULT_AUTO_CENTER_STABLE_DETECTION_COUNT,
+        ))
+        self.stable_detection_window_size = int(rospy.get_param(
+            "~stable_detection_window_size",
+            DEFAULT_STABLE_DETECTION_WINDOW_SIZE,
+        ))
+        self.auto_hover_confirm_settle_seconds = float(rospy.get_param(
+            "~auto_hover_confirm_settle_seconds",
+            DEFAULT_AUTO_HOVER_CONFIRM_SETTLE_SECONDS,
+        ))
+        self.auto_hover_confirm_timeout = float(rospy.get_param(
+            "~auto_hover_confirm_timeout",
+            DEFAULT_AUTO_HOVER_CONFIRM_TIMEOUT,
         ))
         self.stable_center_tolerance_px = float(
             rospy.get_param(
@@ -292,8 +315,15 @@ class Task3InspectAndDropTest:
             "~auto_search_third_forward_distance",
             DEFAULT_AUTO_SEARCH_THIRD_FORWARD_DISTANCE,
         ))
-        self.auto_search_lateral_distance = float(rospy.get_param(
-            "~auto_search_lateral_distance", DEFAULT_AUTO_SEARCH_LATERAL_DISTANCE
+        self.auto_first_segment_zigzag_enabled = bool(rospy.get_param(
+            "~auto_first_segment_zigzag_enabled",
+            DEFAULT_AUTO_FIRST_SEGMENT_ZIGZAG_ENABLED,
+        ))
+        self.auto_search_left_distance = float(rospy.get_param(
+            "~auto_search_left_distance", DEFAULT_AUTO_SEARCH_LEFT_DISTANCE
+        ))
+        self.auto_search_right_distance = float(rospy.get_param(
+            "~auto_search_right_distance", DEFAULT_AUTO_SEARCH_RIGHT_DISTANCE
         ))
         self.auto_visual_forward_gain_m = float(rospy.get_param(
             "~auto_visual_forward_gain_m", DEFAULT_AUTO_VISUAL_FORWARD_GAIN_M
@@ -412,7 +442,11 @@ class Task3InspectAndDropTest:
         self.task_started = rospy.Time.now()
         self.last_model_message_time = None
         self.last_target_time = None
-        self.detection_samples = []
+        self.detection_frame_window = []
+        self.hover_confirmation_ready = False
+        self.hover_confirmation_hover_at = None
+        self.hover_confirmation_started_at = None
+        self.hover_confirmation_resume_goal = None
         self.model_frame_index = 0
         self.current_auto_target = None
         self.auto_hold_z = None
@@ -432,17 +466,34 @@ class Task3InspectAndDropTest:
         self.last_visual_goal_time = None
         self.visual_center_hold_requested = False
         self.visual_stop_locked = False
+        if self.auto_first_segment_zigzag_enabled:
+            zigzag_forward_step = (
+                self.auto_search_first_forward_distance / 3.0
+            )
+            first_segment_steps = [
+                ("zigzag_left", zigzag_forward_step),
+                ("zigzag_right", zigzag_forward_step),
+                (
+                    "zigzag_center",
+                    self.auto_search_first_forward_distance
+                    - 2.0 * zigzag_forward_step,
+                ),
+            ]
+        else:
+            first_segment_steps = [
+                ("forward", self.auto_search_first_forward_distance),
+                ("left", self.auto_search_left_distance),
+                ("right", self.auto_search_right_distance),
+            ]
         self.auto_search_plan = [
             ("hover", self.auto_initial_hover_seconds),
-            ("forward", self.auto_search_first_forward_distance),
-            ("left", self.auto_search_lateral_distance),
-            ("right", self.auto_search_lateral_distance),
+        ] + first_segment_steps + [
             ("forward", self.auto_search_second_forward_distance),
-            ("left", self.auto_search_lateral_distance),
-            ("right", self.auto_search_lateral_distance),
+            ("left", self.auto_search_left_distance),
+            ("right", self.auto_search_right_distance),
             ("forward", self.auto_search_third_forward_distance),
-            ("left", self.auto_search_lateral_distance),
-            ("right", self.auto_search_lateral_distance),
+            ("left", self.auto_search_left_distance),
+            ("right", self.auto_search_right_distance),
         ]
         self.auto_search_index = 0
         self.auto_search_step_started = None
@@ -511,10 +562,12 @@ class Task3InspectAndDropTest:
         )
         rospy.loginfo(
             (
-                "%s：稳定条件：中心最大抖动 %.1fpx，检测框面积变化比例 %.2f，"
+                "%s：逐帧候选组：最近%d个模型帧内保留有效检测，"
+                "位置误差<=%.1fpx，面积变化比例<=%.2f；"
                 "识别超时 %.1fs，总等待上限 %.1fs"
             ),
             NODE_NAME,
+            self.stable_detection_window_size,
             self.stable_center_tolerance_px,
             self.stable_area_tolerance_ratio,
             self.detection_timeout,
@@ -522,10 +575,25 @@ class Task3InspectAndDropTest:
         )
         if self.auto_enabled:
             rospy.loginfo(
-                "%s：自动模式帧数门槛：搜索锁定=%d帧，居中确认=%d帧",
+                (
+                    "%s：自动模式帧数门槛：搜索候选组=%d/%d帧，"
+                    "悬停复核候选组=%d/%d帧，细对准居中确认=%d帧"
+                ),
                 NODE_NAME,
                 self.auto_search_stable_detection_count,
+                self.stable_detection_window_size,
+                self.auto_search_stable_detection_count,
+                self.stable_detection_window_size,
                 self.auto_center_stable_detection_count,
+            )
+            rospy.loginfo(
+                (
+                    "%s：悬停复核时序：新HOVER后先稳定等待%.2fs，"
+                    "再开始重新识别，最长复核%.1fs；超时后恢复被打断的搜索步骤"
+                ),
+                NODE_NAME,
+                self.auto_hover_confirm_settle_seconds,
+                self.auto_hover_confirm_timeout,
             )
             rospy.loginfo(
                 (
@@ -606,20 +674,25 @@ class Task3InspectAndDropTest:
             )
             rospy.loginfo(
                 (
-                    "%s：搜索顺序：悬停%.1fs -> 前进%.2fm -> 左%.2fm -> 右%.2fm -> "
-                    "前进%.2fm -> 左%.2fm -> 右%.2fm -> 前进%.2fm -> 左%.2fm -> 右%.2fm"
+                    "%s：搜索顺序：悬停%.1fs；第一段之字形=%s，"
+                    "第一段总前进%.2fm；第二段前进%.2fm后左右搜索；"
+                    "第三段前进%.2fm后左右搜索"
                 ),
                 NODE_NAME,
                 self.auto_initial_hover_seconds,
+                "开启" if self.auto_first_segment_zigzag_enabled else "关闭",
                 self.auto_search_first_forward_distance,
-                self.auto_search_lateral_distance,
-                self.auto_search_lateral_distance,
                 self.auto_search_second_forward_distance,
-                self.auto_search_lateral_distance,
-                self.auto_search_lateral_distance,
                 self.auto_search_third_forward_distance,
-                self.auto_search_lateral_distance,
-                self.auto_search_lateral_distance,
+            )
+            rospy.loginfo(
+                (
+                    "%s：横移距离定义：左移从当前点向左走%.2fm；"
+                    "随后右移从左侧位置向右走%.2fm"
+                ),
+                NODE_NAME,
+                self.auto_search_left_distance,
+                self.auto_search_right_distance,
             )
         else:
             rospy.loginfo(
@@ -801,6 +874,16 @@ class Task3InspectAndDropTest:
             raise ValueError("min_confidence 必须在 0 到 1 之间")
         if self.stable_detection_count < 1:
             raise ValueError("stable_detection_count 必须大于等于 1")
+        if self.stable_detection_window_size < 1:
+            raise ValueError("stable_detection_window_size 必须大于等于 1")
+        if self.stable_detection_count > self.stable_detection_window_size:
+            raise ValueError(
+                "stable_detection_count 不能大于 stable_detection_window_size"
+            )
+        if self.auto_hover_confirm_settle_seconds < 0.0:
+            raise ValueError("auto_hover_confirm_settle_seconds 不能小于 0")
+        if self.auto_hover_confirm_timeout <= 0.0:
+            raise ValueError("auto_hover_confirm_timeout 必须大于 0")
         if self.stable_center_tolerance_px < 0.0:
             raise ValueError("stable_center_tolerance_px 不能小于 0")
         if not 0.0 <= self.stable_area_tolerance_ratio <= 1.0:
@@ -828,6 +911,14 @@ class Task3InspectAndDropTest:
         if self.auto_search_stable_detection_count < 1:
             raise ValueError(
                 "auto_search_stable_detection_count 必须大于等于 1"
+            )
+        if (
+            self.auto_search_stable_detection_count
+            > self.stable_detection_window_size
+        ):
+            raise ValueError(
+                "auto_search_stable_detection_count 不能大于 "
+                "stable_detection_window_size"
             )
         if self.auto_center_stable_detection_count < 1:
             raise ValueError(
@@ -863,7 +954,8 @@ class Task3InspectAndDropTest:
             self.auto_search_first_forward_distance,
             self.auto_search_second_forward_distance,
             self.auto_search_third_forward_distance,
-            self.auto_search_lateral_distance,
+            self.auto_search_left_distance,
+            self.auto_search_right_distance,
         )
         if min(search_distances) <= 0.0:
             raise ValueError("自动搜索的前进和横移距离必须大于 0")
@@ -1429,16 +1521,49 @@ class Task3InspectAndDropTest:
         self.auto_search_resume_goal = None
         self.auto_search_paused_for_model = False
 
+    def search_step_offsets(self, step_kind, step_amount):
+        if step_kind == "forward":
+            return step_amount, 0.0
+        if step_kind == "left":
+            return 0.0, -step_amount
+        if step_kind == "right":
+            return 0.0, step_amount
+        if step_kind == "zigzag_left":
+            return step_amount, -self.auto_search_left_distance
+        if step_kind == "zigzag_right":
+            return step_amount, self.auto_search_right_distance
+        if step_kind == "zigzag_center":
+            return (
+                step_amount,
+                self.auto_search_left_distance
+                - self.auto_search_right_distance,
+            )
+        return 0.0, 0.0
+
+    def search_step_description(self, step_kind, step_amount):
+        if step_kind == "hover":
+            return "启动悬停 %.2fs" % step_amount
+        forward, right = self.search_step_offsets(step_kind, step_amount)
+        return "%s：前后%+.2fm，左右%+.2fm" % (
+            self.SEARCH_STEP_NAMES[step_kind],
+            forward,
+            right,
+        )
+
     def complete_auto_search_step(self, step_kind, step_amount):
         rospy.loginfo(
-            "%s：搜索步骤 %d/%d 完成并由 HOVER 确认：%s %.2f%s",
+            "%s：搜索步骤 %d/%d 完成并由 HOVER 确认：%s",
             NODE_NAME,
             self.auto_search_index + 1,
             len(self.auto_search_plan),
-            self.SEARCH_STEP_NAMES[step_kind],
-            step_amount,
-            "s" if step_kind == "hover" else "m",
+            self.search_step_description(step_kind, step_amount),
         )
+        if step_kind == "hover":
+            self.reset_stability()
+            rospy.loginfo(
+                "%s：启动悬停结束，已清空悬停期间的识别帧，从搜索移动阶段重新统计",
+                NODE_NAME,
+            )
         self.auto_search_index += 1
         self.reset_auto_search_step()
         if self.auto_search_index >= len(self.auto_search_plan):
@@ -1578,22 +1703,23 @@ class Task3InspectAndDropTest:
             current = self.get_current_pose("生成搜索绝对目标")
             if current is None:
                 return
-            forward = step_amount if step_kind == "forward" else 0.0
-            right = 0.0
-            if step_kind == "left":
-                right = -step_amount
-            elif step_kind == "right":
-                right = step_amount
+            forward, right = self.search_step_offsets(
+                step_kind,
+                step_amount,
+            )
+            step_description = self.search_step_description(
+                step_kind,
+                step_amount,
+            )
             self.auto_search_step_goal = copy.deepcopy(
                 self.set_body_offset_goal(
                     current,
                     forward,
                     right,
-                    "搜索步骤 {}/{}：{} {:.2f}m".format(
+                    "搜索步骤 {}/{}：{}".format(
                         self.auto_search_index + 1,
                         len(self.auto_search_plan),
-                        self.SEARCH_STEP_NAMES[step_kind],
-                        step_amount,
+                        step_description,
                     ),
                 )
             )
@@ -1602,12 +1728,11 @@ class Task3InspectAndDropTest:
                 self.auto_search_step_goal = None
                 return
             rospy.loginfo(
-                "%s：开始搜索步骤 %d/%d：%s %.2fm，等待匹配目标的 HOVER",
+                "%s：开始搜索步骤 %d/%d：%s，等待匹配目标的 HOVER",
                 NODE_NAME,
                 self.auto_search_index + 1,
                 len(self.auto_search_plan),
-                self.SEARCH_STEP_NAMES[step_kind],
-                step_amount,
+                step_description,
             )
 
         if self.state != self.WAIT_FOR_TARGET:
@@ -1622,14 +1747,13 @@ class Task3InspectAndDropTest:
         rospy.loginfo_throttle(
             self.log_interval,
             (
-                "%s：搜索步骤 %d/%d 进行中：%s %.2fm，motion=%s，"
+                "%s：搜索步骤 %d/%d 进行中：%s，motion=%s，"
                 "base误差=%s，水平速度=%s"
             ),
             NODE_NAME,
             self.auto_search_index + 1,
             len(self.auto_search_plan),
-            self.SEARCH_STEP_NAMES[step_kind],
-            step_amount,
+            self.search_step_description(step_kind, step_amount),
             self.MOTION_STATE_NAMES.get(
                 self.latest_motion_state.state, "未知"
             ),
@@ -1901,6 +2025,142 @@ class Task3InspectAndDropTest:
             ),
         )
 
+    def confirm_target_after_hover(self):
+        if self.state != self.AUTO_HOVER_CONFIRM:
+            return
+        if not self.wait_for_motion_cancel("首次识别后等待刹停悬停"):
+            return
+
+        now = rospy.Time.now()
+        if self.hover_confirmation_hover_at is None:
+            self.hover_confirmation_hover_at = now
+            self.reset_stability()
+            self.current_auto_target = None
+            rospy.loginfo(
+                (
+                    "%s：motion_supervisor 已完成刹停并锁定当前位置；"
+                    "先稳定悬停 %.2fs，期间模型帧不参与第二轮复核"
+                ),
+                NODE_NAME,
+                self.auto_hover_confirm_settle_seconds,
+            )
+
+        settle_elapsed = (
+            now - self.hover_confirmation_hover_at
+        ).to_sec()
+        if settle_elapsed < self.auto_hover_confirm_settle_seconds:
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：悬停画面稳定等待 %.2f/%.2fs",
+                NODE_NAME,
+                settle_elapsed,
+                self.auto_hover_confirm_settle_seconds,
+            )
+            return
+
+        if not self.hover_confirmation_ready:
+            self.reset_stability()
+            self.current_auto_target = None
+            self.hover_confirmation_ready = True
+            self.hover_confirmation_started_at = now
+            rospy.loginfo(
+                (
+                    "%s：悬停画面稳定等待完成；已再次清空旧帧，"
+                    "开始第二轮 %d/%d 帧候选组复核，最长等待 %.1fs"
+                ),
+                NODE_NAME,
+                self.auto_search_stable_detection_count,
+                self.stable_detection_window_size,
+                self.auto_hover_confirm_timeout,
+            )
+
+        confirm_elapsed = (
+            now - self.hover_confirmation_started_at
+        ).to_sec()
+        if confirm_elapsed >= self.auto_hover_confirm_timeout:
+            self.resume_search_after_hover_confirmation(
+                "悬停复核 %.1fs 内未形成 %d/%d 帧稳定候选组"
+                % (
+                    self.auto_hover_confirm_timeout,
+                    self.auto_search_stable_detection_count,
+                    self.stable_detection_window_size,
+                )
+            )
+            return
+
+        if self.last_model_message_time is None:
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：悬停复核等待模型话题 %s",
+                NODE_NAME,
+                self.detection_topic,
+            )
+            return
+
+        model_age = (
+            rospy.Time.now() - self.last_model_message_time
+        ).to_sec()
+        if model_age > self.detection_timeout:
+            self.reset_stability()
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：悬停复核期间模型话题已 %.2fs 没有新消息，继续保持定点",
+                NODE_NAME,
+                model_age,
+            )
+            return
+
+        rospy.loginfo_throttle(
+            self.log_interval,
+            (
+                "%s：悬停复核进行中：时间=%.1f/%.1fs，窗口进度=%d/%d帧，"
+                "达到同一位置候选组 %d 帧后进入现有细对准"
+            ),
+            NODE_NAME,
+            confirm_elapsed,
+            self.auto_hover_confirm_timeout,
+            len(self.detection_frame_window),
+            self.stable_detection_window_size,
+            self.auto_search_stable_detection_count,
+        )
+
+    def resume_search_after_hover_confirmation(self, reason):
+        resume_goal = self.hover_confirmation_resume_goal
+        self.hover_confirmation_ready = False
+        self.hover_confirmation_hover_at = None
+        self.hover_confirmation_started_at = None
+        self.hover_confirmation_resume_goal = None
+        self.current_auto_target = None
+        self.visual_stop_locked = False
+        self.reset_auto_center_stability("悬停复核未通过")
+        self.reset_stability()
+
+        if resume_goal is not None:
+            self.active_goal = copy.deepcopy(resume_goal)
+            self.active_goal_reason = "悬停复核未通过，继续被打断的搜索目标"
+            rospy.logwarn(
+                (
+                    "%s：%s；恢复搜索绝对目标 map=(%.3f,%.3f,%.3f)，"
+                    "搜索步骤不前进"
+                ),
+                NODE_NAME,
+                reason,
+                self.active_goal.pose.position.x,
+                self.active_goal.pose.position.y,
+                self.active_goal.pose.position.z,
+            )
+        else:
+            rospy.logwarn(
+                "%s：%s；没有被打断的位移目标，保持当前定点继续搜索",
+                NODE_NAME,
+                reason,
+            )
+
+        self.set_state(
+            self.WAIT_FOR_TARGET,
+            "悬停重新识别未通过，恢复原搜索流程",
+        )
+
     def label_matches(self, class_name):
         normalized = self.normalize_label(class_name)
         if normalized == self.target_color:
@@ -1984,9 +2244,30 @@ class Task3InspectAndDropTest:
 
     def detection_callback(self, message):
         now = rospy.Time.now()
+        previous_model_message_time = self.last_model_message_time
         self.last_model_message_time = now
         self.model_frame_index += 1
         frame_index = self.model_frame_index
+
+        if (
+            self.state in (self.WAIT_FOR_TARGET, self.AUTO_HOVER_CONFIRM)
+            and previous_model_message_time is not None
+            and (now - previous_model_message_time).to_sec()
+            > self.detection_timeout
+        ):
+            gap = (now - previous_model_message_time).to_sec()
+            self.reset_stability()
+            rospy.logwarn(
+                (
+                    "%s：[模型帧 #%d] 模型消息中断 %.2fs，超过 %.2fs，"
+                    "已清空过期的%d帧候选窗口"
+                ),
+                NODE_NAME,
+                frame_index,
+                gap,
+                self.detection_timeout,
+                self.stable_detection_window_size,
+            )
 
         try:
             payload = json.loads(message.data)
@@ -2000,8 +2281,13 @@ class Task3InspectAndDropTest:
             if self.state == self.AUTO_APPROACH:
                 self.current_auto_target = None
                 self.reset_auto_center_stability("模型 JSON 解析失败")
-            else:
-                self.reset_stability()
+            elif self.state == self.WAIT_FOR_TARGET or (
+                self.state == self.AUTO_HOVER_CONFIRM
+                and self.hover_confirmation_ready
+            ):
+                self.add_detection_sample(
+                    None, frame_index, "模型 JSON 解析失败"
+                )
             return
 
         if not isinstance(payload, dict):
@@ -2013,8 +2299,13 @@ class Task3InspectAndDropTest:
             if self.state == self.AUTO_APPROACH:
                 self.current_auto_target = None
                 self.reset_auto_center_stability("模型 JSON 根节点无效")
-            else:
-                self.reset_stability()
+            elif self.state == self.WAIT_FOR_TARGET or (
+                self.state == self.AUTO_HOVER_CONFIRM
+                and self.hover_confirmation_ready
+            ):
+                self.add_detection_sample(
+                    None, frame_index, "模型 JSON 根节点无效"
+                )
             return
 
         raw_detections = payload.get("detections", [])
@@ -2027,8 +2318,13 @@ class Task3InspectAndDropTest:
             if self.state == self.AUTO_APPROACH:
                 self.current_auto_target = None
                 self.reset_auto_center_stability("模型 detections 字段无效")
-            else:
-                self.reset_stability()
+            elif self.state == self.WAIT_FOR_TARGET or (
+                self.state == self.AUTO_HOVER_CONFIRM
+                and self.hover_confirmation_ready
+            ):
+                self.add_detection_sample(
+                    None, frame_index, "模型 detections 字段无效"
+                )
             return
 
         image_width = self.finite_number(payload.get("image_width"))
@@ -2055,7 +2351,25 @@ class Task3InspectAndDropTest:
             "; ".join(summaries) if summaries else "无目标",
         )
 
-        if self.state not in (self.WAIT_FOR_TARGET, self.AUTO_APPROACH):
+        if self.state not in (
+            self.WAIT_FOR_TARGET,
+            self.AUTO_HOVER_CONFIRM,
+            self.AUTO_APPROACH,
+        ):
+            return
+        if (
+            self.state == self.AUTO_HOVER_CONFIRM
+            and not self.hover_confirmation_ready
+        ):
+            rospy.loginfo_throttle(
+                self.log_interval,
+                (
+                    "%s：[模型帧 #%d] 首次识别已通过，"
+                    "机器人尚未完成刹停，本帧不计入悬停复核窗口"
+                ),
+                NODE_NAME,
+                frame_index,
+            )
             return
 
         candidates = [
@@ -2079,18 +2393,11 @@ class Task3InspectAndDropTest:
                 )
                 return
 
-            previous_count = len(self.detection_samples)
-            self.reset_stability()
-            rospy.loginfo(
-                (
-                    "%s：[模型帧 #%d] 本帧无效：没有找到 %s 方框，"
-                    "要求置信度 >= %.2f，连续有效帧 %d -> 0"
-                ),
-                NODE_NAME,
+            self.add_detection_sample(
+                None,
                 frame_index,
-                self.target_color,
-                self.min_confidence,
-                previous_count,
+                "没有找到 %s 方框或置信度低于 %.2f"
+                % (self.target_color, self.min_confidence),
             )
             return
 
@@ -2141,7 +2448,7 @@ class Task3InspectAndDropTest:
         self.add_detection_sample(best, frame_index)
 
     def reset_stability(self):
-        self.detection_samples = []
+        self.detection_frame_window = []
         self.last_target_time = None
 
     def required_stable_detection_count(self):
@@ -2204,119 +2511,202 @@ class Task3InspectAndDropTest:
             error_v_px,
         )
 
-    def add_detection_sample(self, detection, frame_index):
-        now = detection["stamp"]
-        if (
-            self.last_target_time is not None
-            and (now - self.last_target_time).to_sec() > self.detection_timeout
-        ):
-            previous_count = len(self.detection_samples)
-            self.reset_stability()
-            rospy.logwarn(
-                (
-                    "%s：[模型帧 #%d] 相邻目标间隔超过 %.1fs，"
-                    "连续有效帧 %d -> 0"
-                ),
-                NODE_NAME,
-                frame_index,
-                self.detection_timeout,
-                previous_count,
-            )
+    def add_detection_sample(self, detection, frame_index, invalid_reason=""):
+        stage_name = (
+            "悬停复核"
+            if self.state == self.AUTO_HOVER_CONFIRM
+            else "搜索识别" if self.auto_enabled else "人工识别"
+        )
+        if detection is not None:
+            detection["frame_index"] = frame_index
+            self.last_target_time = detection["stamp"]
 
-        self.last_target_time = now
-        detection["frame_index"] = frame_index
-        self.detection_samples.append(detection)
-        required_count = self.required_stable_detection_count()
-        self.detection_samples = self.detection_samples[
-            -required_count :
+        self.detection_frame_window.append({
+            "frame_index": frame_index,
+            "detection": detection,
+        })
+        self.detection_frame_window = self.detection_frame_window[
+            -self.stable_detection_window_size :
         ]
 
-        stable, center_jitter, area_change = self.samples_are_stable(required_count)
-        progress = len(self.detection_samples)
-        rospy.loginfo(
-            (
-                "%s：[模型帧 #%d] 第 %d/%d 帧有效：%s，"
-                "中心抖动=%.1f/%.1fpx，面积变化=%.3f/%.3f"
-            ),
-            NODE_NAME,
-            frame_index,
-            progress,
+        valid_samples = [
+            item["detection"]
+            for item in self.detection_frame_window
+            if item["detection"] is not None
+        ]
+        candidate_groups = self.build_detection_candidate_groups(valid_samples)
+        required_count = self.required_stable_detection_count()
+        window_count = len(self.detection_frame_window)
+        best_group_count = max(
+            (len(group) for group in candidate_groups),
+            default=0,
+        )
+
+        if detection is None:
+            rospy.loginfo(
+                (
+                    "%s：[%s][模型帧 #%d] 本帧无效：%s；窗口进度=%d/%d帧，"
+                    "有效位置帧=%d/%d，最佳位置候选组=%d/%d；"
+                    "保留窗口内旧有效帧"
+                ),
+                NODE_NAME,
+                stage_name,
+                frame_index,
+                invalid_reason or "没有有效目标",
+                window_count,
+                self.stable_detection_window_size,
+                len(valid_samples),
+                window_count,
+                best_group_count,
+                required_count,
+            )
+            return
+
+        current_group_index = 0
+        current_group = [detection]
+        for index, group in enumerate(candidate_groups, start=1):
+            if any(item is detection for item in group):
+                current_group_index = index
+                current_group = group
+                break
+
+        stable, center_jitter, area_change = self.samples_are_stable(
+            current_group,
             required_count,
+        )
+        frame_ids = [item["frame_index"] for item in current_group]
+        rospy.loginfo(
+                (
+                    "%s：[%s][模型帧 #%d] 本帧有效并加入候选组%d：%s；"
+                    "窗口进度=%d/%d帧，有效位置帧=%d/%d，候选组=%d/%d，"
+                    "组内帧=%s，中心抖动=%.1f/%.1fpx，面积变化=%.3f/%.3f"
+                ),
+            NODE_NAME,
+            stage_name,
+            frame_index,
+            current_group_index,
             self.detection_summary(detection),
+            window_count,
+            self.stable_detection_window_size,
+            len(valid_samples),
+            window_count,
+            len(current_group),
+            required_count,
+            frame_ids,
             center_jitter,
             self.stable_center_tolerance_px,
             area_change,
             self.stable_area_tolerance_ratio,
         )
 
-        if progress < required_count:
+        if len(current_group) < required_count:
             return
-
         if not stable:
             rospy.logwarn(
                 (
-                    "%s：[模型帧 #%d] 目标帧有效，但连续稳定性未通过："
-                    "中心抖动=%.1fpx/%.1fpx，面积变化=%.3f/%.3f，"
-                    "保留当前帧作为新的第 1/%d 帧"
+                    "%s：[%s][模型帧 #%d] 候选组帧数已达到%d，"
+                    "但最终一致性未通过；"
+                    "继续保留最近%d帧并等待新的匹配帧"
                 ),
                 NODE_NAME,
+                stage_name,
                 frame_index,
-                center_jitter,
-                self.stable_center_tolerance_px,
-                area_change,
-                self.stable_area_tolerance_ratio,
                 required_count,
+                self.stable_detection_window_size,
             )
-            self.detection_samples = [detection]
             return
 
         rospy.loginfo(
-            "%s：[模型帧 #%d] 第 %d/%d 帧有效，连续稳定识别确认通过",
+            (
+                "%s：[%s][模型帧 #%d] 逐帧候选组确认通过：最近%d帧窗口内"
+                "位置一致的有效帧=%d/%d，命中帧=%s"
+            ),
             NODE_NAME,
+            stage_name,
             frame_index,
-            progress,
+            self.stable_detection_window_size,
+            len(current_group),
             required_count,
+            frame_ids,
         )
-        self.lock_target()
+        self.lock_target(current_group)
 
-    def samples_are_stable(self, required_count):
-        if not self.detection_samples:
+    def build_detection_candidate_groups(self, samples):
+        groups = []
+        for sample in samples:
+            matches = []
+            for index, group in enumerate(groups):
+                median_u, median_v, median_area = self.sample_medians(group)
+                center_distance = math.hypot(
+                    sample["center_u"] - median_u,
+                    sample["center_v"] - median_v,
+                )
+                area_change = self.area_change_ratio(
+                    sample["area"], median_area
+                )
+                if (
+                    center_distance <= self.stable_center_tolerance_px
+                    and area_change <= self.stable_area_tolerance_ratio
+                ):
+                    matches.append((center_distance, area_change, index))
+
+            if not matches:
+                groups.append([sample])
+                continue
+
+            _, _, best_index = min(matches)
+            groups[best_index].append(sample)
+        return groups
+
+    @staticmethod
+    def sample_medians(samples):
+        return (
+            statistics.median(item["center_u"] for item in samples),
+            statistics.median(item["center_v"] for item in samples),
+            statistics.median(item["area"] for item in samples),
+        )
+
+    @staticmethod
+    def area_change_ratio(area_a, area_b):
+        denominator = max(area_a, area_b)
+        if denominator <= 0.0:
+            return 1.0
+        return abs(area_a - area_b) / denominator
+
+    def samples_are_stable(self, samples, required_count):
+        if not samples:
             return False, 0.0, 0.0
 
-        mean_u = sum(item["center_u"] for item in self.detection_samples) / len(
-            self.detection_samples
-        )
-        mean_v = sum(item["center_v"] for item in self.detection_samples) / len(
-            self.detection_samples
-        )
+        median_u, median_v, median_area = self.sample_medians(samples)
         center_jitter = max(
-            math.hypot(item["center_u"] - mean_u, item["center_v"] - mean_v)
-            for item in self.detection_samples
+            math.hypot(
+                item["center_u"] - median_u,
+                item["center_v"] - median_v,
+            )
+            for item in samples
         )
-
-        areas = [item["area"] for item in self.detection_samples]
-        max_area = max(areas)
-        area_change = (max_area - min(areas)) / max_area if max_area > 0.0 else 1.0
-
+        area_change = max(
+            self.area_change_ratio(item["area"], median_area)
+            for item in samples
+        )
         stable = (
-            len(self.detection_samples) >= required_count
+            len(samples) >= required_count
             and center_jitter <= self.stable_center_tolerance_px
             and area_change <= self.stable_area_tolerance_ratio
         )
         return stable, center_jitter, area_change
 
-    def lock_target(self):
-        samples = self.detection_samples
+    def lock_target(self, samples):
         latest = dict(samples[-1])
         latest["mean_confidence"] = sum(
             item["confidence"] for item in samples
         ) / len(samples)
-        latest["mean_center_u"] = sum(
+        latest["mean_center_u"] = statistics.median(
             item["center_u"] for item in samples
-        ) / len(samples)
-        latest["mean_center_v"] = sum(
+        )
+        latest["mean_center_v"] = statistics.median(
             item["center_v"] for item in samples
-        ) / len(samples)
+        )
         rospy.loginfo(
             (
                 "%s：稳定识别成功：颜色=%s，模型标签=%s，平均置信度=%.3f，"
@@ -2334,19 +2724,47 @@ class Task3InspectAndDropTest:
             latest["y2"],
         )
         if self.auto_enabled:
-            latest["center_u"] = latest["mean_center_u"]
-            latest["center_v"] = latest["mean_center_v"]
-            self.current_auto_target = latest
-            self.reset_auto_center_stability()
-            self.visual_stop_locked = False
-            self.request_motion_cancel(
-                "搜索阶段稳定识别目标，主动刹停后进入细对准",
-                discard_search_resume=True,
-            )
-            self.set_state(
-                self.AUTO_APPROACH,
-                "模型目标已稳定确认，开始依据中心像素自动对齐",
-            )
+            if self.state == self.WAIT_FOR_TARGET:
+                resume_source = (
+                    self.auto_search_step_goal
+                    if self.auto_search_step_goal is not None
+                    else self.active_goal
+                )
+                self.hover_confirmation_resume_goal = (
+                    None
+                    if resume_source is None
+                    else copy.deepcopy(resume_source)
+                )
+                self.current_auto_target = None
+                self.reset_auto_center_stability()
+                self.visual_stop_locked = False
+                self.hover_confirmation_ready = False
+                self.hover_confirmation_hover_at = None
+                self.hover_confirmation_started_at = None
+                self.reset_stability()
+                self.request_motion_cancel(
+                    "搜索阶段首次稳定识别目标，刹停后重新识别",
+                    discard_search_resume=True,
+                )
+                self.set_state(
+                    self.AUTO_HOVER_CONFIRM,
+                    "搜索中首次识别通过，等待刹停后重新采集识别帧",
+                )
+            elif self.state == self.AUTO_HOVER_CONFIRM:
+                latest["center_u"] = latest["mean_center_u"]
+                latest["center_v"] = latest["mean_center_v"]
+                self.current_auto_target = latest
+                self.reset_auto_center_stability()
+                self.visual_stop_locked = False
+                self.hover_confirmation_ready = False
+                self.hover_confirmation_hover_at = None
+                self.hover_confirmation_started_at = None
+                self.hover_confirmation_resume_goal = None
+                self.detection_frame_window = []
+                self.set_state(
+                    self.AUTO_APPROACH,
+                    "悬停后第二轮目标识别通过，开始依据中心像素细对准",
+                )
         else:
             self.set_state(self.HOLD_BEFORE_ACTION, "模型目标已稳定确认")
 
@@ -2486,7 +2904,11 @@ class Task3InspectAndDropTest:
                 continue
 
             if (
-                self.state in (self.WAIT_FOR_TARGET, self.AUTO_APPROACH)
+                self.state in (
+                    self.WAIT_FOR_TARGET,
+                    self.AUTO_HOVER_CONFIRM,
+                    self.AUTO_APPROACH,
+                )
                 and elapsed >= self.max_wait_seconds
             ):
                 self.finish_task(
@@ -2528,6 +2950,10 @@ class Task3InspectAndDropTest:
                         self.rate.sleep()
                         continue
                     self.search_target_automatically(model_ready)
+
+            elif self.state == self.AUTO_HOVER_CONFIRM:
+                self.publish_actuator(self.clamp_closed, "off")
+                self.confirm_target_after_hover()
 
             elif self.state == self.AUTO_APPROACH:
                 self.publish_actuator(self.clamp_closed, "off")

@@ -28,7 +28,7 @@
       arrow_topic：Pose箭头方向JSON，需包含valid、confidence、center、bbox和angle_deg；
       新模型还会提供tip、tail_left、tail_right和direction_confidence，当前任务无需额外解析。
     -->
-    <arg name="arrow_topic" default="/arrow/direction" />
+    <arg name="arrow_topic" default="/vision/arrow/direction" />
     <!--
       min_confidence：Pose方向JSON中的confidence下限；该值是检测框与三个关键点
       置信度的最小值。调大可减少不可靠方向，调小可增加弱目标召回。

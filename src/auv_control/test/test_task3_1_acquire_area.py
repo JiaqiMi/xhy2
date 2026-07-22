@@ -71,7 +71,7 @@ class Task3AcquireAreaTest(object):
     def __init__(self):
         self.rate_hz = float(rospy.get_param("~rate", 5.0))
         self.arrow_topic = str(rospy.get_param(
-            "~arrow_topic", "/arrow/direction"
+            "~arrow_topic", "/vision/arrow/direction"
         )).strip()
         self.motion_goal_topic = str(rospy.get_param(
             "~motion_goal_topic", "/cmd/motion/goal"
