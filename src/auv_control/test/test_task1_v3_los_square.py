@@ -36,6 +36,8 @@
 2026.7.20
     增加带时间戳的 YAML 数据文件，定期保存固定轨迹、机器人位姿、LOS目标、
     监督器状态和已完成路径，便于复盘控制过程。
+2026.7.22
+    增加参考深度参数；-1 使用启动时深度，其他值作为全程运动深度。
 """
 
 import copy
@@ -159,6 +161,7 @@ class LosSquareTest:
         self.tf_listener = tf.TransformListener()
 
         self.map_frame = rospy.get_param("~map_frame", "map")
+        self.reference_depth = float(rospy.get_param("~reference_depth", -1.0))
         self.robot_frame = rospy.get_param("~robot_frame", "base_link")
         self.line_tracking_frame = str(rospy.get_param(
             "~line_tracking_frame", "camera"
@@ -452,7 +455,12 @@ class LosSquareTest:
             return False
         self.start_pose = copy.deepcopy(current)
         self.start_yaw = yaw_from_quaternion(current.pose.orientation)
-        self.hold_z = current.pose.position.z
+        self.hold_z = (
+            current.pose.position.z
+            if self.reference_depth == -1.0
+            else self.reference_depth
+        )
+        self.start_pose.pose.position.z = self.hold_z
         self.startup_started = rospy.Time.now()
         self.planned_path = self.sample_square(
             tracking.pose.position, self.start_yaw
@@ -461,12 +469,15 @@ class LosSquareTest:
         self.current_tracking_point = copy.deepcopy(self.planned_path[0])
         self.actual_trajectory.append(copy.deepcopy(current.pose.position))
         rospy.loginfo(
-            "%s: 双目起点=(%.2f, %.2f, %.2f)，初始航向=%.1f deg，"
+            "%s: 双目起点=(%.2f, %.2f, %.2f)，参考深度=%.2f m（%s），"
+            "初始航向=%.1f deg，"
             "正方形边长=%.2f m，总轨迹=%.2f m",
             NODE_NAME,
             tracking.pose.position.x,
             tracking.pose.position.y,
             tracking.pose.position.z,
+            self.hold_z,
+            "当前深度" if self.reference_depth == -1.0 else "launch 设置",
             math.degrees(self.start_yaw),
             self.square_side_length,
             self.planned_path_s[-1],

@@ -7,7 +7,7 @@
 流程：
     1. 定点保持启动位姿一段可调时间，等待相机和识别模块启动；
     2. 未识别到黄色图形时，依次定点左转、右转、回正，再向前移动后重复；
-    3. 最近多条识别消息中达到可调有效帧数后，发布 map 绝对目标前往图形中心；
+    3. 最近 N 条有效识别中有 K 条位置聚类后，发布 map 绝对目标前往图形中心；
     4. 前往图形时只判断水平位置误差，不规划或校正目标航向；
     5. 到达黄色图形上方后亮红灯，动作完成后发布完成消息。
 
@@ -32,6 +32,9 @@
 2026.7.20
     增加带时间戳的 YAML 数据文件，记录图形消息处理结果以及每个控制周期的
     位姿、目标、MotionState、识别窗口和动作阶段。
+2026.7.22
+    识别窗口只保留有效识别帧，每条样本独立按最大保存时间淘汰。
+    增加参考深度参数；-1 使用启动时深度，其他值作为全程运动深度。
 """
 
 import copy
@@ -101,6 +104,7 @@ class YellowMarkerTest:
             self, "marker_display_name", "黄色图形"
         )
         self.rate = rospy.Rate(float(rospy.get_param("~rate", 5.0)))
+        self.reference_depth = float(rospy.get_param("~reference_depth", -1.0))
         self.tf_listener = tf.TransformListener()
 
         self.motion_goal_topic = rospy.get_param(
@@ -179,9 +183,9 @@ class YellowMarkerTest:
         self.marker_cluster_distance = float(rospy.get_param(
             "~marker_cluster_distance", 0.25
         ))
-        self.marker_sample_timeout = float(rospy.get_param(
-            "~marker_sample_timeout", 1.0
-        ))
+        self.marker_sample_timeout = max(0.1, float(rospy.get_param(
+            "~marker_sample_timeout", 10.0
+        )))
         self.max_camera_distance = float(rospy.get_param(
             "~max_camera_distance", 5.0
         ))
@@ -221,7 +225,6 @@ class YellowMarkerTest:
         self.cancel_sent = False
 
         self.marker_observation_window = []
-        self.last_marker_sample_time = None
         self.detected_marker = None
         self.move_target = None
         self.move_goal = None
@@ -318,20 +321,22 @@ class YellowMarkerTest:
                 if transformed is not None else None
             ),
             observation_window_size=len(self.marker_observation_window),
-            observation_valid_count=sum(
-                item is not None for item in self.marker_observation_window
-            ),
+            observation_valid_count=len(self.marker_observation_window),
         )
 
     def record_control_cycle(self, current):
+        self.prune_marker_observations()
         motion = self.latest_motion_state
         rotation = getattr(self, "rotation_state", None)
         rotation_data = None
         if rotation is not None:
             rotation_data = {
                 "completed_deg": math.degrees(rotation["completed"]),
-                "step_deg": math.degrees(rotation["step_angle"]),
+                "lookahead_deg": math.degrees(getattr(
+                    self, "black_rotation_step", 0.0
+                )),
                 "goal": self.pose_record(rotation["goal"]),
+                "final_goal_active": rotation["final_goal_active"],
                 "hover_started": (
                     rotation["hover_started"].to_sec()
                     if rotation["hover_started"] is not None else None
@@ -345,9 +350,7 @@ class YellowMarkerTest:
             move_target=self.point_record(self.move_target),
             detected_marker=self.pose_record(self.detected_marker),
             observation_window_size=len(self.marker_observation_window),
-            observation_valid_count=sum(
-                item is not None for item in self.marker_observation_window
-            ),
+            observation_valid_count=len(self.marker_observation_window),
             action_phase=getattr(self, "black_action_phase", None),
             rotation=rotation_data,
             motion=(
@@ -404,9 +407,20 @@ class YellowMarkerTest:
         if current is None:
             return False
         self.start_pose = copy.deepcopy(current)
-        self.hold_z = current.pose.position.z
+        self.hold_z = (
+            current.pose.position.z
+            if self.reference_depth == -1.0
+            else self.reference_depth
+        )
+        self.start_pose.pose.position.z = self.hold_z
         self.search_base_yaw = yaw_from_quaternion(current.pose.orientation)
         self.startup_hold_started = rospy.Time.now()
+        rospy.loginfo(
+            "%s: 参考深度=%.2f m（%s）",
+            self.node_name,
+            self.hold_z,
+            "当前深度" if self.reference_depth == -1.0 else "launch 设置",
+        )
         return True
 
     @staticmethod
@@ -511,41 +525,40 @@ class YellowMarkerTest:
                 return None
 
     def reset_marker_window(self):
-        """清空滑动识别窗口；窗口项为有效图形位姿或 None。"""
+        """清空只包含有效识别帧的滑动窗口。"""
         self.marker_observation_window = []
-        self.last_marker_sample_time = None
+
+    def prune_marker_observations(self, now=None):
+        """独立淘汰超过最大保存时间的有效识别帧。"""
+        now = rospy.Time.now() if now is None else now
+        self.marker_observation_window = [
+            item for item in self.marker_observation_window
+            if (now - item[0]).to_sec() <= self.marker_sample_timeout
+        ]
 
     def add_marker_observation(self, marker):
-        """加入一条识别输出，并返回窗口内满足数量和聚类条件的图形位姿。"""
+        """只加入有效识别，并返回最近有效帧中满足聚类条件的图形位姿。"""
         now = rospy.Time.now()
-        if (
-            self.last_marker_sample_time is None
-            or (now - self.last_marker_sample_time).to_sec()
-            > self.marker_sample_timeout
-        ):
-            self.marker_observation_window = []
-        self.last_marker_sample_time = now
+        self.prune_marker_observations(now)
+        if marker is None:
+            return None
 
-        self.marker_observation_window.append(
-            copy.deepcopy(marker) if marker is not None else None
-        )
+        self.marker_observation_window.append((now, copy.deepcopy(marker)))
         self.marker_observation_window = self.marker_observation_window[
             -self.marker_window_size:
         ]
-        valid = [
-            item for item in self.marker_observation_window if item is not None
-        ]
+        valid = [item[1] for item in self.marker_observation_window]
         rospy.loginfo_throttle(
             2.0,
-            "%s: %s识别窗口=%d/%d，有效=%d，需要=%d",
+            "%s: %s有效识别窗口=%d/%d，同位置需要=%d，最大保存=%.1f s",
             self.node_name,
             self.marker_display_name,
             len(self.marker_observation_window),
             self.marker_window_size,
-            len(valid),
             self.marker_required_valid,
+            self.marker_sample_timeout,
         )
-        if len(self.marker_observation_window) < self.marker_window_size:
+        if len(valid) < self.marker_window_size:
             return None
 
         best_cluster = []
@@ -608,7 +621,7 @@ class YellowMarkerTest:
         self.step = self.STEP_MOVE
 
     def target_callback(self, message):
-        """最近 N 条识别输出中有 K 条同类有效结果时确认黄色图形。"""
+        """最近 N 条有效识别中有 K 条位置聚类时确认黄色图形。"""
         if self.hold_z is None and not self.initialize_start_pose():
             self.record_target_message(message, "robot_pose_unavailable")
             return
