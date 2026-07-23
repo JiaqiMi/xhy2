@@ -33,11 +33,11 @@
       min_confidence：Pose方向JSON中的confidence下限；该值是检测框与三个关键点
       置信度的最小值。调大可减少不可靠方向，调小可增加弱目标召回。
     -->
-    <arg name="min_confidence" default="0.35" />
+    <arg name="min_confidence" default="0.30" />
     <!-- detection_timeout：普通位置帧最长允许间隔，也用于定点方向复核超时。 -->
-    <arg name="detection_timeout" default="1.0" />
+    <arg name="detection_timeout" default="1" />
     <!-- visual_loss_cancel_seconds：运动中完整箭头丢失达到该时间就cancel；必须不大于detection_timeout。 -->
-    <arg name="visual_loss_cancel_seconds" default="0.5" />
+    <arg name="visual_loss_cancel_seconds" default="1" />
     <!--
       位置锁定复用子任务3的逐帧候选组：保留最近stable_detection_window_size个
       模型帧，其中同一位置候选组命中stable_detection_count帧即通过；
@@ -52,7 +52,7 @@
     <!-- stable_angle_tolerance_deg：方向连续帧相对平均角度允许的最大抖动。 -->
     <arg name="stable_angle_tolerance_deg" default="12.0" />
     <!-- center_stable_detection_count：粗居中、最终居中和base_link前移跟踪共用的连续帧数。 -->
-    <arg name="center_stable_detection_count" default="5" />
+    <arg name="center_stable_detection_count" default="3" />
     <!-- 只有完整箭头的方向连续稳定3帧，才允许从粗对准进入细对准。 -->
     <arg name="heading_stable_detection_count" default="3" />
     <!-- 细对准第一段中，航向和左右位置连续通过该帧数后才开放前后移动。 -->
@@ -63,7 +63,7 @@
     <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
     <arg name="motion_state_topic" default="/motion/state" />
     <!-- motion_state_timeout：运动反馈最大允许年龄；超时后任务失败退出。 -->
-    <arg name="motion_state_timeout" default="0.5" />
+    <arg name="motion_state_timeout" default="2" />
     <!-- motion_startup_timeout：启动后等待第一份有效运动反馈的最长时间。 -->
     <arg name="motion_startup_timeout" default="20.0" />
     <!-- cancel_timeout：发出cancel后等待刹停、模式4接管并进入HOVER的最长时间。 -->
@@ -111,8 +111,8 @@
     <arg name="target_center_u_ratio" default="0.5" />
     <arg name="target_center_v_ratio" default="0.5" />
     <!-- center_tolerance_u/v_px：中心误差容差；调小更准但更容易反复修正。 -->
-    <arg name="center_tolerance_u_px" default="35.0" />
-    <arg name="center_tolerance_v_px" default="35.0" />
+    <arg name="center_tolerance_u_px" default="50.0" />
+    <arg name="center_tolerance_v_px" default="50.0" />
 
     <!--
       粗对准根据v/u误差生成前后、左右小步，并等待每一步真实到达后再发下一步。
@@ -138,9 +138,9 @@
     -->
     <arg name="fine_forward_gain_m" default="0.10" />
     <arg name="fine_lateral_gain_m" default="0.10" />
-    <arg name="fine_visual_max_step_m" default="0.03" />
-    <arg name="fine_visual_min_step_m" default="0.005" />
-    <arg name="fine_yaw_max_step_deg" default="3.0" />
+    <arg name="fine_visual_max_step_m" default="0.3" />
+    <arg name="fine_visual_min_step_m" default="0.1" />
+    <arg name="fine_yaw_max_step_deg" default="20" />
     <arg name="fine_goal_min_interval" default="0.5" />
 
     <!--
@@ -161,7 +161,7 @@
 
     <!-- status_topic/status_timeout：模式、深度和航向反馈话题及最大允许接收间隔。 -->
     <arg name="status_topic" default="/status/auv" />
-    <arg name="status_timeout" default="0.5" />
+    <arg name="status_timeout" default="1" />
     <!--
       min_ground_clearance：最低离地距离。当前控制坐标约定水池底部为map z=0，
       base_link位于底部上方时z为负值，因此任务用map -> base_link实际z计算离底高度，
@@ -181,7 +181,7 @@
     <arg name="arrival_position_tolerance" default="0.05" />
     <arg name="arrival_yaw_tolerance_deg" default="5.0" />
     <arg name="arrival_max_horizontal_speed" default="0.02" />
-    <arg name="arrival_max_yaw_rate_deg_s" default="0.5" />
+    <arg name="arrival_max_yaw_rate_deg_s" default="2" />
     <!-- final_hold_seconds：最终目标真实稳定后需要连续悬停的时间。 -->
     <arg name="final_hold_seconds" default="10.0" />
     <!-- final_hold_timeout：进入最终悬停阶段后允许完成上述连续保持的最长时间。 -->
@@ -189,8 +189,8 @@
 
     <include if="$(arg start_arrow_model)"
              file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
-        <arg name="start_camera" value="false" />
-        <arg name="start_splitter" value="false" />
+        <arg name="start_camera" value="true" />
+        <arg name="start_splitter" value="true" />
     </include>
 
     <!--
