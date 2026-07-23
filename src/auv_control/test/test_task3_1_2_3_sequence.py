@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""任务3子任务2、3联调协调节点。"""
+"""任务3子任务1、2、3完整联调协调节点。"""
 
 import copy
 import json
@@ -21,7 +21,7 @@ from tf.transformations import euler_from_quaternion
 from auv_control.msg import MotionState, TargetDetection
 
 
-NODE_NAME = "test_task3_2_3_sequence"
+NODE_NAME = "test_task3_1_2_3_sequence"
 
 
 def normalize_angle(angle):
@@ -29,11 +29,13 @@ def normalize_angle(angle):
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
-class Task3Subtask23Sequence:
-    """同时保持两个模型常驻，并顺序调度、清理两个执行子任务。"""
+class Task3Subtask123Sequence:
+    """预热三个模型，并顺序调度任务3的三个执行子任务。"""
 
+    TASK1_PREFIX = "test_task3_1_acquire_area"
     TASK2_PREFIX = "test_task3_2_get_task"
     TASK3_PREFIX = "test_task3_3_inspect_and_drop"
+    ARROW_MODEL_ROLE = "arrow_model"
     MODEL_BUNDLE_ROLE = "model_bundle"
     TASK2_COLOR_BY_MARKER = {
         1: "yellow",
@@ -62,6 +64,8 @@ class Task3Subtask23Sequence:
         self.base_frame = str(rospy.get_param("~base_frame", "base_link"))
         self.tf_timeout = float(rospy.get_param("~tf_timeout", 8.0))
 
+        self.arrow_topic = str(rospy.get_param(
+            "~arrow_topic", "/vision/arrow/direction"))
         self.aruco_topic = str(rospy.get_param(
             "~aruco_topic", "/vision/aruco/target_message"))
         self.aruco_web_detection_topic = str(rospy.get_param(
@@ -77,6 +81,8 @@ class Task3Subtask23Sequence:
             "/vision/rectangle/detections"))
         self.rectangle_pose_topic = str(rospy.get_param(
             "~rectangle_pose_topic", "/vision/rectangle/pose"))
+        self.start_arrow_model = bool(rospy.get_param(
+            "~start_arrow_model", True))
         self.start_aruco_model = bool(rospy.get_param(
             "~start_aruco_model", True))
         self.start_rectangle_model = bool(rospy.get_param(
@@ -87,10 +93,13 @@ class Task3Subtask23Sequence:
             "~start_down_camera", False))
         self.start_down_splitter = bool(rospy.get_param(
             "~start_down_splitter", False))
+        self.start_arrow_web = bool(rospy.get_param(
+            "~start_arrow_web", True))
         self.start_aruco_web = bool(rospy.get_param(
             "~start_aruco_web", True))
         self.start_rectangle_web = bool(rospy.get_param(
             "~start_rectangle_web", True))
+        self.arrow_web_port = int(rospy.get_param("~arrow_web_port", 8083))
         self.aruco_web_port = int(rospy.get_param("~aruco_web_port", 8082))
         self.rectangle_web_port = int(rospy.get_param(
             "~rectangle_web_port", 8080))
@@ -117,10 +126,18 @@ class Task3Subtask23Sequence:
             "~initial_hold_timeout", 30.0))
         self.initial_hold_stable_seconds = float(rospy.get_param(
             "~initial_hold_stable_seconds", 1.0))
+        self.post_task1_hold_timeout = float(rospy.get_param(
+            "~post_task1_hold_timeout", 30.0))
+        self.post_task1_stable_seconds = float(rospy.get_param(
+            "~post_task1_stable_seconds", 1.0))
         self.post_task2_hold_timeout = float(rospy.get_param(
             "~post_task2_hold_timeout", 30.0))
         self.post_task2_stable_seconds = float(rospy.get_param(
             "~post_task2_stable_seconds", 1.0))
+        self.post_second_arrow_hold_timeout = float(rospy.get_param(
+            "~post_second_arrow_hold_timeout", 30.0))
+        self.post_second_arrow_stable_seconds = float(rospy.get_param(
+            "~post_second_arrow_stable_seconds", 1.0))
 
         self.goal_match_position_tolerance = float(rospy.get_param(
             "~goal_match_position_tolerance", 0.03))
@@ -137,6 +154,10 @@ class Task3Subtask23Sequence:
         self.arrival_max_yaw_rate = float(rospy.get_param(
             "~arrival_max_yaw_rate", 0.05))
 
+        self.task1_stage_timeout = float(rospy.get_param(
+            "~task1_stage_timeout", 360.0))
+        self.second_arrow_stage_timeout = float(rospy.get_param(
+            "~second_arrow_stage_timeout", 360.0))
         self.task2_stage_timeout = float(rospy.get_param(
             "~task2_stage_timeout", 180.0))
         self.task3_stage_timeout = float(rospy.get_param(
@@ -178,10 +199,13 @@ class Task3Subtask23Sequence:
         self.latest_motion_state = None
         self.latest_motion_state_wall_time = None
 
+        self.arrow_ready = False
         self.aruco_ready = False
         self.rectangle_ready = False
+        self.arrow_message_count = 0
         self.aruco_message_count = 0
         self.rectangle_message_count = 0
+        self.arrow_last_message_wall_time = None
         self.aruco_last_message_wall_time = None
         self.rectangle_last_message_wall_time = None
         self.model_lock = threading.Lock()
@@ -225,6 +249,12 @@ class Task3Subtask23Sequence:
             queue_size=10,
         )
         rospy.Subscriber(
+            self.arrow_topic,
+            String,
+            self.arrow_ready_callback,
+            queue_size=1,
+        )
+        rospy.Subscriber(
             self.aruco_topic,
             TargetDetection,
             self.aruco_ready_callback,
@@ -255,7 +285,11 @@ class Task3Subtask23Sequence:
             "model_recovery_timeout": self.model_recovery_timeout,
             "motion_state_timeout": self.motion_state_timeout,
             "initial_hold_timeout": self.initial_hold_timeout,
+            "post_task1_hold_timeout": self.post_task1_hold_timeout,
             "post_task2_hold_timeout": self.post_task2_hold_timeout,
+            "post_second_arrow_hold_timeout": self.post_second_arrow_hold_timeout,
+            "task1_stage_timeout": self.task1_stage_timeout,
+            "second_arrow_stage_timeout": self.second_arrow_stage_timeout,
             "task2_stage_timeout": self.task2_stage_timeout,
             "task3_stage_timeout": self.task3_stage_timeout,
             "task3_handoff_timeout": self.task3_handoff_timeout,
@@ -273,21 +307,30 @@ class Task3Subtask23Sequence:
             raise ValueError("model_handoff_required_frames必须大于0")
         if self.task3_color_source not in ("task2", "manual"):
             raise ValueError("task3_color_source必须为task2或manual")
-        if not self.start_aruco_model or not self.start_rectangle_model:
+        if (
+                not self.start_arrow_model
+                or not self.start_aruco_model
+                or not self.start_rectangle_model):
             raise ValueError(
-                "联调模式要求start_aruco_model和start_rectangle_model都为true，"
+                "完整联调要求三个识别模型都为true，"
                 "以便协调节点统一管理模型生命周期")
         for name, port in (
+                ("arrow_web_port", self.arrow_web_port),
                 ("aruco_web_port", self.aruco_web_port),
                 ("rectangle_web_port", self.rectangle_web_port)):
             if port <= 0 or port > 65535:
                 raise ValueError("参数{}必须在1到65535之间".format(name))
-        if (
-                self.start_aruco_web
-                and self.start_rectangle_web
-                and self.aruco_web_port == self.rectangle_web_port):
-            raise ValueError("两个Web页面不能使用相同端口")
+        enabled_web_ports = []
+        if self.start_arrow_web:
+            enabled_web_ports.append(self.arrow_web_port)
+        if self.start_aruco_web:
+            enabled_web_ports.append(self.aruco_web_port)
+        if self.start_rectangle_web:
+            enabled_web_ports.append(self.rectangle_web_port)
+        if len(enabled_web_ports) != len(set(enabled_web_ports)):
+            raise ValueError("三个模型启用的Web页面不能使用相同端口")
         isolated_topics = {
+            "箭头方向": self.arrow_topic,
             "ArUco目标结果": self.aruco_topic,
             "ArUco网页检测": self.aruco_web_detection_topic,
             "ArUco网页位姿": self.aruco_web_pose_topic,
@@ -296,6 +339,7 @@ class Task3Subtask23Sequence:
             "方框网页位姿": self.rectangle_pose_topic,
         }
         expected_prefixes = {
+            "箭头方向": "/vision/arrow/",
             "ArUco目标结果": "/vision/aruco/",
             "ArUco网页检测": "/vision/aruco/",
             "ArUco网页位姿": "/vision/aruco/",
@@ -318,7 +362,10 @@ class Task3Subtask23Sequence:
         non_negative_values = {
             "model_settle_seconds": self.model_settle_seconds,
             "initial_hold_stable_seconds": self.initial_hold_stable_seconds,
+            "post_task1_stable_seconds": self.post_task1_stable_seconds,
             "post_task2_stable_seconds": self.post_task2_stable_seconds,
+            "post_second_arrow_stable_seconds": (
+                self.post_second_arrow_stable_seconds),
             "handoff_goal_position_tolerance": self.handoff_goal_position_tolerance,
             "handoff_goal_depth_tolerance": self.handoff_goal_depth_tolerance,
             "handoff_goal_yaw_tolerance": self.handoff_goal_yaw_tolerance,
@@ -331,8 +378,9 @@ class Task3Subtask23Sequence:
     def log_configuration(self):
         rospy.loginfo(
             (
-                "%s：[联调职责] 子任务2自行完成ArUco识别、亮灯和转向；"
-                "本节点只负责启动子任务2、锁存其转向终点并交接子任务3"
+                "%s：[联调职责] 本节点只管理模型和执行顺序；"
+                "两次箭头的前进搜索由子任务1负责，ArUco后的转向由子任务2负责，"
+                "方框搜索和投放由子任务3负责"
             ),
             NODE_NAME,
         )
@@ -349,38 +397,46 @@ class Task3Subtask23Sequence:
         )
         rospy.loginfo(
             (
-                "%s：[联调超时] 模型就绪=%.1fs，子任务2总时限=%.1fs，"
-                "子任务3总时限=%.1fs"
+                "%s：[联调超时] 模型就绪=%.1fs，子任务1=%.1fs，"
+                "子任务2=%.1fs，第二次箭头=%.1fs，子任务3=%.1fs"
             ),
             NODE_NAME,
             self.model_ready_timeout,
+            self.task1_stage_timeout,
             self.task2_stage_timeout,
+            self.second_arrow_stage_timeout,
             self.task3_stage_timeout,
         )
         rospy.loginfo(
             (
-                "%s：[交接参数] 子任务2后复稳=%.1fs；子任务3接管超时=%.1fs，"
-                "需连续收到%d个目标；模型交接需%d个新帧；最终安全悬停=%.1fs"
+                "%s：[交接参数] 子任务1后复稳=%.1fs，子任务2后复稳=%.1fs；"
+                "第二次箭头后复稳=%.1fs；子任务3接管超时=%.1fs，"
+                "需连续收到%d个目标；"
+                "模型交接需%d个新帧；最终安全悬停=%.1fs"
             ),
             NODE_NAME,
+            self.post_task1_stable_seconds,
             self.post_task2_stable_seconds,
+            self.post_second_arrow_stable_seconds,
             self.task3_handoff_timeout,
             self.task3_handoff_goal_count,
             self.model_handoff_required_frames,
             self.safe_stop_stable_seconds,
         )
         rospy.loginfo(
-            "%s：[话题隔离] 子任务2只读取%s，子任务3只读取%s",
+            "%s：[话题隔离] 子任务1=%s，子任务2=%s，子任务3=%s",
             NODE_NAME,
+            self.arrow_topic,
             self.aruco_topic,
             self.rectangle_detection_topic,
         )
         rospy.loginfo(
             (
-                "%s：[模型输出隔离] ArUco={目标:%s,检测:%s,位姿:%s}；"
+                "%s：[模型输出隔离] 箭头方向=%s；ArUco={目标:%s,检测:%s,位姿:%s}；"
                 "方框={目标:%s,检测:%s,位姿:%s}"
             ),
             NODE_NAME,
+            self.arrow_topic,
             self.aruco_topic,
             self.aruco_web_detection_topic,
             self.aruco_web_pose_topic,
@@ -391,8 +447,8 @@ class Task3Subtask23Sequence:
         rospy.loginfo(
             (
                 "%s：[进程生命周期] 默认启动环境只有公共控制和传感器；"
-                "不扫描、不清理历史任务或模型。两个模型同时启动并全程常驻；"
-                "阶段结束关闭当前执行launch，总任务结束关闭本节点启动的模型"
+                "不扫描、不清理历史任务或模型。三个模型同时预热；"
+                "箭头模型保持到第二次箭头完成，ArUco和方框模型常驻到总任务结束"
             ),
             NODE_NAME,
         )
@@ -403,8 +459,10 @@ class Task3Subtask23Sequence:
             self.process_sigterm_timeout,
         )
         rospy.loginfo(
-            "%s：[模型进程] ArUco Web=%s:%d，方框 Web=%s:%d",
+            "%s：[模型进程] 箭头Web=%s:%d，ArUco Web=%s:%d，方框 Web=%s:%d",
             NODE_NAME,
+            "开启" if self.start_arrow_web else "关闭",
+            self.arrow_web_port,
             "开启" if self.start_aruco_web else "关闭",
             self.aruco_web_port,
             "开启" if self.start_rectangle_web else "关闭",
@@ -412,9 +470,11 @@ class Task3Subtask23Sequence:
         )
         rospy.loginfo(
             (
-                "%s：[参数归属] 子任务2参数读取task3_subtask2_get_task.launch；"
+                "%s：[参数归属] 两次箭头的搜索和对准参数读取"
+                "task3_subtask1_acquire_area.launch；"
+                "ArUco识别、亮灯和转向参数读取task3_subtask2_get_task.launch；"
                 "子任务3参数读取task3_subtask3_inspect_and_drop.launch；"
-                "本节点只管理联调衔接"
+                "完整联调launch只保留阶段超时和交接参数"
             ),
             NODE_NAME,
         )
@@ -481,6 +541,47 @@ class Task3Subtask23Sequence:
                 caller_id,
             ))
             self.task3_handoff_goals = self.task3_handoff_goals[-20:]
+
+    def arrow_ready_callback(self, message):
+        now = time.monotonic()
+        try:
+            payload = json.loads(message.data)
+            if not isinstance(payload, dict):
+                raise ValueError("箭头方向消息不是JSON对象")
+            valid = bool(payload.get("valid", False))
+            confidence = payload.get("confidence", "未知")
+            angle = payload.get("angle_deg", "未知")
+        except (TypeError, ValueError, AttributeError):
+            rospy.logwarn_throttle(
+                2.0,
+                "%s：[箭头模型监测] 收到无法解析的消息，不计入模型就绪帧",
+                NODE_NAME,
+            )
+            return
+        with self.model_lock:
+            first_message = not self.arrow_ready
+            self.arrow_ready = True
+            self.arrow_message_count += 1
+            self.arrow_last_message_wall_time = now
+            message_count = self.arrow_message_count
+        if first_message:
+            rospy.loginfo(
+                "%s：箭头模型已有输出，话题=%s",
+                NODE_NAME,
+                self.arrow_topic,
+            )
+        rospy.loginfo_throttle(
+            5.0,
+            (
+                "%s：[箭头模型监测] 第%d帧，valid=%s，confidence=%s，"
+                "angle_deg=%s"
+            ),
+            NODE_NAME,
+            message_count,
+            str(valid),
+            str(confidence),
+            str(angle),
+        )
 
     def aruco_ready_callback(self, message):
         now = time.monotonic()
@@ -724,25 +825,37 @@ class Task3Subtask23Sequence:
 
     def wait_for_models(self, hold_goal):
         started_at = time.monotonic()
-        both_ready_at = None
+        all_ready_at = None
         ready_start_counts = None
         while not rospy.is_shutdown():
             self.publish_goal(hold_goal)
+            if not self.managed_process_alive(self.ARROW_MODEL_ROLE):
+                rospy.logerr("%s：箭头模型进程组已提前退出", NODE_NAME)
+                return False
             if not self.managed_process_alive(self.MODEL_BUNDLE_ROLE):
-                rospy.logerr("%s：双模型常驻进程组已提前退出", NODE_NAME)
+                rospy.logerr("%s：ArUco和方框模型进程组已提前退出", NODE_NAME)
                 return False
             with self.model_lock:
+                arrow_ready = self.arrow_ready
                 aruco_ready = self.aruco_ready
                 rectangle_ready = self.rectangle_ready
+                arrow_count = self.arrow_message_count
                 aruco_count = self.aruco_message_count
                 rectangle_count = self.rectangle_message_count
+                arrow_last = self.arrow_last_message_wall_time
                 aruco_last = self.aruco_last_message_wall_time
                 rectangle_last = self.rectangle_last_message_wall_time
 
             now = time.monotonic()
+            arrow_age = None if arrow_last is None else now - arrow_last
             aruco_age = None if aruco_last is None else now - aruco_last
             rectangle_age = (
                 None if rectangle_last is None else now - rectangle_last)
+            arrow_fresh = (
+                arrow_ready
+                and arrow_age is not None
+                and arrow_age <= self.model_output_timeout
+            )
             aruco_fresh = (
                 aruco_ready
                 and aruco_age is not None
@@ -753,43 +866,53 @@ class Task3Subtask23Sequence:
                 and rectangle_age is not None
                 and rectangle_age <= self.model_output_timeout
             )
-            if aruco_fresh and rectangle_fresh:
-                if both_ready_at is None:
-                    both_ready_at = now
-                    ready_start_counts = (aruco_count, rectangle_count)
+            if arrow_fresh and aruco_fresh and rectangle_fresh:
+                if all_ready_at is None:
+                    all_ready_at = now
+                    ready_start_counts = (
+                        arrow_count,
+                        aruco_count,
+                        rectangle_count,
+                    )
                     rospy.loginfo(
                         (
-                            "%s：两个识别模型输出均新鲜，再等待%.1fs且"
+                            "%s：三个识别模型输出均新鲜，再等待%.1fs且"
                             "各接收%d个新帧确认连续输出"
                         ),
                         NODE_NAME,
                         self.model_settle_seconds,
                         self.model_handoff_required_frames,
                     )
-                aruco_new_frames = aruco_count - ready_start_counts[0]
-                rectangle_new_frames = rectangle_count - ready_start_counts[1]
+                arrow_new_frames = arrow_count - ready_start_counts[0]
+                aruco_new_frames = aruco_count - ready_start_counts[1]
+                rectangle_new_frames = rectangle_count - ready_start_counts[2]
                 if (
-                        now - both_ready_at >= self.model_settle_seconds
+                        now - all_ready_at >= self.model_settle_seconds
+                        and arrow_new_frames >= self.model_handoff_required_frames
                         and aruco_new_frames >= self.model_handoff_required_frames
                         and rectangle_new_frames >= self.model_handoff_required_frames):
                     rospy.loginfo(
-                        "%s：两个模型已完成预热并持续输出，开始执行子任务",
+                        "%s：三个模型已完成预热并持续输出，开始执行子任务1",
                         NODE_NAME,
                     )
                     return True
             else:
-                both_ready_at = None
+                all_ready_at = None
                 ready_start_counts = None
 
             elapsed = now - started_at
             if elapsed >= self.model_ready_timeout:
                 rospy.logerr(
                     (
-                        "%s：等待模型超过%.1fs，ArUco=%s(%d帧，年龄=%s)，"
+                        "%s：等待模型超过%.1fs，箭头=%s(%d帧，年龄=%s)，"
+                        "ArUco=%s(%d帧，年龄=%s)，"
                         "方框=%s(%d帧，年龄=%s)"
                     ),
                     NODE_NAME,
                     self.model_ready_timeout,
+                    "新鲜" if arrow_fresh else "未就绪/超时",
+                    arrow_count,
+                    "无" if arrow_age is None else "{:.2f}s".format(arrow_age),
                     "新鲜" if aruco_fresh else "未就绪/超时",
                     aruco_count,
                     "无" if aruco_age is None else "{:.2f}s".format(aruco_age),
@@ -801,10 +924,14 @@ class Task3Subtask23Sequence:
             rospy.loginfo_throttle(
                 2.0,
                 (
-                    "%s：模型预热中，ArUco=%s(%d帧，年龄=%s)，"
+                    "%s：模型预热中，箭头=%s(%d帧，年龄=%s)，"
+                    "ArUco=%s(%d帧，年龄=%s)，"
                     "方框=%s(%d帧，年龄=%s)，已等待%.1fs"
                 ),
                 NODE_NAME,
+                "新鲜" if arrow_fresh else "等待",
+                arrow_count,
+                "无" if arrow_age is None else "{:.2f}s".format(arrow_age),
                 "新鲜" if aruco_fresh else "等待",
                 aruco_count,
                 "无" if aruco_age is None else "{:.2f}s".format(aruco_age),
@@ -816,23 +943,26 @@ class Task3Subtask23Sequence:
             self.rate.sleep()
         return False
 
-    def wait_for_rectangle_model_fresh(self, hold_goal, reason):
-        """在交接前确认方框模型仍持续出帧，等待期间保持固定点。"""
+    def _wait_for_model_fresh(
+            self, hold_goal, reason, model_label, count_attribute,
+            last_message_attribute, process_role, process_label):
+        """在阶段交接前确认指定常驻模型仍持续出帧。"""
         started_at = time.monotonic()
         with self.model_lock:
-            baseline_count = self.rectangle_message_count
+            baseline_count = getattr(self, count_attribute)
         while not rospy.is_shutdown():
             self.publish_goal(hold_goal)
-            if not self.managed_process_alive(self.MODEL_BUNDLE_ROLE):
+            if not self.managed_process_alive(process_role):
                 rospy.logerr(
-                    "%s：[模型交接检查] %s失败，双模型进程组已经退出",
+                    "%s：[模型交接检查] %s失败，%s进程组已经退出",
                     NODE_NAME,
                     reason,
+                    process_label,
                 )
                 return False
             with self.model_lock:
-                last_message = self.rectangle_last_message_wall_time
-                message_count = self.rectangle_message_count
+                last_message = getattr(self, last_message_attribute)
+                message_count = getattr(self, count_attribute)
             now = time.monotonic()
             age = None if last_message is None else now - last_message
             new_frame_count = max(0, message_count - baseline_count)
@@ -843,12 +973,13 @@ class Task3Subtask23Sequence:
                 rospy.loginfo(
                     (
                         "%s：[模型交接检查] %s通过，新收到%d/%d帧，"
-                        "方框模型总帧=%d，消息年龄=%.2fs"
+                        "%s总帧=%d，消息年龄=%.2fs"
                     ),
                     NODE_NAME,
                     reason,
                     new_frame_count,
                     self.model_handoff_required_frames,
+                    model_label,
                     message_count,
                     age,
                 )
@@ -856,17 +987,19 @@ class Task3Subtask23Sequence:
             elapsed = now - started_at
             if elapsed >= self.model_recovery_timeout:
                 rospy.logerr(
-                    "%s：[模型交接检查] %s失败，%.1fs内方框模型没有恢复连续输出",
+                    "%s：[模型交接检查] %s失败，%.1fs内%s没有恢复连续输出",
                     NODE_NAME,
                     reason,
                     self.model_recovery_timeout,
+                    model_label,
                 )
                 return False
             rospy.logwarn_throttle(
                 1.0,
-                "%s：[模型交接检查] %s等待方框模型恢复，消息年龄=%s，剩余%.1fs",
+                "%s：[模型交接检查] %s等待%s恢复，消息年龄=%s，剩余%.1fs",
                 NODE_NAME,
                 reason,
+                model_label,
                 "无" if age is None else "{:.2f}s".format(age),
                 max(0.0, self.model_recovery_timeout - elapsed),
             )
@@ -881,14 +1014,64 @@ class Task3Subtask23Sequence:
             self.rate.sleep()
         return False
 
+    def wait_for_arrow_model_fresh(self, hold_goal, reason):
+        return self._wait_for_model_fresh(
+            hold_goal,
+            reason,
+            "箭头模型",
+            "arrow_message_count",
+            "arrow_last_message_wall_time",
+            self.ARROW_MODEL_ROLE,
+            "箭头模型",
+        )
+
+    def wait_for_aruco_model_fresh(self, hold_goal, reason):
+        return self._wait_for_model_fresh(
+            hold_goal,
+            reason,
+            "ArUco模型",
+            "aruco_message_count",
+            "aruco_last_message_wall_time",
+            self.MODEL_BUNDLE_ROLE,
+            "ArUco和方框模型",
+        )
+
+    def wait_for_rectangle_model_fresh(self, hold_goal, reason):
+        return self._wait_for_model_fresh(
+            hold_goal,
+            reason,
+            "方框模型",
+            "rectangle_message_count",
+            "rectangle_last_message_wall_time",
+            self.MODEL_BUNDLE_ROLE,
+            "ArUco和方框模型",
+        )
+
     @staticmethod
     def _launch_bool(value):
         return "true" if value else "false"
 
+    def arrow_model_command(self):
+        """递归启动仅箭头模型模式，使箭头Web节点处于独立命名空间。"""
+        return [
+            "roslaunch", "auv_control", "task3_subtask1_2_3_sequence.launch",
+            "coordinator_enabled:=false",
+            "arrow_model_only:=true",
+            "start_arrow_model:={}".format(
+                self._launch_bool(self.start_arrow_model)),
+            "start_down_camera:=false",
+            "start_down_splitter:=false",
+            "start_arrow_web:={}".format(
+                self._launch_bool(self.start_arrow_web)),
+            "arrow_web_port:={}".format(self.arrow_web_port),
+            "arrow_topic:={}".format(self.arrow_topic),
+        ]
+
     def model_bundle_command(self):
         """递归启动同一launch的仅模型模式，保留两套模型的话题隔离。"""
         return [
-            "roslaunch", "auv_control", "task3_subtask2_3_sequence.launch",
+            "roslaunch", "auv_control", "task3_subtask1_2_3_sequence.launch",
+            "coordinator_enabled:=false",
             "model_bundle_only:=true",
             "start_aruco_model:={}".format(
                 self._launch_bool(self.start_aruco_model)),
@@ -914,6 +1097,16 @@ class Task3Subtask23Sequence:
             "rectangle_detection_topic:={}".format(
                 self.rectangle_detection_topic),
             "rectangle_pose_topic:={}".format(self.rectangle_pose_topic),
+        ]
+
+    def task1_command(self):
+        return [
+            "roslaunch", "auv_control", "task3_subtask1_acquire_area.launch",
+            "start_arrow_model:=false",
+            "arrow_topic:={}".format(self.arrow_topic),
+            "motion_goal_topic:={}".format(self.motion_goal_topic),
+            "motion_cancel_topic:={}".format(self.motion_cancel_topic),
+            "motion_state_topic:={}".format(self.motion_state_topic),
         ]
 
     def task2_command(self):
@@ -1063,13 +1256,20 @@ class Task3Subtask23Sequence:
 
     def stop_managed_process(self, role):
         with self.process_lock:
-            entry = self.managed_processes.pop(role, None)
+            entry = self.managed_processes.get(role)
         if entry is None:
             return True
+
+        def forget_entry():
+            with self.process_lock:
+                if self.managed_processes.get(role) is entry:
+                    self.managed_processes.pop(role, None)
+
         process = entry["process"]
         label = entry["label"]
         process_group_id = entry["process_group_id"]
         if not self._managed_entry_alive(entry):
+            forget_entry()
             rospy.loginfo("%s：[%s] 进程组已经退出", NODE_NAME, label)
             return True
 
@@ -1083,6 +1283,7 @@ class Task3Subtask23Sequence:
         except OSError as error:
             rospy.logwarn("%s：[%s] SIGINT失败：%s", NODE_NAME, label, str(error))
         if self._wait_managed_process_exit(entry, self.process_sigint_timeout):
+            forget_entry()
             rospy.loginfo("%s：[%s] 进程组已正常退出", NODE_NAME, label)
             return True
 
@@ -1095,6 +1296,7 @@ class Task3Subtask23Sequence:
         except OSError as error:
             rospy.logwarn("%s：[%s] SIGTERM失败：%s", NODE_NAME, label, str(error))
         if self._wait_managed_process_exit(entry, self.process_sigterm_timeout):
+            forget_entry()
             rospy.loginfo("%s：[%s] 进程组已在SIGTERM后退出", NODE_NAME, label)
             return True
 
@@ -1106,7 +1308,10 @@ class Task3Subtask23Sequence:
                 process.kill()
         except OSError as error:
             rospy.logerr("%s：[%s] SIGKILL失败：%s", NODE_NAME, label, str(error))
-        return self._wait_managed_process_exit(entry, 1.0)
+        stopped = self._wait_managed_process_exit(entry, 1.0)
+        if stopped:
+            forget_entry()
+        return stopped
 
     def start_model_bundle(self):
         with self.model_lock:
@@ -1118,13 +1323,41 @@ class Task3Subtask23Sequence:
             self.rectangle_last_message_wall_time = None
         process = self.start_managed_process(
             self.MODEL_BUNDLE_ROLE,
-            "双模型常驻进程组",
+            "ArUco和方框常驻进程组",
             self.model_bundle_command(),
         )
         return process is not None
 
+    def start_arrow_model_process(self):
+        with self.model_lock:
+            self.arrow_ready = False
+            self.arrow_message_count = 0
+            self.arrow_last_message_wall_time = None
+        process = self.start_managed_process(
+            self.ARROW_MODEL_ROLE,
+            "箭头模型进程组",
+            self.arrow_model_command(),
+        )
+        return process is not None
+
+    def start_all_models(self):
+        if not self.start_arrow_model_process():
+            return False
+        if self.start_model_bundle():
+            return True
+        self.stop_arrow_model_process("ArUco和方框模型启动失败回收")
+        return False
+
+    def stop_arrow_model_process(self, label="第二次箭头结束模型清理"):
+        rospy.loginfo("%s：[%s] 关闭本联调启动的箭头模型进程组", NODE_NAME, label)
+        return self.stop_managed_process(self.ARROW_MODEL_ROLE)
+
     def stop_model_bundle(self, label="总任务模型清理"):
-        rospy.loginfo("%s：[%s] 关闭本联调启动的双模型进程组", NODE_NAME, label)
+        rospy.loginfo(
+            "%s：[%s] 关闭本联调启动的ArUco和方框模型进程组",
+            NODE_NAME,
+            label,
+        )
         return self.stop_managed_process(self.MODEL_BUNDLE_ROLE)
 
     def start_child(self, stage_prefix, stage_name, command):
@@ -1199,10 +1432,10 @@ class Task3Subtask23Sequence:
             self.publish_goal(hold_goal)
             if not self.managed_process_alive(self.MODEL_BUNDLE_ROLE):
                 rospy.logerr(
-                    "%s：[控制权交接失败] 双模型进程组已经退出",
+                    "%s：[控制权交接失败] ArUco和方框模型进程组已经退出",
                     NODE_NAME,
                 )
-                return False, "子任务3接管前双模型进程组已经退出"
+                return False, "子任务3接管前ArUco和方框模型进程组已经退出"
 
             if self.stage_event.is_set():
                 with self.stage_lock:
@@ -1231,7 +1464,7 @@ class Task3Subtask23Sequence:
                         sequence,
                         detail,
                     )
-                    return False, "子任务3首批目标与转向完成点不一致：{}".format(detail)
+                    return False, "子任务3首批目标与交接定点不一致：{}".format(detail)
                 valid_count += 1
                 rospy.loginfo(
                     "%s：[控制权交接] 收到子任务3合法目标%d/%d，发布者=%s，%s",
@@ -1261,7 +1494,7 @@ class Task3Subtask23Sequence:
             rospy.loginfo_throttle(
                 1.0,
                 (
-                    "%s：[控制权交接] 联调节点继续保持转向完成点，"
+                    "%s：[控制权交接] 联调节点继续保持第二次箭头结束定点，"
                     "等待子任务3目标%d/%d，剩余%.1fs"
                 ),
                 NODE_NAME,
@@ -1274,7 +1507,11 @@ class Task3Subtask23Sequence:
 
     def run_child_stage(
             self, stage_prefix, stage_name, command, timeout,
-            hold_goal=None, handoff_goal=None):
+            hold_goal=None, handoff_goal=None, required_model_roles=None):
+        if required_model_roles is None:
+            required_model_roles = (
+                (self.MODEL_BUNDLE_ROLE, "ArUco和方框模型"),
+            )
         with self.stage_lock:
             self.current_stage = stage_prefix
             self.stage_result = None
@@ -1306,8 +1543,18 @@ class Task3Subtask23Sequence:
         stage_failure_detail = None
         result = None
         while not rospy.is_shutdown():
-            if not self.managed_process_alive(self.MODEL_BUNDLE_ROLE):
-                stage_failure_detail = "{}期间双模型常驻进程组异常退出".format(stage_name)
+            failed_model = next(
+                (
+                    label for role, label in required_model_roles
+                    if not self.managed_process_alive(role)
+                ),
+                None,
+            )
+            if failed_model is not None:
+                stage_failure_detail = "{}期间{}进程组异常退出".format(
+                    stage_name,
+                    failed_model,
+                )
                 rospy.logerr("%s：%s", NODE_NAME, stage_failure_detail)
                 break
             if hold_goal is not None:
@@ -1464,9 +1711,15 @@ class Task3Subtask23Sequence:
     def finish_after_safe_stop(self, requested_success, detail):
         safe = self.request_safe_stop(detail)
         child_cleanup = self.stop_child()
+        arrow_cleanup = self.stop_arrow_model_process("总任务结束箭头模型清理")
         model_cleanup = self.stop_model_bundle("总任务结束模型清理")
         process_cleanup = self.stop_remaining_managed_processes()
-        cleanup = child_cleanup and model_cleanup and process_cleanup
+        cleanup = (
+            child_cleanup
+            and arrow_cleanup
+            and model_cleanup
+            and process_cleanup
+        )
         if not safe or not cleanup:
             failure_parts = [detail]
             if not safe:
@@ -1478,8 +1731,8 @@ class Task3Subtask23Sequence:
         self.finish(
             requested_success,
             (
-                "{}；机器人已安全悬停；本联调启动的两个子任务执行launch和"
-                "双模型进程组均已关闭"
+                "{}；机器人已安全悬停；本联调启动的各阶段执行launch和"
+                "三个识别模型均已关闭"
             ).format(detail),
         )
         return requested_success
@@ -1502,20 +1755,24 @@ class Task3Subtask23Sequence:
     def run(self):
         rospy.sleep(0.5)
         rospy.loginfo(
-            "%s：[启动] 默认环境仅有公共控制和传感器，直接启动双模型；"
+            "%s：[启动] 默认环境仅有公共控制和传感器，直接启动三个模型；"
             "不扫描或关闭其他任务、模型、Web节点和端口",
             NODE_NAME,
         )
-        if not self.start_model_bundle():
-            self.finish(False, "两个识别模型进程组启动失败")
+        if not self.start_all_models():
+            self.stop_remaining_managed_processes()
+            self.finish(False, "三个识别模型进程组启动失败")
             return
 
         hold_goal = self.capture_current_goal()
         if hold_goal is None:
-            cleanup = self.stop_model_bundle("启动失败模型清理")
+            arrow_cleanup = self.stop_arrow_model_process("启动失败箭头模型清理")
+            model_cleanup = self.stop_model_bundle("启动失败常驻模型清理")
+            process_cleanup = self.stop_remaining_managed_processes()
+            cleanup = arrow_cleanup and model_cleanup and process_cleanup
             detail = "未能获取启动时map到base_link的固定姿态"
             if not cleanup:
-                detail += "；两个识别模型未完全关闭"
+                detail += "；本联调启动的识别模型未完全关闭"
             self.finish(False, detail)
             return
 
@@ -1528,13 +1785,71 @@ class Task3Subtask23Sequence:
             return
 
         if not self.wait_for_models(hold_goal):
-            self.finish_after_safe_stop(False, "两个识别模型未能全部就绪")
+            self.finish_after_safe_stop(False, "三个识别模型未能全部就绪")
             return
 
         rospy.loginfo(
             (
-                "%s：[阶段1/2 子任务2] 启动后自行锁存当前固定点，"
-                "完成ArUco识别、亮灯和原地转向；参数来自"
+                "%s：[阶段1/4 第一次箭头] 三个模型均已持续输出；启动箭头任务节点，"
+                "参数来自task3_subtask1_acquire_area.launch，协调节点暂停发布运动目标"
+            ),
+            NODE_NAME,
+        )
+        task1_success, task1_detail = self.run_child_stage(
+            self.TASK1_PREFIX,
+            "子任务1",
+            self.task1_command(),
+            self.task1_stage_timeout,
+            required_model_roles=(
+                (self.ARROW_MODEL_ROLE, "箭头模型"),
+                (self.MODEL_BUNDLE_ROLE, "ArUco和方框模型"),
+            ),
+        )
+        if not task1_success:
+            self.finish_after_safe_stop(
+                False,
+                "第一次箭头任务失败，不执行后续阶段：{}".format(task1_detail),
+            )
+            return
+        rospy.loginfo(
+            "%s：[阶段1/4 第一次箭头] 成功：%s",
+            NODE_NAME,
+            task1_detail,
+        )
+
+        rospy.loginfo(
+            "%s：[阶段衔接1->2] 重新锁存子任务1结束位置，禁止使用总任务启动点",
+            NODE_NAME,
+        )
+        hold_goal = self.capture_current_goal()
+        if hold_goal is None:
+            self.finish_after_safe_stop(
+                False,
+                "子任务1成功，但未能获取其结束位置，禁止启动子任务2",
+            )
+            return
+        if not self.wait_for_goal(
+                hold_goal,
+                self.post_task1_hold_timeout,
+                self.post_task1_stable_seconds,
+                "子任务1结束位置复稳"):
+            self.finish_after_safe_stop(
+                False,
+                "子任务1成功，但机器人未能稳定锁定子任务1结束位置",
+            )
+            return
+        if not self.wait_for_aruco_model_fresh(
+                hold_goal, "启动子任务2前ArUco模型复查"):
+            self.finish_after_safe_stop(
+                False,
+                "子任务1成功，但ArUco模型在子任务2启动前没有持续输出",
+            )
+            return
+
+        rospy.loginfo(
+            (
+                "%s：[阶段2/4 子任务2] 启动后自行锁存第一次箭头结束位置，"
+                "依次完成ArUco识别、亮灯和原地转向；左右方向和角度来自"
                 "task3_subtask2_get_task.launch。协调节点暂停发布运动目标"
             ),
             NODE_NAME,
@@ -1544,16 +1859,21 @@ class Task3Subtask23Sequence:
             "子任务2",
             self.task2_command(),
             self.task2_stage_timeout,
+            required_model_roles=(
+                (self.ARROW_MODEL_ROLE, "箭头模型"),
+                (self.MODEL_BUNDLE_ROLE, "ArUco和方框模型"),
+            ),
         )
         if not task2_success:
             self.finish_after_safe_stop(
                 False,
-                "子任务2识别、亮灯或转向失败，不执行子任务3：{}".format(task2_detail),
+                "子任务2识别、亮灯或转向失败，不执行第二次箭头和子任务3：{}".format(
+                    task2_detail),
             )
             return
 
         rospy.loginfo(
-            "%s：[阶段1/2 子任务2] 成功：%s",
+            "%s：[阶段2/4 子任务2] 成功：%s",
             NODE_NAME,
             task2_detail,
         )
@@ -1564,14 +1884,14 @@ class Task3Subtask23Sequence:
             )
             return
         rospy.loginfo(
-            "%s：[阶段衔接1->2] 子任务2已完成内部转向，重新锁存转向结束位置",
+            "%s：[阶段衔接2->3] 子任务2已完成内部转向，重新锁存转向结束位置",
             NODE_NAME,
         )
         hold_goal = self.capture_current_goal()
         if hold_goal is None:
             self.finish_after_safe_stop(
                 False,
-                "子任务2成功，但未能获取转向结束位置，禁止启动子任务3",
+                "子任务2成功，但未能获取转向结束位置，禁止启动第二次箭头",
             )
             return
         if not self.wait_for_goal(
@@ -1584,17 +1904,82 @@ class Task3Subtask23Sequence:
                 "子任务2成功，但机器人未能稳定锁定转向结束位置",
             )
             return
-        if not self.wait_for_rectangle_model_fresh(
-                hold_goal, "启动子任务3前方框模型复查"):
+        if not self.wait_for_arrow_model_fresh(
+                hold_goal, "启动第二次箭头前模型复查"):
             self.finish_after_safe_stop(
                 False,
-                "子任务2成功，但方框模型在子任务3接管前没有持续输出",
+                "子任务2转向成功，但箭头模型在第二次箭头任务启动前没有持续输出",
             )
             return
         rospy.loginfo(
             (
-                "%s：[阶段2/2 子任务3] 子任务2转向终点稳定且方框模型输出正常；"
-                "先启动子任务3并保持转向完成点，握手成功后再交出控制权。参数来自"
+                "%s：[阶段3/4 第二次箭头] 转向结束位置稳定且箭头模型输出正常；"
+                "再次完整启动子任务1，由其自行前进、左右搜索、粗对准和细对准。"
+                "协调节点暂停发布运动目标"
+            ),
+            NODE_NAME,
+        )
+        second_arrow_success, second_arrow_detail = self.run_child_stage(
+            self.TASK1_PREFIX,
+            "第二次箭头",
+            self.task1_command(),
+            self.second_arrow_stage_timeout,
+            required_model_roles=(
+                (self.ARROW_MODEL_ROLE, "箭头模型"),
+                (self.MODEL_BUNDLE_ROLE, "ArUco和方框模型"),
+            ),
+        )
+        if not second_arrow_success:
+            self.finish_after_safe_stop(
+                False,
+                "第二次箭头任务失败，不执行子任务3：{}".format(
+                    second_arrow_detail),
+            )
+            return
+        rospy.loginfo(
+            "%s：[阶段3/4 第二次箭头] 成功：%s",
+            NODE_NAME,
+            second_arrow_detail,
+        )
+
+        rospy.loginfo(
+            "%s：[阶段衔接3->4] 重新锁存第二次箭头结束位置，作为子任务3接管定点",
+            NODE_NAME,
+        )
+        task3_entry_goal = self.capture_current_goal()
+        if task3_entry_goal is None:
+            self.finish_after_safe_stop(
+                False,
+                "第二次箭头任务成功，但未能获取其结束位置，禁止启动子任务3",
+            )
+            return
+        if not self.wait_for_goal(
+                task3_entry_goal,
+                self.post_second_arrow_hold_timeout,
+                self.post_second_arrow_stable_seconds,
+                "第二次箭头结束位置复稳"):
+            self.finish_after_safe_stop(
+                False,
+                "第二次箭头任务成功，但机器人未能稳定锁定其结束位置",
+            )
+            return
+        if not self.stop_arrow_model_process("第二次箭头完成模型清理"):
+            self.finish_after_safe_stop(
+                False,
+                "第二次箭头任务成功，但箭头模型未能完全关闭，禁止启动子任务3",
+            )
+            return
+        if not self.wait_for_rectangle_model_fresh(
+                task3_entry_goal, "启动子任务3前方框模型复查"):
+            self.finish_after_safe_stop(
+                False,
+                "第二次箭头任务成功，但方框模型在子任务3接管前没有持续输出",
+            )
+            return
+        rospy.loginfo(
+            (
+                "%s：[阶段4/4 子任务3] 第二次箭头结束位置已稳定且方框模型输出正常；"
+                "先启动子任务3并保持该定点，握手成功后再交出控制权。参数来自"
                 "task3_subtask3_inspect_and_drop.launch"
             ),
             NODE_NAME,
@@ -1604,7 +1989,7 @@ class Task3Subtask23Sequence:
             "子任务3",
             self.task3_command(),
             self.task3_stage_timeout,
-            handoff_goal=hold_goal,
+            handoff_goal=task3_entry_goal,
         )
         if not task3_success:
             self.finish_after_safe_stop(
@@ -1615,7 +2000,7 @@ class Task3Subtask23Sequence:
 
         self.finish_after_safe_stop(
             True,
-            "子任务2识别亮灯及转向、控制权交接和子任务3均执行成功",
+            "第一次箭头、子任务2识别亮灯及转向、第二次箭头和子任务3均执行成功",
         )
 
     def on_shutdown(self):
@@ -1633,7 +2018,7 @@ class Task3Subtask23Sequence:
 if __name__ == "__main__":
     rospy.init_node(NODE_NAME, anonymous=False)
     try:
-        Task3Subtask23Sequence().run()
+        Task3Subtask123Sequence().run()
     except (rospy.ROSInterruptException, KeyboardInterrupt):
         pass
     except Exception as error:

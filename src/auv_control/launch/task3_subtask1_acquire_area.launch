@@ -38,10 +38,17 @@
     <arg name="detection_timeout" default="1.0" />
     <!-- visual_loss_cancel_seconds：运动中完整箭头丢失达到该时间就cancel；必须不大于detection_timeout。 -->
     <arg name="visual_loss_cancel_seconds" default="0.5" />
-    <!-- stable_detection_count：搜索停止后，重新锁定箭头位置需要的连续有效帧数。 -->
+    <!--
+      位置锁定复用子任务3的逐帧候选组：保留最近stable_detection_window_size个
+      模型帧，其中同一位置候选组命中stable_detection_count帧即通过；
+      无效帧只占用窗口，不会立即清除旧有效帧。
+    -->
+    <arg name="stable_detection_window_size" default="10" />
     <arg name="stable_detection_count" default="3" />
-    <!-- stable_center_tolerance_px：上述连续位置帧相对平均中心允许的最大二维抖动。 -->
+    <!-- stable_center_tolerance_px：候选组中心相对中位中心允许的最大二维距离。 -->
     <arg name="stable_center_tolerance_px" default="40.0" />
+    <!-- stable_area_tolerance_ratio：候选框面积相对中位面积的最大变化比例。 -->
+    <arg name="stable_area_tolerance_ratio" default="0.35" />
     <!-- stable_angle_tolerance_deg：方向连续帧相对平均角度允许的最大抖动。 -->
     <arg name="stable_angle_tolerance_deg" default="12.0" />
     <!-- center_stable_detection_count：粗居中、最终居中和base_link前移跟踪共用的连续帧数。 -->
@@ -85,8 +92,8 @@
     <arg name="max_wait_seconds" default="300.0" />
 
     <!--
-      粗对准只使用u误差生成左右横移目标并锁定航向；只有bbox完整留在画面内、
-      左右位置稳定且方向连续稳定后才进入细对准。细对准先禁用前后移动，
+      粗对准使用u/v误差生成左右、前后小步目标并锁定航向；只有箭头图像居中、
+      bbox完整留在画面内且方向连续稳定后才进入细对准。细对准先禁用前后移动，
       按实时箭头位置和方向慢速横移、转向；航向稳定后才使用v误差慢速前后居中。
     -->
     <!-- image_width/image_height：必须与箭头方向节点实际输入的单目图像尺寸一致。 -->
@@ -108,16 +115,17 @@
     <arg name="center_tolerance_v_px" default="35.0" />
 
     <!--
-      粗对准只使用u误差生成左右横移小步，并等待每一步真实到达后再发下一步。
-      visual_lateral_gain_m调大响应更快；visual_min/max_step_m限制非零步长范围；
-      visual_goal_min_interval限制发目标频率；左右方向相反时只改visual_lateral_sign。
+      粗对准根据v/u误差生成前后、左右小步，并等待每一步真实到达后再发下一步。
+      visual_forward/lateral_gain_m调大对应方向响应更快；
+      visual_min/max_step_m限制非零步长范围，visual_goal_min_interval限制发目标频率。
     -->
+    <arg name="visual_forward_gain_m" default="0.20" />
     <arg name="visual_lateral_gain_m" default="0.20" />
     <arg name="visual_max_step_m" default="0.08" />
     <arg name="visual_min_step_m" default="0.01" />
     <!-- 限制视觉目标更新速度，防止按每一帧当前位置连续累加偏置。 -->
     <arg name="visual_goal_min_interval" default="1.0" />
-    <!-- visual_forward_sign仅作用于细对准的v误差；前后方向相反时改为-1。 -->
+    <!-- visual_forward_sign作用于粗对准和细对准的v误差；前后方向相反时改为-1。 -->
     <arg name="visual_forward_sign" default="1.0" />
     <!-- visual_lateral_sign同时作用于粗对准、细对准和最终前移；左右相反时改为-1。 -->
     <arg name="visual_lateral_sign" default="1.0" />
@@ -151,12 +159,17 @@
     -->
     <arg name="base_link_forward_offset" default="0.35" />
 
-    <!-- status_topic/status_timeout：深度、高度和姿态反馈话题及最大允许接收间隔。 -->
+    <!-- status_topic/status_timeout：模式、深度和航向反馈话题及最大允许接收间隔。 -->
     <arg name="status_topic" default="/status/auv" />
     <arg name="status_timeout" default="0.5" />
+    <!--
+      min_ground_clearance：最低离地距离。当前控制坐标约定水池底部为map z=0，
+      base_link位于底部上方时z为负值，因此任务用map -> base_link实际z计算离底高度，
+      并将motion_supervisor目标z限制为不大于-min_ground_clearance。
+      本保护不再读取/status/auv.pose.altitude。
+    -->
     <!-- max_depth_error：任务判定真实到达和最终悬停时允许的最大深度误差。 -->
     <arg name="max_depth_error" default="0.08" />
-    <!-- min_ground_clearance：最低对地距离，低于该值时只向上修正目标z。 -->
     <arg name="min_ground_clearance" default="0.40" />
     <!-- 候选安全z与当前目标z相差达到该值才改写目标，避免传感器噪声频繁抢占。 -->
     <arg name="ground_clearance_goal_update_threshold" default="0.01" />
@@ -196,8 +209,10 @@
         <param name="min_confidence" type="double" value="$(arg min_confidence)" />
         <param name="detection_timeout" type="double" value="$(arg detection_timeout)" />
         <param name="visual_loss_cancel_seconds" type="double" value="$(arg visual_loss_cancel_seconds)" />
+        <param name="stable_detection_window_size" type="int" value="$(arg stable_detection_window_size)" />
         <param name="stable_detection_count" type="int" value="$(arg stable_detection_count)" />
         <param name="stable_center_tolerance_px" type="double" value="$(arg stable_center_tolerance_px)" />
+        <param name="stable_area_tolerance_ratio" type="double" value="$(arg stable_area_tolerance_ratio)" />
         <param name="stable_angle_tolerance_deg" type="double" value="$(arg stable_angle_tolerance_deg)" />
         <param name="center_stable_detection_count" type="int" value="$(arg center_stable_detection_count)" />
         <param name="heading_stable_detection_count" type="int" value="$(arg heading_stable_detection_count)" />
@@ -228,6 +243,7 @@
         <param name="target_center_v_ratio" type="double" value="$(arg target_center_v_ratio)" />
         <param name="center_tolerance_u_px" type="double" value="$(arg center_tolerance_u_px)" />
         <param name="center_tolerance_v_px" type="double" value="$(arg center_tolerance_v_px)" />
+        <param name="visual_forward_gain_m" type="double" value="$(arg visual_forward_gain_m)" />
         <param name="visual_lateral_gain_m" type="double" value="$(arg visual_lateral_gain_m)" />
         <param name="visual_max_step_m" type="double" value="$(arg visual_max_step_m)" />
         <param name="visual_min_step_m" type="double" value="$(arg visual_min_step_m)" />

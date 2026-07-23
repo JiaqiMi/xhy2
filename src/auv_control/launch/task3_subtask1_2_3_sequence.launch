@@ -1,32 +1,44 @@
 <launch>
     <!--
-      任务3子任务2、3联调：默认启动前只有公共控制和传感器节点，不扫描或关闭历史任务、模型、Web节点和端口。
-      两个视觉模型由本联调同时启动并持续预热，两个子任务执行launch按阶段启动和关闭。
-      流程：启动两个模型 -> 锁存启动点定点 -> 子任务2识别、亮灯并按配置原地转向
-            -> 关闭本联调启动的子任务2执行launch -> 锁存转向结束位置并复稳
+      任务3完整联调：默认启动前只有公共控制和传感器节点，不扫描或关闭历史任务、模型、Web节点和端口。
+      箭头、ArUco和方框模型同时预热，各阶段执行launch按顺序启动和关闭。
+      流程：启动三个模型 -> 锁存启动点定点 -> 第一次箭头搜索、对准并到达箭头上方
+            -> 锁存第一次箭头结束位置 -> 子任务2识别、亮灯并按配置原地转向
+            -> 锁存子任务2转向结束位置 -> 第二次箭头前进搜索、对准并到达箭头上方
+            -> 重新锁存位置并关闭箭头模型
             -> 方框模型连续帧复查 -> 子任务3目标握手接管 -> 自动搜索和投放
             -> 关闭本联调启动的子任务3执行launch -> 主动刹停并确认HOVER
-            -> 关闭本联调启动的双模型进程组后结束。
+            -> 关闭本联调启动的ArUco和方框模型进程组后结束。
       motion_supervisor由基础控制系统统一启动，本launch不重复启动。
     -->
 
-    <!-- 内部递归模式，仅供协调节点托管双模型进程组；正常启动时不要手动修改。 -->
+    <!-- 内部递归模式，仅供协调节点托管模型进程组；正常启动时不要手动修改。 -->
+    <arg name="coordinator_enabled" default="true" />
+    <arg name="arrow_model_only" default="false" />
     <arg name="model_bundle_only" default="false" />
 
-    <!-- 相机驱动已在外部启动时保持false，避免重复占用设备。 -->
+    <!--
+      相机驱动已在外部启动时保持false。需要由本联调启动时，
+      下视相机和分割节点只由ArUco/方框常驻进程组创建，箭头模型共享图像话题。
+    -->
     <arg name="start_fisheye_driver" default="false" />
     <arg name="start_down_camera" default="false" />
     <arg name="start_down_splitter" default="false" />
 
-    <!-- 两个模型同时启动并常驻到总任务结束；子任务切换时只关闭执行launch。 -->
+    <!-- 三个模型同时预热；箭头模型在第二次箭头完成后关闭，另外两个常驻到总任务结束。 -->
+    <arg name="start_arrow_model" default="true" />
     <arg name="start_aruco_model" default="true" />
     <arg name="start_rectangle_model" default="true" />
+    <arg name="start_arrow_web" default="true" />
     <arg name="start_aruco_web" default="true" />
     <arg name="start_rectangle_web" default="true" />
+    <arg name="arrow_web_port" default="8083" />
     <arg name="aruco_web_port" default="8082" />
     <arg name="rectangle_web_port" default="8080" />
 
-    <!-- 使用最新模型公共输出名；ArUco和方框具有独立命名空间，不会互相串流。 -->
+    <!-- 使用最新模型公共输出名；三个模型话题相互独立。 -->
+    <arg name="arrow_topic"
+         default="/vision/arrow/direction" />
     <arg name="aruco_topic"
          default="/vision/aruco/target_message" />
     <arg name="aruco_web_detection_topic"
@@ -40,8 +52,22 @@
     <arg name="rectangle_pose_topic"
          default="/vision/rectangle/pose" />
 
+    <!-- 箭头模型单独成组，第二次箭头完成后可独立关闭并释放推理资源。 -->
+    <group if="$(arg arrow_model_only)">
+        <group if="$(arg start_arrow_model)" ns="task3_sequence/arrow_pipeline">
+            <remap from="/vision/arrow/direction" to="$(arg arrow_topic)" />
+            <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
+                <arg name="start_camera" value="$(arg start_down_camera)" />
+                <arg name="start_splitter" value="$(arg start_down_splitter)" />
+                <arg name="start_web" value="$(arg start_arrow_web)" />
+                <arg name="start_depth" value="false" />
+                <arg name="web_port" value="$(arg arrow_web_port)" />
+            </include>
+        </group>
+    </group>
+
     <!--
-      仅模型模式由协调节点作为一个独立进程组启动。ArUco链路使用命名空间，
+      ArUco和方框仅模型模式由协调节点作为一个独立进程组启动。ArUco链路使用命名空间，
       方框链路保持根命名空间以兼容YOLO按绝对节点名读取参数的方式。
     -->
     <group if="$(arg model_bundle_only)">
@@ -72,7 +98,7 @@
 
     <!--
       联调主循环和模型预热。模型约40秒才能启动时，可增大model_ready_timeout。
-      两个模型都连续输出达到要求后才启动子任务2；这里不检查节点、发布者或Web端口。
+      三个模型都连续输出达到要求后才启动子任务1；这里不检查节点、发布者或Web端口。
     -->
     <arg name="rate" default="10.0" />
     <arg name="model_ready_timeout" default="90.0" />
@@ -92,10 +118,16 @@
     <arg name="motion_state_timeout" default="0.5" />
     <arg name="initial_hold_timeout" default="30.0" />
     <arg name="initial_hold_stable_seconds" default="1.0" />
+    <!-- 子任务1结束后重新锁存当前位置，连续稳定后才允许启动子任务2。 -->
+    <arg name="post_task1_hold_timeout" default="30.0" />
+    <arg name="post_task1_stable_seconds" default="1.0" />
 
-    <!-- 子任务2已在内部完成转向；退出后重新锁存转向终点。 -->
+    <!-- 子任务2已在内部完成转向；退出后重新锁存其转向终点，再启动第二次箭头。 -->
     <arg name="post_task2_hold_timeout" default="30.0" />
     <arg name="post_task2_stable_seconds" default="1.0" />
+    <!-- 第二次箭头结束后重新锁存当前位置，稳定后才允许子任务3接管。 -->
+    <arg name="post_second_arrow_hold_timeout" default="30.0" />
+    <arg name="post_second_arrow_stable_seconds" default="1.0" />
 
     <!-- 到达判定：先核对motion状态中的目标确实是本节点最新目标。 -->
     <arg name="goal_match_position_tolerance" default="0.03" />
@@ -107,11 +139,13 @@
     <arg name="arrival_max_yaw_rate" default="0.05" />
 
     <!--
-      联调内部参数：限制两个阶段的总时间。
+      联调内部参数：仅限制各执行阶段的总时间，不在联调层配置子任务运动距离。
       修改子任务内部超时后，要同步保证这里的阶段总时间更长；
-      子任务2总时间至少覆盖悬停+识别+亮灯+转向，
-      子任务3总时间至少覆盖其max_wait_seconds和动作时间。
+      两次箭头阶段都完整复用子任务1的前进搜索和对准；
+      子任务2总时间至少覆盖悬停+识别+亮灯+转向，子任务3总时间至少覆盖其max_wait_seconds和动作时间。
     -->
+    <arg name="task1_stage_timeout" default="360.0" />
+    <arg name="second_arrow_stage_timeout" default="360.0" />
     <arg name="task2_stage_timeout" default="180.0" />
     <arg name="task3_stage_timeout" default="360.0" />
 
@@ -123,8 +157,8 @@
     <arg name="task3_color_source" default="task2" />
 
     <!--
-      子任务3控制权交接：协调节点保持转向完成点，直到子任务3连续发布指定数量的合法目标。
-      首批目标与转向完成点的水平、深度或航向差超过阈值时，立即取消并安全刹停。
+      子任务3控制权交接：协调节点保持第二次箭头结束点，直到子任务3连续发布指定数量的合法目标。
+      首批目标与该交接点的水平、深度或航向差超过阈值时，立即取消并安全刹停。
     -->
     <arg name="task3_handoff_timeout" default="10.0" />
     <arg name="task3_handoff_goal_count" default="2" />
@@ -139,7 +173,9 @@
     <arg name="control_health_grace_timeout" default="3.0" />
 
     <!--
-      子任务参数不在联调launch重复声明：
+      参数归属：
+      两次箭头的前进、左右搜索、判帧、粗细对准和最终保持参数，
+      在task3_subtask1_acquire_area.launch中调整。
       子任务2的悬停、3/10帧、置信度、识别超时、亮灯和转向参数，
       在task3_subtask2_get_task.launch中调整。
       子任务3的颜色、识别阈值、搜索距离、之字形和细对准参数，
@@ -154,7 +190,7 @@
     <arg name="stage_shutdown_grace" default="1.0" />
 
     <!--
-      只关闭本联调登记并启动的执行launch和双模型进程组，不扫描系统中的其他进程。
+      只关闭本联调登记并启动的执行launch和三个识别模型，不扫描系统中的其他进程。
       关闭时先等待进程响应SIGINT；模型退出较慢时可增大到8~10秒，
       超时后会升级为SIGTERM。
     -->
@@ -162,16 +198,17 @@
     <!-- 等待SIGTERM的时间，单位秒；超时后升级为SIGKILL，建议保持2~5。 -->
     <arg name="process_sigterm_timeout" default="2.0" />
 
-    <node unless="$(arg model_bundle_only)"
+    <node if="$(arg coordinator_enabled)"
           pkg="auv_control"
-          type="test_task3_2_3_sequence.py"
-          name="test_task3_2_3_sequence"
+          type="test_task3_1_2_3_sequence.py"
+          name="test_task3_1_2_3_sequence"
           output="screen"
           required="true">
         <param name="rate" type="double" value="$(arg rate)" />
         <param name="map_frame" type="string" value="$(arg map_frame)" />
         <param name="base_frame" type="string" value="$(arg base_frame)" />
         <param name="tf_timeout" type="double" value="$(arg tf_timeout)" />
+        <param name="arrow_topic" type="string" value="$(arg arrow_topic)" />
         <param name="aruco_topic" type="string" value="$(arg aruco_topic)" />
         <param name="aruco_web_detection_topic" type="string"
                value="$(arg aruco_web_detection_topic)" />
@@ -183,6 +220,8 @@
                value="$(arg rectangle_detection_topic)" />
         <param name="rectangle_pose_topic" type="string"
                value="$(arg rectangle_pose_topic)" />
+        <param name="start_arrow_model" type="bool"
+               value="$(arg start_arrow_model)" />
         <param name="start_aruco_model" type="bool"
                value="$(arg start_aruco_model)" />
         <param name="start_rectangle_model" type="bool"
@@ -193,10 +232,14 @@
                value="$(arg start_down_camera)" />
         <param name="start_down_splitter" type="bool"
                value="$(arg start_down_splitter)" />
+        <param name="start_arrow_web" type="bool"
+               value="$(arg start_arrow_web)" />
         <param name="start_aruco_web" type="bool"
                value="$(arg start_aruco_web)" />
         <param name="start_rectangle_web" type="bool"
                value="$(arg start_rectangle_web)" />
+        <param name="arrow_web_port" type="int"
+               value="$(arg arrow_web_port)" />
         <param name="aruco_web_port" type="int"
                value="$(arg aruco_web_port)" />
         <param name="rectangle_web_port" type="int"
@@ -224,10 +267,18 @@
                value="$(arg initial_hold_timeout)" />
         <param name="initial_hold_stable_seconds" type="double"
                value="$(arg initial_hold_stable_seconds)" />
+        <param name="post_task1_hold_timeout" type="double"
+               value="$(arg post_task1_hold_timeout)" />
+        <param name="post_task1_stable_seconds" type="double"
+               value="$(arg post_task1_stable_seconds)" />
         <param name="post_task2_hold_timeout" type="double"
                value="$(arg post_task2_hold_timeout)" />
         <param name="post_task2_stable_seconds" type="double"
                value="$(arg post_task2_stable_seconds)" />
+        <param name="post_second_arrow_hold_timeout" type="double"
+               value="$(arg post_second_arrow_hold_timeout)" />
+        <param name="post_second_arrow_stable_seconds" type="double"
+               value="$(arg post_second_arrow_stable_seconds)" />
         <param name="goal_match_position_tolerance" type="double"
                value="$(arg goal_match_position_tolerance)" />
         <param name="goal_match_depth_tolerance" type="double"
@@ -243,6 +294,10 @@
         <param name="arrival_max_yaw_rate" type="double"
                value="$(arg arrival_max_yaw_rate)" />
 
+        <param name="task1_stage_timeout" type="double"
+               value="$(arg task1_stage_timeout)" />
+        <param name="second_arrow_stage_timeout" type="double"
+               value="$(arg second_arrow_stage_timeout)" />
         <param name="task2_stage_timeout" type="double"
                value="$(arg task2_stage_timeout)" />
         <param name="task3_stage_timeout" type="double"

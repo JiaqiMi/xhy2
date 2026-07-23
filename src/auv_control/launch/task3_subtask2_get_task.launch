@@ -1,14 +1,41 @@
 <launch>
-    <!-- 任务3子任务2：人工停到目标正前方，mode=4定点，识别后亮灯。 -->
+    <!--
+      任务3子任务2：锁定启动点 -> ArUco识别 -> 亮灯 -> 原地转向。
+      定点和转向统一调用外部已启动的motion_supervisor，本launch不启动控制器。
+    -->
 
     <arg name="rate" default="10.0" />
 
-    <!-- mode=4 动力定位：记录启动时 map -> base_link 并持续发布固定目标。 -->
-    <arg name="pose_cmd_topic" default="/cmd/pose/ned" />
+    <!-- motion_supervisor接口：只发布绝对目标，不直接发布力或力矩。 -->
+    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
+    <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
+    <arg name="motion_state_topic" default="/motion/state" />
     <arg name="hold_map_frame" default="map" />
     <arg name="hold_base_frame" default="base_link" />
     <arg name="initial_hover_seconds" default="10.0" />
+    <arg name="initial_hover_timeout" default="30.0" />
     <arg name="hold_pose_timeout" default="5.0" />
+    <arg name="motion_state_timeout" default="0.5" />
+
+    <!--
+      ArUco识别并亮灯后原地转向。direction只能填写right或left，
+      angle填写正数角度且小于180；right为右转，left为左转。
+    -->
+    <arg name="turn_enabled" default="true" />
+    <arg name="turn_direction" default="right" />
+    <arg name="turn_angle_deg" default="90.0" />
+    <arg name="turn_timeout" default="90.0" />
+    <arg name="turn_stable_seconds" default="1.0" />
+    <arg name="turn_hold_seconds" default="1.0" />
+
+    <!-- 转向完成判定，同时检查目标一致性、实际误差和速度。 -->
+    <arg name="goal_match_position_tolerance" default="0.03" />
+    <arg name="goal_match_depth_tolerance" default="0.03" />
+    <arg name="goal_match_yaw_tolerance_deg" default="2.0" />
+    <arg name="arrival_position_tolerance" default="0.05" />
+    <arg name="arrival_yaw_tolerance_deg" default="5.0" />
+    <arg name="arrival_max_horizontal_speed" default="0.03" />
+    <arg name="arrival_max_yaw_rate" default="0.05" />
 
     <!-- 默认由本launch启动鱼眼摄像头、ArUco节点和Web。
          任务节点设置required=true，成功或60秒超时退出时会关闭整条launch链路。 -->
@@ -17,7 +44,7 @@
     <!-- 识别判定：最近10个模型帧构成滑动循环队列。
          同一个ID在窗口内出现3次立即成功，不要求连续，也不等待10帧填满。 -->
     <arg name="input_mode" default="topic" />
-    <arg name="aruco_topic" default="/obj/target_message" />
+    <arg name="aruco_topic" default="/vision/aruco/target_message" />
     <arg name="min_confidence" default="0.5" />
     <arg name="recognition_window_size" default="10" />
     <arg name="required_match_count" default="3" />
@@ -49,11 +76,35 @@
           output="screen"
           required="true">
         <param name="rate" type="double" value="$(arg rate)" />
-        <param name="pose_cmd_topic" type="string" value="$(arg pose_cmd_topic)" />
+        <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
+        <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
+        <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />
         <param name="hold_map_frame" type="string" value="$(arg hold_map_frame)" />
         <param name="hold_base_frame" type="string" value="$(arg hold_base_frame)" />
         <param name="initial_hover_seconds" type="double" value="$(arg initial_hover_seconds)" />
+        <param name="initial_hover_timeout" type="double" value="$(arg initial_hover_timeout)" />
         <param name="hold_pose_timeout" type="double" value="$(arg hold_pose_timeout)" />
+        <param name="motion_state_timeout" type="double" value="$(arg motion_state_timeout)" />
+        <param name="turn_enabled" type="bool" value="$(arg turn_enabled)" />
+        <param name="turn_direction" type="string" value="$(arg turn_direction)" />
+        <param name="turn_angle_deg" type="double" value="$(arg turn_angle_deg)" />
+        <param name="turn_timeout" type="double" value="$(arg turn_timeout)" />
+        <param name="turn_stable_seconds" type="double" value="$(arg turn_stable_seconds)" />
+        <param name="turn_hold_seconds" type="double" value="$(arg turn_hold_seconds)" />
+        <param name="goal_match_position_tolerance" type="double"
+               value="$(arg goal_match_position_tolerance)" />
+        <param name="goal_match_depth_tolerance" type="double"
+               value="$(arg goal_match_depth_tolerance)" />
+        <param name="goal_match_yaw_tolerance_deg" type="double"
+               value="$(arg goal_match_yaw_tolerance_deg)" />
+        <param name="arrival_position_tolerance" type="double"
+               value="$(arg arrival_position_tolerance)" />
+        <param name="arrival_yaw_tolerance_deg" type="double"
+               value="$(arg arrival_yaw_tolerance_deg)" />
+        <param name="arrival_max_horizontal_speed" type="double"
+               value="$(arg arrival_max_horizontal_speed)" />
+        <param name="arrival_max_yaw_rate" type="double"
+               value="$(arg arrival_max_yaw_rate)" />
 
         <param name="input_mode" type="string" value="$(arg input_mode)" />
         <param name="aruco_topic" type="string" value="$(arg aruco_topic)" />
