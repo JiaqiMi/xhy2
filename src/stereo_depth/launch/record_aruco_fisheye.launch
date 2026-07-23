@@ -1,0 +1,85 @@
+<launch>
+    <!--
+    名称：record_aruco_fisheye.launch
+    功能：
+        1. 启动鱼眼相机与 ArUco 检测
+        2. 录制原始图像、校正图像、检测结果、位姿和 TF
+    作者：xhy
+    -->
+
+    <!-- ==================== 启动参数 ==================== -->
+
+    <!-- 是否启动鱼眼相机驱动 -->
+    <arg name="start_driver" default="true" />
+
+    <!-- 是否启动 Web 页面 -->
+    <arg name="start_web" default="true" />
+
+    <!-- 是否录制 rosbag -->
+    <arg name="start_record" default="true" />
+
+    <!-- rosbag 保存目录 -->
+    <arg name="bag_dir" default="/home/xhy/xhy_records" />
+
+    <!-- rosbag 文件名前缀 -->
+    <arg name="bag_name" default="fisheye_aruco" />
+
+    <!-- 是否录制原始鱼眼图像，图像数据量较大 -->
+    <arg name="record_raw_image" default="true" />
+
+    <!-- ==================== 启动检测系统 ==================== -->
+
+    <!--
+    将下面的文件名改成你当前这个 launch 文件的实际名称
+    -->
+    <include file="$(find stereo_depth)/launch/test_aruco_detection_fisheye.launch">
+        <arg name="start_driver" value="$(arg start_driver)" />
+        <arg name="start_web" value="$(arg start_web)" />
+    </include>
+
+    <!-- ==================== rosbag 录制 ==================== -->
+
+    <!--
+    完整录制模式：
+        包含原始图像、标注图像、校正图像、检测结果、位姿和 TF
+    -->
+    <node if="$(eval arg('start_record') and arg('record_raw_image'))"
+          pkg="rosbag"
+          type="record"
+          name="fisheye_aruco_rosbag_record"
+          output="screen"
+          args="
+              -o $(arg bag_dir)/$(arg bag_name)
+              /fisheye_camera/image_raw
+              /vision/aruco/annotated_image
+              /vision/aruco/image_rect
+              /vision/aruco/detections
+              /vision/aruco/pose
+              /vision/aruco/pose_stamped
+              /vision/aruco/target_message
+              /tf
+              /tf_static
+          " />
+
+    <!--
+    轻量录制模式：
+        不录制原始图像，只保存检测结果、位姿和标注图像
+    -->
+    <node if="$(eval arg('start_record') and not arg('record_raw_image'))"
+          pkg="rosbag"
+          type="record"
+          name="fisheye_aruco_rosbag_record_light"
+          output="screen"
+          args="
+              -o $(arg bag_dir)/$(arg bag_name)
+              /vision/aruco/annotated_image
+              /vision/aruco/image_rect
+              /vision/aruco/detections
+              /vision/aruco/pose
+              /vision/aruco/pose_stamped
+              /vision/aruco/target_message
+              /tf
+              /tf_static
+          " />
+
+</launch>

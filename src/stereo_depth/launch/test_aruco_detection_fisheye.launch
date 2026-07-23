@@ -22,7 +22,7 @@
     <arg name="image_topic" default="/fisheye_camera/image_raw" />
 
     <!-- ArUco -->
-    <arg name="marker_length" default="0.20" />
+    <arg name="marker_length" default="0.30" />
     <arg name="dictionary" default="DICT_4X4_1000" />
     <arg name="infer_rate" default="5.0" />
     <arg name="processing_width" default="1280" />
