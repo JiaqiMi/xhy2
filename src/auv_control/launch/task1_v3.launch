@@ -6,7 +6,7 @@
 
     <!-- 基础任务和话题。 -->
     <arg name="rate" default="5.0" />
-    <arg name="reference_depth" default="-1.0" />
+    <arg name="reference_depth" default="-0.99" />
     <arg name="line_topic" default="/obj/line_message" />
     <arg name="target_topic" default="/obj/target_message" />
     <arg name="camera_topic" default="/left/image_raw" />
@@ -17,15 +17,15 @@
          default="$(env HOME)/.ros/auv_logs/task1" />
 
     <!-- 感知节点默认由外部统一启动；设为 true 时在本 launch 内启动并重映射输出。 -->
-    <arg name="start_line_node" default="false" />
-    <arg name="start_shape_node" default="false" />
+    <arg name="start_line_node" default="true" />
+    <arg name="start_shape_node" default="true" />
 
     <!-- 当前 3.8 m 测试道具使用 2 m 的结束下限。 -->
     <arg name="endpoint_min_completed_path_length" default="2.0" />
 
     <!-- 每类标志要求执行的动作次数；到终点时次数不足也正常结束。 -->
-    <arg name="yellow_required_count" default="1" />
-    <arg name="black_required_count" default="1" />
+    <arg name="yellow_required_count" default="2" />
+    <arg name="black_required_count" default="2" />
 
     <!-- 图形分类、有效帧窗口和位置聚类。有效帧达到 3 条后立即确认，无需等满 10 条。 -->
     <arg name="yellow_classes" default="triangle,circle" />

@@ -3,7 +3,7 @@
 
     <arg name="start_camera" default="false" />
     <arg name="start_splitter" default="false" />
-    <arg name="start_web" default="false" />
+    <arg name="start_web" default="true" />
 
     <arg name="model_path"
          default="/home/xhy/catkin_ws/models/arrow0717.pt" />

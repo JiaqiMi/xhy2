@@ -58,7 +58,7 @@
     <!-- motion_state_timeout：运动反馈最大允许年龄；超时后任务失败退出。 -->
     <arg name="motion_state_timeout" default="0.5" />
     <!-- motion_startup_timeout：启动后等待第一份有效运动反馈的最长时间。 -->
-    <arg name="motion_startup_timeout" default="10.0" />
+    <arg name="motion_startup_timeout" default="20.0" />
     <!-- cancel_timeout：发出cancel后等待刹停、模式4接管并进入HOVER的最长时间。 -->
     <arg name="cancel_timeout" default="15.0" />
 
