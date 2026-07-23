@@ -61,7 +61,7 @@ class MarkerObservationWindow:
             marker.header.stamp == item[1].header.stamp
             for item in self.samples
         ):
-            return None
+            return None, False
         self.samples.append((now_seconds, copy.deepcopy(marker)))
         self.samples = self.samples[-self.max_size:]
 
@@ -76,7 +76,7 @@ class MarkerObservationWindow:
             if len(cluster) > len(best_cluster):
                 best_cluster = cluster
         if len(best_cluster) < self.required_count:
-            return None
+            return None, True
 
         confirmed = copy.deepcopy(best_cluster[-1])
         confirmed.pose.position.x = sum(
@@ -88,7 +88,7 @@ class MarkerObservationWindow:
         confirmed.pose.position.z = sum(
             item.pose.position.z for item in best_cluster
         ) / len(best_cluster)
-        return confirmed
+        return confirmed, True
 
 
 class Task1V3(Task1LineFollowTest):
@@ -227,6 +227,7 @@ class Task1V3(Task1LineFollowTest):
         self.marker_action_hold_goal = None
         self.marker_light_started_at = None
         self.marker_rotation_state = None
+        self.commanded_lights = {"red": 0, "green": 0}
 
         self.actuator_pub = rospy.Publisher(
             self.actuator_topic, ActuatorControl, queue_size=10
@@ -250,6 +251,13 @@ class Task1V3(Task1LineFollowTest):
         )
         self.write_data_record(
             "task1_configuration",
+            target_topic=self.target_topic,
+            actuator_topic=self.actuator_topic,
+            yellow_classes=sorted(self.yellow_classes),
+            black_classes=sorted(self.black_classes),
+            yellow_min_confidence=self.yellow_min_confidence,
+            black_min_confidence=self.black_min_confidence,
+            max_camera_distance=self.max_camera_distance,
             handled_counts=copy.deepcopy(self.handled_counts),
             required_counts=copy.deepcopy(self.required_counts),
             marker_window_size=marker_window_size,
@@ -259,10 +267,17 @@ class Task1V3(Task1LineFollowTest):
             marker_duplicate_distance=self.marker_duplicate_distance,
             marker_line_max_distance=self.marker_line_max_distance,
             marker_progress_tolerance=self.marker_progress_tolerance,
+            reference_depth=self.reference_depth,
+            light_seconds=self.light_seconds,
+            gap_seconds=self.gap_seconds,
+            yellow_light_count=self.yellow_light_count,
+            black_light_count=self.black_light_count,
             black_rotation_angle_deg=math.degrees(self.black_rotation_angle),
+            black_rotation_direction=self.black_rotation_direction,
             black_rotation_lookahead_deg=math.degrees(
                 self.black_rotation_lookahead
             ),
+            black_return_hold_seconds=self.black_return_hold_seconds,
         )
 
     def shutdown_actuators(self):
@@ -284,7 +299,10 @@ class Task1V3(Task1LineFollowTest):
                 pose.header.stamp,
                 rospy.Duration(self.tf_timeout_seconds),
             )
-            return self.tf_listener.transformPose(self.map_frame, pose)
+            return (
+                self.tf_listener.transformPose(self.map_frame, pose),
+                "image_stamp",
+            )
         except tf.Exception:
             try:
                 latest = copy.deepcopy(pose)
@@ -295,12 +313,15 @@ class Task1V3(Task1LineFollowTest):
                     rospy.Time(0),
                     rospy.Duration(self.tf_timeout_seconds),
                 )
-                return self.tf_listener.transformPose(self.map_frame, latest)
+                return (
+                    self.tf_listener.transformPose(self.map_frame, latest),
+                    "latest",
+                )
             except tf.Exception as error:
                 rospy.logwarn_throttle(
                     2.0, "%s: 图形坐标转换失败: %s", NODE_NAME, error
                 )
-                return None
+                return None, "unavailable"
 
     def marker_already_known(self, kind, point):
         with self.marker_lock:
@@ -327,42 +348,345 @@ class Task1V3(Task1LineFollowTest):
                 return None
         return self.project_to_curve(point, points, distances)
 
+    def marker_entry_record(self, marker):
+        if marker is None:
+            return None
+        return {
+            "id": marker["id"],
+            "kind": marker["kind"],
+            "pose": self.pose_record(marker["pose"]),
+            "confidence": round(float(marker["confidence"]), 6),
+            "path_s": (
+                round(float(marker["path_s"]), 6)
+                if marker["path_s"] is not None else None
+            ),
+        }
+
+    def marker_snapshot(self):
+        with self.marker_lock:
+            windows = {
+                kind: {
+                    "size": len(window.samples),
+                    "samples": [
+                        {
+                            "arrival_ros_time": round(arrival_time, 6),
+                            "image_stamp": round(
+                                pose.header.stamp.to_sec(), 6
+                            ),
+                            "pose": self.pose_record(pose),
+                        }
+                        for arrival_time, pose in window.samples
+                    ],
+                }
+                for kind, window in self.marker_windows.items()
+            }
+            return {
+                "windows": windows,
+                "pending": [
+                    self.marker_entry_record(marker)
+                    for marker in self.pending_markers
+                ],
+                "handled": [
+                    self.marker_entry_record(marker)
+                    for marker in self.handled_markers
+                ],
+                "known_points": {
+                    kind: [
+                        self.point_record(point)
+                        for point in points
+                    ]
+                    for kind, points in self.known_marker_points.items()
+                },
+                "handled_counts": copy.deepcopy(self.handled_counts),
+                "required_counts": copy.deepcopy(self.required_counts),
+            }
+
+    def record_marker_frame(
+        self,
+        message,
+        status,
+        reason,
+        kind=None,
+        transformed=None,
+        transform_mode=None,
+        confirmed=None,
+        registration=None,
+    ):
+        with self.marker_lock:
+            window_sizes = {
+                name: len(window.samples)
+                for name, window in self.marker_windows.items()
+            }
+        self.write_data_record(
+            "marker_frame",
+            status=status,
+            reason=reason,
+            marker_kind=kind,
+            class_name=message.class_name,
+            target_type=message.type,
+            confidence=round(float(message.conf), 6),
+            source_frame=message.pose.header.frame_id,
+            image_stamp=round(message.pose.header.stamp.to_sec(), 6),
+            camera_position=self.point_record(message.pose.pose.position),
+            map_pose=self.pose_record(transformed),
+            transform_mode=transform_mode,
+            confirmed_pose=self.pose_record(confirmed),
+            registration=registration,
+            window_sizes=window_sizes,
+            completed_path=round(self.completed_path_length, 6),
+            handled_counts=copy.deepcopy(self.handled_counts),
+            required_counts=copy.deepcopy(self.required_counts),
+        )
+
+    def motion_record(self):
+        message = self.latest_motion_state
+        if message is None:
+            return None
+        return {
+            "stamp": round(message.header.stamp.to_sec(), 6),
+            "state": message.state,
+            "reason": message.reason,
+            "goal_active": message.goal_active,
+            "goal": self.pose_record(message.goal),
+            "position_error": round(float(message.position_error), 6),
+            "base_position_error": round(
+                float(message.base_position_error), 6
+            ),
+            "yaw_error_deg": round(
+                math.degrees(float(message.yaw_error)), 6
+            ),
+            "horizontal_speed": round(float(message.horizontal_speed), 6),
+            "yaw_rate_deg_s": round(
+                math.degrees(float(message.yaw_rate)), 6
+            ),
+            "tx": message.tx,
+            "ty": message.ty,
+            "mz": message.mz,
+            "x_axis_state": message.x_axis_state,
+            "y_axis_state": message.y_axis_state,
+            "yaw_axis_state": message.yaw_axis_state,
+            "x_axis_error": round(float(message.x_axis_error), 6),
+            "y_axis_error": round(float(message.y_axis_error), 6),
+            "x_axis_speed": round(float(message.x_axis_speed), 6),
+            "y_axis_speed": round(float(message.y_axis_speed), 6),
+            "startup_complete": message.startup_complete,
+        }
+
+    def rotation_record(self):
+        state = self.marker_rotation_state
+        if state is None:
+            return None
+        hover_started = state["hover_started"]
+        return {
+            "start_yaw_deg": round(math.degrees(state["start_yaw"]), 6),
+            "last_yaw_deg": round(math.degrees(state["last_yaw"]), 6),
+            "completed_deg": round(math.degrees(state["completed"]), 6),
+            "goal": self.pose_record(state["goal"]),
+            "final_goal_active": state["final_goal_active"],
+            "hover_started": (
+                round(hover_started.to_sec(), 6)
+                if hover_started is not None else None
+            ),
+        }
+
+    def stage_description(self):
+        descriptions = {
+            self.WAIT_CAMERA: "等待相机并保持启动位置",
+            self.SEARCH_LEFT: "向左搜索红线",
+            self.SEARCH_RIGHT: "向右搜索红线",
+            self.SEARCH_RETURN: "返回启动航向搜索红线",
+            self.SEARCH_FORWARD: "向前搜索红线",
+            self.WAIT_FIXED_LINE: "等待红线拟合固定",
+            self.FOLLOW_LINE: "沿红线进行 LOS 巡航",
+            self.HOLD_END: "保持终点并确认结束",
+            self.FINISH: "任务结束",
+        }
+        if self.state != self.MARKER_ACTION:
+            return descriptions.get(self.state, "执行任务")
+        if self.active_marker is None:
+            return "准备执行标志动作"
+        kind_name = "黄色" if self.active_marker["kind"] == "yellow" else "黑色"
+        action_descriptions = {
+            "WAIT_HOVER": "在标志进度处原地定点",
+            "LIGHT": "执行%s标志灯光动作" % kind_name,
+            "ROTATE": "执行黑色标志连续旋转",
+        }
+        return action_descriptions.get(
+            self.marker_action_phase, "执行%s标志动作" % kind_name
+        )
+
+    def record_task1_cycle(self):
+        current = self.get_current_pose()
+        camera = self.get_camera_pose()
+        with self.curve_lock:
+            line_data = {
+                "locked": self.line_locked,
+                "status": self.latest_line_status,
+                "confidence": round(self.latest_line_confidence, 6),
+                "fit_residual": round(self.line_fit_residual, 6),
+                "current_path": round(self.current_path_s, 6),
+                "projected_path": round(self.projected_path_s, 6),
+                "completed_path": round(self.completed_path_length, 6),
+                "fitted_curve_length": (
+                    round(self.line_curve_s[-1], 6)
+                    if self.line_curve_s else 0.0
+                ),
+                "fixed_curve_length": (
+                    round(self.line_committed_curve_s[-1], 6)
+                    if self.line_committed_curve_s else 0.0
+                ),
+                "executing_curve_length": (
+                    round(self.tracking_curve_s[-1], 6)
+                    if self.tracking_curve_s else 0.0
+                ),
+                "tracking_curve_version": self.tracking_curve_version,
+                "fixed_curve_version": self.line_version,
+            }
+        self.write_data_record(
+            "task1_cycle",
+            stage_description=self.stage_description(),
+            base=self.pose_record(current),
+            camera=self.pose_record(camera),
+            command_goal=self.pose_record(self.last_motion_goal),
+            motion=self.motion_record(),
+            line=line_data,
+            markers=self.marker_snapshot(),
+            active_marker=self.marker_entry_record(self.active_marker),
+            marker_action_phase=self.marker_action_phase,
+            marker_action_hold_goal=self.pose_record(
+                self.marker_action_hold_goal
+            ),
+            rotation=self.rotation_record(),
+            commanded_lights=copy.deepcopy(self.commanded_lights),
+            reference_depth=self.reference_depth,
+            active_depth=self.hold_z,
+        )
+
+    def log_task_summary(self):
+        with self.marker_lock:
+            pending_count = len(self.pending_markers)
+        motion_state = (
+            self.latest_motion_state.state
+            if self.latest_motion_state is not None else "-"
+        )
+        marker_text = ""
+        if self.active_marker is not None:
+            marker_text = "；标志=%s#%d，动作=%s" % (
+                self.active_marker["kind"],
+                self.active_marker["id"],
+                self.marker_action_phase,
+            )
+        rospy.loginfo_throttle(
+            2.0,
+            "%s: 当前阶段=%s；正在%s；进度=%.2f m；"
+            "黄色=%d/%d，黑色=%d/%d；待处理=%d；MotionState=%s%s",
+            NODE_NAME,
+            self.state,
+            self.stage_description(),
+            self.completed_path_length,
+            self.handled_counts["yellow"],
+            self.required_counts["yellow"],
+            self.handled_counts["black"],
+            self.required_counts["black"],
+            pending_count,
+            motion_state,
+            marker_text,
+        )
+
     def marker_callback(self, message):
         if not self.line_locked:
+            self.record_marker_frame(
+                message, "ignored", "line_not_locked"
+            )
             return
         kind = self.marker_kind(message)
-        if kind is None or self.handled_counts[kind] >= self.required_counts[kind]:
+        if kind is None:
+            self.record_marker_frame(
+                message, "ignored", "class_not_target"
+            )
+            return
+        if self.handled_counts[kind] >= self.required_counts[kind]:
+            self.record_marker_frame(
+                message, "ignored", "required_count_reached", kind=kind
+            )
             return
         minimum_confidence = (
             self.yellow_min_confidence
             if kind == "yellow" else self.black_min_confidence
         )
         point = message.pose.pose.position
-        valid = (
-            (not message.type or message.type == "center")
-            and float(message.conf) >= minimum_confidence
-            and math.isfinite(point.x)
-            and math.isfinite(point.y)
-            and math.isfinite(point.z)
-            and math.sqrt(point.x ** 2 + point.y ** 2 + point.z ** 2)
-            <= self.max_camera_distance
+        confidence = float(message.conf)
+        if message.type and message.type != "center":
+            self.record_marker_frame(
+                message, "rejected", "target_type_not_center", kind=kind
+            )
+            return
+        if not math.isfinite(confidence):
+            self.record_marker_frame(
+                message, "rejected", "confidence_not_finite", kind=kind
+            )
+            return
+        if confidence < minimum_confidence:
+            self.record_marker_frame(
+                message, "rejected", "confidence_below_minimum", kind=kind
+            )
+            return
+        if not all(
+            math.isfinite(value) for value in (point.x, point.y, point.z)
+        ):
+            self.record_marker_frame(
+                message, "rejected", "position_not_finite", kind=kind
+            )
+            return
+        camera_distance = math.sqrt(
+            point.x ** 2 + point.y ** 2 + point.z ** 2
         )
-        if not valid:
+        if camera_distance > self.max_camera_distance:
+            self.record_marker_frame(
+                message, "rejected", "camera_distance_too_large", kind=kind
+            )
             return
 
-        marker = self.transform_marker_to_map(message.pose)
+        marker, transform_mode = self.transform_marker_to_map(message.pose)
         if marker is None:
+            self.record_marker_frame(
+                message,
+                "rejected",
+                "transform_unavailable",
+                kind=kind,
+                transform_mode=transform_mode,
+            )
             return
         marker.header.stamp = message.pose.header.stamp
         if self.marker_already_known(kind, marker.pose.position):
+            self.record_marker_frame(
+                message,
+                "ignored",
+                "marker_already_known",
+                kind=kind,
+                transformed=marker,
+                transform_mode=transform_mode,
+            )
             return
 
         now_seconds = rospy.Time.now().to_sec()
         with self.marker_lock:
-            confirmed = self.marker_windows[kind].add(now_seconds, marker)
+            confirmed, added = self.marker_windows[kind].add(
+                now_seconds, marker
+            )
             sample_count = len(self.marker_windows[kind].samples)
             if confirmed is not None:
                 self.marker_windows[kind].clear()
+        if not added:
+            self.record_marker_frame(
+                message,
+                "ignored",
+                "duplicate_image_stamp",
+                kind=kind,
+                transformed=marker,
+                transform_mode=transform_mode,
+            )
+            return
         rospy.loginfo_throttle(
             1.0,
             "%s: %s有效识别=%d，位置=(%.2f, %.2f)",
@@ -372,8 +696,30 @@ class Task1V3(Task1LineFollowTest):
             marker.pose.position.x,
             marker.pose.position.y,
         )
-        if confirmed is not None:
-            self.register_marker(kind, confirmed, float(message.conf))
+        if confirmed is None:
+            self.record_marker_frame(
+                message,
+                "accepted",
+                "window_collecting",
+                kind=kind,
+                transformed=marker,
+                transform_mode=transform_mode,
+            )
+            return
+
+        registration_status, registration = self.register_marker(
+            kind, confirmed, confidence
+        )
+        self.record_marker_frame(
+            message,
+            "confirmed",
+            registration_status,
+            kind=kind,
+            transformed=marker,
+            transform_mode=transform_mode,
+            confirmed=confirmed,
+            registration=registration,
+        )
 
     def register_marker(self, kind, marker, confidence):
         point = marker.pose.position
@@ -383,7 +729,7 @@ class Task1V3(Task1LineFollowTest):
                 xy_distance(point, known) <= self.marker_duplicate_distance
                 for known in self.known_marker_points[kind]
             ):
-                return
+                return "duplicate_marker", None
             self.known_marker_points[kind].append(copy.deepcopy(point))
 
             projection_matches = (
@@ -396,25 +742,43 @@ class Task1V3(Task1LineFollowTest):
                 and path_s
                 < self.completed_path_length - self.marker_progress_tolerance
             ):
-                rospy.loginfo(
-                    "%s: 忽略已越过的%s标志；标志进度=%.2f m，"
-                    "机器人进度=%.2f m",
-                    NODE_NAME,
-                    kind,
-                    path_s,
-                    self.completed_path_length,
-                )
-                return
+                ignored_record = {
+                    "kind": kind,
+                    "pose": self.pose_record(marker),
+                    "confidence": round(confidence, 6),
+                    "path_s": round(path_s, 6),
+                    "line_distance": round(projection["distance"], 6),
+                }
+            else:
+                ignored_record = None
 
-            marker_data = {
-                "id": self.next_marker_id,
-                "kind": kind,
-                "pose": copy.deepcopy(marker),
-                "confidence": confidence,
-                "path_s": path_s,
-            }
-            self.next_marker_id += 1
-            self.pending_markers.append(marker_data)
+            if ignored_record is None:
+                marker_data = {
+                    "id": self.next_marker_id,
+                    "kind": kind,
+                    "pose": copy.deepcopy(marker),
+                    "confidence": confidence,
+                    "path_s": path_s,
+                }
+                self.next_marker_id += 1
+                self.pending_markers.append(marker_data)
+
+        if ignored_record is not None:
+            rospy.loginfo(
+                "%s: 忽略已越过的%s标志；标志进度=%.2f m，"
+                "机器人进度=%.2f m",
+                NODE_NAME,
+                kind,
+                path_s,
+                self.completed_path_length,
+            )
+            self.write_data_record(
+                "marker_ignored",
+                reason="progress_already_passed",
+                marker=ignored_record,
+                completed_path=round(self.completed_path_length, 6),
+            )
+            return "progress_already_passed", ignored_record
 
         rospy.loginfo(
             "%s: 标记%s点位 id=%d，位置=(%.2f, %.2f)，巡线进度=%s",
@@ -432,6 +796,10 @@ class Task1V3(Task1LineFollowTest):
             marker=self.pose_record(marker),
             path_s=path_s,
             confidence=confidence,
+        )
+        return (
+            "queued" if path_s is not None else "queued_waiting_curve_match",
+            self.marker_entry_record(marker_data),
         )
 
     def update_marker_progress(self):
@@ -462,6 +830,14 @@ class Task1V3(Task1LineFollowTest):
             for marker in self.pending_markers:
                 kind = marker["kind"]
                 if self.handled_counts[kind] >= self.required_counts[kind]:
+                    self.write_data_record(
+                        "marker_skipped",
+                        reason="required_count_reached",
+                        marker=self.marker_entry_record(marker),
+                        completed_path=round(
+                            self.completed_path_length, 6
+                        ),
+                    )
                     continue
                 projection = self.marker_curve_projection(
                     marker["pose"].pose.position
@@ -484,6 +860,14 @@ class Task1V3(Task1LineFollowTest):
                         marker["id"],
                         marker["path_s"],
                         self.completed_path_length,
+                    )
+                    self.write_data_record(
+                        "marker_skipped",
+                        reason="progress_already_passed",
+                        marker=self.marker_entry_record(marker),
+                        completed_path=round(
+                            self.completed_path_length, 6
+                        ),
                     )
                     continue
                 retained.append(marker)
@@ -510,7 +894,9 @@ class Task1V3(Task1LineFollowTest):
         self.marker_action_phase = "WAIT_HOVER"
         self.marker_light_started_at = None
         self.marker_rotation_state = None
-        self.current_tracking_point = copy.deepcopy(marker["pose"].pose.position)
+        self.current_tracking_point = copy.deepcopy(
+            marker["pose"].pose.position
+        )
         self.set_state(self.MARKER_ACTION)
         rospy.loginfo(
             "%s: 巡线进度到达%s标志 id=%d；标志进度=%.2f m，"
@@ -521,8 +907,28 @@ class Task1V3(Task1LineFollowTest):
             marker["path_s"],
             self.completed_path_length,
         )
+        self.write_data_record(
+            "marker_action_start",
+            marker=self.marker_entry_record(marker),
+            completed_path=round(self.completed_path_length, 6),
+            hold_goal=self.pose_record(self.marker_action_hold_goal),
+            resume_state=self.marker_resume_state,
+        )
 
     def publish_lights(self, red, green):
+        next_lights = {
+            "red": int(red),
+            "green": int(green),
+        }
+        lights_changed = next_lights != self.commanded_lights
+        self.commanded_lights = next_lights
+        if lights_changed:
+            self.write_data_record(
+                "light_command",
+                commanded_lights=copy.deepcopy(self.commanded_lights),
+                active_marker=self.marker_entry_record(self.active_marker),
+                marker_action_phase=self.marker_action_phase,
+            )
         camera_light = ActuatorControl()
         camera_light.mode = 1
         camera_light.light1 = self.light1
@@ -557,6 +963,11 @@ class Task1V3(Task1LineFollowTest):
             else:
                 self.marker_action_phase = "ROTATE"
                 self.marker_rotation_state = None
+                self.write_data_record(
+                    "marker_action_phase",
+                    marker=self.marker_entry_record(self.active_marker),
+                    next_phase=self.marker_action_phase,
+                )
             return
 
         light_on = elapsed - cycle_index * cycle_seconds < self.light_seconds
@@ -579,6 +990,18 @@ class Task1V3(Task1LineFollowTest):
                 "final_goal_active": False,
                 "hover_started": None,
             }
+            self.write_data_record(
+                "black_rotation_start",
+                marker=self.marker_entry_record(self.active_marker),
+                start_yaw_deg=round(math.degrees(current_yaw), 6),
+                target_rotation_deg=round(
+                    math.degrees(self.black_rotation_angle), 6
+                ),
+                lookahead_deg=round(
+                    math.degrees(self.black_rotation_lookahead), 6
+                ),
+                direction=self.black_rotation_direction,
+            )
 
         state = self.marker_rotation_state
         yaw_delta = wrap_angle(current_yaw - state["last_yaw"])
@@ -603,6 +1026,14 @@ class Task1V3(Task1LineFollowTest):
             state["goal"] = self.make_pose(anchor.x, anchor.y, final_yaw)
             state["final_goal_active"] = True
             state["hover_started"] = None
+            self.write_data_record(
+                "black_rotation_final_goal",
+                marker=self.marker_entry_record(self.active_marker),
+                completed_deg=round(
+                    math.degrees(state["completed"]), 6
+                ),
+                goal=self.pose_record(state["goal"]),
+            )
         elif not state["final_goal_active"]:
             target_yaw = wrap_angle(
                 current_yaw
@@ -645,6 +1076,14 @@ class Task1V3(Task1LineFollowTest):
                     "%s: %s标志定点完成，开始灯光动作",
                     NODE_NAME,
                     self.active_marker["kind"],
+                )
+                self.write_data_record(
+                    "marker_action_phase",
+                    marker=self.marker_entry_record(self.active_marker),
+                    next_phase=self.marker_action_phase,
+                    light_started_at=round(
+                        self.marker_light_started_at.to_sec(), 6
+                    ),
                 )
         elif self.marker_action_phase == "LIGHT":
             self.run_marker_light()
@@ -728,6 +1167,10 @@ class Task1V3(Task1LineFollowTest):
         self.start_marker_action(marker, current)
         return True
 
+    def after_control_cycle(self):
+        self.record_task1_cycle()
+        self.log_task_summary()
+
     def finish(self):
         self.publish_lights(0, 0)
         self.cancel_motion()
@@ -747,6 +1190,12 @@ class Task1V3(Task1LineFollowTest):
             handled_counts=copy.deepcopy(self.handled_counts),
             required_counts=copy.deepcopy(self.required_counts),
             pending_marker_count=len(self.pending_markers),
+            markers=self.marker_snapshot(),
+            active_marker=self.marker_entry_record(self.active_marker),
+            marker_action_phase=self.marker_action_phase,
+            commanded_lights=copy.deepcopy(self.commanded_lights),
+            final_base=self.pose_record(self.get_current_pose()),
+            final_motion=self.motion_record(),
         )
         rospy.signal_shutdown("task1_v3 complete")
 

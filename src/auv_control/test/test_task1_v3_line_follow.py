@@ -2206,9 +2206,13 @@ class Task1LineFollowTest:
         """完整任务可覆盖此钩子临时接管巡线主循环；单项测试始终返回 False。"""
         return False
 
+    def after_control_cycle(self):
+        """完整任务可覆盖此钩子追加周期数据；单项测试不执行额外操作。"""
+
     def run(self):
         while not rospy.is_shutdown():
             if not self.initialize_start_pose():
+                self.after_control_cycle()
                 self.rate.sleep()
                 continue
             if self.motion_failed():
@@ -2220,6 +2224,7 @@ class Task1LineFollowTest:
                     self.latest_motion_state.reason,
                 )
                 self.log_debug_cycle()
+                self.after_control_cycle()
                 self.rate.sleep()
                 continue
 
@@ -2284,6 +2289,7 @@ class Task1LineFollowTest:
                 self.finish()
 
             self.log_debug_cycle()
+            self.after_control_cycle()
             self.rate.sleep()
 
 
