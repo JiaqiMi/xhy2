@@ -1,0 +1,82 @@
+<launch>
+    <!-- ======================================== -->
+    <!-- Fish-eye monocular camera calibration    -->
+    <!-- Checkerboard: 11x8 inner corners         -->
+    <!-- Square size: 0.02 m                      -->
+    <!-- ======================================== -->
+
+    <!-- 是否启动鱼眼相机驱动 -->
+    <arg name="start_driver" default="true" />
+
+    <!-- 相机网络参数 -->
+    <arg name="camera_host" default="192.168.1.122" />
+    <arg name="camera_port" default="554" />
+    <arg name="username" default="admin" />
+    <arg name="password" default="admin" />
+    <arg name="channel" default="1" />
+    <arg name="subtype" default="0" />
+
+    <!-- 相机输出图像话题 -->
+    <arg name="image_topic"
+         default="/fisheye_camera/image_raw" />
+
+    <!-- 相机命名空间 -->
+    <arg name="camera_ns"
+         default="/fisheye_camera" />
+
+    <arg name="camera_name"
+         default="fisheye_camera" />
+
+    <!-- 标定板参数 -->
+    <!-- 11x8指内部角点数量，不是黑白方格数量 -->
+    <arg name="board_size"
+         default="11x8" />
+
+    <!-- 单格边长，单位：米 -->
+    <arg name="square_size"
+         default="0.02" />
+
+    <!-- 启动鱼眼相机驱动 -->
+    <include if="$(arg start_driver)"
+             file="$(find fisheye_camera_driver)/launch/driver.launch">
+
+        <arg name="host"
+             value="$(arg camera_host)" />
+
+        <arg name="port"
+             value="$(arg camera_port)" />
+
+        <arg name="username"
+             value="$(arg username)" />
+
+        <arg name="password"
+             value="$(arg password)" />
+
+        <arg name="channel"
+             value="$(arg channel)" />
+
+        <arg name="subtype"
+             value="$(arg subtype)" />
+
+        <arg name="image_topic"
+             value="$(arg image_topic)" />
+    </include>
+
+    <!-- ROS1 Melodic鱼眼单目标定 -->
+    <node pkg="camera_calibration"
+          type="cameracalibrator.py"
+          name="fisheye_camera_calibrator"
+          output="screen"
+          args="
+              --size $(arg board_size)
+              --square $(arg square_size)
+              --no-service-check
+              --camera_name $(arg camera_name)
+              --fisheye-fix-skew
+              --fisheye-recompute-extrinsicsts
+              --fisheye-k-coefficients 4
+              --disable_calib_cb_fast_check
+              image:=$(arg image_topic)
+              camera:=$(arg camera_ns)
+          " />
+</launch>
