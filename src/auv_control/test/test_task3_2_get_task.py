@@ -1,42 +1,62 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""任务3子任务2：定点识别 ArUco 并点亮对应颜色灯。
+"""任务3子任务2：定点识别 ArUco、点亮对应颜色灯并原地转向。
 
 人工把机器人停在目标正前方后，节点记录当前 ``map -> base_link`` 位姿，
-固定使用 ``PoseNEDcmd.mode=4`` 做动力定位。启动后先悬停10秒，再开始
-60秒识别计时。
+通过 ``motion_supervisor`` 做动力定位。启动后先悬停10秒，再开始60秒识别计时。
 
 识别采用最近10个模型消息组成的滑动窗口。任一合法 ArUco ID 在窗口内
 出现3次即立即确认，不要求连续，也不需要等待窗口填满。例如第1、3、7帧
-是同一个ID时，第7帧到达后立即成功。成功后点亮对应颜色灯3秒并结束；
-60秒内未确认则按失败结束。
+是同一个ID时，第7帧到达后立即成功。成功后点亮对应颜色灯3秒，再按配置
+原地左转或右转；60秒内未确认或转向未稳定到达都按失败结束。
 """
 
 import math
 import re
 import threading
+import time
 from collections import Counter, deque
 
 import rospy
 import tf
 
-from std_msgs.msg import String
+from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Empty, String
+from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
-from auv_control.msg import ActuatorControl, PoseNEDcmd, TargetDetection
+from auv_control.msg import ActuatorControl, MotionState, TargetDetection
 
 
 NODE_NAME = "test_task3_2_get_task"
-MODE_DYNAMIC_POSITIONING = 4
 
 DEFAULT_RATE = 10.0
-DEFAULT_POSE_CMD_TOPIC = "/cmd/pose/ned"
+DEFAULT_MOTION_GOAL_TOPIC = "/cmd/motion/goal"
+DEFAULT_MOTION_CANCEL_TOPIC = "/cmd/motion/cancel"
+DEFAULT_MOTION_STATE_TOPIC = "/motion/state"
 DEFAULT_HOLD_MAP_FRAME = "map"
 DEFAULT_HOLD_BASE_FRAME = "base_link"
 DEFAULT_INITIAL_HOVER_SECONDS = 10.0
+DEFAULT_INITIAL_HOVER_TIMEOUT = 30.0
 DEFAULT_HOLD_POSE_TIMEOUT = 5.0
+DEFAULT_MOTION_STATE_TIMEOUT = 0.5
+
+DEFAULT_TURN_ENABLED = True
+DEFAULT_TURN_DIRECTION = "right"
+DEFAULT_TURN_ANGLE_DEG = 90.0
+DEFAULT_TURN_TIMEOUT = 90.0
+DEFAULT_TURN_STABLE_SECONDS = 1.0
+DEFAULT_TURN_HOLD_SECONDS = 1.0
+
+DEFAULT_GOAL_MATCH_POSITION_TOLERANCE = 0.03
+DEFAULT_GOAL_MATCH_DEPTH_TOLERANCE = 0.03
+DEFAULT_GOAL_MATCH_YAW_TOLERANCE_DEG = 2.0
+DEFAULT_ARRIVAL_POSITION_TOLERANCE = 0.05
+DEFAULT_ARRIVAL_YAW_TOLERANCE_DEG = 5.0
+DEFAULT_ARRIVAL_MAX_HORIZONTAL_SPEED = 0.03
+DEFAULT_ARRIVAL_MAX_YAW_RATE = 0.05
 
 DEFAULT_INPUT_MODE = "topic"
-DEFAULT_ARUCO_TOPIC = "/obj/target_message"
+DEFAULT_ARUCO_TOPIC = "/vision/aruco/target_message"
 DEFAULT_MIN_CONFIDENCE = 0.5
 DEFAULT_RECOGNITION_WINDOW_SIZE = 10
 DEFAULT_REQUIRED_MATCH_COUNT = 3
@@ -55,6 +75,10 @@ DEFAULT_HEADING_SERVO = 0x80
 DEFAULT_CLAMP_SERVO = 0xFF
 DEFAULT_DRIVE_CMD = 0
 DEFAULT_DRIVE_SPEED = 0
+
+
+def normalize_angle(angle):
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
 class Task3GetTaskTest:
@@ -78,9 +102,15 @@ class Task3GetTaskTest:
         self.rate_hz = float(rospy.get_param("~rate", DEFAULT_RATE))
         self.rate = rospy.Rate(self.rate_hz)
 
-        self.pose_cmd_topic = str(
-            rospy.get_param("~pose_cmd_topic", DEFAULT_POSE_CMD_TOPIC)
-        ).strip()
+        self.motion_goal_topic = str(rospy.get_param(
+            "~motion_goal_topic", DEFAULT_MOTION_GOAL_TOPIC
+        )).strip()
+        self.motion_cancel_topic = str(rospy.get_param(
+            "~motion_cancel_topic", DEFAULT_MOTION_CANCEL_TOPIC
+        )).strip()
+        self.motion_state_topic = str(rospy.get_param(
+            "~motion_state_topic", DEFAULT_MOTION_STATE_TOPIC
+        )).strip()
         self.hold_map_frame = str(
             rospy.get_param("~hold_map_frame", DEFAULT_HOLD_MAP_FRAME)
         ).strip()
@@ -90,8 +120,62 @@ class Task3GetTaskTest:
         self.initial_hover_seconds = float(rospy.get_param(
             "~initial_hover_seconds", DEFAULT_INITIAL_HOVER_SECONDS
         ))
+        self.initial_hover_timeout = float(rospy.get_param(
+            "~initial_hover_timeout", DEFAULT_INITIAL_HOVER_TIMEOUT
+        ))
         self.hold_pose_timeout = float(rospy.get_param(
             "~hold_pose_timeout", DEFAULT_HOLD_POSE_TIMEOUT
+        ))
+        self.motion_state_timeout = float(rospy.get_param(
+            "~motion_state_timeout", DEFAULT_MOTION_STATE_TIMEOUT
+        ))
+
+        self.turn_enabled = bool(rospy.get_param(
+            "~turn_enabled", DEFAULT_TURN_ENABLED
+        ))
+        self.turn_direction = str(rospy.get_param(
+            "~turn_direction", DEFAULT_TURN_DIRECTION
+        )).strip().lower()
+        self.turn_angle_deg = float(rospy.get_param(
+            "~turn_angle_deg", DEFAULT_TURN_ANGLE_DEG
+        ))
+        self.turn_timeout = float(rospy.get_param(
+            "~turn_timeout", DEFAULT_TURN_TIMEOUT
+        ))
+        self.turn_stable_seconds = float(rospy.get_param(
+            "~turn_stable_seconds", DEFAULT_TURN_STABLE_SECONDS
+        ))
+        self.turn_hold_seconds = float(rospy.get_param(
+            "~turn_hold_seconds", DEFAULT_TURN_HOLD_SECONDS
+        ))
+
+        self.goal_match_position_tolerance = float(rospy.get_param(
+            "~goal_match_position_tolerance",
+            DEFAULT_GOAL_MATCH_POSITION_TOLERANCE,
+        ))
+        self.goal_match_depth_tolerance = float(rospy.get_param(
+            "~goal_match_depth_tolerance",
+            DEFAULT_GOAL_MATCH_DEPTH_TOLERANCE,
+        ))
+        self.goal_match_yaw_tolerance = math.radians(float(rospy.get_param(
+            "~goal_match_yaw_tolerance_deg",
+            DEFAULT_GOAL_MATCH_YAW_TOLERANCE_DEG,
+        )))
+        self.arrival_position_tolerance = float(rospy.get_param(
+            "~arrival_position_tolerance",
+            DEFAULT_ARRIVAL_POSITION_TOLERANCE,
+        ))
+        self.arrival_yaw_tolerance = math.radians(float(rospy.get_param(
+            "~arrival_yaw_tolerance_deg",
+            DEFAULT_ARRIVAL_YAW_TOLERANCE_DEG,
+        )))
+        self.arrival_max_horizontal_speed = float(rospy.get_param(
+            "~arrival_max_horizontal_speed",
+            DEFAULT_ARRIVAL_MAX_HORIZONTAL_SPEED,
+        ))
+        self.arrival_max_yaw_rate = float(rospy.get_param(
+            "~arrival_max_yaw_rate",
+            DEFAULT_ARRIVAL_MAX_YAW_RATE,
         ))
 
         self.input_mode = str(
@@ -148,8 +232,11 @@ class Task3GetTaskTest:
 
         self.validate_params()
 
-        self.hold_translation = None
-        self.hold_rotation = None
+        self.hold_goal = None
+        self.active_goal = None
+        self.motion_state_lock = threading.Lock()
+        self.latest_motion_state = None
+        self.latest_motion_state_wall_time = None
         self.accept_detections = False
         self.model_message_index = 0
         self.recognition_frame_index = 0
@@ -159,8 +246,11 @@ class Task3GetTaskTest:
         self.recognition_window = deque(maxlen=self.recognition_window_size)
         self.outputs_closed = False
 
-        self.pose_cmd_pub = rospy.Publisher(
-            self.pose_cmd_topic, PoseNEDcmd, queue_size=10
+        self.motion_goal_pub = rospy.Publisher(
+            self.motion_goal_topic, PoseStamped, queue_size=1
+        )
+        self.motion_cancel_pub = rospy.Publisher(
+            self.motion_cancel_topic, Empty, queue_size=1
         )
         self.actuator_pub = rospy.Publisher(
             self.actuator_topic, ActuatorControl, queue_size=10
@@ -170,6 +260,12 @@ class Task3GetTaskTest:
         )
         self.tf_listener = tf.TransformListener()
         self.actuator_mode_supported = hasattr(ActuatorControl(), "mode")
+        self.motion_state_sub = rospy.Subscriber(
+            self.motion_state_topic,
+            MotionState,
+            self.motion_state_callback,
+            queue_size=20,
+        )
 
         self.aruco_sub = None
         if self.input_mode == "topic":
@@ -192,14 +288,36 @@ class Task3GetTaskTest:
             raise ValueError("aruco_topic 不能为空")
         if self.input_mode == "mock" and not self.mock_aruco_ids:
             raise ValueError("mock_aruco_ids 不能为空")
-        if not self.pose_cmd_topic:
-            raise ValueError("pose_cmd_topic 不能为空")
+        if not all((
+                self.motion_goal_topic,
+                self.motion_cancel_topic,
+                self.motion_state_topic)):
+            raise ValueError("motion goal、cancel和state话题不能为空")
         if not self.hold_map_frame or not self.hold_base_frame:
             raise ValueError("hold_map_frame 和 hold_base_frame 不能为空")
         if self.initial_hover_seconds < 0.0:
             raise ValueError("initial_hover_seconds 不能小于 0")
-        if self.hold_pose_timeout <= 0.0:
-            raise ValueError("hold_pose_timeout 必须大于 0")
+        if min(
+                self.initial_hover_timeout,
+                self.hold_pose_timeout,
+                self.motion_state_timeout,
+                self.turn_timeout) <= 0.0:
+            raise ValueError("悬停、TF、运动状态和转向超时必须大于0")
+        if self.turn_direction not in ("left", "right"):
+            raise ValueError("turn_direction 必须是 left 或 right")
+        if self.turn_angle_deg <= 0.0 or self.turn_angle_deg >= 180.0:
+            raise ValueError("turn_angle_deg 必须在0到180度之间")
+        if min(
+                self.turn_stable_seconds,
+                self.turn_hold_seconds,
+                self.goal_match_position_tolerance,
+                self.goal_match_depth_tolerance,
+                self.goal_match_yaw_tolerance,
+                self.arrival_position_tolerance,
+                self.arrival_yaw_tolerance,
+                self.arrival_max_horizontal_speed,
+                self.arrival_max_yaw_rate) < 0.0:
+            raise ValueError("转向稳定时间、保持时间和到达门槛不能小于0")
         if not 0.0 <= self.min_confidence <= 1.0:
             raise ValueError("min_confidence 必须在 0 到 1 之间")
         if self.recognition_window_size <= 0:
@@ -225,24 +343,56 @@ class Task3GetTaskTest:
     def log_startup_config(self):
         rospy.loginfo(
             (
-                "%s：流程=mode4定点悬停%.1fs -> 最近%d帧内同ID达到%d帧 -> "
-                "亮灯%.1fs；识别最长%.1fs"
+                "%s：流程=motion_supervisor定点悬停%.1fs -> "
+                "最近%d帧内同ID达到%d帧 -> 亮灯%.1fs -> %s%.1f度；"
+                "识别最长%.1fs"
             ),
             NODE_NAME,
             self.initial_hover_seconds,
             self.recognition_window_size,
             self.required_match_count,
             self.light_seconds,
+            "右转" if self.turn_direction == "right" else "左转",
+            self.turn_angle_deg,
             self.recognition_timeout,
         )
         rospy.loginfo(
-            "%s：定点话题=%s，TF=%s -> %s；识别模式=%s，话题=%s",
+            (
+                "%s：运动接口={目标:%s,取消:%s,状态:%s}，TF=%s -> %s；"
+                "识别模式=%s，话题=%s"
+            ),
             NODE_NAME,
-            self.pose_cmd_topic,
+            self.motion_goal_topic,
+            self.motion_cancel_topic,
+            self.motion_state_topic,
             self.hold_map_frame,
             self.hold_base_frame,
             self.input_mode,
             self.aruco_topic,
+        )
+        rospy.loginfo(
+            (
+                "%s：转向参数：启用=%s，方向=%s，角度=%.1fdeg，超时=%.1fs，"
+                "稳定确认=%.1fs，完成后保持=%.1fs"
+            ),
+            NODE_NAME,
+            str(self.turn_enabled),
+            "右转" if self.turn_direction == "right" else "左转",
+            self.turn_angle_deg,
+            self.turn_timeout,
+            self.turn_stable_seconds,
+            self.turn_hold_seconds,
+        )
+        rospy.loginfo(
+            (
+                "%s：到达门槛：位置<=%.3fm，航向<=%.1fdeg，"
+                "水平速度<=%.3fm/s，航向角速度<=%.3frad/s"
+            ),
+            NODE_NAME,
+            self.arrival_position_tolerance,
+            math.degrees(self.arrival_yaw_tolerance),
+            self.arrival_max_horizontal_speed,
+            self.arrival_max_yaw_rate,
         )
         rospy.loginfo(
             "%s：执行器话题=%s，actuator_mode=%d，最低置信度=%.2f",
@@ -288,6 +438,48 @@ class Task3GetTaskTest:
     def color_for_marker(cls, marker_id):
         return cls.COLOR_BY_MARKER.get(marker_id)
 
+    @staticmethod
+    def yaw_from_pose(pose):
+        quaternion = pose.orientation
+        norm = math.sqrt(
+            quaternion.x * quaternion.x
+            + quaternion.y * quaternion.y
+            + quaternion.z * quaternion.z
+            + quaternion.w * quaternion.w
+        )
+        if norm < 1e-6:
+            return None
+        return euler_from_quaternion([
+            quaternion.x / norm,
+            quaternion.y / norm,
+            quaternion.z / norm,
+            quaternion.w / norm,
+        ])[2]
+
+    def motion_state_callback(self, message):
+        with self.motion_state_lock:
+            self.latest_motion_state = message
+            self.latest_motion_state_wall_time = time.monotonic()
+        rospy.loginfo_throttle(
+            1.0,
+            (
+                "%s：运动反馈：state=%d，goal_active=%s，位置误差=%.3fm，"
+                "航向误差=%+.1fdeg，水平速度=%.3fm/s，"
+                "航向角速度=%+.2fdeg/s，输出=(%d,%d,%d)，原因=%s"
+            ),
+            NODE_NAME,
+            message.state,
+            str(bool(message.goal_active)),
+            message.base_position_error,
+            math.degrees(message.yaw_error),
+            message.horizontal_speed,
+            math.degrees(message.yaw_rate),
+            message.tx,
+            message.ty,
+            message.mz,
+            message.reason or "无",
+        )
+
     def capture_hold_pose(self):
         deadline = rospy.Time.now() + rospy.Duration(self.hold_pose_timeout)
         while not rospy.is_shutdown() and rospy.Time.now() < deadline:
@@ -325,15 +517,33 @@ class Task3GetTaskTest:
                 self.rate.sleep()
                 continue
 
-            self.hold_translation = tuple(float(value) for value in translation)
-            self.hold_rotation = tuple(float(value) for value in rotation)
+            goal = PoseStamped()
+            goal.header.frame_id = self.hold_map_frame
+            goal.pose.position.x = float(translation[0])
+            goal.pose.position.y = float(translation[1])
+            goal.pose.position.z = float(translation[2])
+            goal.pose.orientation.x = float(rotation[0])
+            goal.pose.orientation.y = float(rotation[1])
+            goal.pose.orientation.z = float(rotation[2])
+            goal.pose.orientation.w = float(rotation[3])
+            yaw = self.yaw_from_pose(goal.pose)
+            if yaw is None:
+                rospy.logwarn_throttle(1.0, "%s：定点四元数无效，等待下一帧", NODE_NAME)
+                self.rate.sleep()
+                continue
+            self.hold_goal = goal
+            self.active_goal = goal
             rospy.loginfo(
-                "%s：已记录 mode=4 定点：%s 坐标=(%.3f,%.3f,%.3f)",
+                (
+                    "%s：已锁存motion_supervisor固定点：%s坐标=(%.3f,%.3f,%.3f)，"
+                    "yaw=%.1fdeg；后续漂移不会更新该点"
+                ),
                 NODE_NAME,
                 self.hold_map_frame,
-                self.hold_translation[0],
-                self.hold_translation[1],
-                self.hold_translation[2],
+                goal.pose.position.x,
+                goal.pose.position.y,
+                goal.pose.position.z,
+                math.degrees(yaw),
             )
             return True
 
@@ -347,59 +557,197 @@ class Task3GetTaskTest:
         return False
 
     def publish_position_hold(self, reason):
-        if self.hold_translation is None or self.hold_rotation is None:
+        if self.active_goal is None:
             return False
-
-        command = PoseNEDcmd()
-        command.mode = MODE_DYNAMIC_POSITIONING
-        command.target.header.frame_id = self.hold_map_frame
-        command.target.header.stamp = rospy.Time.now()
-        command.target.pose.position.x = self.hold_translation[0]
-        command.target.pose.position.y = self.hold_translation[1]
-        command.target.pose.position.z = self.hold_translation[2]
-        command.target.pose.orientation.x = self.hold_rotation[0]
-        command.target.pose.orientation.y = self.hold_rotation[1]
-        command.target.pose.orientation.z = self.hold_rotation[2]
-        command.target.pose.orientation.w = self.hold_rotation[3]
-        command.force.TX = 0
-        command.force.TY = 0
-        command.force.TZ = 0
-        command.force.MX = 0
-        command.force.MY = 0
-        command.force.MZ = 0
-        self.pose_cmd_pub.publish(command)
-
+        self.active_goal.header.stamp = rospy.Time.now()
+        self.motion_goal_pub.publish(self.active_goal)
+        yaw = self.yaw_from_pose(self.active_goal.pose)
         rospy.loginfo_throttle(
             1.0,
             (
-                "%s：定点指令 mode=4，目标=(%.3f,%.3f,%.3f)，"
-                "附加力全为0，阶段=%s"
+                "%s：持续发布运动目标=(%.3f,%.3f,%.3f)，yaw=%.1fdeg，阶段=%s"
             ),
             NODE_NAME,
-            self.hold_translation[0],
-            self.hold_translation[1],
-            self.hold_translation[2],
+            self.active_goal.pose.position.x,
+            self.active_goal.pose.position.y,
+            self.active_goal.pose.position.z,
+            math.degrees(yaw) if yaw is not None else float("nan"),
             reason,
         )
         return True
 
-    def hold_position_for(self, seconds, reason):
-        start_time = rospy.Time.now()
+    def goal_arrival_status(self, expected_goal, goal_started_wall_time):
+        with self.motion_state_lock:
+            state = self.latest_motion_state
+            received_at = self.latest_motion_state_wall_time
+        if state is None or received_at is None:
+            return False, "尚未收到motion状态"
+        age = time.monotonic() - received_at
+        if age > self.motion_state_timeout:
+            return False, "motion状态超时{:.2f}s".format(age)
+        if received_at < goal_started_wall_time:
+            return False, "等待目标发布后的新motion状态"
+        if not state.startup_complete:
+            return False, "motion_supervisor尚未完成启动定点"
+        if state.state != MotionState.HOVER:
+            return False, "当前状态={}，等待HOVER".format(state.state)
+        if not state.goal_active:
+            return False, "motion状态尚无活动目标"
+
+        expected_yaw = self.yaw_from_pose(expected_goal.pose)
+        state_goal_yaw = self.yaw_from_pose(state.goal.pose)
+        if expected_yaw is None or state_goal_yaw is None:
+            return False, "目标四元数无效"
+        goal_xy_error = math.hypot(
+            state.goal.pose.position.x - expected_goal.pose.position.x,
+            state.goal.pose.position.y - expected_goal.pose.position.y,
+        )
+        goal_z_error = abs(
+            state.goal.pose.position.z - expected_goal.pose.position.z)
+        goal_yaw_error = abs(normalize_angle(state_goal_yaw - expected_yaw))
+        if goal_xy_error > self.goal_match_position_tolerance:
+            return False, "状态目标与任务目标水平不匹配{:.3f}m".format(goal_xy_error)
+        if goal_z_error > self.goal_match_depth_tolerance:
+            return False, "状态目标与任务目标深度不匹配{:.3f}m".format(goal_z_error)
+        if goal_yaw_error > self.goal_match_yaw_tolerance:
+            return False, "状态目标与任务目标航向不匹配{:.1f}deg".format(
+                math.degrees(goal_yaw_error))
+        if abs(state.base_position_error) > self.arrival_position_tolerance:
+            return False, "位置误差{:.3f}m".format(state.base_position_error)
+        if abs(state.yaw_error) > self.arrival_yaw_tolerance:
+            return False, "航向误差{:.1f}deg".format(math.degrees(state.yaw_error))
+        if abs(state.horizontal_speed) > self.arrival_max_horizontal_speed:
+            return False, "水平速度{:.3f}m/s".format(state.horizontal_speed)
+        if abs(state.yaw_rate) > self.arrival_max_yaw_rate:
+            return False, "航向角速度{:.3f}rad/s".format(state.yaw_rate)
+        return True, "HOVER且位置、航向和速度均达到阈值"
+
+    def motion_state_debug_text(self):
+        with self.motion_state_lock:
+            state = self.latest_motion_state
+            received_at = self.latest_motion_state_wall_time
+        if state is None or received_at is None:
+            return "motion状态=未收到"
+        return (
+            "state={}，位置误差={:.3f}m，航向误差={:.1f}deg，"
+            "水平速度={:.3f}m/s，yaw_rate={:.3f}rad/s，消息年龄={:.2f}s"
+        ).format(
+            state.state,
+            state.base_position_error,
+            math.degrees(state.yaw_error),
+            state.horizontal_speed,
+            state.yaw_rate,
+            max(0.0, time.monotonic() - received_at),
+        )
+
+    def wait_for_goal(self, goal, timeout, stable_seconds, reason):
+        self.active_goal = goal
+        started_at = time.monotonic()
+        stable_started_at = None
         while not rospy.is_shutdown():
-            elapsed = (rospy.Time.now() - start_time).to_sec()
-            if elapsed >= seconds:
-                return True
+            now = time.monotonic()
+            elapsed = now - started_at
+            if elapsed >= timeout:
+                rospy.logerr(
+                    "%s：%s超过%.1fs仍未稳定到达；%s",
+                    NODE_NAME,
+                    reason,
+                    timeout,
+                    self.motion_state_debug_text(),
+                )
+                return False
             if not self.publish_position_hold(reason):
                 return False
-            rospy.loginfo_throttle(
-                1.0,
-                "%s：%s，剩余 %.1fs",
-                NODE_NAME,
-                reason,
-                max(0.0, seconds - elapsed),
-            )
+            arrived, detail = self.goal_arrival_status(goal, started_at)
+            if arrived:
+                if stable_started_at is None:
+                    stable_started_at = now
+                    rospy.loginfo("%s：%s首次达到阈值，开始稳定计时", NODE_NAME, reason)
+                stable_elapsed = now - stable_started_at
+                rospy.loginfo_throttle(
+                    1.0,
+                    "%s：%s稳定确认%.1f/%.1fs：%s；%s",
+                    NODE_NAME,
+                    reason,
+                    min(stable_elapsed, stable_seconds),
+                    stable_seconds,
+                    detail,
+                    self.motion_state_debug_text(),
+                )
+                if stable_elapsed >= stable_seconds:
+                    return True
+            else:
+                if stable_started_at is not None:
+                    rospy.logwarn("%s：%s稳定计时中断：%s", NODE_NAME, reason, detail)
+                stable_started_at = None
+                rospy.loginfo_throttle(
+                    1.0,
+                    "%s：等待%s，剩余%.1fs：%s；%s",
+                    NODE_NAME,
+                    reason,
+                    max(0.0, timeout - elapsed),
+                    detail,
+                    self.motion_state_debug_text(),
+                )
             self.rate.sleep()
         return False
+
+    def hold_position_for(self, seconds, reason):
+        return self.wait_for_goal(
+            self.hold_goal,
+            self.initial_hover_timeout,
+            seconds,
+            reason,
+        )
+
+    def make_rotation_goal(self):
+        start_yaw = self.yaw_from_pose(self.hold_goal.pose)
+        if start_yaw is None:
+            return None
+        signed_angle = self.turn_angle_deg
+        if self.turn_direction == "left":
+            signed_angle = -signed_angle
+        target_yaw = normalize_angle(start_yaw + math.radians(signed_angle))
+        goal = PoseStamped()
+        goal.header.frame_id = self.hold_goal.header.frame_id
+        goal.pose.position.x = self.hold_goal.pose.position.x
+        goal.pose.position.y = self.hold_goal.pose.position.y
+        goal.pose.position.z = self.hold_goal.pose.position.z
+        quaternion = quaternion_from_euler(0.0, 0.0, target_yaw)
+        goal.pose.orientation.x = quaternion[0]
+        goal.pose.orientation.y = quaternion[1]
+        goal.pose.orientation.z = quaternion[2]
+        goal.pose.orientation.w = quaternion[3]
+        rospy.loginfo(
+            (
+                "%s：[转向目标] %s%.1f度，保持位置=(%.3f,%.3f,%.3f)，"
+                "航向=%.1fdeg -> %.1fdeg"
+            ),
+            NODE_NAME,
+            "右转" if self.turn_direction == "right" else "左转",
+            self.turn_angle_deg,
+            goal.pose.position.x,
+            goal.pose.position.y,
+            goal.pose.position.z,
+            math.degrees(start_yaw),
+            math.degrees(target_yaw),
+        )
+        return goal
+
+    def hold_active_goal_for(self, seconds, reason):
+        started_at = time.monotonic()
+        while not rospy.is_shutdown() and time.monotonic() - started_at < seconds:
+            self.publish_position_hold(reason)
+            rospy.loginfo_throttle(
+                1.0,
+                "%s：%s %.1f/%.1fs",
+                NODE_NAME,
+                reason,
+                min(time.monotonic() - started_at, seconds),
+                seconds,
+            )
+            self.rate.sleep()
+        return not rospy.is_shutdown()
 
     @staticmethod
     def window_text(window_values):
@@ -698,7 +1046,7 @@ class Task3GetTaskTest:
             elapsed = (rospy.Time.now() - start_time).to_sec()
             if elapsed >= seconds:
                 return True
-            self.publish_position_hold("灯光阶段继续mode4定点")
+            self.publish_position_hold("灯光阶段继续保持识别固定点")
             self.publish_lights(color)
             rospy.loginfo_throttle(
                 1.0,
@@ -719,7 +1067,11 @@ class Task3GetTaskTest:
     def finalize_task(self, success, detail):
         self.accept_detections = False
         self.publish_lights("off")
-        self.publish_position_hold("任务结束前保持mode4定点，附加力清零")
+        if success:
+            self.publish_position_hold("任务结束前保持最终运动目标")
+        else:
+            self.motion_cancel_pub.publish(Empty())
+            rospy.logwarn("%s：任务失败，已发布motion cancel要求主动刹停", NODE_NAME)
         state = "finished" if success else "failed"
         self.finished_pub.publish(String(
             data="{} {}: {}".format(NODE_NAME, state, detail)
@@ -738,8 +1090,9 @@ class Task3GetTaskTest:
             return
         if hasattr(self, "actuator_pub") and self.actuator_mode_supported:
             self.publish_lights("off")
-        if hasattr(self, "pose_cmd_pub"):
-            self.publish_position_hold("节点退出，保持mode4定点")
+        if hasattr(self, "motion_cancel_pub"):
+            self.motion_cancel_pub.publish(Empty())
+            rospy.logwarn("%s：节点中途退出，已发布motion cancel", NODE_NAME)
         self.outputs_closed = True
 
     def run(self):
@@ -757,7 +1110,10 @@ class Task3GetTaskTest:
             return
 
         rospy.loginfo(
-            "%s：先进行mode4定点悬停%.1fs，期间模型消息不入识别窗口",
+            (
+                "%s：先使用motion_supervisor锁定启动点并稳定悬停%.1fs，"
+                "期间模型消息不入识别窗口"
+            ),
             NODE_NAME,
             self.initial_hover_seconds,
         )
@@ -765,6 +1121,9 @@ class Task3GetTaskTest:
             self.initial_hover_seconds,
             "识别前定点悬停",
         ):
+            reason = "识别前固定点未能在规定时间稳定"
+            self.finalize_task(False, reason)
+            rospy.signal_shutdown(reason)
             return
 
         marker_id = self.wait_for_recognition()
@@ -785,13 +1144,66 @@ class Task3GetTaskTest:
             marker_id,
             color,
         )
-        self.hold_color(color, self.light_seconds)
-        self.hold_color("off", self.gap_seconds)
+        if not self.hold_color(color, self.light_seconds):
+            reason = "亮灯阶段被中止"
+            self.finalize_task(False, reason)
+            rospy.signal_shutdown(reason)
+            return
+        if not self.hold_color("off", self.gap_seconds):
+            reason = "灭灯间隔阶段被中止"
+            self.finalize_task(False, reason)
+            rospy.signal_shutdown(reason)
+            return
 
-        detail = "ArUco ID={}，颜色={}，亮灯{:.1f}s".format(
+        turn_text = "未启用转向"
+        if self.turn_enabled:
+            rotation_goal = self.make_rotation_goal()
+            if rotation_goal is None:
+                reason = "无法生成ArUco识别后的转向目标"
+                self.finalize_task(False, reason)
+                rospy.signal_shutdown(reason)
+                return
+            direction_text = (
+                "右转" if self.turn_direction == "right" else "左转")
+            rospy.loginfo(
+                "%s：灯光阶段完成，开始原地%s%.1f度",
+                NODE_NAME,
+                direction_text,
+                self.turn_angle_deg,
+            )
+            if not self.wait_for_goal(
+                    rotation_goal,
+                    self.turn_timeout,
+                    self.turn_stable_seconds,
+                    "ArUco识别后原地{}{}".format(
+                        direction_text, self.turn_angle_deg),
+            ):
+                reason = "ArUco识别成功，但原地{}{}度未稳定到达".format(
+                    direction_text, self.turn_angle_deg)
+                self.finalize_task(False, reason)
+                rospy.signal_shutdown(reason)
+                return
+            if not self.hold_active_goal_for(
+                    self.turn_hold_seconds, "转向完成后的定点保持"):
+                reason = "转向完成后的定点保持被中止"
+                self.finalize_task(False, reason)
+                rospy.signal_shutdown(reason)
+                return
+            turn_text = "{}{:.1f}度".format(
+                direction_text, self.turn_angle_deg)
+            rospy.loginfo(
+                "%s：转向成功：%s，位置和深度保持不变",
+                NODE_NAME,
+                turn_text,
+            )
+        else:
+            rospy.logwarn("%s：turn_enabled=false，本次识别亮灯后不执行转向", NODE_NAME)
+
+        detail = "ArUco ID={}，颜色={}，亮灯{:.1f}s，转向={}".format(
             marker_id,
             color,
             self.light_seconds,
+            turn_text,
         )
         self.finalize_task(True, detail)
         rospy.signal_shutdown("{} complete".format(NODE_NAME))

@@ -9,6 +9,7 @@ motion_supervisor 负责平移、主动刹停、最终转向和 mode=4 定点接
 
 import json
 import math
+import statistics
 
 import rospy
 import tf
@@ -48,7 +49,7 @@ class Task3AcquireAreaTest(object):
     SEARCH_PATTERN = "固定路径搜索箭头"
     CANCEL_WAIT = "主动刹停并等待定点接管"
     WAIT_FOR_ARROW = "定点重新识别箭头"
-    COARSE_LATERAL_ALIGN = "箭头位置左右粗对准"
+    COARSE_LATERAL_ALIGN = "箭头图像粗居中"
     CONFIRM_DIRECTION = "定点确认箭头方向"
     ALIGN_HEADING = "细对准：持续看箭头并慢速对齐航向"
     FINE_FORWARD_ALIGN = "细对准：航向对齐后慢速前后居中"
@@ -98,8 +99,14 @@ class Task3AcquireAreaTest(object):
         self.stable_detection_count = int(rospy.get_param(
             "~stable_detection_count", 3
         ))
+        self.stable_detection_window_size = int(rospy.get_param(
+            "~stable_detection_window_size", 10
+        ))
         self.stable_center_tolerance_px = float(rospy.get_param(
             "~stable_center_tolerance_px", 40.0
+        ))
+        self.stable_area_tolerance_ratio = float(rospy.get_param(
+            "~stable_area_tolerance_ratio", 0.35
         ))
         self.stable_angle_tolerance_deg = float(rospy.get_param(
             "~stable_angle_tolerance_deg", 12.0
@@ -139,6 +146,9 @@ class Task3AcquireAreaTest(object):
         ))
         self.visual_lateral_gain_m = float(rospy.get_param(
             "~visual_lateral_gain_m", 0.20
+        ))
+        self.visual_forward_gain_m = float(rospy.get_param(
+            "~visual_forward_gain_m", 0.20
         ))
         self.visual_max_step_m = float(rospy.get_param(
             "~visual_max_step_m", 0.08
@@ -349,11 +359,18 @@ class Task3AcquireAreaTest(object):
             raise ValueError("min_confidence 必须在0到1之间")
         if min(
             self.stable_detection_count,
+            self.stable_detection_window_size,
             self.center_stable_detection_count,
             self.heading_stable_detection_count,
             self.heading_aligned_detection_count,
         ) < 1:
-            raise ValueError("连续确认帧数必须大于等于1")
+            raise ValueError("识别窗口和确认帧数必须大于等于1")
+        if self.stable_detection_count > self.stable_detection_window_size:
+            raise ValueError(
+                "stable_detection_count 不能大于 stable_detection_window_size"
+            )
+        if not 0.0 <= self.stable_area_tolerance_ratio <= 1.0:
+            raise ValueError("stable_area_tolerance_ratio 必须在0到1之间")
         if min(self.image_width, self.image_height) <= 0.0:
             raise ValueError("图像宽度和高度必须大于0")
         if not 0.0 <= self.target_center_u_ratio <= 1.0:
@@ -368,6 +385,7 @@ class Task3AcquireAreaTest(object):
             self.full_arrow_min_bbox_height_px,
             self.center_tolerance_u_px,
             self.center_tolerance_v_px,
+            self.visual_forward_gain_m,
             self.visual_lateral_gain_m,
             self.visual_max_step_m,
             self.visual_min_step_m,
@@ -490,7 +508,7 @@ class Task3AcquireAreaTest(object):
             (
                 "%s：流程：固定点HOVER悬停%.1fs -> 前%.2fm -> 左右各%.2fm -> "
                 "再前%.2fm -> 左右各%.2fm搜索 -> "
-                "位置识别%d帧后取消刹停 -> 仅左右粗对准 -> "
+                "最近%d帧内位置一致%d帧 -> 图像中心粗对准 -> "
                 "完整箭头方向%d帧 -> 慢速航向对齐%d帧 -> "
                 "慢速前后居中%d帧 -> base_link前移%.2fm并持续视觉修正 -> "
                 "最终HOVER保持%.1fs"
@@ -501,6 +519,7 @@ class Task3AcquireAreaTest(object):
             self.search_lateral_distance,
             self.search_second_forward_distance,
             self.search_lateral_distance,
+            self.stable_detection_window_size,
             self.stable_detection_count,
             self.heading_stable_detection_count,
             self.heading_aligned_detection_count,
@@ -512,6 +531,7 @@ class Task3AcquireAreaTest(object):
             (
                 "%s：识别：话题=%s，最低置信度=%.2f，稳定判定超时=%.2fs，"
                 "运动阶段丢失刹停=%.2fs，"
+                "位置候选组=最近%d帧命中%d帧，中心抖动<=%.1fpx，面积变化<=%.3f；"
                 "图像=%.0fx%.0f，目标中心=(%.1f,%.1f)px，"
                 "中心容差=(%.1f,%.1f)px；"
                 "完整箭头门槛=距边缘>=%.1fpx且bbox>=%.1fx%.1fpx"
@@ -521,6 +541,10 @@ class Task3AcquireAreaTest(object):
             self.min_confidence,
             self.detection_timeout,
             self.visual_loss_cancel_seconds,
+            self.stable_detection_window_size,
+            self.stable_detection_count,
+            self.stable_center_tolerance_px,
+            self.stable_area_tolerance_ratio,
             self.image_width,
             self.image_height,
             self.image_width * self.target_center_u_ratio,
@@ -533,15 +557,17 @@ class Task3AcquireAreaTest(object):
         )
         rospy.loginfo(
             (
-                "%s：粗对准横移参数：左右增益=%.3fm/归一化u误差，"
+                "%s：粗对准居中参数：增益=(前后%.3f,左右%.3f)m/归一化误差，"
                 "步长范围=%.3f~%.3fm，最短目标间隔=%.2fs，"
-                "左右方向符号=%+.0f"
+                "方向符号=(前后%+.0f,左右%+.0f)"
             ),
             NODE_NAME,
+            self.visual_forward_gain_m,
             self.visual_lateral_gain_m,
             self.visual_min_step_m,
             self.visual_max_step_m,
             self.visual_goal_min_interval,
+            self.visual_forward_sign,
             self.visual_lateral_sign,
         )
         rospy.loginfo(
@@ -589,7 +615,8 @@ class Task3AcquireAreaTest(object):
         )
         rospy.loginfo(
             (
-                "%s：保护与日志：最低离地=%.2fm，离地目标更新阈值=%.3fm，"
+                "%s：保护与日志：按map地面z=0计算，最低离地=%.2fm，"
+                "离地目标更新阈值=%.3fm，"
                 "普通/警告日志周期=(%.1f/%.1f)s"
             ),
             NODE_NAME,
@@ -618,30 +645,27 @@ class Task3AcquireAreaTest(object):
     def status_callback(self, message):
         values = (
             message.pose.depth,
-            message.pose.altitude,
             message.pose.yaw,
         )
         if not all(math.isfinite(value) for value in values):
             rospy.logwarn_throttle(
                 self.warning_log_interval,
-                "%s：/status/auv深度、高度或航向包含无效值，本帧忽略",
+                "%s：/status/auv深度或航向包含无效值，本帧忽略",
                 NODE_NAME,
             )
             return
         self.current_status = {
             "control_mode": int(message.control_mode),
             "depth": float(message.pose.depth),
-            "altitude": float(message.pose.altitude),
             "yaw_deg": float(message.pose.yaw),
         }
         self.last_status_received = rospy.Time.now()
         rospy.loginfo_throttle(
             self.log_interval,
-            "%s：/status/auv：mode=%d，深度=%.3fm，高度=%.3fm，航向=%.2fdeg",
+            "%s：/status/auv：mode=%d，深度=%.3fm，航向=%.2fdeg",
             NODE_NAME,
             self.current_status["control_mode"],
             self.current_status["depth"],
-            self.current_status["altitude"],
             self.current_status["yaw_deg"],
         )
 
@@ -686,11 +710,7 @@ class Task3AcquireAreaTest(object):
     def reject_arrow_frame(self, frame_index, reason):
         self.latest_detection = None
         if self.state in (self.SEARCH_PATTERN, self.WAIT_FOR_ARROW):
-            previous = len(self.detection_samples)
-            self.detection_samples = []
-            self.arrow_locked = False
-        else:
-            previous = 0
+            self.add_detection_sample(None, frame_index, reason)
         if self.state in (
             self.COARSE_LATERAL_ALIGN,
             self.CONFIRM_DIRECTION,
@@ -708,13 +728,7 @@ class Task3AcquireAreaTest(object):
         if self.state == self.MOVE_BASE_OVER_ARROW:
             self.reset_base_tracking_progress(reason)
         if self.state in (self.SEARCH_PATTERN, self.WAIT_FOR_ARROW):
-            rospy.loginfo(
-                "%s：[箭头帧#%d] 无效：%s，首次锁定进度%d -> 0",
-                NODE_NAME,
-                frame_index,
-                reason,
-                previous,
-            )
+            return
         else:
             rospy.loginfo(
                 "%s：[箭头帧#%d] 无效：%s，阶段=%s",
@@ -814,6 +828,15 @@ class Task3AcquireAreaTest(object):
             )
             if all(value is not None for value in candidate):
                 bbox_values = candidate
+        if (
+            bbox_values is None
+            or bbox_values[2] <= bbox_values[0]
+            or bbox_values[3] <= bbox_values[1]
+        ):
+            self.reject_arrow_frame(
+                frame_index, "bbox无效，无法进行位置候选组一致性判断"
+            )
+            return
 
         detection = {
             "frame_index": frame_index,
@@ -828,6 +851,10 @@ class Task3AcquireAreaTest(object):
                 payload.get("discrete_direction", "")
             ).strip(),
             "bbox": bbox_values,
+            "area": (
+                (bbox_values[2] - bbox_values[0])
+                * (bbox_values[3] - bbox_values[1])
+            ),
         }
         full_visible, full_visible_reason = self.full_arrow_visible(detection)
         detection["full_visible"] = full_visible
@@ -874,9 +901,9 @@ class Task3AcquireAreaTest(object):
                     NODE_NAME,
                     frame_index,
                 )
-            self.add_detection_sample(detection)
+            self.add_detection_sample(detection, frame_index)
         elif self.state == self.WAIT_FOR_ARROW:
-            self.add_detection_sample(detection)
+            self.add_detection_sample(detection, frame_index)
         elif self.state == self.COARSE_LATERAL_ALIGN:
             self.update_center_progress(detection, error_u, error_v)
             self.add_direction_sample(detection, error_u, error_v)
@@ -896,71 +923,182 @@ class Task3AcquireAreaTest(object):
                 detection, error_u, error_v
             )
 
-    def add_detection_sample(self, detection):
-        if self.detection_samples:
-            gap = (
-                detection["received_time"]
-                - self.detection_samples[-1]["received_time"]
-            ).to_sec()
-            if gap > self.detection_timeout:
-                rospy.logwarn(
-                    "%s：有效箭头帧间隔%.2fs超过%.2fs，计数清零",
-                    NODE_NAME,
-                    gap,
-                    self.detection_timeout,
-                )
-                self.detection_samples = []
-        self.detection_samples.append(detection)
+    def add_detection_sample(self, detection, frame_index, invalid_reason=""):
+        self.detection_samples.append({
+            "frame_index": frame_index,
+            "detection": detection,
+        })
         self.detection_samples = self.detection_samples[
-            -self.stable_detection_count:
+            -self.stable_detection_window_size:
         ]
-        mean_u = sum(
-            item["center_u"] for item in self.detection_samples
-        ) / len(self.detection_samples)
-        mean_v = sum(
-            item["center_v"] for item in self.detection_samples
-        ) / len(self.detection_samples)
-        center_jitter = max(
-            math.hypot(item["center_u"] - mean_u, item["center_v"] - mean_v)
+
+        valid_samples = [
+            item["detection"]
             for item in self.detection_samples
+            if item["detection"] is not None
+        ]
+        candidate_groups = self.build_detection_candidate_groups(valid_samples)
+        window_count = len(self.detection_samples)
+        best_group_count = max(
+            (len(group) for group in candidate_groups),
+            default=0,
         )
-        progress = len(self.detection_samples)
-        rospy.loginfo(
-            "%s：[箭头帧#%d] 位置锁定第%d/%d帧，中心抖动=%.1f/%.1fpx；"
-            "本阶段不使用方向字段",
-            NODE_NAME,
-            detection["frame_index"],
-            progress,
-            self.stable_detection_count,
-            center_jitter,
-            self.stable_center_tolerance_px,
-        )
-        if progress < self.stable_detection_count:
-            return
-        if center_jitter > self.stable_center_tolerance_px:
-            rospy.logwarn(
-                "%s：首次锁定稳定性未通过，保留当前帧作为第1/%d帧",
+
+        if detection is None:
+            rospy.loginfo(
+                (
+                    "%s：[箭头帧#%d] 本帧无效：%s；窗口=%d/%d帧，"
+                    "有效位置帧=%d/%d，最佳候选组=%d/%d；保留旧有效帧"
+                ),
                 NODE_NAME,
+                frame_index,
+                invalid_reason or "没有有效箭头",
+                window_count,
+                self.stable_detection_window_size,
+                len(valid_samples),
+                window_count,
+                best_group_count,
                 self.stable_detection_count,
             )
-            self.detection_samples = [detection]
             return
-        locked = dict(detection)
-        locked["center_u"] = mean_u
-        locked["center_v"] = mean_v
+
+        current_group_index = 0
+        current_group = [detection]
+        for index, group in enumerate(candidate_groups, start=1):
+            if any(item is detection for item in group):
+                current_group_index = index
+                current_group = group
+                break
+
+        stable, center_jitter, area_change = self.samples_are_stable(
+            current_group
+        )
+        frame_ids = [item["frame_index"] for item in current_group]
+        rospy.loginfo(
+            (
+                "%s：[箭头帧#%d] 有效位置加入候选组%d；窗口=%d/%d帧，"
+                "有效位置帧=%d/%d，当前候选组=%d/%d，命中帧=%s，"
+                "中心抖动=%.1f/%.1fpx，面积变化=%.3f/%.3f"
+            ),
+            NODE_NAME,
+            frame_index,
+            current_group_index,
+            window_count,
+            self.stable_detection_window_size,
+            len(valid_samples),
+            window_count,
+            len(current_group),
+            self.stable_detection_count,
+            frame_ids,
+            center_jitter,
+            self.stable_center_tolerance_px,
+            area_change,
+            self.stable_area_tolerance_ratio,
+        )
+        if not stable:
+            return
+
+        locked = dict(current_group[-1])
+        locked["center_u"] = statistics.median(
+            item["center_u"] for item in current_group
+        )
+        locked["center_v"] = statistics.median(
+            item["center_v"] for item in current_group
+        )
         locked["confidence"] = sum(
-            item["confidence"] for item in self.detection_samples
-        ) / len(self.detection_samples)
+            item["confidence"] for item in current_group
+        ) / len(current_group)
         self.latest_detection = locked
         self.arrow_locked = True
         rospy.loginfo(
-            "%s：箭头位置连续%d帧稳定锁定，平均中心=(%.1f,%.1f)，"
-            "平均置信度=%.3f；方向暂不参与判断",
+            (
+                "%s：箭头位置候选组确认通过：最近%d帧内命中%d/%d帧，"
+                "命中帧=%s，中位中心=(%.1f,%.1f)，平均置信度=%.3f；"
+                "方向暂不参与判断"
+            ),
             NODE_NAME,
+            self.stable_detection_window_size,
+            len(current_group),
             self.stable_detection_count,
+            frame_ids,
             locked["center_u"],
             locked["center_v"],
             locked["confidence"],
+        )
+
+    def build_detection_candidate_groups(self, samples):
+        groups = []
+        for sample in samples:
+            matches = []
+            for index, group in enumerate(groups):
+                median_u, median_v, median_area = self.sample_medians(group)
+                center_distance = math.hypot(
+                    sample["center_u"] - median_u,
+                    sample["center_v"] - median_v,
+                )
+                area_change = self.area_change_ratio(
+                    sample["area"], median_area
+                )
+                if (
+                    center_distance <= self.stable_center_tolerance_px
+                    and area_change <= self.stable_area_tolerance_ratio
+                ):
+                    matches.append((center_distance, area_change, index))
+            if not matches:
+                groups.append([sample])
+                continue
+            _, _, best_index = min(matches)
+            groups[best_index].append(sample)
+        return groups
+
+    @staticmethod
+    def sample_medians(samples):
+        return (
+            statistics.median(item["center_u"] for item in samples),
+            statistics.median(item["center_v"] for item in samples),
+            statistics.median(item["area"] for item in samples),
+        )
+
+    @staticmethod
+    def area_change_ratio(area_a, area_b):
+        denominator = max(area_a, area_b)
+        if denominator <= 0.0:
+            return 1.0
+        return abs(area_a - area_b) / denominator
+
+    def samples_are_stable(self, samples):
+        if not samples:
+            return False, 0.0, 0.0
+        median_u, median_v, median_area = self.sample_medians(samples)
+        center_jitter = max(
+            math.hypot(
+                item["center_u"] - median_u,
+                item["center_v"] - median_v,
+            )
+            for item in samples
+        )
+        area_change = max(
+            self.area_change_ratio(item["area"], median_area)
+            for item in samples
+        )
+        stable = (
+            len(samples) >= self.stable_detection_count
+            and center_jitter <= self.stable_center_tolerance_px
+            and area_change <= self.stable_area_tolerance_ratio
+        )
+        return stable, center_jitter, area_change
+
+    def detection_window_progress(self):
+        valid_samples = [
+            item["detection"]
+            for item in self.detection_samples
+            if item["detection"] is not None
+        ]
+        groups = self.build_detection_candidate_groups(valid_samples)
+        return (
+            len(self.detection_samples),
+            len(valid_samples),
+            max((len(group) for group in groups), default=0),
         )
 
     def add_direction_sample(self, detection, error_u, error_v):
@@ -1058,19 +1196,23 @@ class Task3AcquireAreaTest(object):
             )
 
     def update_center_progress(self, detection, error_u, error_v):
-        centered = abs(error_u) <= self.center_tolerance_u_px
+        centered = (
+            abs(error_u) <= self.center_tolerance_u_px
+            and abs(error_v) <= self.center_tolerance_v_px
+        )
         if not centered:
-            self.reset_center_progress("箭头左右位置超出粗对准容差")
+            self.reset_center_progress("箭头中心超出粗对准容差")
             rospy.loginfo(
                 (
-                    "%s：[箭头帧#%d] 左右粗对准未通过："
-                    "u误差=%+.1f/%.1fpx，v误差=%+.1fpx仅记录不控制"
+                    "%s：[箭头帧#%d] 图像粗居中未通过："
+                    "u误差=%+.1f/%.1fpx，v误差=%+.1f/%.1fpx"
                 ),
                 NODE_NAME,
                 detection["frame_index"],
                 error_u,
                 self.center_tolerance_u_px,
                 error_v,
+                self.center_tolerance_v_px,
             )
             return
         self.centered_frame_count = min(
@@ -1079,14 +1221,15 @@ class Task3AcquireAreaTest(object):
         )
         rospy.loginfo(
             (
-                "%s：[箭头帧#%d] 左右粗对准第%d/%d帧有效，"
-                "u误差=%+.1fpx"
+                "%s：[箭头帧#%d] 图像粗居中第%d/%d帧有效，"
+                "误差=(u=%+.1f,v=%+.1f)px"
             ),
             NODE_NAME,
             detection["frame_index"],
             self.centered_frame_count,
             self.center_stable_detection_count,
             error_u,
+            error_v,
         )
 
     def arrow_heading_error_deg(self):
@@ -1413,59 +1556,45 @@ class Task3AcquireAreaTest(object):
     def update_ground_clearance_goal(self):
         if self.active_goal is None:
             return
-        status = self.get_recent_status("最低对地距离保护")
-        if status is None:
-            return
-        altitude = status["altitude"]
-        if altitude <= 0.0:
-            rospy.logwarn_throttle(
-                self.warning_log_interval,
-                "%s：高度%.3fm无效，无法校验最低对地距离%.2fm",
-                NODE_NAME,
-                altitude,
-                self.min_ground_clearance,
-            )
-            return
-        if altitude >= self.min_ground_clearance:
-            return
         current = self.get_current_pose("最低对地距离保护")
         if current is None:
             return
-        correction = self.min_ground_clearance - altitude
-        safe_z = current.pose.position.z - correction
-        safe_depth = status["depth"] - correction
+        current_z = current.pose.position.z
+        current_clearance = -current_z
+        safe_z = -self.min_ground_clearance
         target_adjustment = self.target_z - safe_z
         if target_adjustment >= self.ground_clearance_goal_update_threshold:
             previous_target_z = self.target_z
             self.target_z = safe_z
             self.active_goal.pose.position.z = safe_z
-            self.target_depth = min(self.target_depth, safe_depth)
+            self.target_depth -= target_adjustment
             rospy.logwarn(
                 (
-                    "%s：离地保护触发：高度%.3fm<%.3fm，按当前位姿需上移%.3fm；"
+                    "%s：离地保护触发：map实际z=%.3f（离底约%.3fm），"
+                    "目标不得低于%.3fm；"
                     "目标z从%.3f改为%.3f（改写%.3fm），目标深度=%.3f"
                 ),
                 NODE_NAME,
-                altitude,
+                current_z,
+                current_clearance,
                 self.min_ground_clearance,
-                correction,
                 previous_target_z,
                 safe_z,
                 target_adjustment,
                 self.target_depth,
             )
-        else:
+            return
+        if current_clearance < self.min_ground_clearance:
             rospy.logwarn_throttle(
                 self.warning_log_interval,
                 (
-                    "%s：高度%.3fm<%.3fm，但目标z无需继续改写："
-                    "候选改写=%+.3fm，更新阈值=%.3fm，当前目标z=%.3f"
+                    "%s：map实际z=%.3f（离底约%.3fm）低于%.3fm，"
+                    "当前安全目标z=%.3f，等待motion_supervisor抬升并定点"
                 ),
                 NODE_NAME,
-                altitude,
+                current_z,
+                current_clearance,
                 self.min_ground_clearance,
-                target_adjustment,
-                self.ground_clearance_goal_update_threshold,
                 self.target_z,
             )
 
@@ -1847,54 +1976,66 @@ class Task3AcquireAreaTest(object):
         )
         return False
 
-    def update_coarse_lateral_goal(self, target_yaw, context):
+    def update_coarse_center_goal(self, target_yaw, context):
         detection = self.latest_detection
         if detection is None:
             return False
         if not self.visual_goal_update_ready(detection):
             return True
-        error_u, error_v, normalized_u, unused_normalized_v = (
+        error_u, error_v, normalized_u, normalized_v = (
             self.detection_center_errors(detection)
         )
-        del unused_normalized_v
-        if abs(error_u) <= self.center_tolerance_u_px:
+        if (
+            abs(error_u) <= self.center_tolerance_u_px
+            and abs(error_v) <= self.center_tolerance_v_px
+        ):
             self.last_visual_goal_frame = detection["frame_index"]
             rospy.loginfo(
-                "%s：[箭头帧#%d] 左右位置已进入粗对准容差；"
-                "u误差=%+.1fpx，v误差=%+.1fpx本阶段暂不处理",
+                "%s：[箭头帧#%d] 箭头中心已进入粗对准容差；"
+                "误差=(u=%+.1f,v=%+.1f)px",
                 NODE_NAME,
                 detection["frame_index"],
                 error_u,
                 error_v,
             )
             return True
-        right_step = self.minimum_visual_step(
-            self.visual_lateral_sign
-            * self.visual_lateral_gain_m
-            * normalized_u
-        )
+        forward_step = 0.0
+        if abs(error_v) > self.center_tolerance_v_px:
+            forward_step = self.minimum_visual_step(
+                self.visual_forward_sign
+                * -self.visual_forward_gain_m
+                * normalized_v
+            )
+        right_step = 0.0
+        if abs(error_u) > self.center_tolerance_u_px:
+            right_step = self.minimum_visual_step(
+                self.visual_lateral_sign
+                * self.visual_lateral_gain_m
+                * normalized_u
+            )
         current = self.get_current_pose(context)
         if current is None:
             return False
         goal_x, goal_y = self.set_body_offset_goal(
             current,
-            0.0,
+            forward_step,
             right_step,
             target_yaw,
-            "{}：粗对准只生成左右横移目标".format(context),
+            "{}：粗对准生成前后和左右居中目标，航向保持不变".format(context),
         )
         self.last_visual_goal_frame = detection["frame_index"]
         self.last_visual_goal_time = rospy.Time.now()
         rospy.loginfo(
             (
-                "%s：[箭头帧#%d] 左右粗对准目标：u误差=%+.1fpx，"
-                "v误差=%+.1fpx暂不处理，本体偏置=(前+0.000,右%+.3f)m，"
+                "%s：[箭头帧#%d] 图像粗居中目标：误差=(u=%+.1f,v=%+.1f)px，"
+                "本体偏置=(前%+.3f,右%+.3f)m，"
                 "map目标=(%.3f,%.3f)，航向保持=%.2fdeg"
             ),
             NODE_NAME,
             detection["frame_index"],
             error_u,
             error_v,
+            forward_step,
             right_step,
             goal_x,
             goal_y,
@@ -2186,7 +2327,10 @@ class Task3AcquireAreaTest(object):
         if self.first_position_detected:
             self.begin_cancel(
                 self.WAIT_FOR_ARROW,
-                "搜索中出现首帧有效箭头位置，立即退出搜索并刹停；随后累计3帧位置",
+                "搜索中出现首帧有效箭头位置，立即退出搜索并刹停；"
+                "随后按最近{}帧候选组重新确认".format(
+                    self.stable_detection_window_size
+                ),
             )
             return
         if self.motion_arrived():
@@ -2204,18 +2348,25 @@ class Task3AcquireAreaTest(object):
             model_age = (
                 rospy.Time.now() - self.last_model_message_time
             ).to_sec()
+        window_count, valid_count, best_group_count = (
+            self.detection_window_progress()
+        )
         rospy.loginfo_throttle(
             self.log_interval,
             (
                 "%s：固定路径搜索第%d/%d点：motion=%s，实际位置误差=%.3fm，"
-                "位置识别进度=%d/%d帧，模型消息年龄=%s"
+                "识别窗口=%d/%d帧，有效=%d帧，最佳候选组=%d/%d帧，"
+                "模型消息年龄=%s"
             ),
             NODE_NAME,
             self.search_waypoint_index + 1,
             len(self.search_waypoints),
             self.current_motion_state_name(),
             self.latest_motion_state.base_position_error,
-            len(self.detection_samples),
+            window_count,
+            self.stable_detection_window_size,
+            valid_count,
+            best_group_count,
             self.stable_detection_count,
             "未收到" if model_age is None else "{:.2f}s".format(model_age),
         )
@@ -2266,7 +2417,7 @@ class Task3AcquireAreaTest(object):
         if next_state == self.WAIT_FOR_ARROW:
             self.reset_first_lock()
         elif next_state == self.COARSE_LATERAL_ALIGN:
-            self.reset_center_progress("进入只控制左右横移的粗对准")
+            self.reset_center_progress("进入保持航向的图像中心粗对准")
         elif next_state == self.CONFIRM_DIRECTION:
             self.reset_direction_lock()
         self.set_state(
@@ -2282,7 +2433,10 @@ class Task3AcquireAreaTest(object):
             self.last_visual_goal_time = None
             self.set_state(
                 self.COARSE_LATERAL_ALIGN,
-                "定点重新连续识别位置成功，恢复左右粗对准",
+                "定点完成{}/{}位置候选组确认，进入图像中心粗对准".format(
+                    self.stable_detection_count,
+                    self.stable_detection_window_size,
+                ),
             )
             return
         model_age = None
@@ -2290,11 +2444,20 @@ class Task3AcquireAreaTest(object):
             model_age = (
                 rospy.Time.now() - self.last_model_message_time
             ).to_sec()
+        window_count, valid_count, best_group_count = (
+            self.detection_window_progress()
+        )
         rospy.loginfo_throttle(
             self.log_interval,
-            "%s：定点重识别：进度=%d/%d帧，模型年龄=%s，motion=%s",
+            (
+                "%s：定点重识别：窗口=%d/%d帧，有效=%d帧，"
+                "最佳候选组=%d/%d帧，模型年龄=%s，motion=%s"
+            ),
             NODE_NAME,
-            len(self.detection_samples),
+            window_count,
+            self.stable_detection_window_size,
+            valid_count,
+            best_group_count,
             self.stable_detection_count,
             "未收到" if model_age is None else "{:.2f}s".format(model_age),
             self.current_motion_state_name(),
@@ -2302,14 +2465,14 @@ class Task3AcquireAreaTest(object):
 
     def control_coarse_lateral_align(self):
         if not self.detection_available_within(
-            self.visual_loss_cancel_seconds, "左右粗对准阶段"
+            self.visual_loss_cancel_seconds, "图像中心粗对准阶段"
         ):
             valid_age = self.valid_detection_age()
             if valid_age is None or valid_age > self.visual_loss_cancel_seconds:
                 self.begin_cancel(
                     self.WAIT_FOR_ARROW,
                     (
-                        "左右粗对准时箭头丢失{}，超过{:.2f}s阈值，"
+                        "图像中心粗对准时箭头丢失{}，超过{:.2f}s阈值，"
                         "刹停后定点重识别"
                     ).format(
                         "未知" if valid_age is None else "{:.2f}s".format(
@@ -2325,14 +2488,14 @@ class Task3AcquireAreaTest(object):
         ):
             self.begin_cancel(
                 self.CONFIRM_DIRECTION,
-                "左右粗对准和完整箭头方向均稳定，刹停后定点复核方向",
+                "图像中心粗对准和完整箭头方向均稳定，刹停后定点复核方向",
             )
             return
         if self.centered_frame_count >= self.center_stable_detection_count:
             rospy.loginfo_throttle(
                 self.log_interval,
                 (
-                    "%s：左右粗对准已稳定%d/%d帧，保持当前固定目标等待"
+                    "%s：图像中心粗对准已稳定%d/%d帧，保持当前固定目标等待"
                     "完整箭头方向%d/%d帧"
                 ),
                 NODE_NAME,
@@ -2343,12 +2506,12 @@ class Task3AcquireAreaTest(object):
             )
             return
         target_yaw = yaw_from_quaternion(self.active_goal.pose.orientation)
-        self.update_coarse_lateral_goal(
-            target_yaw, "保持发现航向且只做左右横移粗对准"
+        self.update_coarse_center_goal(
+            target_yaw, "保持发现航向并做前后、左右图像粗居中"
         )
         rospy.loginfo_throttle(
             self.log_interval,
-            "%s：左右粗对准进度=%d/%d帧，motion=%s，位置误差=%.3fm",
+            "%s：图像中心粗对准进度=%d/%d帧，motion=%s，位置误差=%.3fm",
             NODE_NAME,
             self.centered_frame_count,
             self.center_stable_detection_count,
