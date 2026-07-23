@@ -1,6 +1,8 @@
 <launch>
     <!-- 测试轴：x=前后，y=左右，yaw=原地转向。 -->
     <arg name="axis" default="x" />
+    <!-- true：HOVER 全程由上位机以 mode=2 纠偏；须与 motion_supervisor 配置一致。 -->
+    <arg name="pure_depth_control" default="true" />
     <!-- 下位机定深和最终定点采用的 NED 绝对目标深度，单位 m。 -->
     <arg name="target_z" default="-0.9" />
     <!-- 每个幅值执行“正向、原点、负向、原点”的重复次数。 -->
@@ -19,7 +21,7 @@
     <arg name="hover_hold_seconds" default="2.0" />
     <!-- X/Y 实际水平位置验收容差，单位 m；Yaw 测试不使用。 -->
     <arg name="acceptance_position_tolerance" default="0.10" />
-    <!-- X/Y 下一段出发前的连续稳定时间，单位 s，必须不小于 10 s。 -->
+    <!-- X/Y 下一段出发前的连续稳定时间，单位 s，必须不小于 2 s。 -->
     <arg name="inter_step_stable_seconds" default="12.0" />
     <!-- X/Y 连续稳定等待的水平速度阈值，单位 m/s。 -->
     <arg name="stable_speed_threshold" default="0.03" />
@@ -51,6 +53,7 @@
     <node pkg="auv_control" type="motion_axis_auto_test.py"
           name="motion_$(arg axis)_auto_test" output="screen">
         <param name="axis" value="$(arg axis)" />
+        <param name="pure_depth_control" value="$(arg pure_depth_control)" />
         <param name="target_z" value="$(arg target_z)" />
         <param name="repetitions" value="$(arg repetitions)" />
         <rosparam subst_value="true"

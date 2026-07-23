@@ -20,6 +20,8 @@
     新增 X、Y、Yaw 单轴自动水池测试执行器和摘要 CSV。
 2026.7.19
     X/Y 测试增加实际位置验收、连续停稳等待、停滞诊断和刹停方向分类。
+2026.7.22
+    适配纯定深上位机 HOVER，移除测试验收对 mode=4 接管的固定假设。
 """
 
 from __future__ import division
@@ -67,6 +69,7 @@ class MotionAxisAutoTest(object):
     LOG_FIELDS = (
         'step',
         'axis',
+        'control_architecture',
         'magnitude',
         'repetition',
         'phase',
@@ -119,6 +122,13 @@ class MotionAxisAutoTest(object):
 
     def __init__(self):
         self.axis = str(rospy.get_param('~axis', 'x')).strip().lower()
+        self.pure_depth_control = bool(
+            rospy.get_param('~pure_depth_control', True))
+        self.control_architecture = (
+            'pure_depth_mode2'
+            if self.pure_depth_control
+            else 'legacy_mode4_handover'
+        )
         self.repetitions = int(rospy.get_param('~repetitions', 3))
         self.target_z = float(rospy.get_param('~target_z', -0.9))
         self.publish_rate_hz = float(
@@ -361,6 +371,38 @@ class MotionAxisAutoTest(object):
             rospy.Time.now() - self.latest_state_received_at
         ).to_sec() <= self.feedback_timeout
 
+    def _diagnostics_fresh(self):
+        if self.latest_diagnostics_received_at is None:
+            return False
+        return (
+            rospy.Time.now() - self.latest_diagnostics_received_at
+        ).to_sec() <= self.feedback_timeout
+
+    def _assert_control_architecture(self):
+        """确认测试器与 motion_supervisor 使用相同的 HOVER 架构。"""
+        if not self._diagnostics_fresh() or self.latest_diagnostics is None:
+            raise RuntimeError('未收到新鲜的 /motion/diagnostics，无法核对控制架构')
+        expected_mode = 2 if self.pure_depth_control else 4
+        try:
+            actual_mode = int(self.latest_diagnostics['command_mode'])
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError(
+                '/motion/diagnostics 缺少 command_mode，请先启动更新后的控制器')
+        actual_pure_depth = bool(
+            self.latest_diagnostics.get('pure_depth_control', False))
+        if (
+                actual_mode != expected_mode
+                or actual_pure_depth != self.pure_depth_control):
+            raise RuntimeError(
+                '测试配置与控制器不一致：测试 pure_depth_control={}，'
+                '期望 HOVER mode={}；控制器 pure_depth_control={}，'
+                '实际 mode={}'.format(
+                    self.pure_depth_control,
+                    expected_mode,
+                    actual_pure_depth,
+                    actual_mode,
+                ))
+
     def _wait_for_supervisor(self):
         deadline = rospy.Time.now() + rospy.Duration(self.startup_timeout)
         rate = rospy.Rate(self.publish_rate_hz)
@@ -371,6 +413,7 @@ class MotionAxisAutoTest(object):
                     and state is not None
                     and state.startup_complete
                     and state.state == MotionState.HOVER):
+                self._assert_control_architecture()
                 return True
             rospy.loginfo_throttle(
                 2.0,
@@ -564,6 +607,7 @@ class MotionAxisAutoTest(object):
         self.summary_writer.writerow({
             'step': step.index,
             'axis': step.axis,
+            'control_architecture': self.control_architecture,
             'magnitude': (
                 math.degrees(step.magnitude)
                 if self.axis == 'yaw'
@@ -769,11 +813,17 @@ class MotionAxisAutoTest(object):
                 and not arrived
             )
             if hover_acceptance_lost:
+                hold_description = (
+                    '纯定深 HOVER 保持中'
+                    if self.pure_depth_control
+                    else 'mode=4 接管后'
+                )
                 rospy.logwarn_throttle(
                     2.0,
-                    '%s: mode=4 接管后暂未满足测试验收；'
+                    '%s: %s暂未满足测试验收；'
                     '二维误差=%.3f m，速度=%.4f m/s，继续等待稳定',
                     NODE_NAME,
+                    hold_description,
                     state.base_position_error,
                     state.horizontal_speed,
                 )
@@ -783,8 +833,12 @@ class MotionAxisAutoTest(object):
                 and self._state_fresh()
                 and state is not None
                 and state.startup_complete
-                # HOVER 后 TX/TY=0 是 mode=4 接管的正常表现，不能判为停滞。
-                and state.state != MotionState.HOVER
+                # 纯定深 HOVER 仍由上位机纠偏，应继续检查零输出停滞；
+                # 旧 mode=4 HOVER 的 TX/TY=0 则是下位机接管后的正常表现。
+                and (
+                    self.pure_depth_control
+                    or state.state != MotionState.HOVER
+                )
                 and goal_confirmed
                 and xy_motion_is_stalled(
                     state.base_position_error,
@@ -899,10 +953,11 @@ class MotionAxisAutoTest(object):
 
     def run(self):
         rospy.loginfo(
-            '%s: 启动 %s 轴自动测试，共 %d 个动作；摘要日志: %s',
+            '%s: 启动 %s 轴自动测试，共 %d 个动作；控制架构=%s；摘要日志: %s',
             NODE_NAME,
             self.axis.upper(),
             len(self.steps),
+            self.control_architecture,
             self.summary_path,
         )
         if self.axis in ('x', 'y'):
@@ -947,11 +1002,17 @@ class MotionAxisAutoTest(object):
                     '自动测试在第 {} 步中止'.format(step.index))
         self.completed = True
         self._close_summary()
+        hold_description = (
+            '由上位机纯定深 HOVER 保持'
+            if self.pure_depth_control
+            else '由 mode=4 接管'
+        )
         rospy.loginfo(
-            '%s: %s 轴全部 %d 个动作完成，AUV 已回到原点并由 mode=4 接管',
+            '%s: %s 轴全部 %d 个动作完成，AUV 已回到原点并%s',
             NODE_NAME,
             self.axis.upper(),
             len(self.steps),
+            hold_description,
         )
 
 

@@ -8,7 +8,7 @@
     -->
 
     <arg name="start_camera" default="false" />
-    <arg name="start_splitter" default="true" />
+    <arg name="start_splitter" default="false" />
     <arg name="start_web" default="true" />
     <arg name="start_depth" default="true" />
 
@@ -34,7 +34,7 @@
     <!-- ================= 箭头三维定位参数 ================= -->
     <arg name="right_topic" default="/right/image_raw" />
     <arg name="arrow_center_topic"
-         default="/yolo_unified/arrow_center" />
+         default="/vision/arrow/center" />
 
     <!-- 三关键点代表中心：keypoint_centroid 或 axis_midpoint -->
     <arg name="depth_center_mode"
@@ -129,6 +129,12 @@
                value="$(arg input_topic)" />
         <param name="keypoint_topic"
                value="/vision/arrow/keypoints" />
+        <param name="center_topic"
+               value="$(arg arrow_center_topic)" />
+        <param name="center_mode"
+               value="$(arg depth_center_mode)" />
+        <param name="depth_window_size"
+               value="$(arg window_size)" />
         <param name="target_class_name"
                value="arrow" />
 
@@ -160,12 +166,12 @@
     <!-- ================= 箭头三维位置计算 ================= -->
     <!--
         arrow_pose_direction_node.py 发布:
-            /yolo_unified/arrow_center  geometry_msgs/PointStamped
+            /vision/arrow/center  geometry_msgs/PointStamped
 
         stereo_depth_node.py 使用该像素周围 window_size 区域的
         有效深度均值，发布:
-            /obj/target_message
-            /web/pose
+            /vision/arrow/target_message
+            /vision/arrow/pose
     -->
     <node if="$(arg start_depth)"
           pkg="stereo_depth"
@@ -213,9 +219,9 @@
                value="$(arg block_size)" />
 
         <param name="target_output_topic"
-               value="/obj/target_message" />
+               value="/vision/arrow/target_message" />
         <param name="web_pose_topic"
-               value="/web/pose" />
+               value="/vision/arrow/pose" />
     </node>
     
     <!-- ================= Web ================= -->

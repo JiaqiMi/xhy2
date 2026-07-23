@@ -12,8 +12,9 @@
 发布：/cmd/pose/ned (PoseNEDcmd.msg)
       /motion/state (MotionState.msg)
 说明：
-    1. 运动和刹停阶段使用 mode=2，由下位机保持深度，上位机输出 TX、TY、MZ；
-    2. 捕获条件连续稳定后切换 mode=4，由下位机执行定点保持；
+    1. 默认全程使用 mode=2，由下位机保持深度，上位机输出 TX、TY、MZ；
+    2. 捕获条件连续稳定后进入 HOVER，并继续由上位机定点定姿；
+       关闭 pure_depth_control 时才使用旧 mode=4 接管逻辑；
     3. 本节点必须是原型运行期间 /cmd/pose/ned 的唯一发布者。
 记录：
 2026.7.16
@@ -32,6 +33,20 @@
     启动后锁定第一帧完整有效位姿并先完成定点接管，期间缓存最新任务目标。
     正、负计划旋转方向分别使用固定 TF；任务目标保持 base_link 最终位姿语义。
     一次动作按计划 yaw 方向锁存中心，主动刹转 MZ 反号时不切换。
+2026.7.22
+    新增航向制动 jerk 参数加载，使 TX、TY、MZ 均使用受限减速轨迹。
+2026.7.22
+    记录三轴制动轨迹加速度和力矩前馈，支持水池测试直接校正制动模型。
+2026.7.22
+    记录航向刹转方向和实测反号保护状态，支持识别并抑制刹转极限环。
+2026.7.22
+    支持纯定深上位机保持模式，HOVER 状态下继续发布 mode=2 三轴控制量。
+2026.7.22
+    修正纯定深启动提示，并在诊断消息中明确发布当前指令模式和控制架构。
+2026.7.22
+    增加水平计划制动减速度与推进器有效减速度诊断，支持 data5 后续复测核验。
+2026.7.22
+    根据 data6 增加启动首帧三轴主动刹停，记录航向计划与有效角减速度，并收紧纯定深保持死区。
 """
 
 from __future__ import division
@@ -130,10 +145,17 @@ class MotionSupervisorNode(object):
         'map_velocity_y',
         'reference_velocity_x',
         'reference_velocity_y',
+        'reference_acceleration_x',
+        'reference_acceleration_y',
+        'reference_acceleration_body_x',
+        'reference_acceleration_body_y',
+        'brake_feedforward_tx',
+        'brake_feedforward_ty',
         'reference_speed',
         'closing_speed',
         'xy_stop_distance',
         'xy_brake_acceleration',
+        'xy_brake_effective_acceleration',
         'xy_brake_margin',
         'xy_brake_entry',
         'xy_brake_entered',
@@ -144,6 +166,10 @@ class MotionSupervisorNode(object):
         'xy_brake_latched',
         'xy_braking',
         'yaw_rate_reference_deg_s',
+        'yaw_reference_acceleration_deg_s2',
+        'yaw_brake_reference_acceleration_deg_s2',
+        'yaw_brake_effective_acceleration_deg_s2',
+        'brake_feedforward_mz',
         'map_yaw_rate_deg_s',
         'yaw_stop_angle_deg',
         'yaw_brake_entry',
@@ -154,6 +180,9 @@ class MotionSupervisorNode(object):
         'yaw_brake_release_wait_s',
         'yaw_brake_latched',
         'yaw_braking',
+        'yaw_brake_direction',
+        'yaw_brake_rate_reversed',
+        'yaw_brake_reversal_detected',
         'brake_axes',
         'goal_static_seconds',
         'goal_static_for_capture',
@@ -358,13 +387,19 @@ class MotionSupervisorNode(object):
         degree_parameters = {
             'yaw_brake_margin_positive': 'yaw_brake_margin_positive_deg',
             'yaw_brake_margin_negative': 'yaw_brake_margin_negative_deg',
+            'angular_brake_reference_acceleration_mz_positive': (
+                'angular_brake_reference_acceleration_mz_positive_deg_s2'),
+            'angular_brake_reference_acceleration_mz_negative': (
+                'angular_brake_reference_acceleration_mz_negative_deg_s2'),
             'yaw_tolerance': 'yaw_tolerance_deg',
+            'yaw_control_tolerance': 'yaw_control_tolerance_deg',
             'yaw_rate_threshold': 'yaw_rate_threshold_deg_s',
             'hover_fault_yaw_rate': 'hover_fault_yaw_rate_deg_s',
             'hover_fault_yaw_error': 'hover_fault_yaw_error_deg',
             'yaw_max_rate': 'yaw_max_rate_deg_s',
             'yaw_max_acceleration': 'yaw_max_acceleration_deg_s2',
             'yaw_max_jerk': 'yaw_max_jerk_deg_s3',
+            'yaw_brake_jerk': 'yaw_brake_jerk_deg_s3',
             'yaw_brake_enter_rate': 'yaw_brake_enter_rate_deg_s',
             'yaw_brake_exit_rate': 'yaw_brake_exit_rate_deg_s',
             'goal_replan_yaw_threshold': 'goal_replan_yaw_threshold_deg',
@@ -376,6 +411,10 @@ class MotionSupervisorNode(object):
                     degree_parameters[name], default_degrees)
                 self.loaded_core_parameters[degree_parameters[name]] = loaded
                 parameters[name] = math.radians(float(loaded))
+            elif name == 'pure_depth_control':
+                loaded = self._parameter(name, default)
+                self.loaded_core_parameters[name] = bool(loaded)
+                parameters[name] = bool(loaded)
             elif name == 'stable_frames':
                 loaded = self._parameter(name, default)
                 self.loaded_core_parameters[name] = loaded
@@ -650,10 +689,24 @@ class MotionSupervisorNode(object):
             'map_velocity_y': diagnostics.get('map_velocity_y', ''),
             'reference_velocity_x': diagnostics.get('reference_velocity_x', ''),
             'reference_velocity_y': diagnostics.get('reference_velocity_y', ''),
+            'reference_acceleration_x': diagnostics.get(
+                'reference_acceleration_x', ''),
+            'reference_acceleration_y': diagnostics.get(
+                'reference_acceleration_y', ''),
+            'reference_acceleration_body_x': diagnostics.get(
+                'reference_acceleration_body_x', ''),
+            'reference_acceleration_body_y': diagnostics.get(
+                'reference_acceleration_body_y', ''),
+            'brake_feedforward_tx': diagnostics.get(
+                'brake_feedforward_tx', ''),
+            'brake_feedforward_ty': diagnostics.get(
+                'brake_feedforward_ty', ''),
             'reference_speed': diagnostics.get('reference_speed', ''),
             'closing_speed': diagnostics.get('closing_speed', ''),
             'xy_stop_distance': diagnostics.get('xy_stop_distance', ''),
             'xy_brake_acceleration': diagnostics.get('xy_brake_acceleration', ''),
+            'xy_brake_effective_acceleration': diagnostics.get(
+                'xy_brake_effective_acceleration', ''),
             'xy_brake_margin': diagnostics.get('xy_brake_margin', ''),
             'xy_brake_entry': int(bool(
                 diagnostics.get('xy_brake_entry', False))),
@@ -673,6 +726,19 @@ class MotionSupervisorNode(object):
             'yaw_rate_reference_deg_s': (
                 math.degrees(diagnostics['yaw_rate_reference'])
                 if 'yaw_rate_reference' in diagnostics else ''),
+            'yaw_reference_acceleration_deg_s2': (
+                math.degrees(diagnostics['yaw_reference_acceleration'])
+                if 'yaw_reference_acceleration' in diagnostics else ''),
+            'yaw_brake_reference_acceleration_deg_s2': (
+                math.degrees(
+                    diagnostics['yaw_brake_reference_acceleration'])
+                if 'yaw_brake_reference_acceleration' in diagnostics else ''),
+            'yaw_brake_effective_acceleration_deg_s2': (
+                math.degrees(
+                    diagnostics['yaw_brake_effective_acceleration'])
+                if 'yaw_brake_effective_acceleration' in diagnostics else ''),
+            'brake_feedforward_mz': diagnostics.get(
+                'brake_feedforward_mz', ''),
             'map_yaw_rate_deg_s': (
                 math.degrees(diagnostics['map_yaw_rate'])
                 if 'map_yaw_rate' in diagnostics else ''),
@@ -694,6 +760,12 @@ class MotionSupervisorNode(object):
             'yaw_brake_latched': int(bool(
                 diagnostics.get('yaw_brake_latched', False))),
             'yaw_braking': int(bool(diagnostics.get('yaw_braking', False))),
+            'yaw_brake_direction': diagnostics.get(
+                'yaw_brake_direction', ''),
+            'yaw_brake_rate_reversed': int(bool(
+                diagnostics.get('yaw_brake_rate_reversed', False))),
+            'yaw_brake_reversal_detected': int(bool(
+                diagnostics.get('yaw_brake_reversal_detected', False))),
             'brake_axes': diagnostics.get('brake_axes', ''),
             'goal_static_seconds': diagnostics.get('goal_static_seconds', ''),
             'goal_static_for_capture': int(bool(
@@ -746,7 +818,9 @@ class MotionSupervisorNode(object):
         message.header.frame_id = 'map'
         message.state = (
             CAPTURE
-            if output.state == HOVER and not self.startup_complete
+            if (output.state == HOVER
+                and not self.startup_complete
+                and not self.core.parameters['pure_depth_control'])
             else output.state
         )
         message.goal_active = output.goal_active
@@ -775,7 +849,9 @@ class MotionSupervisorNode(object):
         message.startup_complete = self.startup_complete
         message.reason = (
             '启动首帧定点已接管，等待稳定发布帧数'
-            if output.state == HOVER and not self.startup_complete
+            if (output.state == HOVER
+                and not self.startup_complete
+                and not self.core.parameters['pure_depth_control'])
             else output.reason
         )
         self.state_pub.publish(message)
@@ -786,6 +862,9 @@ class MotionSupervisorNode(object):
         payload.update({
             'stamp_sec': now.to_sec(),
             'state': STATE_NAMES.get(output.state, str(output.state)),
+            'command_mode': output.mode,
+            'pure_depth_control': bool(
+                self.core.parameters['pure_depth_control']),
             'control_frame': self.reference_frame,
             'position_error_m': output.position_error,
             'yaw_error_rad': output.yaw_error,
@@ -857,7 +936,7 @@ class MotionSupervisorNode(object):
             return
         vehicle = self._build_vehicle_state(now, feedback_fresh)
         if not self.startup_latched:
-            self.core.set_goal(MotionGoal(
+            self.core.set_initial_hold_goal(MotionGoal(
                 vehicle.x,
                 vehicle.y,
                 vehicle.z,
@@ -879,8 +958,13 @@ class MotionSupervisorNode(object):
                 self.startup_hover_count += 1
                 if self.startup_hover_count >= self.startup_hover_frames:
                     self.startup_complete = True
-                    rospy.loginfo(
-                        'motion_supervisor: 首帧锁定位姿已完成 mode=4 接管')
+                    if self.core.parameters['pure_depth_control']:
+                        rospy.loginfo(
+                            'motion_supervisor: 首帧锁定位姿已进入'
+                            '纯定深上位机 HOVER 保持')
+                    else:
+                        rospy.loginfo(
+                            'motion_supervisor: 首帧锁定位姿已完成 mode=4 接管')
                     if self.startup_pending_goal is not None:
                         pending = self.startup_pending_goal
                         self.startup_pending_goal = None
