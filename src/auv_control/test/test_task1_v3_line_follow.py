@@ -2202,9 +2202,17 @@ class Task1LineFollowTest:
         )
         rospy.signal_shutdown("%s complete" % NODE_NAME)
 
+    def run_task_override_cycle(self):
+        """完整任务可覆盖此钩子临时接管巡线主循环；单项测试始终返回 False。"""
+        return False
+
+    def after_control_cycle(self):
+        """完整任务可覆盖此钩子追加周期数据；单项测试不执行额外操作。"""
+
     def run(self):
         while not rospy.is_shutdown():
             if not self.initialize_start_pose():
+                self.after_control_cycle()
                 self.rate.sleep()
                 continue
             if self.motion_failed():
@@ -2216,13 +2224,16 @@ class Task1LineFollowTest:
                     self.latest_motion_state.reason,
                 )
                 self.log_debug_cycle()
+                self.after_control_cycle()
                 self.rate.sleep()
                 continue
 
             self.try_lock_line()
             self.publish_trajectory_status()
 
-            if self.line_lock_candidate is not None and not self.line_locked:
+            if self.run_task_override_cycle():
+                pass
+            elif self.line_lock_candidate is not None and not self.line_locked:
                 # 首帧候选出现后立即停止搜索，短暂定点累计窗口内高置信点。
                 self.current_tracking_point = copy.deepcopy(
                     self.line_lock_candidate["points"][0]
@@ -2278,6 +2289,7 @@ class Task1LineFollowTest:
                 self.finish()
 
             self.log_debug_cycle()
+            self.after_control_cycle()
             self.rate.sleep()
 
 

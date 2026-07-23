@@ -542,6 +542,11 @@ class YellowMarkerTest:
         self.prune_marker_observations(now)
         if marker is None:
             return None
+        if marker.header.stamp != rospy.Time(0) and any(
+            marker.header.stamp == item[1].header.stamp
+            for item in self.marker_observation_window
+        ):
+            return None
 
         self.marker_observation_window.append((now, copy.deepcopy(marker)))
         self.marker_observation_window = self.marker_observation_window[
@@ -558,7 +563,7 @@ class YellowMarkerTest:
             self.marker_required_valid,
             self.marker_sample_timeout,
         )
-        if len(valid) < self.marker_window_size:
+        if len(valid) < self.marker_required_valid:
             return None
 
         best_cluster = []
@@ -653,6 +658,8 @@ class YellowMarkerTest:
             )
         if valid_message:
             marker = self.transform_pose_to_map(message.pose)
+            if marker is not None:
+                marker.header.stamp = message.pose.header.stamp
 
         confirmed = self.add_marker_observation(marker)
         self.record_target_message(
