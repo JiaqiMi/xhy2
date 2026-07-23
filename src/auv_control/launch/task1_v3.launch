@@ -1,0 +1,125 @@
+<launch>
+    <!--
+        Task1 v3 完整任务：巡线过程中按前向进度依次处理黄色和黑色标志。
+        现有 test_task1_v3_* 单项 launch 保持可独立运行。
+    -->
+
+    <!-- 基础任务和话题。 -->
+    <arg name="rate" default="5.0" />
+    <arg name="reference_depth" default="-1.0" />
+    <arg name="line_topic" default="/obj/line_message" />
+    <arg name="target_topic" default="/obj/target_message" />
+    <arg name="camera_topic" default="/left/image_raw" />
+    <arg name="actuator_topic" default="/cmd/actuator" />
+    <arg name="finished_topic" default="/finished" />
+    <arg name="trajectory_topic" default="/task1/v3/trajectory" />
+    <arg name="log_directory"
+         default="$(env HOME)/.ros/auv_logs/task1" />
+
+    <!-- 感知节点默认由外部统一启动；设为 true 时在本 launch 内启动并重映射输出。 -->
+    <arg name="start_line_node" default="false" />
+    <arg name="start_shape_node" default="false" />
+
+    <!-- 当前 3.8 m 测试道具使用 2 m 的结束下限。 -->
+    <arg name="endpoint_min_completed_path_length" default="2.0" />
+
+    <!-- 每类标志要求执行的动作次数；到终点时次数不足也正常结束。 -->
+    <arg name="yellow_required_count" default="1" />
+    <arg name="black_required_count" default="1" />
+
+    <!-- 图形分类、有效帧窗口和位置聚类。有效帧达到 3 条后立即确认，无需等满 10 条。 -->
+    <arg name="yellow_classes" default="triangle,circle" />
+    <arg name="black_classes" default="rectangle" />
+    <arg name="yellow_min_confidence" default="0.30" />
+    <arg name="black_min_confidence" default="0.30" />
+    <arg name="marker_window_size" default="10" />
+    <arg name="marker_required_valid" default="3" />
+    <arg name="marker_sample_timeout" default="10.0" />
+    <arg name="marker_cluster_distance" default="0.25" />
+    <arg name="marker_duplicate_distance" default="0.40" />
+    <arg name="max_camera_distance" default="5.0" />
+
+    <!-- 标志与红线的匹配：横向距离门槛，以及按弧长进度触发/判定已越过的容差。 -->
+    <arg name="marker_line_max_distance" default="0.50" />
+    <arg name="marker_progress_tolerance" default="0.15" />
+
+    <!-- 黄色闪红一次、黑色闪绿两次。 -->
+    <arg name="light_seconds" default="3.0" />
+    <arg name="gap_seconds" default="0.5" />
+    <arg name="yellow_light_count" default="1" />
+    <arg name="black_light_count" default="2" />
+
+    <!-- 黑色动作：默认一圈；持续发布相对当前航向超前 90 度的动态目标。 -->
+    <arg name="black_rotation_angle_deg" default="360.0" />
+    <arg name="black_rotation_direction" default="1.0" />
+    <arg name="black_rotation_step_deg" default="90.0" />
+    <arg name="black_return_hold_seconds" default="2.0" />
+
+    <!-- 外设默认值。 -->
+    <arg name="light1" default="0" />
+    <arg name="light2" default="0" />
+    <arg name="heading_servo" default="128" />
+    <arg name="clamp_servo" default="0" />
+    <arg name="drive_cmd" default="0" />
+    <arg name="drive_speed" default="0" />
+
+    <!-- 完整任务节点的私有参数。 -->
+    <group ns="task1_v3">
+        <param name="target_topic" type="string" value="$(arg target_topic)" />
+        <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
+        <param name="yellow_required_count" type="int" value="$(arg yellow_required_count)" />
+        <param name="black_required_count" type="int" value="$(arg black_required_count)" />
+        <param name="yellow_classes" type="string" value="$(arg yellow_classes)" />
+        <param name="black_classes" type="string" value="$(arg black_classes)" />
+        <param name="yellow_min_confidence" type="double" value="$(arg yellow_min_confidence)" />
+        <param name="black_min_confidence" type="double" value="$(arg black_min_confidence)" />
+        <param name="marker_window_size" type="int" value="$(arg marker_window_size)" />
+        <param name="marker_required_valid" type="int" value="$(arg marker_required_valid)" />
+        <param name="marker_sample_timeout" type="double" value="$(arg marker_sample_timeout)" />
+        <param name="marker_cluster_distance" type="double" value="$(arg marker_cluster_distance)" />
+        <param name="marker_duplicate_distance" type="double" value="$(arg marker_duplicate_distance)" />
+        <param name="marker_line_max_distance" type="double" value="$(arg marker_line_max_distance)" />
+        <param name="marker_progress_tolerance" type="double" value="$(arg marker_progress_tolerance)" />
+        <param name="max_camera_distance" type="double" value="$(arg max_camera_distance)" />
+        <param name="light_seconds" type="double" value="$(arg light_seconds)" />
+        <param name="gap_seconds" type="double" value="$(arg gap_seconds)" />
+        <param name="yellow_light_count" type="int" value="$(arg yellow_light_count)" />
+        <param name="black_light_count" type="int" value="$(arg black_light_count)" />
+        <param name="black_rotation_angle_deg" type="double" value="$(arg black_rotation_angle_deg)" />
+        <param name="black_rotation_direction" type="double" value="$(arg black_rotation_direction)" />
+        <param name="black_rotation_step_deg" type="double" value="$(arg black_rotation_step_deg)" />
+        <param name="black_return_hold_seconds" type="double" value="$(arg black_return_hold_seconds)" />
+        <param name="light1" type="int" value="$(arg light1)" />
+        <param name="light2" type="int" value="$(arg light2)" />
+        <param name="heading_servo" type="int" value="$(arg heading_servo)" />
+        <param name="clamp_servo" type="int" value="$(arg clamp_servo)" />
+        <param name="drive_cmd" type="int" value="$(arg drive_cmd)" />
+        <param name="drive_speed" type="int" value="$(arg drive_speed)" />
+    </group>
+
+    <group if="$(arg start_line_node)">
+        <remap from="/vision/line/line_message" to="$(arg line_topic)" />
+        <include file="$(find stereo_depth)/launch/test_line_detection_lineN.launch" />
+    </group>
+
+    <group if="$(arg start_shape_node)">
+        <remap from="/vision/shapes/target_message" to="$(arg target_topic)" />
+        <include file="$(find stereo_depth)/launch/test_shapes_detection.launch" />
+    </group>
+
+    <!-- 复用巡线单项 launch 的全部巡线默认参数，只替换节点实现和名称。 -->
+    <include file="$(find auv_control)/launch/task1_v3_test_line_follow.launch">
+        <arg name="task_node_type" value="task1_v3.py" />
+        <arg name="task_node_name" value="task1_v3" />
+        <arg name="rate" value="$(arg rate)" />
+        <arg name="reference_depth" value="$(arg reference_depth)" />
+        <arg name="line_topic" value="$(arg line_topic)" />
+        <arg name="camera_topic" value="$(arg camera_topic)" />
+        <arg name="finished_topic" value="$(arg finished_topic)" />
+        <arg name="trajectory_topic" value="$(arg trajectory_topic)" />
+        <arg name="log_directory" value="$(arg log_directory)" />
+        <arg name="endpoint_min_completed_path_length"
+             value="$(arg endpoint_min_completed_path_length)" />
+        <arg name="start_line_node" value="false" />
+    </include>
+</launch>

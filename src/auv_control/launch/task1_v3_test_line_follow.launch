@@ -13,6 +13,9 @@
 
     <!-- 基础：主循环频率，单位 Hz。 -->
     <arg name="rate" default="5.0" />
+    <!-- 默认运行巡线单项测试；完整 Task1 launch 通过这两个参数复用全部巡线配置。 -->
+    <arg name="task_node_type" default="test_task1_v3_line_follow.py" />
+    <arg name="task_node_name" default="test_task1_v3_line_follow" />
     <!-- 全程参考深度（m）；-1 表示使用节点启动时的机器人当前深度。 -->
     <arg name="reference_depth" default="-1.0" />
     <!-- 红线识别点统一转换到的世界坐标系。 -->
@@ -124,8 +127,8 @@
 <include if="$(arg start_line_node)"
              file="$(find stereo_depth)/launch/test_line_detection_lineN.launch" />
     <node pkg="auv_control"
-          type="test_task1_v3_line_follow.py"
-          name="test_task1_v3_line_follow"
+          type="$(arg task_node_type)"
+          name="$(arg task_node_name)"
           output="screen">
         <!-- 文件记录 DEBUG 及以上，屏幕只显示 INFO 及以上。 -->
         <env name="ROS_PYTHON_LOG_CONFIG_FILE"

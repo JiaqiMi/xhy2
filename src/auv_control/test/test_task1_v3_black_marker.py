@@ -126,6 +126,8 @@ class BlackMarkerTest(YellowMarkerTest):
             )
         if valid_message:
             marker = self.transform_pose_to_map(message.pose)
+            if marker is not None:
+                marker.header.stamp = message.pose.header.stamp
 
         confirmed = self.add_marker_observation(marker)
         self.record_target_message(

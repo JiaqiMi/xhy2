@@ -47,8 +47,8 @@
     <!-- 到达判断：定点前进和前往黑色方形共用的水平位置容差（m）。 -->
     <arg name="position_tolerance" default="0.15" />
 
-    <!-- 黑色方形过滤：只保存最近 marker_window_size 条有效识别，至少
-         marker_required_valid 条位置聚类；无效识别不入窗也不清窗。
+    <!-- 黑色方形过滤：最多保存最近 marker_window_size 条有效识别，一旦
+         marker_required_valid 条位置聚类就确认；无效识别不入窗也不清窗。
          每条有效样本最多保存 marker_sample_timeout 秒。 -->
     <arg name="black_classes" default="rectangle" />
     <arg name="black_min_confidence" default="0.30" />

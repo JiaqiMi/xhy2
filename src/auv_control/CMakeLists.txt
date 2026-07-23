@@ -207,6 +207,7 @@ catkin_install_python(PROGRAMS
   test/motion_effectiveness_calibration_test.py
   test/motion_goal_test.py
   test/motion_yaw_continuous_test.py
+  test/task1_v3.py
   test/task1_v3_yaml_logger.py
   test/test_task1_v2_black_marker.py
   test/test_task1_v2_line_fitting.py
