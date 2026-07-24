@@ -8,6 +8,7 @@ catkin_make_isolated \
 -DCMAKE_BUILD_TYPE=Release \
 -DPYTHON_EXECUTABLE=/home/xhy/xhy_env/bin/python3.8
 
+使用 `--pkg auv_control` 单独编译单个包
 
 
 ## 相机

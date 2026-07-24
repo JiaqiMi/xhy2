@@ -10,7 +10,11 @@
 -->
 <launch>
     <!-- 需先单独启动 begin.launch，使 /world_origin 和 map 到 camera 的 TF 可用。 -->
-    <include file="$(find stereo_depth)/launch/test_red_circle_detection.launch" />
+    <include file="$(find stereo_depth)/launch/test_red_circle_detection.launch" >
+        <arg name="start_camera" value="true" />
+        <arg name="start_splitter" value="true" />
+        <arg name="start_web" default="true" />
+    </include>
 
     <!-- 节点结束时 required 会停止本 launch 中的感知链路。 -->
     <node pkg="auv_control" type="world_origin_reset.py" name="world_origin_reset" output="screen" required="true">

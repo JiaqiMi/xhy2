@@ -288,59 +288,113 @@ class FisheyeArucoNode:
         return K
 
     def _get_rectification(self, width, height):
+        width = int(width)
+        height = int(height)
+
         key = (
             self.camera_model,
             width,
             height,
-            round(self.fisheye_balance, 4),
+            round(float(self.fisheye_balance), 4),
         )
+
         if key in self.map_cache:
             return self.map_cache[key]
 
         K = self._scaled_K(width, height)
+
         if K is None or self.D_calib is None:
-            raise RuntimeError("camera calibration is unavailable")
+            raise RuntimeError(
+                "camera calibration is unavailable: "
+                "K_calib={}, D_calib={}".format(
+                    self.K_calib is not None,
+                    self.D_calib is not None,
+                )
+            )
+
+        # 强制转换为 OpenCV 兼容格式
+        K = np.ascontiguousarray(K, dtype=np.float64)
+        D = np.ascontiguousarray(
+            self.D_calib.reshape(-1, 1),
+            dtype=np.float64,
+        )
 
         size = (width, height)
         identity = np.eye(3, dtype=np.float64)
 
+        rospy.loginfo_once("OpenCV version: %s", cv2.__version__)
+        rospy.loginfo_once(
+            "fisheye_balance type=%s, value=%s",
+            type(self.fisheye_balance),
+            self.fisheye_balance,
+        )
+        rospy.loginfo_once(
+            "rectification input: size=%s, K shape=%s, D shape=%s",
+            size,
+            K.shape,
+            D.shape,
+        )
+
         if self.camera_model == "fisheye":
-            new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-                K,
-                self.D_calib,
-                size,
-                identity,
-                self.fisheye_balance,
-                size,
-                1.0,
+            if D.size != 4:
+                raise RuntimeError(
+                    "fisheye model requires exactly 4 distortion "
+                    "coefficients, but got {}".format(D.size)
+                )
+
+            new_K = (
+                cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+                    K,
+                    D,
+                    size,
+                    identity,
+                    balance=float(self.fisheye_balance),
+                    new_size=size,
+                    fov_scale=1.0,
+                )
             )
+
+            new_K = np.ascontiguousarray(new_K, dtype=np.float64)
+
             map1, map2 = cv2.fisheye.initUndistortRectifyMap(
                 K,
-                self.D_calib,
+                D,
                 identity,
                 new_K,
                 size,
                 cv2.CV_16SC2,
             )
+
         else:
             new_K, _ = cv2.getOptimalNewCameraMatrix(
                 K,
-                self.D_calib,
+                D,
                 size,
-                self.fisheye_balance,
+                float(self.fisheye_balance),
                 size,
             )
+
+            new_K = np.ascontiguousarray(new_K, dtype=np.float64)
+
             map1, map2 = cv2.initUndistortRectifyMap(
                 K,
-                self.D_calib,
+                D,
                 None,
                 new_K,
                 size,
                 cv2.CV_16SC2,
             )
 
+        # 矫正后的图像可视为零畸变
         zero_dist = np.zeros((5, 1), dtype=np.float64)
-        self.map_cache[key] = (map1, map2, new_K, zero_dist)
+
+        self.map_cache[key] = (
+            map1,
+            map2,
+            new_K,
+            zero_dist,
+        )
+
         return self.map_cache[key]
 
     def _prepare_image(self, original):
