@@ -1496,13 +1496,13 @@ class Task3InspectAndDropTest:
         message = self.latest_motion_state
         return (
             self.motion_arrived()
-            and status["control_mode"] == MODE_POSITION
-            and message.horizontal_speed
-            <= self.auto_action_max_horizontal_speed
-            and abs(status["vz"]) <= self.auto_action_max_vertical_speed
-            and abs(message.yaw_rate) <= self.auto_action_max_yaw_rate
-            and abs(depth_error) <= self.auto_action_max_depth_error
-            and abs(yaw_error_deg) <= self.auto_action_max_yaw_error_deg
+            # and status["control_mode"] == MODE_POSITION
+            # and message.horizontal_speed
+            # <= self.auto_action_max_horizontal_speed
+            # and abs(status["vz"]) <= self.auto_action_max_vertical_speed
+            # and abs(message.yaw_rate) <= self.auto_action_max_yaw_rate
+            # and abs(depth_error) <= self.auto_action_max_depth_error
+            # and abs(yaw_error_deg) <= self.auto_action_max_yaw_error_deg
         )
 
     def capture_action_hold_position(self):

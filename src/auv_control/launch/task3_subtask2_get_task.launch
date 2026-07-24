@@ -25,7 +25,7 @@
       angle填写正数角度且小于180；right为右转，left为左转。
     -->
     <arg name="turn_enabled" default="true" />
-    <arg name="turn_direction" default="right" />
+    <arg name="turn_direction" default="left" />
     <arg name="turn_angle_deg" default="90.0" />
     <arg name="turn_timeout" default="90.0" />
     <arg name="turn_stable_seconds" default="1.0" />
