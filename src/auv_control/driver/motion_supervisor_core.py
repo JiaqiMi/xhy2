@@ -56,6 +56,8 @@
     根据 data6 增加启动首帧三轴主动刹停，收紧纯定深位置和航向保持死区，并解耦航向计划角减速度。
 2026.7.22
     根据 data8 在航向制动锁存期间固定原刹转方向的模型，避免角速度反号后切换正负 MZ 参数。
+2026.7.24
+    纯定深 HOVER 增加带时间滞回的误差退出，保持 mode=2 和统一控制输出连续。
 """
 
 from __future__ import division
@@ -321,6 +323,9 @@ DEFAULT_PARAMETERS = {
     'yaw_control_tolerance': math.radians(5.0),
     'yaw_rate_threshold': math.radians(0.3),
     'stable_frames': 5,
+    'hover_exit_position_error': 0.12,
+    'hover_exit_yaw_error': math.radians(8.0),
+    'hover_exit_hold_seconds': 0.50,
     'hover_fault_position_error': 0.40,
     'hover_fault_speed': 0.15,
     'hover_fault_yaw_rate': math.radians(5.0),
@@ -388,6 +393,7 @@ class MotionSupervisorCore(object):
         self.yaw_axis_state = AXIS_HOLD
         self.stable_count = 0
         self.handover_started_at = None
+        self.hover_exit_started_at = None
         self.last_tx = 0.0
         self.last_ty = 0.0
         self.last_mz = 0.0
@@ -443,7 +449,9 @@ class MotionSupervisorCore(object):
             'capture_exit_radius', 'control_center_hold_tolerance',
             'horizontal_speed_threshold',
             'yaw_tolerance', 'yaw_control_tolerance', 'yaw_rate_threshold',
-            'stable_frames', 'hover_fault_position_error',
+            'stable_frames', 'hover_exit_position_error',
+            'hover_exit_yaw_error', 'hover_exit_hold_seconds',
+            'hover_fault_position_error',
             'hover_fault_speed', 'hover_fault_yaw_rate',
             'hover_fault_yaw_error', 'mode_ack_timeout',
             'brake_margin_tx_positive', 'brake_margin_tx_negative',
@@ -484,6 +492,14 @@ class MotionSupervisorCore(object):
         if self.parameters['yaw_control_tolerance'] > (
                 self.parameters['yaw_tolerance']):
             raise ValueError('yaw_control_tolerance 不能大于 yaw_tolerance')
+        if self.parameters['hover_exit_position_error'] <= (
+                self.parameters['capture_radius']):
+            raise ValueError(
+                'hover_exit_position_error 必须大于 capture_radius')
+        if self.parameters['hover_exit_yaw_error'] <= (
+                self.parameters['yaw_tolerance']):
+            raise ValueError(
+                'hover_exit_yaw_error 必须大于 yaw_tolerance')
         if self.parameters['capture_exit_radius'] <= self.parameters['capture_radius']:
             raise ValueError('capture_exit_radius 必须大于 capture_radius')
         if self.parameters['control_center_hold_tolerance'] >= (
@@ -617,6 +633,7 @@ class MotionSupervisorCore(object):
         if new_state != self.state:
             self.state = new_state
             self.stable_count = 0
+            self.hover_exit_started_at = None
         self.reason = reason
         if new_state != CAPTURE:
             self.handover_started_at = None
@@ -1609,9 +1626,52 @@ class MotionSupervisorCore(object):
             return output
 
         if self.state == HOVER and self.parameters['pure_depth_control']:
-            # HOVER 仅表示已经稳定进入上位机保持；即使出现误差，也继续
-            # 在 HOVER 内运行统一位置—速度—力控制，不再执行接管退出。
-            return self._unified_pose_output(vehicle, maintain_hover=True)
+            # 纯定深始终保持 mode=2 和同一套统一控制器；这里只切换内部
+            # 状态语义。退出阈值高于捕获阈值，并要求连续超限一段时间，
+            # 避免定位噪声在 HOVER/TRANSLATE 之间反复切换。
+            unused_dx, unused_dy, hover_distance, hover_yaw_error = (
+                self._goal_metrics(vehicle))
+            del unused_dx, unused_dy
+            hover_exit_requested = (
+                hover_distance
+                > self.parameters['hover_exit_position_error']
+                or abs(hover_yaw_error)
+                > self.parameters['hover_exit_yaw_error']
+            )
+            if hover_exit_requested:
+                if self.hover_exit_started_at is None:
+                    self.hover_exit_started_at = vehicle.now
+                elif (vehicle.now - self.hover_exit_started_at >=
+                      self.parameters['hover_exit_hold_seconds']):
+                    self._transition(
+                        TRANSLATE,
+                        'HOVER 误差持续超限，恢复统一三轴跟踪',
+                    )
+                    # 不重置参考速度、制动锁存或上一周期输出，保证退出
+                    # HOVER 时力矩连续；_unified_pose_output 仍发布 mode=2。
+                    output = self._unified_pose_output(vehicle)
+                    output.diagnostics.update({
+                        'hover_exit_requested': True,
+                        'hover_exit_wait_s': (
+                            self.parameters['hover_exit_hold_seconds']),
+                        'hover_exit_triggered': True,
+                    })
+                    return output
+            else:
+                self.hover_exit_started_at = None
+            hover_exit_wait_s = (
+                0.0
+                if self.hover_exit_started_at is None
+                else max(0.0, vehicle.now - self.hover_exit_started_at)
+            )
+            output = self._unified_pose_output(
+                vehicle, maintain_hover=True)
+            output.diagnostics.update({
+                'hover_exit_requested': hover_exit_requested,
+                'hover_exit_wait_s': hover_exit_wait_s,
+                'hover_exit_triggered': False,
+            })
+            return output
 
         if self.state == CAPTURE:
             self.x_axis_state = AXIS_HOLD

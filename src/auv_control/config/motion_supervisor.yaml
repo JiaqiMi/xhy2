@@ -3,6 +3,7 @@ pure_depth_control: true # true：全程 mode=2，由上位机统一控制并在
 control_rate_hz: 20.0 # 统一三轴速度闭环频率；目标可保持 5 Hz 发布
 feedback_timeout: 0.5 # TF 或速度反馈最大允许间隔，单位 s，超时后进入 SAFE
 velocity_filter_alpha: 0.50 # 速度一阶低通新数据权重，范围 (0,1]，越大响应越快
+
 # 原始 /status/vel.r 到 map 航向角速度的符号；当前 MZ 与 r 方向相反，取 -1。
 yaw_rate_to_map_sign: -1.0
 pitch_offset_deg: 0.0 # 发送目标姿态时附加的固定俯仰角，单位 deg
@@ -14,14 +15,14 @@ log_directory: ~/.ros/auv_logs/motion_supervisor # CSV 日志目录，每次启�
 log_flush_every: 20 # 每累计多少个控制周期刷新磁盘，20 Hz 下约每秒刷新
 
 # 正常运动限幅；参数后缀表示本周期实际输出力或力矩的正负号
-max_tx_positive: 1200.0 # data5 正 TX=700 仅约 0.04 m/s；保守提高以改善 X 正向响应
-max_tx_negative: 1500.0 # 正常运动阶段负 TX 绝对值上限
-max_ty_positive: 2000.0 # 正常运动阶段正 TY 最大值 对应0.1m/s
-max_ty_negative: 4000.0 # 正常运动阶段负 TY 绝对值上限 对应0.1m/s
-max_mz_positive: 2400.0 # 正常转向阶段正 MZ 最大值
-max_mz_negative: 3000.0 # 正常转向阶段负 MZ 绝对值上限
+max_tx_positive: 1500.0 # 正常运动阶段正 TX 最大值
+max_tx_negative: 2000.0 # 正常运动阶段负 TX 绝对值上限
+max_ty_positive: 2000.0 # 正常运动阶段正 TY 最大值
+max_ty_negative: 4000.0 # 正常运动阶段负 TY 绝对值上限
+max_mz_positive: 3000.0 # 正常转向阶段正 MZ 最大值
+max_mz_negative: 3500.0 # 正常转向阶段负 MZ 绝对值上限
 brake_max_tx_positive: 2000.0 # 主动刹车阶段正 TX 最大值
-brake_max_tx_negative: 1800.0 # data5 的 -3000 导致速度由 +0.04 反转至 -0.05 m/s
+brake_max_tx_negative: 1800.0 # 主动刹车阶段负 TX 绝对值上限
 brake_max_ty_positive: 2000.0 # 主动刹车阶段正 TY 最大值
 brake_max_ty_negative: 4000.0 # 主动刹车阶段负 TY 绝对值上限
 brake_max_mz_positive: 2000.0 # 主动刹转阶段正 MZ 最大值
@@ -30,10 +31,13 @@ force_slew_per_cycle: 1000.0 # 正常运动每控制周期允许的最大力矩�
 brake_force_slew_per_cycle: 10000.0 # 刹车每控制周期允许的最大力矩变化量
 
 # 统一三轴速度环增益；yaw 的正负按 map 航向角速度误差选择，对应最终 MZ 正负。
-kv_x_positive: 8000.0 # 配合正 TX=900，提高 X 正向跟踪速度但保留方向性限幅
-kv_x_negative: 9100.0 # 1000 / 0.11；0.5 m 阶跃可触发负 TX 正常限幅
-kv_y_positive: 30000.0 # 1200 / 0.04；按右移 +1000 对应 0.04 m/s 的保守数据取值
-kv_y_negative: 40000.0 # 2000 / 0.05；按左移 -2000 对应 0.05 m/s 取值
+kv_x_positive: 11900.0 # 配合正 TX=900，提高 X 正向跟踪速度但保留方向性限幅
+kv_x_negative: 14250.0 # 1000 / 0.11；0.5 m 阶跃可触发负 TX 正常限幅
+kv_y_positive: 36000.0 # 1200 / 0.04；按右移 +1000 对应 0.04 m/s 的保守数据取值
+kv_y_negative: 52000.0 # 2000 / 0.05；按左移 -2000 对应 0.05 m/s 取值
+kp_yaw_positive: 9200.0 # 60 deg 阶跃静态控制核验证可触发正 MZ 正常限幅
+kp_yaw_negative: 11200.0 # 60 deg 阶跃静态控制核验证可触发负 MZ 正常限幅
+
 # 定点模式锁存制动时的速度环增益；仍按最终 TX/TY 输出符号区分正反车效率。
 brake_kv_x_positive: 20000.0
 brake_kv_x_negative: 24000.0 # 降低负 TX 制动速度误差放大，抑制执行滞后后的反向加速
@@ -42,8 +46,6 @@ brake_kv_y_negative: 60000.0
 # 定点模式锁存刹转时的角速度环增益；按最终 MZ 输出符号区分正反转效率。
 brake_kp_yaw_positive: 9000.0
 brake_kp_yaw_negative: 14000.0 # data4 表明负 MZ 刹转过强；反向保护后恢复保守增益
-kp_yaw_positive: 7500.0 # 60 deg 阶跃静态控制核验证可触发正 MZ 正常限幅
-kp_yaw_negative: 11200.0 # 60 deg 阶跃静态控制核验证可触发负 MZ 正常限幅
 
 # 已停用的旧式比例刹车参数：正常定点、取消和 SAFE 均改用受限减速轨迹、
 # 减速度前馈和方向性速度环；保留原值仅供历史标定记录，不参与加载。
@@ -60,6 +62,7 @@ brake_acceleration_tx_positive: 0.04 # data7/data1 正 TX 满输出等效约 0.0
 brake_acceleration_tx_negative: 0.03 # data7/data1 负 TX 满输出等效约 0.030/0.025 m/s^2，避免低估制动前馈
 brake_acceleration_ty_positive: 0.016 # data1 正 TY 满输出等效约 0.016 m/s^2；对应 Y 负向运动
 brake_acceleration_ty_negative: 0.019 # data1 负 TY 满输出等效约 0.019 m/s^2；对应 Y 正向运动
+
 # 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
 brake_reference_acceleration_tx_positive: 0.018 # data1 正 TX 实际平均减速度约 0.014，较旧值提前约 4 cm 制动
 brake_reference_acceleration_tx_negative: 0.015 # data1 负 TX 实际平均减速度约 0.013，较旧值提前约 2~5 cm 制动
@@ -86,6 +89,9 @@ yaw_tolerance_deg: 5.0 # 最终航向允许误差，单位 deg
 yaw_control_tolerance_deg: 2.0 # 纯定深内部航向保持死区；旧 mode=4 兼容逻辑仍使用 5 deg
 yaw_rate_threshold_deg_s: 0.3 # 判定转动停稳的角速度上限，单位 deg/s
 stable_frames: 5 # 捕获或停稳条件需连续满足的控制帧数，20 Hz 下约为 0.25 s
+hover_exit_position_error: 0.12 # 纯定深 HOVER 水平退出阈值；高于 0.07 m 捕获阈值形成滞回
+hover_exit_yaw_error_deg: 8.0 # 纯定深 HOVER 航向退出阈值；高于 5 deg 捕获阈值形成滞回
+hover_exit_hold_seconds: 0.50 # 误差连续超限达到此时间才恢复 TRANSLATE，抑制定位噪声导致的状态振荡
 hover_fault_position_error: 0.40 # mode=4 接管后才触发回退的水平位置误差，单位 m；必须大于 capture_exit_radius
 hover_fault_speed: 0.15 # mode=4 接管后才触发回退的水平速度，单位 m/s
 hover_fault_yaw_rate_deg_s: 5.0 # mode=4 接管后才触发回退的航向角速度，单位 deg/s
@@ -98,6 +104,7 @@ xy_position_gain: 2.00
 xy_max_acceleration: 0.40
 xy_max_jerk: 0.40
 xy_brake_jerk: 0.20 # 定点制动速度参考的最大 jerk，单位 m/s^3
+
 # 预测停车距离内且合速度达到进入阈值时锁存刹停；低于退出阈值才恢复跟踪。
 xy_brake_enter_speed: 0.020
 xy_brake_exit_speed: 0.012
@@ -106,12 +113,15 @@ yaw_position_gain: 1.50
 yaw_max_acceleration_deg_s2: 20.0
 yaw_max_jerk_deg_s3: 60.0
 yaw_brake_jerk_deg_s3: 5.0 # 定点刹转角速度参考的最大 jerk，单位 deg/s^3
+
 # 航向刹停迟滞；高于 0.6 deg/s 才进入，低于 0.2 deg/s 才退出。
 yaw_brake_enter_rate_deg_s: 0.6
 yaw_brake_exit_rate_deg_s: 0.2
+
 # 速度反馈实测约 7 Hz；退出刹车前连续低速保持 0.40 s，防止低速采样抖动反复进出刹车。
 brake_release_hold_seconds: 0.40
 goal_static_capture_seconds: 0.80
+
 # 目标仍然逐帧更新；仅超过以下阈值才重置速度/角速度参考和捕获计时。
 goal_replan_position_threshold: 0.10 # 位置目标变化的重规划阈值，单位 m
 goal_replan_yaw_threshold_deg: 5.0 # 目标航向变化的重规划阈值，单位 deg

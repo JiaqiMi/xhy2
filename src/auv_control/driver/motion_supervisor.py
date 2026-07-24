@@ -47,6 +47,8 @@
     增加水平计划制动减速度与推进器有效减速度诊断，支持 data5 后续复测核验。
 2026.7.22
     根据 data6 增加启动首帧三轴主动刹停，记录航向计划与有效角减速度，并收紧纯定深保持死区。
+2026.7.24
+    加载纯定深 HOVER 退出滞回参数，支持误差持续超限后恢复统一跟踪。
 """
 
 from __future__ import division
@@ -186,6 +188,9 @@ class MotionSupervisorNode(object):
         'brake_axes',
         'goal_static_seconds',
         'goal_static_for_capture',
+        'hover_exit_requested',
+        'hover_exit_wait_s',
+        'hover_exit_triggered',
         'raw_tx',
         'raw_ty',
         'raw_mz',
@@ -394,6 +399,7 @@ class MotionSupervisorNode(object):
             'yaw_tolerance': 'yaw_tolerance_deg',
             'yaw_control_tolerance': 'yaw_control_tolerance_deg',
             'yaw_rate_threshold': 'yaw_rate_threshold_deg_s',
+            'hover_exit_yaw_error': 'hover_exit_yaw_error_deg',
             'hover_fault_yaw_rate': 'hover_fault_yaw_rate_deg_s',
             'hover_fault_yaw_error': 'hover_fault_yaw_error_deg',
             'yaw_max_rate': 'yaw_max_rate_deg_s',
@@ -770,6 +776,12 @@ class MotionSupervisorNode(object):
             'goal_static_seconds': diagnostics.get('goal_static_seconds', ''),
             'goal_static_for_capture': int(bool(
                 diagnostics.get('goal_static_for_capture', False))),
+            'hover_exit_requested': int(bool(
+                diagnostics.get('hover_exit_requested', False))),
+            'hover_exit_wait_s': diagnostics.get(
+                'hover_exit_wait_s', ''),
+            'hover_exit_triggered': int(bool(
+                diagnostics.get('hover_exit_triggered', False))),
             'raw_tx': diagnostics.get('raw_tx', ''),
             'raw_ty': diagnostics.get('raw_ty', ''),
             'raw_mz': diagnostics.get('raw_mz', ''),
