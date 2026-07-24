@@ -6,6 +6,9 @@
 
     <arg name="rate" default="10.0" />
 
+    <!-- 文件日志保存目录；文件名由节点自动生成为subtask2_年月日_时分秒_微秒.log。 -->
+    <arg name="log_directory" default="$(env HOME)/.ros/auv_logs/task3" />
+
     <!-- motion_supervisor接口：只发布绝对目标，不直接发布力或力矩。 -->
     <arg name="motion_goal_topic" default="/cmd/motion/goal" />
     <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
@@ -76,6 +79,7 @@
           output="screen"
           required="true">
         <param name="rate" type="double" value="$(arg rate)" />
+        <param name="log_directory" type="string" value="$(arg log_directory)" />
         <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
         <param name="motion_cancel_topic" type="string" value="$(arg motion_cancel_topic)" />
         <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />

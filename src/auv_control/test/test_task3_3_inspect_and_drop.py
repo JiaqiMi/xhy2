@@ -11,8 +11,11 @@
 """
 
 import copy
+from datetime import datetime
 import json
+import logging
 import math
+import os
 import statistics
 
 import rospy
@@ -25,6 +28,38 @@ from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 NODE_NAME = "test_task3_3_inspect_and_drop"
 MODE_POSITION = 4
+
+
+def configure_task_file_logging(subtask_name):
+    """将本节点的rospy日志同时保存到带时间戳的UTF-8文件。"""
+    log_directory = os.path.abspath(os.path.expanduser(str(
+        rospy.get_param("~log_directory", "~/.ros/auv_logs/task3")
+    )))
+    try:
+        os.makedirs(log_directory, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        log_path = os.path.join(
+            log_directory, "{}_{}.log".format(subtask_name, timestamp)
+        )
+        handler = logging.FileHandler(
+            log_path, mode="a", encoding="utf-8"
+        )
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s"
+        ))
+        ros_logger = logging.getLogger("rosout")
+        ros_logger.addHandler(handler)
+    except (IOError, OSError) as error:
+        rospy.logerr(
+            "%s：无法创建文件日志目录%s：%s",
+            NODE_NAME,
+            log_directory,
+            str(error),
+        )
+        return None
+    rospy.loginfo("%s：文件日志已启用：%s", NODE_NAME, log_path)
+    return log_path
 
 
 def clamp(value, lower, upper):
@@ -3013,6 +3048,7 @@ class Task3InspectAndDropTest:
 
 if __name__ == "__main__":
     rospy.init_node(NODE_NAME, anonymous=True)
+    configure_task_file_logging("subtask3")
     try:
         Task3InspectAndDropTest().run()
     except rospy.ROSInterruptException:
