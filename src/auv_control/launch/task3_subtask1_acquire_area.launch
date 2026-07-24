@@ -38,7 +38,7 @@
     -->
     <arg name="min_confidence" default="0.30" />
     <!-- detection_timeout：普通位置帧最长允许间隔，也用于定点方向复核超时。 -->
-    <arg name="detection_timeout" default="1" />
+    <arg name="detection_timeout" default="2" />
     <!-- visual_loss_cancel_seconds：运动中完整箭头丢失达到该时间就cancel；必须不大于detection_timeout。 -->
     <arg name="visual_loss_cancel_seconds" default="1" />
     <!--
@@ -79,7 +79,7 @@
     -->
     <arg name="goal_match_position_tolerance" default="0.03" />
     <arg name="goal_match_depth_tolerance" default="0.03" />
-    <arg name="goal_match_yaw_tolerance_deg" default="2.0" />
+    <arg name="goal_match_yaw_tolerance_deg" default="5.0" />
 
     <!-- initial_hover_seconds：固定启动点收到当前目标对应的HOVER后，需要连续保持的时间。 -->
     <arg name="initial_hover_seconds" default="10.0" />
@@ -88,9 +88,9 @@
       再前0.3m，第二层左右各0.2m。任意一帧位置有效就立即cancel退出搜索。
       三个距离依次控制第一层前进量、每层左右距离和第二次追加前进量。
     -->
-    <arg name="search_initial_forward_distance" default="0.30" />
+    <arg name="search_initial_forward_distance" default="0.50" />
     <arg name="search_lateral_distance" default="0.20" />
-    <arg name="search_second_forward_distance" default="0.20" />
+    <arg name="search_second_forward_distance" default="0.30" />
     <!-- max_wait_seconds：除最终悬停外，搜索与对准全过程的总超时。 -->
     <arg name="max_wait_seconds" default="300.0" />
 
@@ -116,6 +116,31 @@
     <!-- center_tolerance_u/v_px：中心误差容差；调小更准但更容易反复修正。 -->
     <arg name="center_tolerance_u_px" default="50.0" />
     <arg name="center_tolerance_v_px" default="50.0" />
+    <!--
+      heading_lateral_tolerance_px：航向对准阶段专用横向死区。
+      默认小于普通中心容差，使机器人转动航向时同步横移并保持水平居中；
+      横移频繁抖动时调大，转向时箭头水平偏离却不横移时调小。
+
+      航向和横移联合对准的现场调参顺序：
+      1. 日志中的“右移”一直为0.000m：
+         先将heading_lateral_tolerance_px从20调到15，仍不触发再调到10。
+      2. “右移”已经非零但目标偏置太小：
+         将fine_lateral_gain_m从0.10逐步调到0.15或0.20。
+      3. 横移距离过大或左右振荡：
+         优先调低fine_visual_min_step_m和fine_visual_max_step_m；
+         当前起始值分别为0.04m和0.05m，每次修改后都应低速单独验证。
+      4. 航向转动太快，看不出同步横移：
+         调低fine_yaw_max_step_deg，再观察同一目标中的横移和航向修正。
+      5. 横移方向相反：
+         不要修改增益，将visual_lateral_sign改为-1。
+
+      调参时查看日志：
+      “本体偏置=(前...,右...)m”是任务生成的横移目标；
+      “方向误差/航向小步=(.../...)deg”是同一目标中的航向修正。
+      如果“右移”已经非零，且/motion/state中的TY也明显非零，但机器人实体
+      横移仍不明显，再检查motion_supervisor的横移输出限制。
+    -->
+    <arg name="heading_lateral_tolerance_px" default="20.0" />
 
     <!--
       粗对准根据v/u误差生成前后、左右小步，并等待motion_supervisor报告HOVER后
@@ -125,8 +150,8 @@
     -->
     <arg name="visual_forward_gain_m" default="0.20" />
     <arg name="visual_lateral_gain_m" default="0.20" />
-    <arg name="visual_max_step_m" default="0.08" />
-    <arg name="visual_min_step_m" default="0.01" />
+    <arg name="visual_max_step_m" default="0.3" />
+    <arg name="visual_min_step_m" default="0.1" />
     <!-- 限制视觉目标更新速度，防止按每一帧当前位置连续累加偏置。 -->
     <arg name="visual_goal_min_interval" default="1.0" />
     <!-- visual_forward_sign作用于粗对准和细对准的v误差；前后方向相反时改为-1。 -->
@@ -140,12 +165,12 @@
       fine_goal_min_interval限制实时目标刷新。航向稳定前前后步长始终为0。
       这些小目标仍统一交给motion_supervisor执行，任务节点不直接计算推力。
     -->
-    <arg name="fine_forward_gain_m" default="0.10" />
-    <arg name="fine_lateral_gain_m" default="0.10" />
-    <arg name="fine_visual_max_step_m" default="0.3" />
+    <arg name="fine_forward_gain_m" default="0.20" />
+    <arg name="fine_lateral_gain_m" default="0.20" />
+    <arg name="fine_visual_max_step_m" default="0.2" />
     <arg name="fine_visual_min_step_m" default="0.1" />
-    <arg name="fine_yaw_max_step_deg" default="20" />
-    <arg name="fine_goal_min_interval" default="0.5" />
+    <arg name="fine_yaw_max_step_deg" default="10.0" />
+    <arg name="fine_goal_min_interval" default="2.0" />
 
     <!--
       camera_forward_angle_deg：图像中机器人正前方对应的箭头角度，当前协议默认90度。
@@ -162,7 +187,7 @@
       不再修改位置或航向，也不会因箭头离开画面而取消或回退。
       该偏置需按相机与base_link实际安装位置现场标定。
     -->
-    <arg name="base_link_forward_offset" default="0.35" />
+    <arg name="base_link_forward_offset" default="0.5" />
 
     <!-- status_topic/status_timeout：模式、深度和航向反馈话题及最大允许接收间隔。 -->
     <arg name="status_topic" default="/status/auv" />

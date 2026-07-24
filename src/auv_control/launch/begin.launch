@@ -3,10 +3,10 @@
     <!-- 用法: roslaunch auv_control begin.launch -->
 
     <!-- 启动节点参数 -->
-    <arg name="start_camera" default="true" />
-    <arg name="start_splitter" default="true" />
+    <arg name="start_camera" default="false" />
+    <arg name="start_splitter" default="false" />
     <arg name="start_state_web" default="true" />
-    <arg name="start_fisheye" default="true" />
+    <arg name="start_fisheye" default="false" />
     <arg name="start_motion_supervisor" default="false" />
 
     <!-- 包含任务参数 -->
