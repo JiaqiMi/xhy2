@@ -12,6 +12,9 @@
     <arg name="operation_mode" default="auto" />
     <arg name="rate" default="5.0" />
 
+    <!-- 文件日志保存目录；文件名由节点自动生成为subtask3_年月日_时分秒_微秒.log。 -->
+    <arg name="log_directory" default="$(env HOME)/.ros/auv_logs/task3" />
+
     <!-- 普通状态日志和异常日志的节流周期；模型帧进度仍逐帧打印。 -->
     <arg name="log_interval" default="1.0" />
     <arg name="warning_log_interval" default="2.0" />
@@ -173,6 +176,7 @@
           output="screen">
         <param name="operation_mode" type="string" value="$(arg operation_mode)" />
         <param name="rate" type="double" value="$(arg rate)" />
+        <param name="log_directory" type="string" value="$(arg log_directory)" />
         <param name="log_interval" type="double" value="$(arg log_interval)" />
         <param name="warning_log_interval" type="double" value="$(arg warning_log_interval)" />
 

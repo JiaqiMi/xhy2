@@ -11,7 +11,10 @@
 原地左转或右转；60秒内未确认或转向未稳定到达都按失败结束。
 """
 
+from datetime import datetime
+import logging
 import math
+import os
 import re
 import threading
 import time
@@ -28,6 +31,39 @@ from auv_control.msg import ActuatorControl, MotionState, TargetDetection
 
 
 NODE_NAME = "test_task3_2_get_task"
+
+
+def configure_task_file_logging(subtask_name):
+    """将本节点的rospy日志同时保存到带时间戳的UTF-8文件。"""
+    log_directory = os.path.abspath(os.path.expanduser(str(
+        rospy.get_param("~log_directory", "~/.ros/auv_logs/task3")
+    )))
+    try:
+        os.makedirs(log_directory, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        log_path = os.path.join(
+            log_directory, "{}_{}.log".format(subtask_name, timestamp)
+        )
+        handler = logging.FileHandler(
+            log_path, mode="a", encoding="utf-8"
+        )
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s"
+        ))
+        ros_logger = logging.getLogger("rosout")
+        ros_logger.addHandler(handler)
+    except (IOError, OSError) as error:
+        rospy.logerr(
+            "%s：无法创建文件日志目录%s：%s",
+            NODE_NAME,
+            log_directory,
+            str(error),
+        )
+        return None
+    rospy.loginfo("%s：文件日志已启用：%s", NODE_NAME, log_path)
+    return log_path
+
 
 DEFAULT_RATE = 10.0
 DEFAULT_MOTION_GOAL_TOPIC = "/cmd/motion/goal"
@@ -1211,6 +1247,7 @@ class Task3GetTaskTest:
 
 if __name__ == "__main__":
     rospy.init_node(NODE_NAME, anonymous=True)
+    configure_task_file_logging("subtask2")
     try:
         Task3GetTaskTest().run()
     except rospy.ROSInterruptException:

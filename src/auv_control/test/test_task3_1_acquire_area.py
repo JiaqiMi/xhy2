@@ -7,8 +7,11 @@
 motion_supervisor 负责平移、主动刹停、最终转向和 mode=4 定点接管。
 """
 
+from datetime import datetime
 import json
+import logging
 import math
+import os
 import statistics
 
 import rospy
@@ -20,6 +23,38 @@ from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
 NODE_NAME = "test_task3_1_acquire_area"
+
+
+def configure_task_file_logging(subtask_name):
+    """将本节点的rospy日志同时保存到带时间戳的UTF-8文件。"""
+    log_directory = os.path.abspath(os.path.expanduser(str(
+        rospy.get_param("~log_directory", "~/.ros/auv_logs/task3")
+    )))
+    try:
+        os.makedirs(log_directory, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        log_path = os.path.join(
+            log_directory, "{}_{}.log".format(subtask_name, timestamp)
+        )
+        handler = logging.FileHandler(
+            log_path, mode="a", encoding="utf-8"
+        )
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s"
+        ))
+        ros_logger = logging.getLogger("rosout")
+        ros_logger.addHandler(handler)
+    except (IOError, OSError) as error:
+        rospy.logerr(
+            "%s：无法创建文件日志目录%s：%s",
+            NODE_NAME,
+            log_directory,
+            str(error),
+        )
+        return None
+    rospy.loginfo("%s：文件日志已启用：%s", NODE_NAME, log_path)
+    return log_path
 
 
 def clamp(value, lower, upper):
@@ -51,9 +86,9 @@ class Task3AcquireAreaTest(object):
     WAIT_FOR_ARROW = "定点重新识别箭头"
     COARSE_LATERAL_ALIGN = "箭头图像粗居中"
     CONFIRM_DIRECTION = "定点确认箭头方向"
-    ALIGN_HEADING = "细对准：持续看箭头并慢速对齐航向"
+    ALIGN_HEADING = "细对准：航向和横移联合对准"
     FINE_FORWARD_ALIGN = "细对准：航向对齐后慢速前后居中"
-    MOVE_BASE_OVER_ARROW = "持续视觉跟踪并将base_link移到箭头上方"
+    MOVE_BASE_OVER_ARROW = "按固定目标将base_link移到箭头上方"
     FINAL_HOLD = "最终定点保持"
 
     MOTION_STATE_NAMES = {
@@ -143,6 +178,9 @@ class Task3AcquireAreaTest(object):
         ))
         self.center_tolerance_v_px = float(rospy.get_param(
             "~center_tolerance_v_px", 35.0
+        ))
+        self.heading_lateral_tolerance_px = float(rospy.get_param(
+            "~heading_lateral_tolerance_px", 20.0
         ))
         self.visual_lateral_gain_m = float(rospy.get_param(
             "~visual_lateral_gain_m", 0.20
@@ -240,21 +278,6 @@ class Task3AcquireAreaTest(object):
         self.goal_match_yaw_tolerance_deg = float(rospy.get_param(
             "~goal_match_yaw_tolerance_deg", 2.0
         ))
-        self.arrival_position_tolerance = float(rospy.get_param(
-            "~arrival_position_tolerance", 0.05
-        ))
-        self.arrival_yaw_tolerance_deg = float(rospy.get_param(
-            "~arrival_yaw_tolerance_deg", 5.0
-        ))
-        self.arrival_max_horizontal_speed = float(rospy.get_param(
-            "~arrival_max_horizontal_speed", 0.02
-        ))
-        self.arrival_max_yaw_rate_deg_s = float(rospy.get_param(
-            "~arrival_max_yaw_rate_deg_s", 0.5
-        ))
-        self.max_depth_error = float(rospy.get_param(
-            "~max_depth_error", 0.08
-        ))
         self.min_ground_clearance = float(rospy.get_param(
             "~min_ground_clearance", 0.40
         ))
@@ -330,7 +353,6 @@ class Task3AcquireAreaTest(object):
         self.centered_frame_count = 0
         self.heading_aligned_frame_count = 0
         self.aligned_frame_count = 0
-        self.base_tracking_frame_count = 0
         self.last_visual_goal_frame = 0
         self.last_visual_goal_time = None
 
@@ -412,11 +434,7 @@ class Task3AcquireAreaTest(object):
             self.goal_match_position_tolerance,
             self.goal_match_depth_tolerance,
             self.goal_match_yaw_tolerance_deg,
-            self.arrival_position_tolerance,
-            self.arrival_yaw_tolerance_deg,
-            self.arrival_max_horizontal_speed,
-            self.arrival_max_yaw_rate_deg_s,
-            self.max_depth_error,
+            self.heading_lateral_tolerance_px,
             self.min_ground_clearance,
             self.detection_timeout,
             self.visual_loss_cancel_seconds,
@@ -444,10 +462,7 @@ class Task3AcquireAreaTest(object):
             self.visual_loss_cancel_seconds,
             self.visual_goal_min_interval,
             self.fine_goal_min_interval,
-            self.arrival_position_tolerance,
-            self.arrival_yaw_tolerance_deg,
-            self.arrival_max_horizontal_speed,
-            self.arrival_max_yaw_rate_deg_s,
+            self.heading_lateral_tolerance_px,
             self.log_interval,
             self.warning_log_interval,
         ) <= 0.0:
@@ -509,8 +524,8 @@ class Task3AcquireAreaTest(object):
                 "%s：流程：固定点HOVER悬停%.1fs -> 前%.2fm -> 左右各%.2fm -> "
                 "再前%.2fm -> 左右各%.2fm搜索 -> "
                 "最近%d帧内位置一致%d帧 -> 图像中心粗对准 -> "
-                "完整箭头方向%d帧 -> 慢速航向对齐%d帧 -> "
-                "慢速前后居中%d帧 -> base_link前移%.2fm并持续视觉修正 -> "
+                "完整箭头方向%d帧 -> 慢速航向和横移联合对齐%d帧 -> "
+                "慢速前后居中%d帧 -> base_link按固定目标前移%.2fm -> "
                 "最终HOVER保持%.1fs"
             ),
             NODE_NAME,
@@ -530,7 +545,7 @@ class Task3AcquireAreaTest(object):
         rospy.loginfo(
             (
                 "%s：识别：话题=%s，最低置信度=%.2f，稳定判定超时=%.2fs，"
-                "运动阶段丢失刹停=%.2fs，"
+                "粗、细对准阶段视觉丢失刹停=%.2fs，"
                 "位置候选组=最近%d帧命中%d帧，中心抖动<=%.1fpx，面积变化<=%.3f；"
                 "图像=%.0fx%.0f，目标中心=(%.1f,%.1f)px，"
                 "中心容差=(%.1f,%.1f)px；"
@@ -574,6 +589,7 @@ class Task3AcquireAreaTest(object):
             (
                 "%s：细对准慢速参数：增益=(前后%.3f,左右%.3f)，"
                 "平移步长=%.3f~%.3fm，单次航向<=%.1fdeg，目标间隔>=%.2fs，"
+                "航向阶段横向死区=%.1fpx，"
                 "方向符号=(前后%+.0f,左右%+.0f,yaw%+.0f)"
             ),
             NODE_NAME,
@@ -583,6 +599,7 @@ class Task3AcquireAreaTest(object):
             self.fine_visual_max_step_m,
             self.fine_yaw_max_step_deg,
             self.fine_goal_min_interval,
+            self.heading_lateral_tolerance_px,
             self.visual_forward_sign,
             self.visual_lateral_sign,
             self.yaw_correction_sign,
@@ -601,17 +618,9 @@ class Task3AcquireAreaTest(object):
             self.goal_match_yaw_tolerance_deg,
         )
         rospy.loginfo(
-            (
-                "%s：任务侧实际到达门槛：base_link水平误差<=%.3fm，"
-                "航向误差<=%.1fdeg，水平速度<=%.3fm/s，"
-                "航向角速度<=%.2fdeg/s，深度误差<=%.3fm"
-            ),
+            "%s：到达判定只读取当前目标对应的新鲜MotionState.HOVER；"
+            "位置、航向、速度和角速度门槛由motion_supervisor统一负责",
             NODE_NAME,
-            self.arrival_position_tolerance,
-            self.arrival_yaw_tolerance_deg,
-            self.arrival_max_horizontal_speed,
-            self.arrival_max_yaw_rate_deg_s,
-            self.max_depth_error,
         )
         rospy.loginfo(
             (
@@ -716,7 +725,6 @@ class Task3AcquireAreaTest(object):
             self.CONFIRM_DIRECTION,
             self.ALIGN_HEADING,
             self.FINE_FORWARD_ALIGN,
-            self.MOVE_BASE_OVER_ARROW,
         ):
             self.reset_direction_lock()
         if self.state == self.COARSE_LATERAL_ALIGN:
@@ -725,8 +733,6 @@ class Task3AcquireAreaTest(object):
             self.reset_heading_alignment_progress(reason)
         if self.state == self.FINE_FORWARD_ALIGN:
             self.reset_alignment_progress(reason)
-        if self.state == self.MOVE_BASE_OVER_ARROW:
-            self.reset_base_tracking_progress(reason)
         if self.state in (self.SEARCH_PATTERN, self.WAIT_FOR_ARROW):
             return
         else:
@@ -917,11 +923,6 @@ class Task3AcquireAreaTest(object):
         elif self.state == self.FINE_FORWARD_ALIGN:
             self.add_direction_sample(detection, error_u, error_v)
             self.update_alignment_progress(detection, error_u, error_v)
-        elif self.state == self.MOVE_BASE_OVER_ARROW:
-            self.add_direction_sample(detection, error_u, error_v)
-            self.update_base_tracking_progress(
-                detection, error_u, error_v
-            )
 
     def add_detection_sample(self, detection, frame_index, invalid_reason=""):
         self.detection_samples.append({
@@ -1257,21 +1258,21 @@ class Task3AcquireAreaTest(object):
             not detection["full_visible"]
             or heading_error is None
             or abs(heading_error) > self.yaw_tolerance_deg
-            or abs(error_u) > self.center_tolerance_u_px
+            or abs(error_u) > self.heading_lateral_tolerance_px
         ):
             self.reset_heading_alignment_progress(
                 "完整可见、左右位置或箭头航向未同时通过"
             )
             rospy.loginfo(
                 (
-                    "%s：[箭头帧#%d] 慢速航向对齐未通过：完整可见=%s，"
+                    "%s：[箭头帧#%d] 航向和横移联合对准未通过：完整可见=%s，"
                     "u误差=%+.1f/%.1fpx，方向误差=%s/%.1fdeg"
                 ),
                 NODE_NAME,
                 detection["frame_index"],
                 "是" if detection["full_visible"] else "否",
                 error_u,
-                self.center_tolerance_u_px,
+                self.heading_lateral_tolerance_px,
                 "未知" if heading_error is None else "{:+.1f}".format(
                     heading_error
                 ),
@@ -1284,7 +1285,7 @@ class Task3AcquireAreaTest(object):
         )
         rospy.loginfo(
             (
-                "%s：[箭头帧#%d] 慢速航向对齐第%d/%d帧有效："
+                "%s：[箭头帧#%d] 航向和横移联合对准第%d/%d帧有效："
                 "完整箭头[通过]，u误差=%+.1fpx，方向误差=%+.1fdeg"
             ),
             NODE_NAME,
@@ -1352,65 +1353,6 @@ class Task3AcquireAreaTest(object):
             error_u,
             error_v,
             arrow_heading_error,
-        )
-
-    def reset_base_tracking_progress(self, reason):
-        previous = self.base_tracking_frame_count
-        self.base_tracking_frame_count = 0
-        if previous > 0:
-            rospy.loginfo(
-                "%s：base_link前移视觉跟踪计数%d -> 0，原因=%s",
-                NODE_NAME,
-                previous,
-                reason,
-            )
-
-    def update_base_tracking_progress(self, detection, error_u, error_v):
-        heading_error = self.arrow_heading_error_deg()
-        tracking_ok = (
-            detection["full_visible"]
-            and heading_error is not None
-            and abs(error_u) <= self.center_tolerance_u_px
-            and abs(heading_error) <= self.yaw_tolerance_deg
-        )
-        if not tracking_ok:
-            self.reset_base_tracking_progress(
-                "完整箭头、左右位置或箭头航向未同时通过"
-            )
-            rospy.loginfo(
-                (
-                    "%s：[箭头帧#%d] base_link前移视觉跟踪未通过："
-                    "完整可见=%s，u误差=%+.1f/%.1fpx，方向误差=%s/%.1fdeg，"
-                    "v误差=%+.1fpx仅记录"
-                ),
-                NODE_NAME,
-                detection["frame_index"],
-                "是" if detection["full_visible"] else "否",
-                error_u,
-                self.center_tolerance_u_px,
-                "未知" if heading_error is None else "{:+.1f}".format(
-                    heading_error
-                ),
-                self.yaw_tolerance_deg,
-                error_v,
-            )
-            return
-        self.base_tracking_frame_count = min(
-            self.base_tracking_frame_count + 1,
-            self.center_stable_detection_count,
-        )
-        rospy.loginfo(
-            (
-                "%s：[箭头帧#%d] base_link前移视觉跟踪第%d/%d帧有效："
-                "u误差=%+.1fpx，方向误差=%+.1fdeg，v误差=%+.1fpx仅记录"
-            ),
-            NODE_NAME,
-            detection["frame_index"],
-            self.base_tracking_frame_count,
-            self.center_stable_detection_count,
-            error_u,
-            heading_error,
-            error_v,
         )
 
     def get_current_pose(self, context):
@@ -1678,62 +1620,11 @@ class Task3AcquireAreaTest(object):
             and self.latest_motion_state.state == MotionState.HOVER
         )
 
-    def actual_arrival_checks(self):
-        message = self.latest_motion_state
-        status = self.current_status
-        if message is None or status is None or self.target_depth is None:
-            return None
-        values = (
-            message.base_position_error,
-            message.yaw_error,
-            message.horizontal_speed,
-            message.yaw_rate,
-            status["depth"],
-        )
-        if not all(math.isfinite(value) for value in values):
-            return None
-        depth_error = abs(status["depth"] - self.target_depth)
-        return {
-            "position_error": abs(message.base_position_error),
-            "position_ok": (
-                abs(message.base_position_error)
-                <= self.arrival_position_tolerance
-            ),
-            "yaw_error_deg": abs(math.degrees(message.yaw_error)),
-            "yaw_ok": (
-                abs(math.degrees(message.yaw_error))
-                <= self.arrival_yaw_tolerance_deg
-            ),
-            "horizontal_speed": abs(message.horizontal_speed),
-            "speed_ok": (
-                abs(message.horizontal_speed)
-                <= self.arrival_max_horizontal_speed
-            ),
-            "yaw_rate_deg_s": abs(math.degrees(message.yaw_rate)),
-            "yaw_rate_ok": (
-                abs(math.degrees(message.yaw_rate))
-                <= self.arrival_max_yaw_rate_deg_s
-            ),
-            "depth_error": depth_error,
-            "depth_ok": depth_error <= self.max_depth_error,
-        }
-
-    def actual_arrival_satisfied(self):
-        checks = self.actual_arrival_checks()
-        return (
-            checks is not None
-            and checks["position_ok"]
-            and checks["yaw_ok"]
-            and checks["speed_ok"]
-            and checks["yaw_rate_ok"]
-            and checks["depth_ok"]
-        )
-
     def motion_arrived(self):
         return (
             self.motion_hover_fresh()
+            and self.latest_motion_state.startup_complete
             and self.goal_matches_motion_state()
-            and self.actual_arrival_satisfied()
         )
 
     def handle_motion_health(self):
@@ -1951,7 +1842,7 @@ class Task3AcquireAreaTest(object):
             rospy.loginfo_throttle(
                 self.log_interval,
                 (
-                    "%s：上一视觉小步尚未满足实际到达门槛，"
+                    "%s：上一视觉小步尚未收到当前目标对应的HOVER，"
                     "本帧只更新识别结果，不叠加新目标"
                 ),
                 NODE_NAME,
@@ -2043,7 +1934,9 @@ class Task3AcquireAreaTest(object):
         )
         return True
 
-    def update_fine_visual_goal(self, allow_forward, context):
+    def update_fine_visual_goal(
+        self, allow_forward, lateral_tolerance_px, context
+    ):
         detection = self.latest_detection
         if detection is None:
             return False
@@ -2062,7 +1955,7 @@ class Task3AcquireAreaTest(object):
                 self.fine_visual_max_step_m,
             )
         right_step = 0.0
-        if abs(error_u) > self.center_tolerance_u_px:
+        if abs(error_u) > lateral_tolerance_px:
             right_step = self.minimum_visual_step(
                 self.visual_lateral_sign
                 * self.fine_lateral_gain_m
@@ -2097,13 +1990,15 @@ class Task3AcquireAreaTest(object):
             rospy.loginfo(
                 (
                     "%s：[箭头帧#%d] 细对准已在本阶段容差内："
-                    "允许前后=%s，误差=(u=%+.1f,v=%+.1f)px，方向误差=%+.1fdeg"
+                    "允许前后=%s，误差=(u=%+.1f,v=%+.1f)px，"
+                    "横向死区=%.1fpx，方向误差=%+.1fdeg"
                 ),
                 NODE_NAME,
                 detection["frame_index"],
                 "是" if allow_forward else "否",
                 error_u,
                 error_v,
+                lateral_tolerance_px,
                 heading_error,
             )
             return True
@@ -2119,7 +2014,7 @@ class Task3AcquireAreaTest(object):
         rospy.loginfo(
             (
                 "%s：[箭头帧#%d] 细对准实时目标：完整箭头[通过]，"
-                "允许前后=%s，误差=(u=%+.1f,v=%+.1f)px，"
+                "允许前后=%s，误差=(u=%+.1f,v=%+.1f)px，横向死区=%.1fpx，"
                 "本体偏置=(前%+.3f,右%+.3f)m，"
                 "方向误差/航向小步=(%+.2f/%+.2f)deg，"
                 "map目标=(%.3f,%.3f, yaw=%.2fdeg)"
@@ -2129,6 +2024,7 @@ class Task3AcquireAreaTest(object):
             "是" if allow_forward else "否",
             error_u,
             error_v,
+            lateral_tolerance_px,
             forward_step,
             right_step,
             heading_error,
@@ -2136,93 +2032,6 @@ class Task3AcquireAreaTest(object):
             goal_x,
             goal_y,
             math.degrees(target_yaw),
-        )
-        return True
-
-    def update_base_tracking_goal(self):
-        detection = self.latest_detection
-        if detection is None or self.active_goal is None:
-            return False
-        if not self.fine_goal_update_ready(detection):
-            return True
-        error_u, error_v, normalized_u, unused_normalized_v = (
-            self.detection_center_errors(detection)
-        )
-        del unused_normalized_v
-        right_step = 0.0
-        if abs(error_u) > self.center_tolerance_u_px:
-            right_step = self.minimum_visual_step(
-                self.visual_lateral_sign
-                * self.fine_lateral_gain_m
-                * normalized_u,
-                self.fine_visual_min_step_m,
-                self.fine_visual_max_step_m,
-            )
-        heading_error = self.arrow_heading_error_deg()
-        if heading_error is None:
-            return False
-        yaw_step_deg = 0.0
-        if abs(heading_error) > self.yaw_tolerance_deg:
-            yaw_step_deg = clamp(
-                heading_error,
-                -self.fine_yaw_max_step_deg,
-                self.fine_yaw_max_step_deg,
-            )
-        if right_step == 0.0 and yaw_step_deg == 0.0:
-            self.last_visual_goal_frame = detection["frame_index"]
-            rospy.loginfo(
-                (
-                    "%s：[箭头帧#%d] base_link前移期间不改目标："
-                    "u/v误差=(%+.1f,%+.1f)px，方向误差=%+.1fdeg，均在控制容差内"
-                ),
-                NODE_NAME,
-                detection["frame_index"],
-                error_u,
-                error_v,
-                heading_error,
-            )
-            return True
-        current = self.get_current_pose("base_link前移期间实时视觉修正")
-        if current is None:
-            return False
-        current_yaw = yaw_from_quaternion(current.pose.orientation)
-        target_yaw = normalize_angle_rad(
-            current_yaw + math.radians(yaw_step_deg)
-        )
-        target_x = self.active_goal.pose.position.x
-        target_y = self.active_goal.pose.position.y
-        if right_step != 0.0:
-            target_x -= math.sin(current_yaw) * right_step
-            target_y += math.cos(current_yaw) * right_step
-        self.final_target_yaw = target_yaw
-        self.set_active_goal(
-            target_x,
-            target_y,
-            self.target_z,
-            target_yaw,
-            "base_link前移期间按最新完整箭头做慢速横向和航向修正",
-        )
-        self.last_visual_goal_frame = detection["frame_index"]
-        self.last_visual_goal_time = rospy.Time.now()
-        rospy.loginfo(
-            (
-                "%s：[箭头帧#%d] base_link前移实时修正："
-                "u/v误差=(%+.1f,%+.1f)px，右移修正=%+.3fm，"
-                "方向误差/航向修正=(%+.2f/%+.2f)deg，"
-                "map目标=(%.3f,%.3f,yaw=%.2fdeg)，"
-                "前后目标保持为已标定的%.3fm偏置"
-            ),
-            NODE_NAME,
-            detection["frame_index"],
-            error_u,
-            error_v,
-            right_step,
-            heading_error,
-            yaw_step_deg,
-            target_x,
-            target_y,
-            math.degrees(target_yaw),
-            self.base_link_forward_offset,
         )
         return True
 
@@ -2587,7 +2396,7 @@ class Task3AcquireAreaTest(object):
 
     def control_align_heading(self):
         if not self.fine_detection_available_within(
-            self.visual_loss_cancel_seconds, "慢速航向对准阶段"
+            self.visual_loss_cancel_seconds, "航向和横移联合对准阶段"
         ):
             full_age = self.full_direction_detection_age()
             if full_age is None or full_age > self.visual_loss_cancel_seconds:
@@ -2607,17 +2416,19 @@ class Task3AcquireAreaTest(object):
         if not self.direction_locked:
             rospy.loginfo_throttle(
                 self.log_interval,
-                "%s：慢速航向对准暂停，等待完整箭头方向重新稳定",
+                "%s：航向和横移联合对准暂停，等待完整箭头方向重新稳定",
                 NODE_NAME,
             )
             return
         self.update_fine_visual_goal(
-            False, "细对准第一段：禁止前后移动，实时慢速横移和转向"
+            False,
+            self.heading_lateral_tolerance_px,
+            "细对准第一段：禁止前后移动，实时慢速横移和转向",
         )
         rospy.loginfo_throttle(
             self.log_interval,
             (
-                "%s：慢速航向对准：确认=%d/%d帧，motion=%s，"
+                "%s：航向和横移联合对准：确认=%d/%d帧，motion=%s，"
                 "位置/航向误差=(%.3fm,%+.2fdeg)，目标匹配=%s"
             ),
             NODE_NAME,
@@ -2640,7 +2451,8 @@ class Task3AcquireAreaTest(object):
         self.last_visual_goal_time = None
         self.set_state(
             self.FINE_FORWARD_ALIGN,
-            "航向连续稳定且已停稳，开始保持实时方向并慢速前后居中",
+            "航向和水平中心连续稳定且控制器报告HOVER，"
+            "开始保持实时方向并慢速前后居中",
         )
 
     def control_fine_forward_align(self):
@@ -2670,7 +2482,9 @@ class Task3AcquireAreaTest(object):
             )
             return
         self.update_fine_visual_goal(
-            True, "细对准第二段：保持方向并慢速前后、左右居中"
+            True,
+            self.center_tolerance_u_px,
+            "细对准第二段：保持方向并慢速前后、左右居中",
         )
         rospy.loginfo_throttle(
             self.log_interval,
@@ -2730,75 +2544,31 @@ class Task3AcquireAreaTest(object):
         )
         self.set_state(
             self.MOVE_BASE_OVER_ARROW,
-            "等待base_link到达箭头上方、刹停并由mode4接管",
+            "固定前移目标已锁定；忽略后续视觉变化，等待到达后由mode4定点",
         )
-        self.base_tracking_frame_count = 0
-        self.last_visual_goal_frame = 0
-        self.last_visual_goal_time = None
 
     def control_move_base_over_arrow(self):
-        if not self.fine_detection_available_within(
-            self.visual_loss_cancel_seconds, "base_link前移视觉跟踪阶段"
-        ):
-            full_age = self.full_direction_detection_age()
-            if full_age is None or full_age > self.visual_loss_cancel_seconds:
-                self.begin_cancel(
-                    self.WAIT_FOR_ARROW,
-                    (
-                        "base_link前移时完整箭头方向丢失{}，超过{:.2f}s阈值，"
-                        "立即刹停并重新识别"
-                    ).format(
-                        "未知" if full_age is None else "{:.2f}s".format(
-                            full_age
-                        ),
-                        self.visual_loss_cancel_seconds,
-                    ),
-                )
-            return
-        if not self.direction_locked:
-            rospy.loginfo_throttle(
-                self.log_interval,
-                "%s：base_link前移目标保持，等待完整箭头方向重新稳定",
-                NODE_NAME,
-            )
-            return
-        self.update_base_tracking_goal()
-        rospy.loginfo_throttle(
-            self.log_interval,
-            "%s：base_link前移：视觉跟踪=%d/%d帧，motion=%s，位置误差=%.3fm",
-            NODE_NAME,
-            self.base_tracking_frame_count,
-            self.center_stable_detection_count,
-            self.current_motion_state_name(),
-            self.latest_motion_state.position_error,
-        )
-        if (
-            self.base_tracking_frame_count >= self.center_stable_detection_count
-            and self.motion_arrived()
-        ):
+        if self.motion_arrived():
             self.final_hold_stable_started = None
             self.set_state(
                 self.FINAL_HOLD,
-                "前移目标已进入HOVER，开始最终稳定保持",
+                "固定{:.2f}米前移目标已到达并进入HOVER，"
+                "开始最终稳定保持".format(self.base_link_forward_offset),
             )
             return
-        if self.base_tracking_frame_count >= self.center_stable_detection_count:
-            self.log_arrival_gate("视觉跟踪已稳定，等待base_link前移目标完成")
+        self.log_arrival_gate(
+            "执行一次性固定前移目标；此阶段视觉仅记录，不改目标也不触发回退"
+        )
 
     def control_final_hold(self):
         now = rospy.Time.now()
-        status = self.get_recent_status("最终深度确认")
         hover_ok = self.motion_arrived()
-        depth_error = None
-        depth_ok = False
-        if status is not None and self.target_depth is not None:
-            depth_error = status["depth"] - self.target_depth
-            depth_ok = abs(depth_error) <= self.max_depth_error
-        if hover_ok and depth_ok:
+        if hover_ok:
             if self.final_hold_stable_started is None:
                 self.final_hold_stable_started = now
                 rospy.loginfo(
-                    "%s：最终HOVER和深度均通过，开始累计%.1fs",
+                    "%s：当前固定目标已由motion_supervisor报告HOVER，"
+                    "开始累计%.1fs",
                     NODE_NAME,
                     self.final_hold_seconds,
                 )
@@ -2808,14 +2578,12 @@ class Task3AcquireAreaTest(object):
             rospy.loginfo_throttle(
                 self.log_interval,
                 (
-                    "%s：最终保持%.1f/%.1fs；HOVER[通过]；"
-                    "深度误差=%.3f<=%.3f[通过]"
+                    "%s：最终保持%.1f/%.1fs；"
+                    "当前目标对应的新鲜HOVER[通过]"
                 ),
                 NODE_NAME,
                 stable_elapsed,
                 self.final_hold_seconds,
-                abs(depth_error),
-                self.max_depth_error,
             )
             if stable_elapsed >= self.final_hold_seconds:
                 self.finish_task(
@@ -2832,21 +2600,7 @@ class Task3AcquireAreaTest(object):
                     NODE_NAME,
                 )
             self.final_hold_stable_started = None
-            rospy.loginfo_throttle(
-                self.log_interval,
-                (
-                    "%s：最终保持门槛：motion=%s，HOVER目标匹配[%s]；"
-                    "深度误差=%s<=%.3f[%s]"
-                ),
-                NODE_NAME,
-                self.current_motion_state_name(),
-                "通过" if hover_ok else "未通过",
-                "未知" if depth_error is None else "{:.3f}".format(
-                    abs(depth_error)
-                ),
-                self.max_depth_error,
-                "通过" if depth_ok else "未通过",
-            )
+            self.log_arrival_gate("最终保持等待当前目标对应的新鲜HOVER")
         if (now - self.state_started).to_sec() >= self.final_hold_timeout:
             self.finish_task(
                 False,
@@ -2869,10 +2623,10 @@ class Task3AcquireAreaTest(object):
         if message is None:
             return
         fresh = self.motion_state_is_fresh()
+        startup_complete = bool(message.startup_complete)
         hover = message.state == MotionState.HOVER
         goal_match = self.goal_matches_motion_state()
         goal_errors = self.goal_match_errors()
-        actual_checks = self.actual_arrival_checks()
         if goal_errors is None:
             goal_error_text = "未知（反馈goal坐标系={}）".format(
                 message.goal.header.frame_id or "空"
@@ -2889,43 +2643,26 @@ class Task3AcquireAreaTest(object):
                 goal_errors[2],
                 self.goal_match_yaw_tolerance_deg,
             )
-        if actual_checks is None:
-            actual_error_text = "未知"
-            actual_ok = False
-        else:
-            actual_ok = self.actual_arrival_satisfied()
-            actual_error_text = (
-                "位置{:.3f}/<={:.3f}m，航向{:.2f}/<={:.2f}deg，"
-                "速度{:.3f}/<={:.3f}m/s，yaw_rate{:.2f}/<={:.2f}deg/s，"
-                "深度{:.3f}/<={:.3f}m"
-            ).format(
-                actual_checks["position_error"],
-                self.arrival_position_tolerance,
-                actual_checks["yaw_error_deg"],
-                self.arrival_yaw_tolerance_deg,
-                actual_checks["horizontal_speed"],
-                self.arrival_max_horizontal_speed,
-                actual_checks["yaw_rate_deg_s"],
-                self.arrival_max_yaw_rate_deg_s,
-                actual_checks["depth_error"],
-                self.max_depth_error,
-            )
         rospy.loginfo_throttle(
             self.log_interval,
             (
-                "%s：%s：反馈新鲜[%s]，state=%s/HOVER[%s]，"
-                "目标一致[%s]，目标差值=(%s)，实际到达[%s]，"
-                "实际门槛=(%s)，控制器输出=(%d,%d,%d)"
+                "%s：%s：反馈新鲜[%s]，startup_complete[%s]，"
+                "state=%s/HOVER[%s]，当前目标一致[%s]，目标差值=(%s)；"
+                "控制器诊断=(位置误差%.3fm，航向误差%+.2fdeg，"
+                "速度%.3fm/s，yaw_rate%+.2fdeg/s，输出=%d,%d,%d)"
             ),
             NODE_NAME,
             context,
             "通过" if fresh else "未通过",
+            "通过" if startup_complete else "未通过",
             self.current_motion_state_name(),
             "通过" if hover else "未通过",
             "通过" if goal_match else "未通过",
             goal_error_text,
-            "通过" if actual_ok else "未通过",
-            actual_error_text,
+            message.base_position_error,
+            math.degrees(message.yaw_error),
+            message.horizontal_speed,
+            math.degrees(message.yaw_rate),
             message.tx,
             message.ty,
             message.mz,
@@ -3011,6 +2748,7 @@ class Task3AcquireAreaTest(object):
 
 if __name__ == "__main__":
     rospy.init_node(NODE_NAME)
+    configure_task_file_logging("subtask1")
     try:
         Task3AcquireAreaTest().run()
     except rospy.ROSInterruptException:

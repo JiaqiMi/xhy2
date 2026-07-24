@@ -10,6 +10,9 @@
     <!-- rate：任务循环和绝对目标重复发布频率。调大只提高任务刷新率，不提高底层控制频率。 -->
     <arg name="rate" default="5.0" />
 
+    <!-- 文件日志保存目录；文件名由节点自动生成为subtask1_年月日_时分秒_微秒.log。 -->
+    <arg name="log_directory" default="$(env HOME)/.ros/auv_logs/task3" />
+
     <!--
       log_interval：普通状态日志节流周期；调小可更密集观察运动状态。
       warning_log_interval：TF、模型或反馈异常日志节流周期；调小便于短时排错。
@@ -78,7 +81,7 @@
     <arg name="goal_match_depth_tolerance" default="0.03" />
     <arg name="goal_match_yaw_tolerance_deg" default="2.0" />
 
-    <!-- initial_hover_seconds：固定启动点满足真实到达门槛后，需要连续保持的时间。 -->
+    <!-- initial_hover_seconds：固定启动点收到当前目标对应的HOVER后，需要连续保持的时间。 -->
     <arg name="initial_hover_seconds" default="10.0" />
     <!--
       固定点悬停完成后的绝对路径：前0.5m，第一层左右各0.2m并回中，
@@ -115,7 +118,8 @@
     <arg name="center_tolerance_v_px" default="50.0" />
 
     <!--
-      粗对准根据v/u误差生成前后、左右小步，并等待每一步真实到达后再发下一步。
+      粗对准根据v/u误差生成前后、左右小步，并等待motion_supervisor报告HOVER后
+      再发下一步。
       visual_forward/lateral_gain_m调大对应方向响应更快；
       visual_min/max_step_m限制非零步长范围，visual_goal_min_interval限制发目标频率。
     -->
@@ -153,9 +157,10 @@
     <arg name="yaw_tolerance_deg" default="10.0" />
 
     <!--
-      细对准完成后，沿机器人当前前方计算0.35米的map绝对目标，使base_link
-      移动到箭头上方。前移期间仍持续读取完整箭头的位置和方向，只对最终目标
-      做慢速左右和航向修正；该偏置需按相机与base_link实际安装位置现场标定。
+      细对准完成后，沿机器人当前前方计算一次0.35米的map绝对目标，使base_link
+      移动到箭头上方。目标一旦下发就保持不变；前移期间视觉消息仅用于日志，
+      不再修改位置或航向，也不会因箭头离开画面而取消或回退。
+      该偏置需按相机与base_link实际安装位置现场标定。
     -->
     <arg name="base_link_forward_offset" default="0.35" />
 
@@ -168,15 +173,13 @@
       并将motion_supervisor目标z限制为不大于-min_ground_clearance。
       本保护不再读取/status/auv.pose.altitude。
     -->
-    <!-- max_depth_error：任务判定真实到达和最终悬停时允许的最大深度误差。 -->
-    <arg name="max_depth_error" default="0.08" />
     <arg name="min_ground_clearance" default="0.40" />
     <!-- 候选安全z与当前目标z相差达到该值才改写目标，避免传感器噪声频繁抢占。 -->
     <arg name="ground_clearance_goal_update_threshold" default="0.01" />
     <!--
-      HOVER只表示控制器已完成mode4接管；任务继续检查机器人真实误差。
-      四项门槛依次是base_link水平误差、航向误差、水平速度和航向角速度上限；
-      调小判定更严格，但不会修改motion_supervisor内部控制参数。
+      到达只读取/motion/state中的新鲜HOVER，并确认反馈goal是当前任务目标。
+      HOVER内部的位置、航向、速度、角速度和mode4接管门槛统一由motion_supervisor负责，
+      本任务不再设置第二套到达阈值。
     -->
     <arg name="arrival_position_tolerance" default="0.05" />
     <arg name="arrival_yaw_tolerance_deg" default="5.0" />
@@ -203,6 +206,7 @@
           output="screen"
           required="true">
         <param name="rate" type="double" value="$(arg rate)" />
+        <param name="log_directory" type="string" value="$(arg log_directory)" />
         <param name="log_interval" type="double" value="$(arg log_interval)" />
         <param name="warning_log_interval" type="double" value="$(arg warning_log_interval)" />
         <param name="arrow_topic" type="string" value="$(arg arrow_topic)" />
@@ -243,6 +247,7 @@
         <param name="target_center_v_ratio" type="double" value="$(arg target_center_v_ratio)" />
         <param name="center_tolerance_u_px" type="double" value="$(arg center_tolerance_u_px)" />
         <param name="center_tolerance_v_px" type="double" value="$(arg center_tolerance_v_px)" />
+        <param name="heading_lateral_tolerance_px" type="double" value="$(arg heading_lateral_tolerance_px)" />
         <param name="visual_forward_gain_m" type="double" value="$(arg visual_forward_gain_m)" />
         <param name="visual_lateral_gain_m" type="double" value="$(arg visual_lateral_gain_m)" />
         <param name="visual_max_step_m" type="double" value="$(arg visual_max_step_m)" />
@@ -264,13 +269,8 @@
 
         <param name="status_topic" type="string" value="$(arg status_topic)" />
         <param name="status_timeout" type="double" value="$(arg status_timeout)" />
-        <param name="max_depth_error" type="double" value="$(arg max_depth_error)" />
         <param name="min_ground_clearance" type="double" value="$(arg min_ground_clearance)" />
         <param name="ground_clearance_goal_update_threshold" type="double" value="$(arg ground_clearance_goal_update_threshold)" />
-        <param name="arrival_position_tolerance" type="double" value="$(arg arrival_position_tolerance)" />
-        <param name="arrival_yaw_tolerance_deg" type="double" value="$(arg arrival_yaw_tolerance_deg)" />
-        <param name="arrival_max_horizontal_speed" type="double" value="$(arg arrival_max_horizontal_speed)" />
-        <param name="arrival_max_yaw_rate_deg_s" type="double" value="$(arg arrival_max_yaw_rate_deg_s)" />
         <param name="final_hold_seconds" type="double" value="$(arg final_hold_seconds)" />
         <param name="final_hold_timeout" type="double" value="$(arg final_hold_timeout)" />
     </node>
