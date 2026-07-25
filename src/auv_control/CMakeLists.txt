@@ -196,6 +196,7 @@ catkin_install_python(PROGRAMS
   scripts/data_saver.py
   scripts/keyboard_control.py
   scripts/state_control.py
+  scripts/task3_final.py
   scripts/task_v2_common.py
   scripts/task1_v2.py
   scripts/task2_v2.py
@@ -222,7 +223,6 @@ catkin_install_python(PROGRAMS
   test/test_task3_1_acquire_area.py
   test/test_task3_1_2_3_sequence.py
   test/test_task3_2_get_task.py
-  test/test_task3_2_3_sequence.py
   test/test_task3_3_inspect_and_drop.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

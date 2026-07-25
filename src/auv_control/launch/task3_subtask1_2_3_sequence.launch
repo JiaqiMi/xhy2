@@ -178,7 +178,7 @@
       在task3_subtask1_acquire_area.launch中调整。
       子任务2的悬停、3/10帧、置信度、识别超时、亮灯和转向参数，
       在task3_subtask2_get_task.launch中调整。
-      子任务3的颜色、识别阈值、搜索距离、之字形和细对准参数，
+      子任务3的颜色、识别阈值、搜索距离和细对准参数，
       在task3_subtask3_inspect_and_drop.launch中调整。
     -->
 

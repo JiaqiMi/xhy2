@@ -1,0 +1,126 @@
+<launch>
+    <!--
+      任务3整合版：三个模型一次启动并常驻，task3_final.py在一个ROS节点内
+      顺序执行第一次箭头、ArUco、第二次箭头和方框投放。
+
+      子任务和整合调度的全部调优参数统一在config/task3.yaml修改。
+      本launch只负责加载配置、启动模型以及连接相机、Web和ROS话题。
+    -->
+
+    <arg name="task3_config_file"
+         default="$(find auv_control)/config/task3.yaml" />
+
+    <!-- 外部已经启动相机和图像分割节点时保持false。 -->
+    <arg name="start_fisheye_driver" default="false" />
+    <arg name="start_down_camera" default="false" />
+    <arg name="start_down_splitter" default="false" />
+
+    <!-- 三个模型由本launch一次性启动，任务阶段切换时不关闭。 -->
+    <arg name="start_arrow_model" default="true" />
+    <arg name="start_aruco_model" default="true" />
+    <arg name="start_rectangle_model" default="true" />
+    <arg name="start_arrow_web" default="false" />
+    <arg name="start_aruco_web" default="false" />
+    <arg name="start_rectangle_web" default="false" />
+    <arg name="arrow_web_port" default="8083" />
+    <arg name="aruco_web_port" default="8082" />
+    <arg name="rectangle_web_port" default="8080" />
+
+    <!-- 模型、控制器、状态和执行器话题属于进程连接，不属于调优参数。 -->
+    <arg name="arrow_topic" default="/vision/arrow/direction" />
+    <arg name="aruco_topic" default="/vision/aruco/target_message" />
+    <arg name="aruco_web_detection_topic"
+         default="/vision/aruco/detections" />
+    <arg name="aruco_web_pose_topic"
+         default="/vision/aruco/pose" />
+    <arg name="rectangle_target_topic"
+         default="/vision/rectangle/target_message" />
+    <arg name="rectangle_detection_topic"
+         default="/vision/rectangle/detections" />
+    <arg name="rectangle_pose_topic"
+         default="/vision/rectangle/pose" />
+    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
+    <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
+    <arg name="motion_state_topic" default="/motion/state" />
+    <arg name="status_topic" default="/status/auv" />
+    <arg name="actuator_topic" default="/cmd/actuator" />
+    <arg name="sequence_finished_topic"
+         default="/task3_final/finished" />
+
+    <!-- 一次加载四个节点的参数命名空间。 -->
+    <rosparam command="load" file="$(arg task3_config_file)" />
+
+    <!-- 箭头模型共享外部下视相机，不重复启动相机和分割节点。 -->
+    <group if="$(arg start_arrow_model)"
+           ns="task3_final/arrow_pipeline">
+        <remap from="/vision/arrow/direction"
+               to="$(arg arrow_topic)" />
+        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
+            <arg name="start_camera" value="false" />
+            <arg name="start_splitter" value="false" />
+            <arg name="start_web" value="$(arg start_arrow_web)" />
+            <arg name="start_depth" value="true" />
+            <arg name="web_port" value="$(arg arrow_web_port)" />
+        </include>
+    </group>
+
+    <!-- 鱼眼ArUco模型。 -->
+    <group if="$(arg start_aruco_model)"
+           ns="task3_final/aruco_pipeline">
+        <include file="$(find stereo_depth)/launch/test_aruco_detection_fisheye.launch">
+            <arg name="start_driver" value="$(arg start_fisheye_driver)" />
+            <arg name="target_output_topic" value="$(arg aruco_topic)" />
+            <arg name="web_detection_topic"
+                 value="$(arg aruco_web_detection_topic)" />
+            <arg name="web_pose_topic"
+                 value="$(arg aruco_web_pose_topic)" />
+            <arg name="start_web" value="$(arg start_aruco_web)" />
+            <arg name="web_port" value="$(arg aruco_web_port)" />
+        </include>
+    </group>
+
+    <!-- 彩色方框模型。 -->
+    <group if="$(arg start_rectangle_model)">
+        <remap from="/vision/rectangle/target_message"
+               to="$(arg rectangle_target_topic)" />
+        <remap from="/vision/rectangle/detections"
+               to="$(arg rectangle_detection_topic)" />
+        <remap from="/vision/rectangle/pose"
+               to="$(arg rectangle_pose_topic)" />
+        <include file="$(find stereo_depth)/launch/test_rectangles_detection.launch">
+            <arg name="start_camera" value="$(arg start_down_camera)" />
+            <arg name="start_splitter" value="$(arg start_down_splitter)" />
+            <arg name="start_web" value="$(arg start_rectangle_web)" />
+            <arg name="web_port" value="$(arg rectangle_web_port)" />
+        </include>
+    </group>
+
+    <!--
+      required=true：完整任务结束后关闭本launch启动的三个模型。
+      节点内只覆盖话题连接；调度和子任务参数全部来自task3.yaml。
+    -->
+    <node pkg="auv_control"
+          type="task3_final.py"
+          name="task3_final"
+          output="screen"
+          required="true">
+        <param name="arrow_topic" type="string"
+               value="$(arg arrow_topic)" />
+        <param name="aruco_topic" type="string"
+               value="$(arg aruco_topic)" />
+        <param name="rectangle_topic" type="string"
+               value="$(arg rectangle_detection_topic)" />
+        <param name="motion_goal_topic" type="string"
+               value="$(arg motion_goal_topic)" />
+        <param name="motion_cancel_topic" type="string"
+               value="$(arg motion_cancel_topic)" />
+        <param name="motion_state_topic" type="string"
+               value="$(arg motion_state_topic)" />
+        <param name="status_topic" type="string"
+               value="$(arg status_topic)" />
+        <param name="actuator_topic" type="string"
+               value="$(arg actuator_topic)" />
+        <param name="sequence_finished_topic" type="string"
+               value="$(arg sequence_finished_topic)" />
+    </node>
+</launch>

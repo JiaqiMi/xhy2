@@ -117,9 +117,9 @@ DEFAULT_AUTO_INITIAL_HOVER_SECONDS = 10.0
 DEFAULT_AUTO_SEARCH_FIRST_FORWARD_DISTANCE = 0.30
 DEFAULT_AUTO_SEARCH_SECOND_FORWARD_DISTANCE = 0.20
 DEFAULT_AUTO_SEARCH_THIRD_FORWARD_DISTANCE = 0.10
-DEFAULT_AUTO_FIRST_SEGMENT_ZIGZAG_ENABLED = False
 DEFAULT_AUTO_SEARCH_LEFT_DISTANCE = 0.20
 DEFAULT_AUTO_SEARCH_RIGHT_DISTANCE = 0.40
+DEFAULT_AUTO_COLOR_FAST_SEARCH_ENABLED = True
 DEFAULT_AUTO_VISUAL_FORWARD_GAIN_M = 0.10
 DEFAULT_AUTO_VISUAL_LATERAL_GAIN_M = 0.10
 DEFAULT_AUTO_VISUAL_MIN_STEP_M = 0.005
@@ -145,6 +145,10 @@ DEFAULT_WARNING_LOG_INTERVAL = 2.0
 DEFAULT_HOLD_SECONDS = 1.0
 DEFAULT_OPEN_SECONDS = 3.0
 DEFAULT_CLOSE_SECONDS = 0.0
+DEFAULT_POST_DROP_MOTION_ENABLED = True
+DEFAULT_POST_DROP_TURN_ANGLE_DEG = 90.0
+DEFAULT_POST_DROP_FORWARD_DISTANCE = 0.50
+DEFAULT_POST_DROP_STEP_TIMEOUT = 90.0
 
 # 执行器参数。
 DEFAULT_ACTUATOR_TOPIC = "/cmd/actuator"
@@ -165,6 +169,8 @@ class Task3InspectAndDropTest:
     HOLD_BEFORE_ACTION = 3
     OPEN_CLAMP = 4
     CLOSE_CLAMP = 5
+    POST_DROP_TURN = 6
+    POST_DROP_FORWARD = 7
 
     STATE_NAMES = {
         WAIT_FOR_TARGET: "等待目标颜色方框",
@@ -173,6 +179,8 @@ class Task3InspectAndDropTest:
         HOLD_BEFORE_ACTION: "识别确认后保持",
         OPEN_CLAMP: "打开夹爪",
         CLOSE_CLAMP: "关闭夹爪",
+        POST_DROP_TURN: "投放后左转",
+        POST_DROP_FORWARD: "投放后向前离场",
     }
 
     SEARCH_STEP_NAMES = {
@@ -180,9 +188,10 @@ class Task3InspectAndDropTest:
         "forward": "向前移动",
         "left": "向左横移",
         "right": "向右横移",
-        "zigzag_left": "之字形向前并左移",
-        "zigzag_right": "之字形向前并右移",
-        "zigzag_center": "之字形向前并回中线",
+        "observe_center": "中间位置颜色观察",
+        "observe_left": "左侧位置颜色观察",
+        "observe_inferred_left": "推断左侧目标复核",
+        "observe_inferred_right": "推断右侧目标复核",
     }
 
     MOTION_STATE_NAMES = {
@@ -278,6 +287,22 @@ class Task3InspectAndDropTest:
         self.close_seconds = float(
             rospy.get_param("~close_seconds", DEFAULT_CLOSE_SECONDS)
         )
+        self.post_drop_motion_enabled = bool(rospy.get_param(
+            "~post_drop_motion_enabled",
+            DEFAULT_POST_DROP_MOTION_ENABLED,
+        ))
+        self.post_drop_turn_angle_deg = float(rospy.get_param(
+            "~post_drop_turn_angle_deg",
+            DEFAULT_POST_DROP_TURN_ANGLE_DEG,
+        ))
+        self.post_drop_forward_distance = float(rospy.get_param(
+            "~post_drop_forward_distance",
+            DEFAULT_POST_DROP_FORWARD_DISTANCE,
+        ))
+        self.post_drop_step_timeout = float(rospy.get_param(
+            "~post_drop_step_timeout",
+            DEFAULT_POST_DROP_STEP_TIMEOUT,
+        ))
 
         self.motion_goal_topic = str(rospy.get_param(
             "~motion_goal_topic", DEFAULT_MOTION_GOAL_TOPIC
@@ -350,15 +375,15 @@ class Task3InspectAndDropTest:
             "~auto_search_third_forward_distance",
             DEFAULT_AUTO_SEARCH_THIRD_FORWARD_DISTANCE,
         ))
-        self.auto_first_segment_zigzag_enabled = bool(rospy.get_param(
-            "~auto_first_segment_zigzag_enabled",
-            DEFAULT_AUTO_FIRST_SEGMENT_ZIGZAG_ENABLED,
-        ))
         self.auto_search_left_distance = float(rospy.get_param(
             "~auto_search_left_distance", DEFAULT_AUTO_SEARCH_LEFT_DISTANCE
         ))
         self.auto_search_right_distance = float(rospy.get_param(
             "~auto_search_right_distance", DEFAULT_AUTO_SEARCH_RIGHT_DISTANCE
+        ))
+        self.auto_color_fast_search_enabled = bool(rospy.get_param(
+            "~auto_color_fast_search_enabled",
+            DEFAULT_AUTO_COLOR_FAST_SEARCH_ENABLED,
         ))
         self.auto_visual_forward_gain_m = float(rospy.get_param(
             "~auto_visual_forward_gain_m", DEFAULT_AUTO_VISUAL_FORWARD_GAIN_M
@@ -478,6 +503,8 @@ class Task3InspectAndDropTest:
         self.last_model_message_time = None
         self.last_target_time = None
         self.detection_frame_window = []
+        self.color_scene_frame_window = []
+        self.smart_search_first_color = None
         self.hover_confirmation_ready = False
         self.hover_confirmation_hover_at = None
         self.hover_confirmation_started_at = None
@@ -501,28 +528,7 @@ class Task3InspectAndDropTest:
         self.last_visual_goal_time = None
         self.visual_center_hold_requested = False
         self.visual_stop_locked = False
-        if self.auto_first_segment_zigzag_enabled:
-            zigzag_forward_step = (
-                self.auto_search_first_forward_distance / 3.0
-            )
-            first_segment_steps = [
-                ("zigzag_left", zigzag_forward_step),
-                ("zigzag_right", zigzag_forward_step),
-                (
-                    "zigzag_center",
-                    self.auto_search_first_forward_distance
-                    - 2.0 * zigzag_forward_step,
-                ),
-            ]
-        else:
-            first_segment_steps = [
-                ("forward", self.auto_search_first_forward_distance),
-                ("left", self.auto_search_left_distance),
-                ("right", self.auto_search_right_distance),
-            ]
-        self.auto_search_plan = [
-            ("hover", self.auto_initial_hover_seconds),
-        ] + first_segment_steps + [
+        self.fallback_search_tail = [
             ("forward", self.auto_search_second_forward_distance),
             ("left", self.auto_search_left_distance),
             ("right", self.auto_search_right_distance),
@@ -530,6 +536,18 @@ class Task3InspectAndDropTest:
             ("left", self.auto_search_left_distance),
             ("right", self.auto_search_right_distance),
         ]
+        self.auto_search_plan = [
+            ("hover", self.auto_initial_hover_seconds),
+            ("forward", self.auto_search_first_forward_distance),
+        ]
+        if self.auto_color_fast_search_enabled:
+            self.auto_search_plan.append(("observe_center", 0.0))
+        else:
+            self.auto_search_plan.extend([
+                ("left", self.auto_search_left_distance),
+                ("right", self.auto_search_right_distance),
+            ])
+            self.auto_search_plan.extend(self.fallback_search_tail)
         self.auto_search_index = 0
         self.auto_search_step_started = None
         self.auto_search_step_goal = None
@@ -538,6 +556,7 @@ class Task3InspectAndDropTest:
         self.status_hold_depth = None
         self.status_hold_yaw_deg = None
         self.auto_action_hold_position = None
+        self.post_drop_target_yaw = None
         self.last_actuator_command = None
         self.finished = False
 
@@ -633,11 +652,22 @@ class Task3InspectAndDropTest:
             rospy.loginfo(
                 (
                     "%s：自动动作时序：居中确认后同时开灯和打开夹爪，"
-                    "悬停=%.1fs，然后关闭夹爪、熄灯，结束前确认=%.1fs"
+                    "悬停=%.1fs，然后关闭夹爪、熄灯，关闭确认=%.1fs"
                 ),
                 NODE_NAME,
                 self.open_seconds,
                 self.close_seconds,
+            )
+            rospy.loginfo(
+                (
+                    "%s：投放后离场：启用=%s，左转=%.1fdeg，"
+                    "随后前进=%.2fm，每一步到达超时=%.1fs"
+                ),
+                NODE_NAME,
+                "是" if self.post_drop_motion_enabled else "否",
+                self.post_drop_turn_angle_deg,
+                self.post_drop_forward_distance,
+                self.post_drop_step_timeout,
             )
             rospy.loginfo(
                 (
@@ -709,13 +739,12 @@ class Task3InspectAndDropTest:
             )
             rospy.loginfo(
                 (
-                    "%s：搜索顺序：悬停%.1fs；第一段之字形=%s，"
-                    "第一段总前进%.2fm；第二段前进%.2fm后左右搜索；"
+                    "%s：搜索顺序：悬停%.1fs；第一段直行%.2fm后进行快速颜色判定；"
+                    "第二段前进%.2fm后左右搜索；"
                     "第三段前进%.2fm后左右搜索"
                 ),
                 NODE_NAME,
                 self.auto_initial_hover_seconds,
-                "开启" if self.auto_first_segment_zigzag_enabled else "关闭",
                 self.auto_search_first_forward_distance,
                 self.auto_search_second_forward_distance,
                 self.auto_search_third_forward_distance,
@@ -728,6 +757,17 @@ class Task3InspectAndDropTest:
                 NODE_NAME,
                 self.auto_search_left_distance,
                 self.auto_search_right_distance,
+            )
+            rospy.loginfo(
+                (
+                    "%s：三色方框快速搜索=%s；每个观察位置使用最近%d帧中的"
+                    "%d帧一致结论。中间识别到非目标单色后按原步长左移，"
+                    "两种非目标颜色可直接推断缺失目标方向；推断失败后继续原搜索路径"
+                ),
+                NODE_NAME,
+                "开启" if self.auto_color_fast_search_enabled else "关闭",
+                self.stable_detection_window_size,
+                self.auto_search_stable_detection_count,
             )
         else:
             rospy.loginfo(
@@ -943,6 +983,20 @@ class Task3InspectAndDropTest:
 
         if not self.auto_enabled:
             return
+        if self.post_drop_motion_enabled:
+            if (
+                self.post_drop_turn_angle_deg <= 0.0
+                or self.post_drop_turn_angle_deg >= 180.0
+            ):
+                raise ValueError(
+                    "post_drop_turn_angle_deg 必须在0到180度之间"
+                )
+            if self.post_drop_forward_distance <= 0.0:
+                raise ValueError(
+                    "post_drop_forward_distance 必须大于0"
+                )
+            if self.post_drop_step_timeout <= 0.0:
+                raise ValueError("post_drop_step_timeout 必须大于0")
         if self.auto_search_stable_detection_count < 1:
             raise ValueError(
                 "auto_search_stable_detection_count 必须大于等于 1"
@@ -994,6 +1048,15 @@ class Task3InspectAndDropTest:
         )
         if min(search_distances) <= 0.0:
             raise ValueError("自动搜索的前进和横移距离必须大于 0")
+        if (
+            self.auto_color_fast_search_enabled
+            and self.auto_search_right_distance
+            <= self.auto_search_left_distance
+        ):
+            raise ValueError(
+                "开启三色方框快速搜索时，auto_search_right_distance 必须大于 "
+                "auto_search_left_distance，才能从中间位置计算右侧定步长"
+            )
         if self.auto_initial_hover_seconds < 0.0:
             raise ValueError("auto_initial_hover_seconds 不能小于 0")
         if min(
@@ -1120,6 +1183,126 @@ class Task3InspectAndDropTest:
             reason,
         )
         return self.active_goal
+
+    def start_post_drop_turn(self):
+        source_goal = self.active_goal
+        if source_goal is None:
+            source_goal = self.get_current_pose("生成投放后左转目标")
+        if source_goal is None:
+            return False
+
+        start_yaw = yaw_from_quaternion(source_goal.pose.orientation)
+        self.post_drop_target_yaw = normalize_angle_rad(
+            start_yaw - math.radians(self.post_drop_turn_angle_deg)
+        )
+        self.set_active_goal(
+            source_goal.pose.position.x,
+            source_goal.pose.position.y,
+            self.auto_hold_z,
+            self.post_drop_target_yaw,
+            "投放完成后原地左转%.1f度"
+            % self.post_drop_turn_angle_deg,
+        )
+        rospy.loginfo(
+            (
+                "%s：[投放后离场] 开始原地左转%.1f度，"
+                "保持位置=(%.3f,%.3f,%.3f)，航向=%.1fdeg -> %.1fdeg"
+            ),
+            NODE_NAME,
+            self.post_drop_turn_angle_deg,
+            self.active_goal.pose.position.x,
+            self.active_goal.pose.position.y,
+            self.active_goal.pose.position.z,
+            math.degrees(start_yaw),
+            math.degrees(self.post_drop_target_yaw),
+        )
+        self.set_state(
+            self.POST_DROP_TURN,
+            "夹爪关闭并熄灯后开始离场左转",
+        )
+        return True
+
+    def start_post_drop_forward(self):
+        if self.active_goal is None or self.post_drop_target_yaw is None:
+            return False
+        turn_goal = copy.deepcopy(self.active_goal)
+        self.auto_hold_yaw = self.post_drop_target_yaw
+        self.set_body_offset_goal(
+            turn_goal,
+            self.post_drop_forward_distance,
+            0.0,
+            "投放后左转完成，沿新航向前进%.2fm"
+            % self.post_drop_forward_distance,
+        )
+        rospy.loginfo(
+            (
+                "%s：[投放后离场] 左转已由HOVER确认，"
+                "开始沿新航向前进%.2fm，目标=(%.3f,%.3f,%.3f)"
+            ),
+            NODE_NAME,
+            self.post_drop_forward_distance,
+            self.active_goal.pose.position.x,
+            self.active_goal.pose.position.y,
+            self.active_goal.pose.position.z,
+        )
+        self.set_state(
+            self.POST_DROP_FORWARD,
+            "左转目标已到达，开始沿新航向前进",
+        )
+        return True
+
+    def post_drop_step_timed_out(self, step_name):
+        elapsed = self.state_elapsed()
+        if elapsed < self.post_drop_step_timeout:
+            return False
+        self.finish_task(
+            False,
+            "%s超过%.1fs仍未到达HOVER"
+            % (step_name, self.post_drop_step_timeout),
+        )
+        return True
+
+    def handle_post_drop_turn(self):
+        self.publish_actuator(self.clamp_closed, "off")
+        if self.post_drop_step_timed_out("投放后左转"):
+            return
+        if self.motion_arrived():
+            if not self.start_post_drop_forward():
+                self.finish_task(False, "无法生成投放后前进目标")
+            return
+        rospy.loginfo_throttle(
+            self.log_interval,
+            "%s：[投放后离场] 左转进行中 %.1f/%.1fs，motion=%s",
+            NODE_NAME,
+            self.state_elapsed(),
+            self.post_drop_step_timeout,
+            self.current_motion_state_name(),
+        )
+        self.log_arrival_gate("投放后左转到达判定")
+
+    def handle_post_drop_forward(self):
+        self.publish_actuator(self.clamp_closed, "off")
+        if self.post_drop_step_timed_out("投放后前进"):
+            return
+        if self.motion_arrived():
+            self.finish_task(
+                True,
+                "识别和投放完成，左转%.1f度并前进%.2fm离场"
+                % (
+                    self.post_drop_turn_angle_deg,
+                    self.post_drop_forward_distance,
+                ),
+            )
+            return
+        rospy.loginfo_throttle(
+            self.log_interval,
+            "%s：[投放后离场] 前进进行中 %.1f/%.1fs，motion=%s",
+            NODE_NAME,
+            self.state_elapsed(),
+            self.post_drop_step_timeout,
+            self.current_motion_state_name(),
+        )
+        self.log_arrival_gate("投放后前进到达判定")
 
     def initialize_auto_pose(self):
         if not self.auto_enabled:
@@ -1556,6 +1739,149 @@ class Task3InspectAndDropTest:
         self.auto_search_resume_goal = None
         self.auto_search_paused_for_model = False
 
+    @staticmethod
+    def is_color_observation_step(step_kind):
+        return step_kind.startswith("observe_")
+
+    def current_search_step_kind(self):
+        if self.auto_search_index >= len(self.auto_search_plan):
+            return None
+        return self.auto_search_plan[self.auto_search_index][0]
+
+    def color_observation_is_ready(self):
+        step_kind = self.current_search_step_kind()
+        return (
+            self.auto_enabled
+            and self.state == self.WAIT_FOR_TARGET
+            and self.auto_color_fast_search_enabled
+            and step_kind is not None
+            and self.is_color_observation_step(step_kind)
+            and self.auto_search_step_started is not None
+        )
+
+    def replace_search_plan_after_observation(self, steps, reason):
+        completed_prefix = self.auto_search_plan[
+            : self.auto_search_index + 1
+        ]
+        self.auto_search_plan = completed_prefix + list(steps)
+        self.auto_search_index += 1
+        self.reset_auto_search_step()
+        self.reset_stability()
+        rospy.loginfo(
+            "%s：快速颜色搜索决定下一段路径：%s；后续步骤=%s",
+            NODE_NAME,
+            reason,
+            " -> ".join(
+                self.search_step_description(kind, amount)
+                for kind, amount in steps
+            ) if steps else "保持当前定点",
+        )
+
+    def start_fallback_search(self, observation_step, reason):
+        if observation_step == "observe_center":
+            fallback_steps = [
+                ("left", self.auto_search_left_distance),
+                ("right", self.auto_search_right_distance),
+            ] + self.fallback_search_tail
+        elif observation_step in (
+            "observe_left",
+            "observe_inferred_left",
+        ):
+            fallback_steps = [
+                ("right", self.auto_search_right_distance),
+            ] + self.fallback_search_tail
+        elif observation_step == "observe_inferred_right":
+            fallback_steps = [
+                ("left", self.auto_search_right_distance),
+                ("right", self.auto_search_right_distance),
+            ] + self.fallback_search_tail
+        else:
+            fallback_steps = list(self.fallback_search_tail)
+
+        self.smart_search_first_color = None
+        self.replace_search_plan_after_observation(
+            fallback_steps,
+            "快速判定未找到目标：%s；从当前位置接回原有定步长搜索"
+            % reason,
+        )
+
+    def schedule_smart_search_direction(self, direction, source_step, reason):
+        if direction == "left":
+            steps = [
+                ("left", self.auto_search_left_distance),
+                ("observe_inferred_left", 0.0),
+            ]
+        elif source_step == "observe_center":
+            center_to_right = (
+                self.auto_search_right_distance
+                - self.auto_search_left_distance
+            )
+            steps = [
+                ("right", center_to_right),
+                ("observe_inferred_right", 0.0),
+            ]
+        else:
+            steps = [
+                ("right", self.auto_search_right_distance),
+                ("observe_inferred_right", 0.0),
+            ]
+        self.replace_search_plan_after_observation(steps, reason)
+
+    def handle_color_observation_step(self, model_ready, step_kind):
+        if not model_ready:
+            self.pause_search_for_model()
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：%s等待模型恢复，当前定点保持不动",
+                NODE_NAME,
+                self.SEARCH_STEP_NAMES[step_kind],
+            )
+            return
+        if not self.resume_search_after_model_ready():
+            return
+        if self.state != self.WAIT_FOR_TARGET:
+            return
+
+        if self.auto_search_step_started is None:
+            if not self.motion_arrived():
+                rospy.loginfo_throttle(
+                    self.log_interval,
+                    "%s：等待HOVER后开始%s",
+                    NODE_NAME,
+                    self.SEARCH_STEP_NAMES[step_kind],
+                )
+                self.log_arrival_gate(
+                    "%s到达判定" % self.SEARCH_STEP_NAMES[step_kind]
+                )
+                return
+            self.reset_stability()
+            self.auto_search_step_started = rospy.Time.now()
+            rospy.loginfo(
+                (
+                    "%s：已到达HOVER，开始%s；清空移动途中的旧帧，"
+                    "按最近%d帧中%d帧一致进行颜色判定"
+                ),
+                NODE_NAME,
+                self.SEARCH_STEP_NAMES[step_kind],
+                self.stable_detection_window_size,
+                self.auto_search_stable_detection_count,
+            )
+            return
+
+        rospy.loginfo_throttle(
+            self.log_interval,
+            (
+                "%s：%s进行中：颜色场景窗口=%d/%d帧，"
+                "目标颜色=%s，首次正面颜色=%s"
+            ),
+            NODE_NAME,
+            self.SEARCH_STEP_NAMES[step_kind],
+            len(self.color_scene_frame_window),
+            self.stable_detection_window_size,
+            self.target_color,
+            self.smart_search_first_color or "尚未确认",
+        )
+
     def search_step_offsets(self, step_kind, step_amount):
         if step_kind == "forward":
             return step_amount, 0.0
@@ -1563,21 +1889,13 @@ class Task3InspectAndDropTest:
             return 0.0, -step_amount
         if step_kind == "right":
             return 0.0, step_amount
-        if step_kind == "zigzag_left":
-            return step_amount, -self.auto_search_left_distance
-        if step_kind == "zigzag_right":
-            return step_amount, self.auto_search_right_distance
-        if step_kind == "zigzag_center":
-            return (
-                step_amount,
-                self.auto_search_left_distance
-                - self.auto_search_right_distance,
-            )
         return 0.0, 0.0
 
     def search_step_description(self, step_kind, step_amount):
         if step_kind == "hover":
             return "启动悬停 %.2fs" % step_amount
+        if self.is_color_observation_step(step_kind):
+            return self.SEARCH_STEP_NAMES[step_kind]
         forward, right = self.search_step_offsets(step_kind, step_amount)
         return "%s：前后%+.2fm，左右%+.2fm" % (
             self.SEARCH_STEP_NAMES[step_kind],
@@ -1654,6 +1972,9 @@ class Task3InspectAndDropTest:
             return
 
         step_kind, step_amount = self.auto_search_plan[self.auto_search_index]
+        if self.is_color_observation_step(step_kind):
+            self.handle_color_observation_step(model_ready, step_kind)
+            return
         if step_kind == "hover":
             status = self.get_recent_status("启动固定点悬停")
             if status is None:
@@ -2197,12 +2518,296 @@ class Task3InspectAndDropTest:
         )
 
     def label_matches(self, class_name):
-        normalized = self.normalize_label(class_name)
-        if normalized == self.target_color:
-            return True
+        return self.detection_color(class_name) == self.target_color
 
-        # 兼容 yellow_box、yellow_rectangle 等带颜色后缀的模型标签。
-        return self.target_color in normalized.split("_")
+    def detection_color(self, class_name):
+        normalized = self.normalize_label(class_name)
+        label_parts = normalized.split("_")
+        for color in self.COLOR_LIGHTS:
+            if color == "off":
+                continue
+            if normalized == color or color in label_parts:
+                return color
+        return None
+
+    def build_color_scene_observation(
+        self,
+        detections,
+        step_kind,
+    ):
+        by_color = {}
+        for detection in detections:
+            if detection["confidence"] < self.min_confidence:
+                continue
+            color = self.detection_color(detection["class_name"])
+            if color is None or color == self.target_color:
+                continue
+            previous = by_color.get(color)
+            if (
+                previous is None
+                or detection["confidence"] > previous["confidence"]
+            ):
+                by_color[color] = detection
+
+        if not by_color:
+            return None
+
+        first_detection = next(iter(by_color.values()))
+        image_width = first_detection.get(
+            "image_width", self.auto_image_width
+        )
+        desired_u = image_width * self.auto_target_center_u_ratio
+        visible_colors = tuple(sorted(by_color))
+
+        if step_kind == "observe_center":
+            center_candidates = [
+                (color, detection)
+                for color, detection in by_color.items()
+                if detection["x1"] <= desired_u <= detection["x2"]
+            ]
+            if not center_candidates:
+                return None
+            front_color, front = min(
+                center_candidates,
+                key=lambda item: abs(item[1]["center_u"] - desired_u),
+            )
+            if len(by_color) == 1:
+                return {
+                    "key": ("single", front_color),
+                    "kind": "single",
+                    "front_color": front_color,
+                    "visible_colors": visible_colors,
+                }
+
+            other_color, other = min(
+                (
+                    (color, detection)
+                    for color, detection in by_color.items()
+                    if color != front_color
+                ),
+                key=lambda item: abs(
+                    item[1]["center_u"] - front["center_u"]
+                ),
+            )
+            direction = (
+                "right"
+                if other["center_u"] < front["center_u"]
+                else "left"
+            )
+            return {
+                "key": (
+                    "infer",
+                    direction,
+                    front_color,
+                    other_color,
+                ),
+                "kind": "infer",
+                "direction": direction,
+                "front_color": front_color,
+                "other_color": other_color,
+                "visible_colors": visible_colors,
+            }
+
+        if step_kind == "observe_left":
+            if self.smart_search_first_color is None:
+                return None
+            different_colors = [
+                (color, detection)
+                for color, detection in by_color.items()
+                if color != self.smart_search_first_color
+            ]
+            if different_colors:
+                second_color, _ = min(
+                    different_colors,
+                    key=lambda item: abs(item[1]["center_u"] - desired_u),
+                )
+                return {
+                    "key": (
+                        "infer",
+                        "right",
+                        self.smart_search_first_color,
+                        second_color,
+                    ),
+                    "kind": "infer",
+                    "direction": "right",
+                    "front_color": self.smart_search_first_color,
+                    "other_color": second_color,
+                    "visible_colors": visible_colors,
+                }
+
+            if self.smart_search_first_color in by_color:
+                return {
+                    "key": ("same", self.smart_search_first_color),
+                    "kind": "same",
+                    "front_color": self.smart_search_first_color,
+                    "visible_colors": visible_colors,
+                }
+        return None
+
+    @staticmethod
+    def color_scene_summary(observation):
+        if observation is None:
+            return "没有可用于推断的非目标颜色"
+        colors = ",".join(observation["visible_colors"])
+        if observation["kind"] == "single":
+            return "正面颜色=%s，可见颜色=[%s]" % (
+                observation["front_color"],
+                colors,
+            )
+        if observation["kind"] == "same":
+            return "左移后仍只确认到原颜色=%s，可见颜色=[%s]" % (
+                observation["front_color"],
+                colors,
+            )
+        return "非目标颜色=%s/%s，推断目标在%s侧，可见颜色=[%s]" % (
+            observation["front_color"],
+            observation["other_color"],
+            "左" if observation["direction"] == "left" else "右",
+            colors,
+        )
+
+    def add_color_scene_sample(
+        self,
+        observation,
+        frame_index,
+        invalid_reason="",
+    ):
+        if not self.color_observation_is_ready():
+            return
+        step_kind = self.current_search_step_kind()
+        self.color_scene_frame_window.append({
+            "frame_index": frame_index,
+            "observation": observation,
+        })
+        self.color_scene_frame_window = self.color_scene_frame_window[
+            -self.stable_detection_window_size :
+        ]
+        window_count = len(self.color_scene_frame_window)
+        required_count = self.auto_search_stable_detection_count
+
+        if observation is None:
+            rospy.loginfo(
+                (
+                    "%s：[快速颜色判定][模型帧 #%d] 本帧无有效推断：%s；"
+                    "窗口=%d/%d帧，保留旧的有效颜色结论"
+                ),
+                NODE_NAME,
+                frame_index,
+                invalid_reason or "未看到非目标颜色方框",
+                window_count,
+                self.stable_detection_window_size,
+            )
+            self.maybe_start_color_search_fallback(step_kind)
+            return
+
+        matching_frames = [
+            item
+            for item in self.color_scene_frame_window
+            if item["observation"] is not None
+            and item["observation"]["key"] == observation["key"]
+        ]
+        frame_ids = [item["frame_index"] for item in matching_frames]
+        rospy.loginfo(
+            (
+                "%s：[快速颜色判定][模型帧 #%d] %s；窗口=%d/%d帧，"
+                "同一颜色布局=%d/%d，命中帧=%s"
+            ),
+            NODE_NAME,
+            frame_index,
+            self.color_scene_summary(observation),
+            window_count,
+            self.stable_detection_window_size,
+            len(matching_frames),
+            required_count,
+            frame_ids,
+        )
+
+        if (
+            observation["kind"] != "same"
+            and len(matching_frames) >= required_count
+        ):
+            self.handle_color_scene_decision(
+                step_kind,
+                observation,
+                frame_ids,
+            )
+            return
+        self.maybe_start_color_search_fallback(step_kind)
+
+    def handle_color_scene_decision(
+        self,
+        step_kind,
+        observation,
+        frame_ids,
+    ):
+        if not self.color_observation_is_ready():
+            return
+        if observation["kind"] == "single" and step_kind == "observe_center":
+            self.smart_search_first_color = observation["front_color"]
+            self.replace_search_plan_after_observation(
+                [
+                    ("left", self.auto_search_left_distance),
+                    ("observe_left", 0.0),
+                ],
+                (
+                    "最近%d帧内%d帧确认正面非目标颜色=%s，命中帧=%s；"
+                    "按原左移步长%.2fm观察相邻方框"
+                )
+                % (
+                    self.stable_detection_window_size,
+                    len(frame_ids),
+                    self.smart_search_first_color,
+                    frame_ids,
+                    self.auto_search_left_distance,
+                ),
+            )
+            return
+
+        if observation["kind"] == "infer":
+            self.schedule_smart_search_direction(
+                observation["direction"],
+                step_kind,
+                (
+                    "最近%d帧内%d帧确认非目标颜色%s/%s，命中帧=%s，"
+                    "推断目标在%s侧"
+                )
+                % (
+                    self.stable_detection_window_size,
+                    len(frame_ids),
+                    observation["front_color"],
+                    observation["other_color"],
+                    frame_ids,
+                    "左" if observation["direction"] == "left" else "右",
+                ),
+            )
+
+    def maybe_start_color_search_fallback(self, step_kind):
+        if len(self.color_scene_frame_window) < (
+            self.stable_detection_window_size
+        ):
+            return
+        if not self.color_observation_is_ready():
+            return
+
+        hypothesis_counts = {}
+        for item in self.color_scene_frame_window:
+            observation = item["observation"]
+            if observation is None:
+                continue
+            summary = self.color_scene_summary(observation)
+            hypothesis_counts[summary] = hypothesis_counts.get(summary, 0) + 1
+        summary = (
+            "；".join(
+                "%s=%d帧" % item
+                for item in sorted(hypothesis_counts.items())
+            )
+            if hypothesis_counts
+            else "10帧内没有可用颜色结论"
+        )
+        self.start_fallback_search(
+            step_kind,
+            "窗口已满但没有形成可执行的3帧一致结论（%s）" % summary,
+        )
 
     @staticmethod
     def finite_number(value):
@@ -2323,6 +2928,9 @@ class Task3InspectAndDropTest:
                 self.add_detection_sample(
                     None, frame_index, "模型 JSON 解析失败"
                 )
+                self.add_color_scene_sample(
+                    None, frame_index, "模型 JSON 解析失败"
+                )
             return
 
         if not isinstance(payload, dict):
@@ -2339,6 +2947,9 @@ class Task3InspectAndDropTest:
                 and self.hover_confirmation_ready
             ):
                 self.add_detection_sample(
+                    None, frame_index, "模型 JSON 根节点无效"
+                )
+                self.add_color_scene_sample(
                     None, frame_index, "模型 JSON 根节点无效"
                 )
             return
@@ -2358,6 +2969,9 @@ class Task3InspectAndDropTest:
                 and self.hover_confirmation_ready
             ):
                 self.add_detection_sample(
+                    None, frame_index, "模型 detections 字段无效"
+                )
+                self.add_color_scene_sample(
                     None, frame_index, "模型 detections 字段无效"
                 )
             return
@@ -2434,6 +3048,17 @@ class Task3InspectAndDropTest:
                 "没有找到 %s 方框或置信度低于 %.2f"
                 % (self.target_color, self.min_confidence),
             )
+            if self.color_observation_is_ready():
+                step_kind = self.current_search_step_kind()
+                observation = self.build_color_scene_observation(
+                    detections,
+                    step_kind,
+                )
+                self.add_color_scene_sample(
+                    observation,
+                    frame_index,
+                    "未看到目标颜色，也没有稳定的其他颜色布局",
+                )
             return
 
         best = max(candidates, key=lambda item: item["confidence"])
@@ -2481,9 +3106,16 @@ class Task3InspectAndDropTest:
             return
 
         self.add_detection_sample(best, frame_index)
+        if self.color_observation_is_ready():
+            self.add_color_scene_sample(
+                None,
+                frame_index,
+                "本帧看到目标颜色，优先累计目标位置候选组",
+            )
 
     def reset_stability(self):
         self.detection_frame_window = []
+        self.color_scene_frame_window = []
         self.last_target_time = None
 
     def required_stable_detection_count(self):
@@ -2928,7 +3560,7 @@ class Task3InspectAndDropTest:
             )
             return
 
-        while not rospy.is_shutdown():
+        while not rospy.is_shutdown() and not self.finished:
             now = rospy.Time.now()
             elapsed = (now - self.task_started).to_sec()
 
@@ -3035,11 +3667,30 @@ class Task3InspectAndDropTest:
                 if self.auto_enabled:
                     self.publish_action_position_hold(
                         "夹爪关闭期间最终定点保持"
-                    )
+                )
                 self.publish_actuator(self.clamp_closed, "off")
                 if self.state_elapsed() >= self.close_seconds:
-                    self.finish_task(True, "识别和投放动作执行完成")
-                    return
+                    if self.auto_enabled and self.post_drop_motion_enabled:
+                        if not self.start_post_drop_turn():
+                            self.finish_task(
+                                False,
+                                "投放完成，但无法生成投放后左转目标",
+                            )
+                            return
+                    else:
+                        self.finish_task(
+                            True,
+                            "识别和投放动作执行完成；未执行自动离场"
+                            if self.auto_enabled
+                            else "人工模式识别和投放动作执行完成",
+                        )
+                        return
+
+            elif self.state == self.POST_DROP_TURN:
+                self.handle_post_drop_turn()
+
+            elif self.state == self.POST_DROP_FORWARD:
+                self.handle_post_drop_forward()
 
             if self.auto_enabled and not self.finished:
                 self.publish_active_goal()

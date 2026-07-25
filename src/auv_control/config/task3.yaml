@@ -1,0 +1,326 @@
+# 任务3统一运行参数
+#
+# 本文件是子任务1、子任务2、子任务3和task3_final的唯一调优参数源。
+# 修改本文件后，单独运行任一子任务或运行完整任务3都会使用相同参数。
+#
+# 参数边界：
+# 1. 本文件负责识别阈值、帧数、距离、时间、控制增益、到达容差和执行器数值。
+# 2. 启动哪些相机、模型、Web节点以及话题重映射仍由launch负责。
+# 3. motion_supervisor内部推力、速度、阻尼和HOVER判定参数仍在
+#    config/motion_supervisor.yaml中调整，本文件只配置任务侧目标与核对门槛。
+
+
+# ============================================================
+# 子任务1：箭头搜索、粗对准、方向对准和最后固定前移
+# ROS私有参数命名空间：/test_task3_1_acquire_area
+# ============================================================
+test_task3_1_acquire_area:
+  # 主循环与日志
+  rate: 5.0
+  log_directory: "~/.ros/auv_logs/task3"
+  log_interval: 1.0
+  warning_log_interval: 2.0
+
+  # 箭头基础识别
+  # min_confidence调大可减少误检，调小可增加弱目标召回。
+  min_confidence: 0.30
+  # 普通位置帧最大允许间隔，同时用于定点方向复核保护。
+  detection_timeout: 2.0
+  # 运动中完整箭头丢失达到该时间后取消当前目标。
+  visual_loss_cancel_seconds: 2.0
+
+  # 箭头位置锁定：最近10个模型帧内，同一位置候选组命中3帧。
+  stable_detection_window_size: 10
+  stable_detection_count: 3
+  # 候选组中心最大二维抖动，单位px。
+  stable_center_tolerance_px: 40.0
+  # 候选框面积相对中位面积的最大变化比例。
+  stable_area_tolerance_ratio: 0.35
+  # 方向候选组或连续方向帧的最大角度抖动，单位deg。
+  stable_angle_tolerance_deg: 12.0
+  # 粗居中和启用时的最终视觉对准连续确认帧数。
+  center_stable_detection_count: 2
+
+  # 定点方向复核：10帧内同一角度候选组命中3帧，不要求连续。
+  direction_confirm_window_size: 10
+  direction_confirm_required_count: 3
+  # 机器人运动期间仍要求方向连续稳定2帧，避免使用旧位姿历史帧。
+  heading_stable_detection_count: 2
+  # 航向与横移联合对准连续通过帧数。
+  heading_aligned_detection_count: 2
+
+  # false：最后固定前移前不再检查最终视觉中心、方向和连续帧，
+  #        只等待当前目标对应的MotionState.HOVER。
+  # true：保留最终视觉中心、方向和连续帧判断。
+  enable_final_visual_alignment: false
+
+  # motion_supervisor反馈与取消保护
+  motion_state_timeout: 2.0
+  motion_startup_timeout: 20.0
+  cancel_timeout: 15.0
+
+  # MotionState.goal与任务最近目标的允许差。
+  # 这些参数只防止旧HOVER误判，不改变motion_supervisor内部控制精度。
+  # 调大更容易通过，调小目标匹配更严格。
+  goal_match_position_tolerance: 0.10
+  goal_match_depth_tolerance: 0.10
+  goal_match_yaw_tolerance_deg: 10.0
+
+  # 独立运行子任务1时的启动悬停和搜索路径。
+  initial_hover_seconds: 10.0
+  search_initial_forward_distance: 0.50
+  search_lateral_distance: 0.20
+  search_second_forward_distance: 0.30
+  max_wait_seconds: 300.0
+
+  # 箭头模型图像尺寸和完整可见门槛
+  image_width: 640.0
+  image_height: 480.0
+  full_arrow_edge_margin_px: 5.0
+  full_arrow_min_bbox_width_px: 30.0
+  full_arrow_min_bbox_height_px: 30.0
+
+  # 图像目标中心和普通中心容差；0.5/0.5表示图像正中心。
+  target_center_u_ratio: 0.5
+  target_center_v_ratio: 0.5
+  center_tolerance_u_px: 50.0
+  center_tolerance_v_px: 50.0
+
+  # 航向对准阶段专用水平容差。
+  # 转向时横移不明显可逐步调小；左右振荡时调大。
+  heading_lateral_tolerance_px: 20.0
+
+  # 粗对准：归一化v/u误差到前后/左右位置小步的增益，单位m。
+  visual_forward_gain_m: 0.20
+  visual_lateral_gain_m: 0.20
+  visual_max_step_m: 0.50
+  visual_min_step_m: 0.05
+  visual_goal_min_interval: 1.0
+  # 运动方向相反时只修改对应符号为-1.0。
+  visual_forward_sign: 1.0
+  visual_lateral_sign: 1.0
+
+  # 细对准：航向和横移联合控制以及慢速前后居中。
+  fine_forward_gain_m: 0.20
+  fine_lateral_gain_m: 0.20
+  fine_visual_max_step_m: 0.50
+  fine_visual_min_step_m: 0.05
+  fine_yaw_max_step_deg: 10.0
+  fine_goal_min_interval: 2.0
+
+  # 图像中机器人正前方对应的箭头角度和方向修正符号。
+  camera_forward_angle_deg: 90.0
+  yaw_correction_sign: 1.0
+  yaw_tolerance_deg: 10.0
+
+  # 航向和图像中心对准后，base_link沿当前航向执行的一次性固定前移。
+  # 当前实验值为1.0m；目标下发后忽略后续视觉，不回退。
+  base_link_forward_offset: 1.0
+
+  # 任务侧离底保护和最终悬停
+  status_timeout: 1.0
+  min_ground_clearance: 0.40
+  ground_clearance_goal_update_threshold: 0.01
+  final_hold_seconds: 10.0
+  final_hold_timeout: 30.0
+
+
+# ============================================================
+# 子任务2：ArUco识别、亮灯和原地转向
+# ROS私有参数命名空间：/test_task3_2_get_task
+# ============================================================
+test_task3_2_get_task:
+  # 主循环与日志
+  rate: 10.0
+  log_directory: "~/.ros/auv_logs/task3"
+
+  # 固定启动点并保持位置
+  hold_map_frame: "map"
+  hold_base_frame: "base_link"
+  initial_hover_seconds: 10.0
+  initial_hover_timeout: 30.0
+  hold_pose_timeout: 5.0
+  motion_state_timeout: 0.5
+
+  # ArUco识别和亮灯完成后的原地转向
+  turn_enabled: true
+  # 只能填写left或right。
+  turn_direction: "left"
+  turn_angle_deg: 90.0
+  turn_timeout: 90.0
+  turn_stable_seconds: 1.0
+  turn_hold_seconds: 1.0
+
+  # 目标匹配门槛：只防止把旧目标的HOVER当作当前目标到达。
+  goal_match_position_tolerance: 0.03
+  goal_match_depth_tolerance: 0.03
+  goal_match_yaw_tolerance_deg: 2.0
+  # 实际到达与停稳门槛。
+  arrival_position_tolerance: 0.05
+  arrival_yaw_tolerance_deg: 5.0
+  arrival_max_horizontal_speed: 0.03
+  # 航向角速度门槛，单位rad/s。
+  arrival_max_yaw_rate: 0.05
+
+  # topic：使用真实ArUco话题；mock：使用下面的模拟ID序列。
+  input_mode: "topic"
+  min_confidence: 0.50
+  # 最近10帧内同一ID命中3帧立即成功，不要求连续。
+  recognition_window_size: 10
+  required_match_count: 3
+  recognition_timeout: 60.0
+  mock_aruco_ids: [1, -1, 1, 2, -1, -1, 1]
+  mock_frame_interval: 0.2
+
+  # 识别成功后灯光动作
+  light_seconds: 3.0
+  gap_seconds: 0.5
+
+  # 执行器协议数值
+  actuator_mode: 2
+  light1: 0
+  light2: 0
+  heading_servo: 128
+  clamp_servo: 255
+  drive_cmd: 0
+  drive_speed: 0
+
+
+# ============================================================
+# 子任务3：彩色方框搜索、细对准、开灯和夹爪
+# ROS私有参数命名空间：/test_task3_3_inspect_and_drop
+# ============================================================
+test_task3_3_inspect_and_drop:
+  # manual：人工移动，只执行识别和动作；auto：自动搜索和对准。
+  operation_mode: "auto"
+  rate: 5.0
+  log_directory: "~/.ros/auv_logs/task3"
+  log_interval: 1.0
+  warning_log_interval: 2.0
+
+  # 方框识别
+  target_color: "red"
+  min_confidence: 0.20
+  # 人工模式稳定候选组要求。
+  stable_detection_count: 5
+  # 自动搜索和刹停后复核共用的滑动窗口。
+  stable_detection_window_size: 10
+  auto_search_stable_detection_count: 3
+  auto_hover_confirm_settle_seconds: 0.5
+  auto_hover_confirm_timeout: 4.0
+  # 细对准最终居中连续确认帧数。
+  auto_center_stable_detection_count: 3
+  stable_center_tolerance_px: 40.0
+  stable_area_tolerance_ratio: 0.35
+  detection_timeout: 2.0
+  max_wait_seconds: 300.0
+
+  # motion_supervisor反馈和取消保护
+  motion_state_timeout: 2.0
+  motion_startup_timeout: 20.0
+  cancel_timeout: 50.0
+  goal_match_position_tolerance: 0.03
+  goal_match_depth_tolerance: 0.03
+  goal_match_yaw_tolerance_deg: 2.0
+  arrival_position_tolerance: 0.05
+  arrival_yaw_tolerance_deg: 5.0
+  arrival_max_horizontal_speed: 0.02
+  arrival_max_yaw_rate_deg_s: 0.5
+
+  # /status/auv反馈
+  status_timeout: 1.0
+  status_linear_velocity_scale: 1.0
+
+  # 自动搜索：先完成悬停和第一段前进，再观察并排的三个颜色方框。
+  auto_initial_hover_seconds: 5.0
+  auto_search_first_forward_distance: 0.30
+  auto_search_second_forward_distance: 0.30
+  auto_search_third_forward_distance: 0.20
+  # 左移从当前搜索点计算；右移从左移结束位置计算。
+  auto_search_left_distance: 0.60
+  auto_search_right_distance: 0.90
+  # true：10帧内3帧确认颜色布局，优先直接找目标或推断左右方向。
+  # 只看到一个非目标颜色时仍按上面的原左移步长横移；
+  # 从左侧跨到右侧仍使用原右移步长。快速判定失败后自动接回原搜索。
+  # false：完全跳过颜色布局推断，直接执行原三段定步长搜索。
+  auto_color_fast_search_enabled: true
+
+  # 视觉细对准增益和单次位置小步
+  auto_visual_forward_gain_m: 0.10
+  auto_visual_lateral_gain_m: 0.10
+  auto_visual_min_step_m: 0.10
+  auto_visual_max_step_m: 0.20
+  auto_visual_goal_min_interval: 0.50
+  # 实际运动方向相反时改为-1.0。
+  auto_forward_sign: 1.0
+  auto_lateral_sign: 1.0
+
+  # 方框目标中心、像素容差和图像尺寸回退值
+  auto_target_center_u_ratio: 0.5
+  auto_target_center_v_ratio: 0.5
+  auto_center_tolerance_u_px: 35.0
+  auto_center_tolerance_v_px: 35.0
+  auto_image_width: 640.0
+  auto_image_height: 480.0
+
+  # 自动模式开灯、开夹爪前的动作放行门槛
+  auto_action_max_horizontal_speed: 0.03
+  auto_action_max_vertical_speed: 0.03
+  # 航向角速度门槛，单位rad/s。
+  auto_action_max_yaw_rate: 0.05
+  auto_action_max_depth_error: 0.08
+  auto_action_max_yaw_error_deg: 5.0
+
+  # 动作时序
+  hold_seconds: 1.0
+  open_seconds: 5.0
+  close_seconds: 0.0
+
+  # 投放完成后的自动离场，仅operation_mode=auto时执行。
+  post_drop_motion_enabled: true
+  # 固定向左转；角度必须大于0且小于180度。
+  post_drop_turn_angle_deg: 90.0
+  # 左转目标到达HOVER后，沿新的机器人前方移动距离。
+  post_drop_forward_distance: 0.50
+  # 左转和前进分别使用该到达超时。
+  post_drop_step_timeout: 90.0
+
+  # 执行器协议数值
+  actuator_mode: 2
+  clamp_open: 0
+  clamp_closed: 255
+  heading_servo: 128
+  drive_cmd: 0
+  drive_speed: 0
+  light1: 0
+  light2: 0
+
+
+# ============================================================
+# 完整任务3：模型预热、四阶段调度和阶段间HOVER
+# ROS私有参数命名空间：/task3_final
+# ============================================================
+task3_final:
+  rate: 10.0
+  log_directory: "~/.ros/auv_logs/task3"
+
+  # 等待三个模型开始持续发布的最长时间和最低帧数。
+  model_ready_timeout: 90.0
+  model_required_frames: 3
+  model_output_timeout: 2.0
+  model_recovery_timeout: 10.0
+
+  # 子任务切换时等待motion_supervisor稳定HOVER。
+  handoff_timeout: 30.0
+  handoff_stable_seconds: 3.0
+  motion_state_timeout: 2.0
+  # 启动时锁存map到base_link固定悬停点的最长等待时间。
+  startup_tf_timeout: 8.0
+
+  # 整合模式已经在模型预热和阶段交接中统一悬停，因此关闭子任务内部
+  # 重复的启动与结束等待。独立运行子任务时仍使用各子任务自己的参数。
+  subtask1_initial_hover_seconds: 0.0
+  subtask1_final_hold_seconds: 0.0
+  subtask2_initial_hover_seconds: 0.0
+  subtask2_turn_hold_seconds: 0.0
+  subtask3_initial_hover_seconds: 0.0
