@@ -74,7 +74,7 @@
               --camera_name $(arg camera_name)
               --fisheye-fix-skew
               --fisheye-recompute-extrinsicsts
-              --fisheye-k-coefficients 4
+              --fisheye-k-coefficients 3
               --disable_calib_cb_fast_check
               image:=$(arg image_topic)
               camera:=$(arg camera_ns)
