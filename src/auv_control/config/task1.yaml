@@ -1,10 +1,16 @@
 # Task1 比赛完整流程参数。
 # launch 只负责编排节点；任务运行参数统一在本文件中修改。
 
-# 主循环、坐标系与深度
+# 主循环、坐标系、深度与启动航向
 rate: 5.0
 map_frame: map
+# false：使用机器人启动时的当前深度；true：使用 reference_depth
+use_reference_depth: false
 reference_depth: -0.99
+# false：使用机器人启动时的当前航向；true：先旋转到参考航向，
+# 收到 HOVER 后再开始 startup_hold_seconds 定点等待
+use_reference_yaw: false
+reference_yaw_deg: 0.0
 line_tracking_frame: camera
 
 # motion_supervisor 接口

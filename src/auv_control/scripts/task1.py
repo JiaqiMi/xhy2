@@ -111,6 +111,12 @@ class Task1(Task1LineFollow):
                 endpoint_min_completed_path_length=(
                     self.endpoint_min_completed_path_length
                 ),
+                use_reference_depth=self.use_reference_depth,
+                reference_depth=self.reference_depth,
+                use_reference_yaw=self.use_reference_yaw,
+                reference_yaw_deg=round(
+                    math.degrees(self.reference_yaw), 6
+                ),
             )
             rospy.loginfo("%s: 完整数据文件=%s", NODE_NAME, self.data_log_path)
         except OSError as error:
@@ -263,7 +269,10 @@ class Task1(Task1LineFollow):
             marker_duplicate_distance=self.marker_duplicate_distance,
             marker_line_max_distance=self.marker_line_max_distance,
             marker_progress_tolerance=self.marker_progress_tolerance,
+            use_reference_depth=self.use_reference_depth,
             reference_depth=self.reference_depth,
+            use_reference_yaw=self.use_reference_yaw,
+            reference_yaw_deg=math.degrees(self.reference_yaw),
             light_seconds=self.light_seconds,
             gap_seconds=self.gap_seconds,
             yellow_light_count=self.yellow_light_count,
@@ -483,6 +492,10 @@ class Task1(Task1LineFollow):
         }
 
     def stage_description(self):
+        if self.state == self.WAIT_CAMERA:
+            if self.startup_hold_started is None:
+                return "原地旋转到参考航向"
+            return "保持启动位置并等待识别节点"
         if (
             self.extension_search_active
             and self.state in self.SEARCH_STATES
@@ -496,7 +509,6 @@ class Task1(Task1LineFollow):
                 self.state, "终点固定位置搜索红线延伸"
             )
         descriptions = {
-            self.WAIT_CAMERA: "等待相机并保持启动位置",
             self.SEARCH_LEFT: "向左搜索红线",
             self.SEARCH_RIGHT: "向右搜索红线",
             self.SEARCH_RETURN: "返回启动航向搜索红线",
@@ -578,8 +590,17 @@ class Task1(Task1LineFollow):
             ),
             rotation=self.rotation_record(),
             commanded_lights=copy.deepcopy(self.commanded_lights),
+            use_reference_depth=self.use_reference_depth,
             reference_depth=self.reference_depth,
             active_depth=self.hold_z,
+            use_reference_yaw=self.use_reference_yaw,
+            reference_yaw_deg=round(
+                math.degrees(self.reference_yaw), 6
+            ),
+            active_start_yaw_deg=(
+                round(math.degrees(self.search_base_yaw), 6)
+                if self.search_base_yaw is not None else None
+            ),
         )
 
     def log_task_summary(self):
