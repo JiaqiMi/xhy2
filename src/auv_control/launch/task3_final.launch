@@ -16,9 +16,9 @@
     <arg name="start_down_splitter" default="false" />
 
     <!-- 三个模型由本launch一次性启动，任务阶段切换时不关闭。 -->
-    <arg name="start_arrow_model" default="true" />
-    <arg name="start_aruco_model" default="true" />
-    <arg name="start_rectangle_model" default="true" />
+    <arg name="start_arrow_model" default="false" />
+    <arg name="start_aruco_model" default="false" />
+    <arg name="start_rectangle_model" default="false" />
     <arg name="start_arrow_web" default="false" />
     <arg name="start_aruco_web" default="false" />
     <arg name="start_rectangle_web" default="false" />
@@ -51,8 +51,11 @@
     <rosparam command="load" file="$(arg task3_config_file)" />
 
     <!-- 箭头模型共享外部下视相机，不重复启动相机和分割节点。 -->
-    <group if="$(arg start_arrow_model)"
-           ns="task3_final/arrow_pipeline">
+    <!--
+      箭头YOLO wrapper按绝对节点名/yolo_arrow_pose_detector读取参数，
+      因此这里必须保持根命名空间，否则wrapper会读不到model_path并退出。
+    -->
+    <group if="$(arg start_arrow_model)">
         <remap from="/vision/arrow/direction"
                to="$(arg arrow_topic)" />
         <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">

@@ -1052,7 +1052,7 @@ class Task3Subtask123Sequence:
         return "true" if value else "false"
 
     def arrow_model_command(self):
-        """递归启动仅箭头模型模式，使箭头Web节点处于独立命名空间。"""
+        """递归启动仅箭头模型模式，并保持wrapper所需的根命名空间。"""
         return [
             "roslaunch", "auv_control", "task3_subtask1_2_3_sequence.launch",
             "coordinator_enabled:=false",
@@ -1138,8 +1138,9 @@ class Task3Subtask123Sequence:
     def prepare_task3_color(self, task2_result):
         marker_id, reported_color = self.parse_task2_result(task2_result)
         mapped_color = self.TASK2_COLOR_BY_MARKER.get(marker_id)
+        selected_color = mapped_color or reported_color
         self.task2_marker_id = marker_id
-        self.task2_target_color = mapped_color
+        self.task2_target_color = selected_color
         if self.task3_color_source == "manual":
             rospy.logwarn(
                 (
@@ -1151,13 +1152,23 @@ class Task3Subtask123Sequence:
                 "未知" if reported_color is None else reported_color,
             )
             return True
-        if mapped_color is None:
+        if selected_color is None:
             rospy.logerr(
-                "%s：[颜色交接失败] 无法从子任务2成功消息解析有效ArUco ID：%s",
+                "%s：[颜色交接失败] 无法从子任务2成功消息解析有效ID或颜色：%s",
                 NODE_NAME,
                 task2_result,
             )
             return False
+        if mapped_color is None:
+            rospy.logwarn(
+                (
+                    "%s：[颜色交接-固定兜底] 子任务2未确认有效ArUco ID，"
+                    "直接采用其上报颜色=%s"
+                ),
+                NODE_NAME,
+                selected_color,
+            )
+            return True
         if reported_color is not None and reported_color != mapped_color:
             rospy.logerr(
                 (
@@ -1177,9 +1188,9 @@ class Task3Subtask123Sequence:
                 "启动子任务3时将覆盖其launch默认颜色"
             ),
             NODE_NAME,
-            marker_id,
-            mapped_color,
-            "未提供" if reported_color is None else reported_color,
+                marker_id,
+                selected_color,
+                "未提供" if reported_color is None else reported_color,
         )
         return True
 

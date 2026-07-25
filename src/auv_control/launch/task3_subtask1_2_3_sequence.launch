@@ -54,7 +54,8 @@
 
     <!-- 箭头模型单独成组，第二次箭头完成后可独立关闭并释放推理资源。 -->
     <group if="$(arg arrow_model_only)">
-        <group if="$(arg start_arrow_model)" ns="task3_sequence/arrow_pipeline">
+               <!-- 箭头YOLO wrapper依赖根命名空间读取模型参数。 -->
+        <group if="$(arg start_arrow_model)">
             <remap from="/vision/arrow/direction" to="$(arg arrow_topic)" />
             <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
                 <arg name="start_camera" value="$(arg start_down_camera)" />

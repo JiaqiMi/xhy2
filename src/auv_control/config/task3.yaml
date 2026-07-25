@@ -169,6 +169,10 @@ test_task3_2_get_task:
   recognition_window_size: 10
   required_match_count: 3
   recognition_timeout: 60.0
+    # 超过30秒仍未满足3/10帧时，不再继续等待ID，直接按固定颜色执行。
+  # recognition_fallback_color只能填写yellow、green或red。
+  recognition_fallback_seconds: 30.0
+  recognition_fallback_color: "yellow"
   mock_aruco_ids: [1, -1, 1, 2, -1, -1, 1]
   mock_frame_interval: 0.2
 
@@ -232,13 +236,13 @@ test_task3_3_inspect_and_drop:
   status_linear_velocity_scale: 1.0
 
   # 自动搜索：先完成悬停和第一段前进，再观察并排的三个颜色方框。
-  auto_initial_hover_seconds: 5.0
-  auto_search_first_forward_distance: 0.30
+  auto_initial_hover_seconds: 3.0
+  auto_search_first_forward_distance: 0.50
   auto_search_second_forward_distance: 0.30
   auto_search_third_forward_distance: 0.20
   # 左移从当前搜索点计算；右移从左移结束位置计算。
-  auto_search_left_distance: 0.60
-  auto_search_right_distance: 0.90
+  auto_search_left_distance: 0.50
+  auto_search_right_distance: 1.0
   # true：10帧内3帧确认颜色布局，优先直接找目标或推断左右方向。
   # 只看到一个非目标颜色时仍按上面的原左移步长横移；
   # 从左侧跨到右侧仍使用原右移步长。快速判定失败后自动接回原搜索。
@@ -249,7 +253,7 @@ test_task3_3_inspect_and_drop:
   auto_visual_forward_gain_m: 0.10
   auto_visual_lateral_gain_m: 0.10
   auto_visual_min_step_m: 0.10
-  auto_visual_max_step_m: 0.20
+  auto_visual_max_step_m: 0.30
   auto_visual_goal_min_interval: 0.50
   # 实际运动方向相反时改为-1.0。
   auto_forward_sign: 1.0
@@ -258,8 +262,8 @@ test_task3_3_inspect_and_drop:
   # 方框目标中心、像素容差和图像尺寸回退值
   auto_target_center_u_ratio: 0.5
   auto_target_center_v_ratio: 0.5
-  auto_center_tolerance_u_px: 35.0
-  auto_center_tolerance_v_px: 35.0
+  auto_center_tolerance_u_px: 40.0
+  auto_center_tolerance_v_px: 40.0
   auto_image_width: 640.0
   auto_image_height: 480.0
 
@@ -281,7 +285,7 @@ test_task3_3_inspect_and_drop:
   # 固定向左转；角度必须大于0且小于180度。
   post_drop_turn_angle_deg: 90.0
   # 左转目标到达HOVER后，沿新的机器人前方移动距离。
-  post_drop_forward_distance: 0.50
+  post_drop_forward_distance: 0.10
   # 左转和前进分别使用该到达超时。
   post_drop_step_timeout: 90.0
 
@@ -312,7 +316,7 @@ task3_final:
 
   # 子任务切换时等待motion_supervisor稳定HOVER。
   handoff_timeout: 30.0
-  handoff_stable_seconds: 3.0
+  handoff_stable_seconds: 2
   motion_state_timeout: 2.0
   # 启动时锁存map到base_link固定悬停点的最长等待时间。
   startup_tf_timeout: 8.0

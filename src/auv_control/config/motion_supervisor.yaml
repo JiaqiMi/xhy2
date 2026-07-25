@@ -16,10 +16,10 @@ log_directory: ~/.ros/auv_logs/motion_supervisor  # CSV 日志目录，每次启
 log_flush_every: 20                               # 每累计多少个控制周期刷新磁盘，20 Hz 下约每秒刷新
 
 # 正常运动限幅；参数后缀表示本周期实际输出力或力矩的正负号
-max_tx_positive: 1500.0             # 正常运动阶段正 TX 最大值
-max_tx_negative: 2000.0             # 正常运动阶段负 TX 绝对值上限
-max_ty_positive: 2000.0             # 正常运动阶段正 TY 最大值
-max_ty_negative: 4000.0             # 正常运动阶段负 TY 绝对值上限
+max_tx_positive: 2000.0             # 正常运动阶段正 TX 最大值
+max_tx_negative: 2250.0             # 正常运动阶段负 TX 绝对值上限
+max_ty_positive: 4000.0             # 正常运动阶段正 TY 最大值
+max_ty_negative: 6600.0             # 正常运动阶段负 TY 绝对值上限
 max_mz_positive: 3000.0             # 正常转向阶段正 MZ 最大值
 max_mz_negative: 3500.0             # 正常转向阶段负 MZ 绝对值上限
 brake_max_tx_positive: 2000.0       # 主动刹车阶段正 TX 最大值
@@ -32,12 +32,12 @@ force_slew_per_cycle: 1000.0        # 正常运动每控制周期允许的最大
 brake_force_slew_per_cycle: 10000.0 # 刹车每控制周期允许的最大力矩变化量
 
 # 统一三轴速度环增益；yaw 的正负按 map 航向角速度误差选择，对应最终 MZ 正负。
-kv_x_positive: 11900.0              # 配合正 TX=900，提高 X 正向跟踪速度但保留方向性限幅
-kv_x_negative: 14250.0              # 1000 / 0.11；0.5 m 阶跃可触发负 TX 正常限幅
-kv_y_positive: 36000.0              # 1200 / 0.04；按右移 +1000 对应 0.04 m/s 的保守数据取值
-kv_y_negative: 52000.0              # 2000 / 0.05；按左移 -2000 对应 0.05 m/s 取值
-kp_yaw_positive: 9200.0             # 60 deg 阶跃静态控制核验证可触发正 MZ 正常限幅
-kp_yaw_negative: 11200.0            # 60 deg 阶跃静态控制核验证可触发负 MZ 正常限幅
+kv_x_positive: 13900.0              # 配合正 TX=900，提高 X 正向跟踪速度但保留方向性限幅
+kv_x_negative: 15250.0              # 1000 / 0.11；0.5 m 阶跃可触发负 TX 正常限幅
+kv_y_positive: 36000.0              # 1200 / 0.04；
+kv_y_negative: 52000.0              # 2000 / 0.05；
+kp_yaw_positive: 11000.0             # 60 deg 阶跃静态控制核验证可触发正 MZ 正常限幅
+kp_yaw_negative: 12800.0            # 60 deg 阶跃静态控制核验证可触发负 MZ 正常限幅
 
 # 定点模式锁存制动时的速度环增益；仍按最终 TX/TY 输出符号区分正反车效率。
 brake_kv_x_positive: 20000.0
@@ -65,7 +65,7 @@ brake_acceleration_ty_positive: 0.016 # data1 正 TY 满输出等效约 0.016 m/
 brake_acceleration_ty_negative: 0.019 # data1 负 TY 满输出等效约 0.019 m/s^2；对应 Y 正向运动
 
 # 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
-brake_reference_acceleration_tx_positive: 0.018 # data1 正 TX 实际平均减速度约 0.014，较旧值提前约 4 cm 制动
+brake_reference_acceleration_tx_positive: 0.014 # data1 正 TX 实际平均减速度约 0.014，较旧值提前约 4 cm 制动
 brake_reference_acceleration_tx_negative: 0.015 # data1 负 TX 实际平均减速度约 0.013，较旧值提前约 2~5 cm 制动
 brake_reference_acceleration_ty_positive: 0.007 # data1 Y 超调均值 0.037 m，配合 0.03 m 余量提前平滑减速
 brake_reference_acceleration_ty_negative: 0.007 # 两向统一计划减速度，推进器差异由有效值和方向限幅保留

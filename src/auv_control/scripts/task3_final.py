@@ -911,11 +911,9 @@ class Task3Final:
             success = bool(task.embedded_success)
             detail = task.embedded_detail
             marker_id = task.confirmed_marker_id
-            color = (
-                task.color_for_marker(marker_id)
-                if success and marker_id is not None
-                else None
-            )
+            color = task.confirmed_color if success else None
+            if color is None and success and marker_id is not None:
+                color = task.color_for_marker(marker_id)
         except Exception as error:
             rospy.logexception("%s：%s发生未处理异常", NODE_NAME, label)
             success = False
