@@ -29,9 +29,9 @@
     <arg name="start_arrow_model" default="true" />
     <arg name="start_aruco_model" default="true" />
     <arg name="start_rectangle_model" default="true" />
-    <arg name="start_arrow_web" default="true" />
-    <arg name="start_aruco_web" default="true" />
-    <arg name="start_rectangle_web" default="true" />
+    <arg name="start_arrow_web" default="false" />
+    <arg name="start_aruco_web" default="false" />
+    <arg name="start_rectangle_web" default="false" />
     <arg name="arrow_web_port" default="8083" />
     <arg name="aruco_web_port" default="8082" />
     <arg name="rectangle_web_port" default="8080" />
@@ -60,7 +60,7 @@
                 <arg name="start_camera" value="$(arg start_down_camera)" />
                 <arg name="start_splitter" value="$(arg start_down_splitter)" />
                 <arg name="start_web" value="$(arg start_arrow_web)" />
-                <arg name="start_depth" value="false" />
+                <arg name="start_depth" value="true" />
                 <arg name="web_port" value="$(arg arrow_web_port)" />
             </include>
         </group>
@@ -160,7 +160,7 @@
       子任务3控制权交接：协调节点保持第二次箭头结束点，直到子任务3连续发布指定数量的合法目标。
       首批目标与该交接点的水平、深度或航向差超过阈值时，立即取消并安全刹停。
     -->
-    <arg name="task3_handoff_timeout" default="10.0" />
+    <arg name="task3_handoff_timeout" default="20.0" />
     <arg name="task3_handoff_goal_count" default="2" />
     <arg name="handoff_goal_position_tolerance" default="0.10" />
     <arg name="handoff_goal_depth_tolerance" default="0.10" />

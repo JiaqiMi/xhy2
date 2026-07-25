@@ -40,7 +40,7 @@
     <!-- detection_timeout：普通位置帧最长允许间隔，也用于定点方向复核超时。 -->
     <arg name="detection_timeout" default="2" />
     <!-- visual_loss_cancel_seconds：运动中完整箭头丢失达到该时间就cancel；必须不大于detection_timeout。 -->
-    <arg name="visual_loss_cancel_seconds" default="1" />
+    <arg name="visual_loss_cancel_seconds" default="2" />
     <!--
       位置锁定复用子任务3的逐帧候选组：保留最近stable_detection_window_size个
       模型帧，其中同一位置候选组命中stable_detection_count帧即通过；
@@ -55,11 +55,11 @@
     <!-- stable_angle_tolerance_deg：方向连续帧相对平均角度允许的最大抖动。 -->
     <arg name="stable_angle_tolerance_deg" default="12.0" />
     <!-- center_stable_detection_count：粗居中、最终居中和base_link前移跟踪共用的连续帧数。 -->
-    <arg name="center_stable_detection_count" default="3" />
+    <arg name="center_stable_detection_count" default="2" />
     <!-- 只有完整箭头的方向连续稳定3帧，才允许从粗对准进入细对准。 -->
-    <arg name="heading_stable_detection_count" default="3" />
+    <arg name="heading_stable_detection_count" default="2" />
     <!-- 细对准第一段中，航向和左右位置连续通过该帧数后才开放前后移动。 -->
-    <arg name="heading_aligned_detection_count" default="3" />
+    <arg name="heading_aligned_detection_count" default="2" />
 
     <!-- motion_supervisor任务接口。只在控制话题改名时修改；任务不直接设置TX/TY/MZ。 -->
     <arg name="motion_goal_topic" default="/cmd/motion/goal" />
@@ -88,7 +88,7 @@
       再前0.3m，第二层左右各0.2m。任意一帧位置有效就立即cancel退出搜索。
       三个距离依次控制第一层前进量、每层左右距离和第二次追加前进量。
     -->
-    <arg name="search_initial_forward_distance" default="0.50" />
+    <arg name="search_initial_forward_distance" default="0.30" />
     <arg name="search_lateral_distance" default="0.20" />
     <arg name="search_second_forward_distance" default="0.30" />
     <!-- max_wait_seconds：除最终悬停外，搜索与对准全过程的总超时。 -->
@@ -107,7 +107,7 @@
       bbox过小即使有角度也不用于细对准。现场箭头较大时优先调小边缘留白，
       远距离框较小时再调小最小宽高；最小宽高加两侧留白必须能放入图像。
     -->
-    <arg name="full_arrow_edge_margin_px" default="15.0" />
+    <arg name="full_arrow_edge_margin_px" default="5.0" />
     <arg name="full_arrow_min_bbox_width_px" default="30.0" />
     <arg name="full_arrow_min_bbox_height_px" default="30.0" />
     <!-- target_center_u/v_ratio：期望箭头中心占图像宽/高的比例，0.5/0.5表示正中心。 -->
@@ -150,8 +150,8 @@
     -->
     <arg name="visual_forward_gain_m" default="0.20" />
     <arg name="visual_lateral_gain_m" default="0.20" />
-    <arg name="visual_max_step_m" default="0.3" />
-    <arg name="visual_min_step_m" default="0.1" />
+    <arg name="visual_max_step_m" default="0.5" />
+    <arg name="visual_min_step_m" default="0.05" />
     <!-- 限制视觉目标更新速度，防止按每一帧当前位置连续累加偏置。 -->
     <arg name="visual_goal_min_interval" default="1.0" />
     <!-- visual_forward_sign作用于粗对准和细对准的v误差；前后方向相反时改为-1。 -->
@@ -167,8 +167,8 @@
     -->
     <arg name="fine_forward_gain_m" default="0.20" />
     <arg name="fine_lateral_gain_m" default="0.20" />
-    <arg name="fine_visual_max_step_m" default="0.2" />
-    <arg name="fine_visual_min_step_m" default="0.1" />
+    <arg name="fine_visual_max_step_m" default="0.5" />
+    <arg name="fine_visual_min_step_m" default="0.05" />
     <arg name="fine_yaw_max_step_deg" default="10.0" />
     <arg name="fine_goal_min_interval" default="2.0" />
 
@@ -187,7 +187,7 @@
       不再修改位置或航向，也不会因箭头离开画面而取消或回退。
       该偏置需按相机与base_link实际安装位置现场标定。
     -->
-    <arg name="base_link_forward_offset" default="0.5" />
+    <arg name="base_link_forward_offset" default="1.0" />
 
     <!-- status_topic/status_timeout：模式、深度和航向反馈话题及最大允许接收间隔。 -->
     <arg name="status_topic" default="/status/auv" />

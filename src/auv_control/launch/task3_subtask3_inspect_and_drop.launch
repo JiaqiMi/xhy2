@@ -61,8 +61,8 @@
     <arg name="motion_goal_topic" default="/cmd/motion/goal" />
     <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
     <arg name="motion_state_topic" default="/motion/state" />
-    <arg name="motion_state_timeout" default="0.5" />
-    <arg name="motion_startup_timeout" default="10.0" />
+    <arg name="motion_state_timeout" default="2" />
+    <arg name="motion_startup_timeout" default="20.0" />
     <arg name="cancel_timeout" default="50.0" />
 
     <!--
@@ -87,7 +87,7 @@
       不再用于本节点计算推力或阻尼。线速度缩放按实际消息单位调整。
     -->
     <arg name="status_topic" default="/status/auv" />
-    <arg name="status_timeout" default="0.5" />
+    <arg name="status_timeout" default="1" />
     <arg name="status_linear_velocity_scale" default="1.0" />
 
     <!--
@@ -97,7 +97,7 @@
       每一段都发送一个map绝对目标，并等待匹配目标的HOVER后进入下一段。
     -->
     <arg name="auto_initial_hover_seconds" default="5.0" />
-    <arg name="auto_search_first_forward_distance" default="2.0" />
+    <arg name="auto_search_first_forward_distance" default="0.30" />
     <arg name="auto_search_second_forward_distance" default="0.30" />
     <arg name="auto_search_third_forward_distance" default="0.20" />
     <!--
@@ -111,8 +111,8 @@
       例如左移0.20m后，右移0.20m表示回到原横向位置；
       若希望从左侧-0.20m扫到右侧+0.20m，可将右移距离设为0.40m。
     -->
-    <arg name="auto_search_left_distance" default="0.40" />
-    <arg name="auto_search_right_distance" default="0.80" />
+    <arg name="auto_search_left_distance" default="0.60" />
+    <arg name="auto_search_right_distance" default="0.90" />
 
     <!--
       视觉细对准把归一化像素误差换算成前后、左右位置小步，单位均为m。
@@ -152,7 +152,7 @@
     <!-- 人工模式稳定识别后的动作前等待；自动模式不使用该等待。 -->
     <arg name="hold_seconds" default="1.0" />
     <!-- 开灯并打开夹爪后保持最终定点3秒，再关闭夹爪和灯。 -->
-    <arg name="open_seconds" default="3.0" />
+    <arg name="open_seconds" default="5.0" />
     <arg name="close_seconds" default="0.0" />
 
     <!-- 执行器协议参数。子任务3需要三色灯和夹爪，因此mode固定建议为2。 -->

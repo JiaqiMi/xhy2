@@ -1,0 +1,110 @@
+# Task1 比赛完整流程参数。
+# launch 只负责编排节点；任务运行参数统一在本文件中修改。
+
+# 主循环、坐标系与深度
+rate: 5.0
+map_frame: map
+reference_depth: -0.99
+line_tracking_frame: camera
+
+# motion_supervisor 接口
+motion_goal_topic: /cmd/motion/goal
+motion_cancel_topic: /cmd/motion/cancel
+motion_state_topic: /motion/state
+motion_state_timeout: 5.0
+
+# 感知、完成和可视化话题
+line_topic: /obj/line_message
+target_topic: /obj/target_message
+camera_topic: /left/image_raw
+actuator_topic: /cmd/actuator
+finished_topic: /finished
+trajectory_topic: /task1/trajectory
+
+# 启动与搜索
+startup_hold_seconds: 10.0
+camera_message_timeout: 2.0
+tf_timeout_seconds: 1.0
+line_message_max_age_seconds: 5.0
+search_forward_distance: 0.5
+search_yaw_angle_deg: 30.0
+search_yaw_sign: 1.0
+
+# 红线锁定与拟合
+line_classes: line
+line_lock_window_seconds: 0.3
+line_min_confidence: 0.70
+line_point_merge_distance: 0.0
+line_point_update_alpha: 0.20
+line_curve_max_points: 200
+line_curve_overlap_points: 40
+line_curve_sample_count: 100
+line_curve_degree: 3
+curve_freeze_required_frames: 2
+curve_freeze_min_length: 0.15
+curve_freeze_min_advance: 0.10
+curve_freeze_overlap_distance: 0.25
+endpoint_growth_tolerance: 0.08
+
+# LOS。控制端给出一次新鲜 HOVER 即认为当前目标到达。
+los_lookahead_distance: 0.6
+los_midpoint_ratio: 0.50
+los_target_update_min_distance: 0.08
+
+# 终点：默认使用未知长度模式。
+# 到达最后中点后固定 XY，只搜索一轮“左、右、返回”；无新增长则结束。
+endpoint_min_completed_path_length: 2.0
+endpoint_stable_frames: 8
+endpoint_stable_position_tolerance: 0.12
+endpoint_evidence_robot_distance: 0.8
+use_known_line_length: false
+known_line_length: 3.8
+known_line_stop_margin: 0.3
+
+# 黄色/黑色图形识别
+yellow_classes: "triangle,circle"
+black_classes: rectangle
+yellow_min_confidence: 0.30
+black_min_confidence: 0.30
+max_camera_distance: 5.0
+marker_window_size: 10
+marker_required_valid: 3
+marker_sample_timeout: 10.0
+marker_cluster_distance: 0.25
+marker_duplicate_distance: 0.40
+marker_line_max_distance: 0.50
+marker_progress_tolerance: 0.15
+
+# 每类动作要求次数；到终点时不足也正常结束
+yellow_required_count: 2
+black_required_count: 2
+
+# 灯光动作
+light_seconds: 3.0
+gap_seconds: 0.5
+yellow_light_count: 1
+black_light_count: 2
+
+# 黑色动作：动态超前 90 度，累计一圈后等待最后目标的一次 HOVER
+black_rotation_angle_deg: 360.0
+black_rotation_direction: 1.0
+black_rotation_step_deg: 90.0
+
+# 外设默认值
+light1: 0
+light2: 0
+heading_servo: 128
+clamp_servo: 0
+drive_cmd: 0
+drive_speed: 0
+
+# 数据和 Web
+log_directory: ~/.ros/auv_logs/task1
+trajectory_publish_period: 0.5
+actual_path_min_spacing: 0.03
+actual_path_max_points: 2000
+web_valid_point_merge_distance: 0.01
+web_valid_point_max_count: 20000
+trajectory_web_enabled: true
+trajectory_web_host: 192.168.1.117
+trajectory_web_port: 8083
