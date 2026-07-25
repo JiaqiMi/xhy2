@@ -103,7 +103,10 @@
     结构化测试数据由 JSONL 改为带启动时间戳的 YAML 文档流；每条感知、目标、
     状态和控制周期记录都保留独立墙钟时间与 ROS 时间，便于复现实测过程。
 2026.7.22
-    增加参考深度参数；-1 使用启动时深度，其他值作为全程运动深度。
+    增加参考深度参数。
+2026.7.25
+    深度和启动航向分别改用布尔开关选择当前值或参考值；参考航向启用时，
+    先原地旋转并等待 HOVER，再开始启动定点和识别节点等待计时。
 """
 
 import copy
@@ -266,7 +269,18 @@ class Task1LineFollow:
             "~motion_state_timeout", 0.5
         )))
         self.map_frame = rospy.get_param("~map_frame", "map")
-        self.reference_depth = float(rospy.get_param("~reference_depth", -1.0))
+        self.use_reference_depth = bool(rospy.get_param(
+            "~use_reference_depth", False
+        ))
+        self.reference_depth = float(rospy.get_param(
+            "~reference_depth", -0.99
+        ))
+        self.use_reference_yaw = bool(rospy.get_param(
+            "~use_reference_yaw", False
+        ))
+        self.reference_yaw = wrap_angle(math.radians(float(rospy.get_param(
+            "~reference_yaw_deg", 0.0
+        ))))
         self.line_topic = rospy.get_param("~line_topic", "/obj/line_message")
         self.finished_topic = rospy.get_param("~finished_topic", "/finished")
         self.camera_topic = rospy.get_param("~camera_topic", "/left/image_raw")
@@ -649,24 +663,40 @@ class Task1LineFollow:
             return False
         self.start_pose = copy.deepcopy(current)
         self.hold_z = (
-            current.pose.position.z
-            if self.reference_depth == -1.0
-            else self.reference_depth
+            self.reference_depth
+            if self.use_reference_depth
+            else current.pose.position.z
         )
         self.start_pose.pose.position.z = self.hold_z
-        self.search_base_yaw = yaw_from_quaternion(current.pose.orientation)
-        self.startup_hold_started = rospy.Time.now()
+        current_yaw = yaw_from_quaternion(current.pose.orientation)
+        self.search_base_yaw = (
+            self.reference_yaw
+            if self.use_reference_yaw
+            else current_yaw
+        )
+        self.start_pose.pose.orientation = Quaternion(*quaternion_from_euler(
+            0.0, 0.0, self.search_base_yaw
+        ))
+        self.startup_hold_started = (
+            None if self.use_reference_yaw else rospy.Time.now()
+        )
         rospy.loginfo(
-            "%s: 当前位姿=(%.2f, %.2f, %.2f)，参考深度=%.2f m（%s），"
-            "启动航向=%.1f deg",
+            "%s: 当前位姿=(%.2f, %.2f, %.2f)，启动深度=%.2f m（%s），"
+            "启动航向=%.1f deg（%s）",
             NODE_NAME,
             current.pose.position.x,
             current.pose.position.y,
             current.pose.position.z,
             self.hold_z,
-            "当前深度" if self.reference_depth == -1.0 else "launch 设置",
+            "参考深度" if self.use_reference_depth else "当前深度",
             math.degrees(self.search_base_yaw),
+            "参考航向" if self.use_reference_yaw else "当前航向",
         )
+        if self.use_reference_yaw:
+            rospy.loginfo(
+                "%s: 启动阶段先原地旋转到参考航向；收到 HOVER 后再开始定点计时",
+                NODE_NAME,
+            )
         return True
 
     def make_pose(self, x, y, yaw):
@@ -2360,16 +2390,30 @@ class Task1LineFollow:
                     self.start_pose.pose.position
                 )
                 current = self.get_current_pose()
+                hover_ready = self.hover_confirmed()
+                if self.startup_hold_started is None and hover_ready:
+                    self.startup_hold_started = rospy.Time.now()
+                    rospy.loginfo(
+                        "%s: 已到达参考航向 %.1f deg；开始启动定点 %.1f s，"
+                        "并等待识别节点",
+                        NODE_NAME,
+                        math.degrees(self.search_base_yaw),
+                        self.startup_hold_seconds,
+                    )
                 hold_elapsed = (
                     (rospy.Time.now() - self.startup_hold_started).to_sec()
                     if self.startup_hold_started is not None else 0.0
                 )
-                hover_ready = self.hover_confirmed()
                 rospy.loginfo_throttle(
                     2.0,
-                    "%s: 摄像头节点=%s；当前位姿=(%.2f, %.2f, %.2f)；"
-                    "启动定点=%.1f/%.1f s",
+                    "%s: 启动阶段=%s；摄像头节点=%s；"
+                    "当前位姿=(%.2f, %.2f, %.2f)；启动定点=%.1f/%.1f s",
                     NODE_NAME,
+                    (
+                        "定点等待识别"
+                        if self.startup_hold_started is not None
+                        else "旋转到参考航向"
+                    ),
                     "已开启" if self.camera_ready() else "未开启",
                     current.pose.position.x if current else float("nan"),
                     current.pose.position.y if current else float("nan"),
