@@ -152,8 +152,17 @@ class Task3AcquireAreaTest(object):
         self.heading_stable_detection_count = int(rospy.get_param(
             "~heading_stable_detection_count", 3
         ))
+        self.direction_confirm_window_size = int(rospy.get_param(
+            "~direction_confirm_window_size", 10
+        ))
+        self.direction_confirm_required_count = int(rospy.get_param(
+            "~direction_confirm_required_count", 3
+        ))
         self.heading_aligned_detection_count = int(rospy.get_param(
             "~heading_aligned_detection_count", 3
+        ))
+        self.enable_final_visual_alignment = bool(rospy.get_param(
+            "~enable_final_visual_alignment", True
         ))
 
         self.image_width = float(rospy.get_param("~image_width", 640.0))
@@ -347,6 +356,7 @@ class Task3AcquireAreaTest(object):
         self.latest_detection = None
         self.detection_samples = []
         self.direction_samples = []
+        self.direction_confirmation_samples = []
         self.arrow_locked = False
         self.direction_locked = False
         self.direction_locked_angle_deg = None
@@ -384,12 +394,22 @@ class Task3AcquireAreaTest(object):
             self.stable_detection_window_size,
             self.center_stable_detection_count,
             self.heading_stable_detection_count,
+            self.direction_confirm_window_size,
+            self.direction_confirm_required_count,
             self.heading_aligned_detection_count,
         ) < 1:
             raise ValueError("识别窗口和确认帧数必须大于等于1")
         if self.stable_detection_count > self.stable_detection_window_size:
             raise ValueError(
                 "stable_detection_count 不能大于 stable_detection_window_size"
+            )
+        if (
+            self.direction_confirm_required_count
+            > self.direction_confirm_window_size
+        ):
+            raise ValueError(
+                "direction_confirm_required_count 不能大于 "
+                "direction_confirm_window_size"
             )
         if not 0.0 <= self.stable_area_tolerance_ratio <= 1.0:
             raise ValueError("stable_area_tolerance_ratio 必须在0到1之间")
@@ -524,8 +544,9 @@ class Task3AcquireAreaTest(object):
                 "%s：流程：固定点HOVER悬停%.1fs -> 前%.2fm -> 左右各%.2fm -> "
                 "再前%.2fm -> 左右各%.2fm搜索 -> "
                 "最近%d帧内位置一致%d帧 -> 图像中心粗对准 -> "
-                "完整箭头方向%d帧 -> 慢速航向和横移联合对齐%d帧 -> "
-                "慢速前后居中%d帧 -> base_link按固定目标前移%.2fm -> "
+                "定点方向最近%d帧内一致%d帧 -> "
+                "运动中方向连续%d帧 -> 慢速航向和横移联合对齐%d帧 -> "
+                "最后前移前判断=%s -> base_link按固定目标前移%.2fm -> "
                 "最终HOVER保持%.1fs"
             ),
             NODE_NAME,
@@ -536,9 +557,17 @@ class Task3AcquireAreaTest(object):
             self.search_lateral_distance,
             self.stable_detection_window_size,
             self.stable_detection_count,
+            self.direction_confirm_window_size,
+            self.direction_confirm_required_count,
             self.heading_stable_detection_count,
             self.heading_aligned_detection_count,
-            self.center_stable_detection_count,
+            (
+                "视觉中心和方向连续{}帧且MotionState.HOVER".format(
+                    self.center_stable_detection_count
+                )
+                if self.enable_final_visual_alignment
+                else "仅MotionState.HOVER和目标匹配"
+            ),
             self.base_link_forward_offset,
             self.final_hold_seconds,
         )
@@ -547,6 +576,7 @@ class Task3AcquireAreaTest(object):
                 "%s：识别：话题=%s，最低置信度=%.2f，稳定判定超时=%.2fs，"
                 "粗、细对准阶段视觉丢失刹停=%.2fs，"
                 "位置候选组=最近%d帧命中%d帧，中心抖动<=%.1fpx，面积变化<=%.3f；"
+                "定点方向候选组=最近%d帧命中%d帧，角度抖动<=%.1fdeg；"
                 "图像=%.0fx%.0f，目标中心=(%.1f,%.1f)px，"
                 "中心容差=(%.1f,%.1f)px；"
                 "完整箭头门槛=距边缘>=%.1fpx且bbox>=%.1fx%.1fpx"
@@ -560,6 +590,9 @@ class Task3AcquireAreaTest(object):
             self.stable_detection_count,
             self.stable_center_tolerance_px,
             self.stable_area_tolerance_ratio,
+            self.direction_confirm_window_size,
+            self.direction_confirm_required_count,
+            self.stable_angle_tolerance_deg,
             self.image_width,
             self.image_height,
             self.image_width * self.target_center_u_ratio,
@@ -603,6 +636,15 @@ class Task3AcquireAreaTest(object):
             self.visual_forward_sign,
             self.visual_lateral_sign,
             self.yaw_correction_sign,
+        )
+        rospy.loginfo(
+            (
+                "%s：最后固定前移前的视觉最终对准=%s；"
+                "关闭时只等待当前目标对应的MotionState.HOVER，"
+                "不再检查最终中心、方向和连续视觉帧"
+            ),
+            NODE_NAME,
+            "开启" if self.enable_final_visual_alignment else "关闭",
         )
         rospy.loginfo(
             (
@@ -722,11 +764,14 @@ class Task3AcquireAreaTest(object):
             self.add_detection_sample(None, frame_index, reason)
         if self.state in (
             self.COARSE_LATERAL_ALIGN,
-            self.CONFIRM_DIRECTION,
             self.ALIGN_HEADING,
             self.FINE_FORWARD_ALIGN,
         ):
             self.reset_direction_lock()
+        if self.state == self.CONFIRM_DIRECTION:
+            self.add_direction_confirmation_sample(
+                None, frame_index, reason
+            )
         if self.state == self.COARSE_LATERAL_ALIGN:
             self.reset_center_progress(reason)
         if self.state == self.ALIGN_HEADING:
@@ -912,9 +957,8 @@ class Task3AcquireAreaTest(object):
             self.add_detection_sample(detection, frame_index)
         elif self.state == self.COARSE_LATERAL_ALIGN:
             self.update_center_progress(detection, error_u, error_v)
-            self.add_direction_sample(detection, error_u, error_v)
         elif self.state == self.CONFIRM_DIRECTION:
-            self.add_direction_sample(detection, error_u, error_v)
+            self.add_direction_confirmation_sample(detection, frame_index)
         elif self.state == self.ALIGN_HEADING:
             self.add_direction_sample(detection, error_u, error_v)
             self.update_heading_alignment_progress(
@@ -1098,6 +1142,151 @@ class Task3AcquireAreaTest(object):
         groups = self.build_detection_candidate_groups(valid_samples)
         return (
             len(self.detection_samples),
+            len(valid_samples),
+            max((len(group) for group in groups), default=0),
+        )
+
+    def add_direction_confirmation_sample(
+        self, detection, frame_index, invalid_reason=""
+    ):
+        reason = invalid_reason
+        if detection is not None and not detection["full_visible"]:
+            reason = detection["full_visible_reason"]
+            detection = None
+        elif detection is not None and detection["angle_deg"] is None:
+            reason = "位置有效但方向字段无效"
+            detection = None
+
+        self.direction_confirmation_samples.append({
+            "frame_index": frame_index,
+            "detection": detection,
+        })
+        self.direction_confirmation_samples = (
+            self.direction_confirmation_samples[
+                -self.direction_confirm_window_size:
+            ]
+        )
+        valid_samples = [
+            item["detection"]
+            for item in self.direction_confirmation_samples
+            if item["detection"] is not None
+        ]
+        candidate_groups = self.build_direction_candidate_groups(valid_samples)
+        window_count = len(self.direction_confirmation_samples)
+        best_group_count = max(
+            (len(group) for group in candidate_groups),
+            default=0,
+        )
+
+        if detection is None:
+            rospy.loginfo(
+                (
+                    "%s：[箭头帧#%d] 定点方向复核本帧无效：%s；"
+                    "窗口=%d/%d帧，有效方向帧=%d/%d，"
+                    "最佳角度候选组=%d/%d；保留窗口内旧有效帧"
+                ),
+                NODE_NAME,
+                frame_index,
+                reason or "没有有效完整箭头方向",
+                window_count,
+                self.direction_confirm_window_size,
+                len(valid_samples),
+                window_count,
+                best_group_count,
+                self.direction_confirm_required_count,
+            )
+            return
+
+        current_group_index = 0
+        current_group = [detection]
+        for index, group in enumerate(candidate_groups, start=1):
+            if any(item is detection for item in group):
+                current_group_index = index
+                current_group = group
+                break
+
+        mean_angle = self.mean_angle_deg([
+            item["angle_deg"] for item in current_group
+        ])
+        angle_jitter = max(
+            abs(normalize_angle_deg(item["angle_deg"] - mean_angle))
+            for item in current_group
+        )
+        frame_ids = [item["frame_index"] for item in current_group]
+        rospy.loginfo(
+            (
+                "%s：[箭头帧#%d] 有效方向加入角度候选组%d；"
+                "窗口=%d/%d帧，有效方向帧=%d/%d，"
+                "当前候选组=%d/%d，命中帧=%s，"
+                "平均角度=%.1fdeg，抖动=%.1f/%.1fdeg"
+            ),
+            NODE_NAME,
+            frame_index,
+            current_group_index,
+            window_count,
+            self.direction_confirm_window_size,
+            len(valid_samples),
+            window_count,
+            len(current_group),
+            self.direction_confirm_required_count,
+            frame_ids,
+            mean_angle,
+            angle_jitter,
+            self.stable_angle_tolerance_deg,
+        )
+        if (
+            len(current_group) < self.direction_confirm_required_count
+            or angle_jitter > self.stable_angle_tolerance_deg
+        ):
+            return
+
+        self.direction_locked = True
+        self.direction_locked_angle_deg = mean_angle
+        rospy.loginfo(
+            (
+                "%s：定点方向候选组确认通过：最近%d帧内命中%d/%d帧，"
+                "不要求连续，命中帧=%s，平均角度=%.1fdeg，"
+                "抖动=%.1f/%.1fdeg"
+            ),
+            NODE_NAME,
+            self.direction_confirm_window_size,
+            len(current_group),
+            self.direction_confirm_required_count,
+            frame_ids,
+            mean_angle,
+            angle_jitter,
+            self.stable_angle_tolerance_deg,
+        )
+
+    def build_direction_candidate_groups(self, samples):
+        groups = []
+        for sample in samples:
+            matches = []
+            for index, group in enumerate(groups):
+                mean_angle = self.mean_angle_deg([
+                    item["angle_deg"] for item in group
+                ])
+                angle_distance = abs(normalize_angle_deg(
+                    sample["angle_deg"] - mean_angle
+                ))
+                if angle_distance <= self.stable_angle_tolerance_deg:
+                    matches.append((angle_distance, index))
+            if not matches:
+                groups.append([sample])
+                continue
+            _, best_index = min(matches)
+            groups[best_index].append(sample)
+        return groups
+
+    def direction_confirmation_window_progress(self):
+        valid_samples = [
+            item["detection"]
+            for item in self.direction_confirmation_samples
+            if item["detection"] is not None
+        ]
+        groups = self.build_direction_candidate_groups(valid_samples)
+        return (
+            len(self.direction_confirmation_samples),
             len(valid_samples),
             max((len(group) for group in groups), default=0),
         )
@@ -1721,6 +1910,7 @@ class Task3AcquireAreaTest(object):
 
     def reset_direction_lock(self):
         self.direction_samples = []
+        self.direction_confirmation_samples = []
         self.direction_locked = False
         self.direction_locked_angle_deg = None
 
@@ -2291,27 +2481,18 @@ class Task3AcquireAreaTest(object):
                     ),
                 )
             return
-        if (
-            self.direction_locked
-            and self.centered_frame_count >= self.center_stable_detection_count
-        ):
+        if self.centered_frame_count >= self.center_stable_detection_count:
             self.begin_cancel(
                 self.CONFIRM_DIRECTION,
-                "图像中心粗对准和完整箭头方向均稳定，刹停后定点复核方向",
-            )
-            return
-        if self.centered_frame_count >= self.center_stable_detection_count:
-            rospy.loginfo_throttle(
-                self.log_interval,
                 (
-                    "%s：图像中心粗对准已稳定%d/%d帧，保持当前固定目标等待"
-                    "完整箭头方向%d/%d帧"
+                    "图像中心粗对准已稳定{}/{}帧，先刹停锁定当前位置，"
+                    "再按最近{}/{}帧候选组定点复核方向"
+                ).format(
+                    self.centered_frame_count,
+                    self.center_stable_detection_count,
+                    self.direction_confirm_required_count,
+                    self.direction_confirm_window_size,
                 ),
-                NODE_NAME,
-                self.centered_frame_count,
-                self.center_stable_detection_count,
-                len(self.direction_samples),
-                self.heading_stable_detection_count,
             )
             return
         target_yaw = yaw_from_quaternion(self.active_goal.pose.orientation)
@@ -2333,7 +2514,14 @@ class Task3AcquireAreaTest(object):
             self.detection_timeout, "定点复核完整箭头方向阶段"
         ):
             full_age = self.full_direction_detection_age()
-            if full_age is None or full_age > self.detection_timeout:
+            state_elapsed = (rospy.Time.now() - self.state_started).to_sec()
+            if (
+                state_elapsed > self.detection_timeout
+                and (
+                    full_age is None
+                    or full_age > self.detection_timeout
+                )
+            ):
                 self.begin_cancel(
                     self.WAIT_FOR_ARROW,
                     "定点复核时完整箭头方向丢失超过{:.2f}s".format(
@@ -2345,13 +2533,21 @@ class Task3AcquireAreaTest(object):
             self.latest_detection
         )
         if not self.direction_locked:
+            window_count, valid_count, best_group_count = (
+                self.direction_confirmation_window_progress()
+            )
             rospy.loginfo_throttle(
                 self.log_interval,
-                "%s：保持HOVER复核完整箭头方向%d/%d帧；"
+                "%s：保持HOVER复核完整箭头方向；窗口=%d/%d帧，"
+                "有效方向帧=%d/%d，最佳角度候选组=%d/%d；"
                 "当前位置误差=(u=%+.1f,v=%+.1f)px，v误差将在细对准处理",
                 NODE_NAME,
-                len(self.direction_samples),
-                self.heading_stable_detection_count,
+                window_count,
+                self.direction_confirm_window_size,
+                valid_count,
+                window_count,
+                best_group_count,
+                self.direction_confirm_required_count,
                 error_u,
                 error_v,
             )
@@ -2389,9 +2585,11 @@ class Task3AcquireAreaTest(object):
             correction_deg,
             self.fine_yaw_max_step_deg,
         )
+        self.reset_direction_lock()
         self.set_state(
             self.ALIGN_HEADING,
-            "完整箭头方向已复核，禁止前后移动，只慢速横移并实时对齐航向",
+            "完整箭头方向已复核；清空定点历史帧，运动中重新连续确认方向，"
+            "禁止前后移动，只慢速横移并实时对齐航向",
         )
 
     def control_align_heading(self):
@@ -2456,6 +2654,20 @@ class Task3AcquireAreaTest(object):
         )
 
     def control_fine_forward_align(self):
+        if not self.enable_final_visual_alignment:
+            if not self.motion_arrived():
+                self.log_arrival_gate(
+                    "视觉最终对准已关闭，只等待当前目标对应的MotionState.HOVER"
+                )
+                return
+            rospy.loginfo(
+                "%s：视觉最终对准已关闭，MotionState.HOVER和目标匹配均通过，"
+                "开始生成最后固定前移目标",
+                NODE_NAME,
+            )
+            self.start_base_over_arrow_offset()
+            return
+
         if not self.fine_detection_available_within(
             self.visual_loss_cancel_seconds, "航向对齐后的慢速前后居中阶段"
         ):

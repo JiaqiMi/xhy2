@@ -1193,7 +1193,9 @@ class Task3Subtask123Sequence:
             "motion_state_topic:={}".format(self.motion_state_topic),
         ]
         if self.task3_color_source == "task2":
-            command.append("target_color:={}".format(self.task2_target_color))
+            command.append(
+                "target_color_override:={}".format(self.task2_target_color)
+            )
         return command
 
     def start_managed_process(self, role, label, command):
