@@ -212,15 +212,16 @@ brake_min_mz: 100.0
 ```
 
 停车距离只在某轴的误差或速度达到主轴的 20% 时才纳入该轴，避免微小
-横向分量使纯前进测试错误采用较小的 TY 减速度。切换和保持 `mode=4`
-时增加以下保护：
+横向分量使纯前进测试错误采用较小的 TY 减速度。当前 `mode=2` 与
+`mode=4` 使用同一套 HOVER 进入和退出判据：
 
-- 进入定点前必须位于 `capture_radius` 内；
-- 等待定点接管确认时，位置误差超过 `capture_exit_radius` 才恢复三轴跟踪，
-  在进入与退出半径之间形成滞环；
-- 定点接管后的位置、航向和速度回退阈值分别使用
-  `hover_fault_position_error`、`hover_fault_yaw_error`、
-  `hover_fault_speed` 和 `hover_fault_yaw_rate`；
+- 进入 HOVER 前，位置、航向、水平速度和角速度必须分别满足
+  `capture_radius`、`yaw_tolerance_deg`、`horizontal_speed_threshold`
+  和 `yaw_rate_threshold_deg_s`，并连续保持 `stable_frames`；
+- 接管等待和 HOVER 状态下，位置或航向误差连续
+  `hover_exit_hold_seconds` 超过 `hover_exit_position_error` 或
+  `hover_exit_yaw_error_deg`，恢复 mode=2 三轴跟踪；
+- `mode=4` 额外保留 `mode_ack_timeout`，只处理接管确认和模式反馈丢失；
 - 角速度超过停稳阈值时，航向刹车力矩绝对值不低于 `100`。
 
 ## 2026-07-18 旋转试验与杆臂修正
@@ -261,8 +262,8 @@ angular_brake_acceleration_mz_negative: 0.040
 | 60° | 0.350 m |
 | 90° | 0.495 m |
 
-60° 和 90° 已超过或明显接近 `capture_exit_radius=0.25 m`，会触发状态机
-退出最终转向并重新平移。现在统一使用 `config/auv_tf.yaml` 中的
+60° 和 90° 对应的杆臂位置差足以触发旧版接管退出逻辑。现在统一使用
+`config/auv_tf.yaml` 中的
 `static_transforms.imu.translation`：
 
 - 状态链路：由 IMU/GNSS NED 位置减去旋转后的 `base_link -> imu`

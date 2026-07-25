@@ -49,6 +49,8 @@
     根据 data6 增加启动首帧三轴主动刹停，记录航向计划与有效角减速度，并收紧纯定深保持死区。
 2026.7.24
     加载纯定深 HOVER 退出滞回参数，支持误差持续超限后恢复统一跟踪。
+2026.7.25
+    mode=2 与 mode=4 共用 HOVER 进入和退出参数，移除旧接管故障阈值加载。
 """
 
 from __future__ import division
@@ -400,8 +402,6 @@ class MotionSupervisorNode(object):
             'yaw_control_tolerance': 'yaw_control_tolerance_deg',
             'yaw_rate_threshold': 'yaw_rate_threshold_deg_s',
             'hover_exit_yaw_error': 'hover_exit_yaw_error_deg',
-            'hover_fault_yaw_rate': 'hover_fault_yaw_rate_deg_s',
-            'hover_fault_yaw_error': 'hover_fault_yaw_error_deg',
             'yaw_max_rate': 'yaw_max_rate_deg_s',
             'yaw_max_acceleration': 'yaw_max_acceleration_deg_s2',
             'yaw_max_jerk': 'yaw_max_jerk_deg_s3',
