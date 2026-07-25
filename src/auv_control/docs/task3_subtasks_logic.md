@@ -532,7 +532,9 @@ supervisor接口和到达判定：
 | `kv_y_positive/negative` | `1200/2000` | 左右速度阻尼增益 |
 | `brake_gain_tx_* / brake_gain_ty_*` | 按方向分别配置 | 主动刹车增益；过冲时结合实测速度调整 |
 | `brake_acceleration_* / brake_margin_*` | 按方向分别配置 | 刹车距离估计和附加停车余量 |
-| `capture_radius/capture_exit_radius` | `0.15/0.25` | 进入 mode=4 接管和重新跟踪的水平误差门槛，m |
+| `capture_radius/hover_exit_position_error` | `0.07/0.12` | mode=2和mode=4统一的HOVER进入/退出水平误差门槛，m |
+| `yaw_tolerance_deg/hover_exit_yaw_error_deg` | `5.0/8.0` | 两种模式统一的HOVER进入/退出航向误差门槛，deg |
+| `hover_exit_hold_seconds` | `0.50` | HOVER退出误差需要连续保持的时间，s |
 | `control_center_hold_tolerance` | `0.03` | mode=4 当前控制中心位置死区，m |
 | `horizontal_speed_threshold` | `0.015` | supervisor 判定水平停稳的速度上限，m/s |
 | `yaw_tolerance_deg/yaw_rate_threshold_deg_s` | `5.0/0.3` | supervisor 判定航向到达和停转的门槛 |

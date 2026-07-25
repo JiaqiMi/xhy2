@@ -4,84 +4,11 @@
       motion_supervisor 必须由基础控制系统预先启动，并作为 /cmd/pose/ned 的唯一发布者。
     -->
 
-    <!-- 节点与控制器接口。 -->
-    <arg name="map_frame" default="map" />
-    <arg name="base_frame" default="base_link" />
-    <arg name="motion_goal_topic" default="/cmd/motion/goal" />
-    <arg name="motion_state_topic" default="/motion/state" />
-    <arg name="actuator_topic" default="/cmd/actuator" />
-    <arg name="actuator_status_topic" default="/status/actuator" />
-    <arg name="finished_topic" default="/finished" />
-    <!-- 文本日志记录 ROS 输出；结构化 YAML 数据流记录每次判断和反馈快照。 -->
-    <arg name="log_directory" default="$(env HOME)/.ros/auv_logs/task2" />
-    <arg name="data_log_enabled" default="true" />
-
-    <!-- 任务空间与时长参数；坐标均在 map 坐标系下。 -->
-    <arg name="task_depth" default="-1.0" />
-    <arg name="delivery_xy" default="[0.0, 0.0]" />
-    <arg name="delivery_yaw_deg" default="0.0" />
-    <arg name="surface_depth" default="0.0" />
-    <arg name="final_yaw_deg" default="0.0" />
-    <arg name="pushrod_speed" default="250" />
-    <arg name="pushrod_duration" default="10.0" />
-    <arg name="surface_hold_seconds" default="10.0" />
-    <arg name="final_hold_seconds" default="10.0" />
-
-    <!-- 执行器安全状态与闭环确认。 -->
-    <arg name="heading_servo_right" default="0" />
-    <arg name="clamp_closed" default="255" />
-    <arg name="pushrod_forward_cmd" default="1" />
-    <arg name="feedback_confirm_frames" default="2" />
-    <arg name="actuator_status_timeout" default="0.6" />
-    <arg name="actuator_confirm_timeout" default="5.0" />
-
-    <!-- 启动、导航、反馈恢复与最终安全定点超时。 -->
-    <arg name="tf_initial_timeout" default="30.0" />
-    <arg name="motion_state_timeout" default="0.5" />
-    <arg name="motion_recovery_timeout" default="10.0" />
-    <arg name="initial_hover_timeout" default="120.0" />
-    <arg name="delivery_depth_timeout" default="180.0" />
-    <arg name="surface_timeout" default="120.0" />
-    <arg name="dive_timeout" default="120.0" />
-    <arg name="return_home_timeout" default="180.0" />
-    <arg name="final_safe_warning_timeout" default="120.0" />
+    <!-- Task2 运行参数统一由 config/task2.yaml 提供。 -->
+    <arg name="task2_config_file"
+         default="$(find auv_control)/config/task2.yaml" />
 
     <node pkg="auv_control" type="task2_v2.py" name="task2_v2" output="screen">
-        <param name="map_frame" type="string" value="$(arg map_frame)" />
-        <param name="base_frame" type="string" value="$(arg base_frame)" />
-        <param name="motion_goal_topic" type="string" value="$(arg motion_goal_topic)" />
-        <param name="motion_state_topic" type="string" value="$(arg motion_state_topic)" />
-        <param name="actuator_topic" type="string" value="$(arg actuator_topic)" />
-        <param name="actuator_status_topic" type="string" value="$(arg actuator_status_topic)" />
-        <param name="finished_topic" type="string" value="$(arg finished_topic)" />
-        <param name="log_directory" type="string" value="$(arg log_directory)" />
-        <param name="data_log_enabled" type="bool" value="$(arg data_log_enabled)" />
-
-        <param name="task_depth" type="double" value="$(arg task_depth)" />
-        <param name="delivery_xy" type="yaml" value="$(arg delivery_xy)" />
-        <param name="delivery_yaw_deg" type="double" value="$(arg delivery_yaw_deg)" />
-        <param name="surface_depth" type="double" value="$(arg surface_depth)" />
-        <param name="final_yaw_deg" type="double" value="$(arg final_yaw_deg)" />
-        <param name="pushrod_speed" type="int" value="$(arg pushrod_speed)" />
-        <param name="pushrod_duration" type="double" value="$(arg pushrod_duration)" />
-        <param name="surface_hold_seconds" type="double" value="$(arg surface_hold_seconds)" />
-        <param name="final_hold_seconds" type="double" value="$(arg final_hold_seconds)" />
-
-        <param name="heading_servo_right" type="int" value="$(arg heading_servo_right)" />
-        <param name="clamp_closed" type="int" value="$(arg clamp_closed)" />
-        <param name="pushrod_forward_cmd" type="int" value="$(arg pushrod_forward_cmd)" />
-        <param name="feedback_confirm_frames" type="int" value="$(arg feedback_confirm_frames)" />
-        <param name="actuator_status_timeout" type="double" value="$(arg actuator_status_timeout)" />
-        <param name="actuator_confirm_timeout" type="double" value="$(arg actuator_confirm_timeout)" />
-
-        <param name="tf_initial_timeout" type="double" value="$(arg tf_initial_timeout)" />
-        <param name="motion_state_timeout" type="double" value="$(arg motion_state_timeout)" />
-        <param name="motion_recovery_timeout" type="double" value="$(arg motion_recovery_timeout)" />
-        <param name="initial_hover_timeout" type="double" value="$(arg initial_hover_timeout)" />
-        <param name="delivery_depth_timeout" type="double" value="$(arg delivery_depth_timeout)" />
-        <param name="surface_timeout" type="double" value="$(arg surface_timeout)" />
-        <param name="dive_timeout" type="double" value="$(arg dive_timeout)" />
-        <param name="return_home_timeout" type="double" value="$(arg return_home_timeout)" />
-        <param name="final_safe_warning_timeout" type="double" value="$(arg final_safe_warning_timeout)" />
+        <rosparam command="load" file="$(arg task2_config_file)" />
     </node>
 </launch>

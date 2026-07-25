@@ -1,0 +1,45 @@
+# Task2 采水器任务参数。
+# task2_v2.launch 只负责编排节点；本文件集中配置任务运行参数。
+
+# 坐标系与控制器接口
+map_frame: map
+base_frame: base_link
+motion_goal_topic: /cmd/motion/goal
+motion_state_topic: /motion/state
+actuator_topic: /cmd/actuator
+actuator_status_topic: /status/actuator
+finished_topic: /finished
+
+# 采水、送水与返航目标；坐标均在 map 坐标系下。
+task_depth: -1.0
+delivery_xy: [0.0, 0.0]
+delivery_yaw_deg: 0.0
+surface_depth: 0.0
+final_yaw_deg: 0.0
+pushrod_speed: 250
+pushrod_duration: 10.0
+surface_hold_seconds: 10.0
+final_hold_seconds: 10.0
+
+# 执行器安全状态与反馈闭环
+heading_servo_right: 0
+clamp_closed: 255
+pushrod_forward_cmd: 1
+feedback_confirm_frames: 2
+actuator_status_timeout: 0.6
+actuator_confirm_timeout: 5.0
+
+# 运动与反馈超时
+tf_initial_timeout: 30.0
+motion_state_timeout: 0.5
+motion_recovery_timeout: 10.0
+initial_hover_timeout: 120.0
+delivery_depth_timeout: 180.0
+surface_timeout: 120.0
+dive_timeout: 120.0
+return_home_timeout: 180.0
+final_safe_warning_timeout: 120.0
+
+# 运行日志
+log_directory: ~/.ros/auv_logs/task2
+data_log_enabled: true
