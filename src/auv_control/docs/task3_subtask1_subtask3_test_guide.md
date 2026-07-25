@@ -607,13 +607,15 @@ src/auv_control/config/motion_supervisor.yaml
 
 | 参数 | 当前值 | 作用 |
 | --- | ---: | --- |
-| `capture_radius` | `0.15m` | 允许进入mode=4接管的水平误差 |
-| `capture_exit_radius` | `0.25m` | 接管等待期间允许保留的水平误差 |
+| `capture_radius` | `0.07m` | mode=2和mode=4统一的HOVER进入水平误差 |
 | `control_center_hold_tolerance` | `0.03m` | 控制中心位置死区 |
-| `horizontal_speed_threshold` | `0.015m/s` | supervisor判定停稳的水平速度 |
+| `horizontal_speed_threshold` | `0.008m/s` | supervisor判定停稳的水平速度 |
 | `yaw_tolerance_deg` | `5deg` | supervisor航向捕获容差 |
 | `yaw_rate_threshold_deg_s` | `0.3deg/s` | supervisor停转门槛 |
 | `stable_frames` | `5` | 捕获条件连续通过帧数 |
+| `hover_exit_position_error` | `0.12m` | 两种模式统一的HOVER水平退出阈值 |
+| `hover_exit_yaw_error_deg` | `8deg` | 两种模式统一的HOVER航向退出阈值 |
+| `hover_exit_hold_seconds` | `0.50s` | 退出误差需要连续保持的时间 |
 | `goal_static_capture_seconds` | `0.80s` | 目标保持不变多久后才允许捕获 |
 | `mode_ack_timeout` | `1.0s` | 等待下位机mode=4确认的超时 |
 

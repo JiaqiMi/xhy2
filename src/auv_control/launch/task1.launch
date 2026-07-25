@@ -1,0 +1,43 @@
+<launch>
+    <!-- Task1 比赛完整流程。任务运行参数统一由 config/task1.yaml 提供。 -->
+    <arg name="task1_config_file"
+         default="$(find auv_control)/config/task1.yaml" />
+
+    <!-- true：由本 launch 同时启动红线和图形识别节点。 -->
+    <arg name="start_detection_nodes" default="true" />
+
+    <!--
+        true：task1 正常结束退出后，roslaunch 自动关闭本 launch 启动的
+        红线和图形识别节点；不会关闭在其他 launch 中启动的外部节点。
+    -->
+    <arg name="auto_shutdown_detection_nodes" default="true" />
+
+    <group if="$(arg start_detection_nodes)">
+        <group>
+            <remap from="/vision/line/line_message"
+                   to="/obj/line_message" />
+            <include file="$(find stereo_depth)/launch/test_line_detection_lineN.launch">
+                <!-- 两套识别共用一个 Web 节点名，比赛流程关闭识别 Web 避免冲突。 -->
+                <arg name="start_web" value="false" />
+            </include>
+        </group>
+
+        <group>
+            <remap from="/vision/shapes/target_message"
+                   to="/obj/target_message" />
+            <include file="$(find stereo_depth)/launch/test_shapes_detection.launch">
+                <arg name="start_web" value="false" />
+            </include>
+        </group>
+    </group>
+
+    <node pkg="auv_control"
+          type="task1.py"
+          name="task1"
+          output="screen"
+          required="$(arg auto_shutdown_detection_nodes)">
+        <env name="ROS_PYTHON_LOG_CONFIG_FILE"
+             value="$(find auv_control)/config/task1_v3_python_logging.conf" />
+        <rosparam command="load" file="$(arg task1_config_file)" />
+    </node>
+</launch>
