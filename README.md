@@ -192,7 +192,8 @@ roslaunch stereo_depth test_aruco_detection_fisheye.launch
 ```bash
 
 roslaunch stereo_depth test_rosbag.launch \
-  mode:=record
+  mode:=record \
+  start_web:=true
 
 roslaunch stereo_depth test_rosbag.launch \
   mode:=play \
