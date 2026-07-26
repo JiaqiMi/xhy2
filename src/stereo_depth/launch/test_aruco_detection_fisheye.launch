@@ -39,7 +39,7 @@
     <arg name="undistort_before_detection" default="false" />
 
     <arg name="camera_model" default="fisheye" />
-    <arg name="fisheye_balance" default="0.25" />
+    <arg name="fisheye_balance" default="0.5" />
 
     <!-- 输出 -->
     <arg name="pose_topic" default="/vision/aruco/pose_stamped" />

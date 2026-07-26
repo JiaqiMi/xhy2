@@ -23,4 +23,5 @@ camera_matrix: [1105.0710852460152, 0.0, 1252.913633665789, 0.0, 1178.9131117999
 dist_coeffs: [-0.35178111435863124, 0.04760698460581123, 0.06780191219249923, 0.0]
 
 # 0.0 crops more; 1.0 retains more field of view and black borders.
-fisheye_balance: 0.25
+# fisheye_balance: 0.25
+fisheye_balance: 0.0

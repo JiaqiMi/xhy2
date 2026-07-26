@@ -9,7 +9,7 @@
 
     <arg name="start_camera" default="false" />
     <arg name="start_splitter" default="false" />
-    <arg name="start_web" default="false" />
+    <arg name="start_web" default="true" />
     <arg name="start_depth" default="true" />
 
     <!-- 请将训练得到的best.pt复制并重命名到该位置 -->
@@ -22,7 +22,7 @@
     <arg name="imgsz" default="640" />
     <arg name="device" default="0" />
     <arg name="visualization" default="0" />
-    <arg name="web_port" default="8080" />
+    <arg name="web_port" default="8087" />
 
     <!-- 1 Hz rosbag建议1.5~2.0；实时5 Hz可设0.8~1.0 -->
     <arg name="keypoint_timeout" default="1.5" />
