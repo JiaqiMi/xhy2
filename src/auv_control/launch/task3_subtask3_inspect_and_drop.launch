@@ -28,6 +28,8 @@
     <arg name="motion_state_topic" default="/motion/state" />
     <arg name="status_topic" default="/status/auv" />
     <arg name="actuator_topic" default="/cmd/actuator" />
+    <!-- 执行器实际位置反馈，用于判断回中、开爪、回右和关爪是否到位。 -->
+    <arg name="actuator_status_topic" default="/status/actuator" />
 
     <!-- 加载后生成/test_task3_3_inspect_and_drop/*私有参数。 -->
     <rosparam command="load" file="$(arg task3_config_file)" />
@@ -58,5 +60,7 @@
         <param name="status_topic" type="string" value="$(arg status_topic)" />
         <param name="actuator_topic" type="string"
                value="$(arg actuator_topic)" />
+        <param name="actuator_status_topic" type="string"
+               value="$(arg actuator_status_topic)" />
     </node>
 </launch>

@@ -276,9 +276,26 @@ test_task3_3_inspect_and_drop:
   auto_action_max_yaw_error_deg: 5.0
 
   # 动作时序
+  # 以下时间均从/status/actuator反馈确认到位后开始计算，
+  # 不再用于猜测机械爪是否已经到位。
+  # 方框对准后，航向舵机回中且夹爪闭合到位后的保持时间。
   hold_seconds: 1.0
+  # 航向舵机位于中间，夹爪打开到位后的保持时间。
   open_seconds: 5.0
+  # 夹爪保持打开，航向舵机回到右侧到位后的保持时间。
+  return_right_seconds: 1.0
+  # 回到右侧并关闭夹爪到位后的保持时间。
   close_seconds: 0.0
+
+  # 执行器反馈到位判定
+  # /status/actuator超过该时间没有更新时，暂停到位计数。
+  actuator_status_timeout: 1.0
+  # 连续多少条反馈同时满足航向舵机和夹爪目标，才确认到位。
+  actuator_feedback_confirm_frames: 2
+  # 航向舵机和夹爪反馈相对目标值允许的绝对误差。
+  actuator_servo_tolerance: 2
+  # 每个机械动作等待反馈到位的最长时间，超时则任务失败并安全收爪。
+  actuator_stage_timeout: 15.0
 
   # 投放完成后的自动离场，仅operation_mode=auto时执行。
   post_drop_motion_enabled: true
@@ -293,7 +310,9 @@ test_task3_3_inspect_and_drop:
   actuator_mode: 2
   clamp_open: 0
   clamp_closed: 255
-  heading_servo: 128
+  # 航向舵机协议：0=右，128=中，255=左。
+  heading_servo_right: 0
+  heading_servo_center: 128
   drive_cmd: 0
   drive_speed: 0
   light1: 0

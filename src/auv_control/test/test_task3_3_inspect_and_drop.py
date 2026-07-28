@@ -144,6 +144,7 @@ DEFAULT_WARNING_LOG_INTERVAL = 2.0
 # 识别成功后的动作参数。
 DEFAULT_HOLD_SECONDS = 1.0
 DEFAULT_OPEN_SECONDS = 3.0
+DEFAULT_RETURN_RIGHT_SECONDS = 1.0
 DEFAULT_CLOSE_SECONDS = 0.0
 DEFAULT_POST_DROP_MOTION_ENABLED = True
 DEFAULT_POST_DROP_TURN_ANGLE_DEG = 90.0
@@ -152,10 +153,16 @@ DEFAULT_POST_DROP_STEP_TIMEOUT = 90.0
 
 # 执行器参数。
 DEFAULT_ACTUATOR_TOPIC = "/cmd/actuator"
+DEFAULT_ACTUATOR_STATUS_TOPIC = "/status/actuator"
 DEFAULT_ACTUATOR_MODE = 2  # 0=不响应，1=仅补光灯，2=仅执行器
 DEFAULT_CLAMP_OPEN = 0x00
 DEFAULT_CLAMP_CLOSED = 0xFF
-DEFAULT_HEADING_SERVO = 0x80
+DEFAULT_HEADING_SERVO_RIGHT = 0x00
+DEFAULT_HEADING_SERVO_CENTER = 0x80
+DEFAULT_ACTUATOR_STATUS_TIMEOUT = 1.0
+DEFAULT_ACTUATOR_FEEDBACK_CONFIRM_FRAMES = 2
+DEFAULT_ACTUATOR_SERVO_TOLERANCE = 2
+DEFAULT_ACTUATOR_STAGE_TIMEOUT = 15.0
 DEFAULT_DRIVE_CMD = 0
 DEFAULT_DRIVE_SPEED = 0
 DEFAULT_LIGHT1 = 0
@@ -168,16 +175,18 @@ class Task3InspectAndDropTest:
     AUTO_APPROACH = 2
     HOLD_BEFORE_ACTION = 3
     OPEN_CLAMP = 4
-    CLOSE_CLAMP = 5
-    POST_DROP_TURN = 6
-    POST_DROP_FORWARD = 7
+    RETURN_GRIPPER_RIGHT = 5
+    CLOSE_CLAMP = 6
+    POST_DROP_TURN = 7
+    POST_DROP_FORWARD = 8
 
     STATE_NAMES = {
         WAIT_FOR_TARGET: "等待目标颜色方框",
         AUTO_HOVER_CONFIRM: "刹停后悬停复核方框",
         AUTO_APPROACH: "自动靠近并对齐方框",
-        HOLD_BEFORE_ACTION: "识别确认后保持",
+        HOLD_BEFORE_ACTION: "夹爪移动到中间",
         OPEN_CLAMP: "打开夹爪",
+        RETURN_GRIPPER_RIGHT: "打开状态回到右侧",
         CLOSE_CLAMP: "关闭夹爪",
         POST_DROP_TURN: "投放后左转",
         POST_DROP_FORWARD: "投放后向前离场",
@@ -284,6 +293,9 @@ class Task3InspectAndDropTest:
         self.open_seconds = float(
             rospy.get_param("~open_seconds", DEFAULT_OPEN_SECONDS)
         )
+        self.return_right_seconds = float(rospy.get_param(
+            "~return_right_seconds", DEFAULT_RETURN_RIGHT_SECONDS
+        ))
         self.close_seconds = float(
             rospy.get_param("~close_seconds", DEFAULT_CLOSE_SECONDS)
         )
@@ -453,6 +465,9 @@ class Task3InspectAndDropTest:
         self.actuator_topic = str(
             rospy.get_param("~actuator_topic", DEFAULT_ACTUATOR_TOPIC)
         ).strip()
+        self.actuator_status_topic = str(rospy.get_param(
+            "~actuator_status_topic", DEFAULT_ACTUATOR_STATUS_TOPIC
+        )).strip()
         self.actuator_mode = int(
             rospy.get_param("~actuator_mode", DEFAULT_ACTUATOR_MODE)
         )
@@ -462,9 +477,29 @@ class Task3InspectAndDropTest:
         self.clamp_closed = int(
             rospy.get_param("~clamp_closed", DEFAULT_CLAMP_CLOSED)
         )
-        self.heading_servo = int(
-            rospy.get_param("~heading_servo", DEFAULT_HEADING_SERVO)
+        self.heading_servo_right = int(
+            rospy.get_param(
+                "~heading_servo_right", DEFAULT_HEADING_SERVO_RIGHT
+            )
         )
+        self.heading_servo_center = int(
+            rospy.get_param(
+                "~heading_servo_center", DEFAULT_HEADING_SERVO_CENTER
+            )
+        )
+        self.actuator_status_timeout = float(rospy.get_param(
+            "~actuator_status_timeout", DEFAULT_ACTUATOR_STATUS_TIMEOUT
+        ))
+        self.actuator_feedback_confirm_frames = int(rospy.get_param(
+            "~actuator_feedback_confirm_frames",
+            DEFAULT_ACTUATOR_FEEDBACK_CONFIRM_FRAMES,
+        ))
+        self.actuator_servo_tolerance = int(rospy.get_param(
+            "~actuator_servo_tolerance", DEFAULT_ACTUATOR_SERVO_TOLERANCE
+        ))
+        self.actuator_stage_timeout = float(rospy.get_param(
+            "~actuator_stage_timeout", DEFAULT_ACTUATOR_STAGE_TIMEOUT
+        ))
         self.drive_cmd = int(
             rospy.get_param("~drive_cmd", DEFAULT_DRIVE_CMD)
         )
@@ -558,6 +593,16 @@ class Task3InspectAndDropTest:
         self.auto_action_hold_position = None
         self.post_drop_target_yaw = None
         self.last_actuator_command = None
+        self.latest_actuator_status = None
+        self.last_actuator_status_time = None
+        self.actuator_status_sequence = 0
+        self.actuator_feedback_baseline_sequence = 0
+        self.actuator_feedback_last_checked_sequence = 0
+        self.actuator_feedback_match_count = 0
+        self.actuator_feedback_confirmed_at = None
+        self.actuator_safe_feedback_count = 0
+        self.actuator_safe_feedback_ready = False
+        self.actuator_pre_action_wait_started_at = None
         self.finished = False
 
         self.detection_sub = rospy.Subscriber(
@@ -565,6 +610,12 @@ class Task3InspectAndDropTest:
             String,
             self.detection_callback,
             queue_size=10,
+        )
+        self.actuator_status_sub = rospy.Subscriber(
+            self.actuator_status_topic,
+            ActuatorControl,
+            self.actuator_status_callback,
+            queue_size=20,
         )
         self.status_sub = None
         self.motion_state_sub = None
@@ -651,11 +702,14 @@ class Task3InspectAndDropTest:
             )
             rospy.loginfo(
                 (
-                    "%s：自动动作时序：居中确认后同时开灯和打开夹爪，"
-                    "悬停=%.1fs，然后关闭夹爪、熄灯，关闭确认=%.1fs"
+                    "%s：自动动作时序：右侧闭合 -> 中间闭合%.1fs -> "
+                    "中间打开%.1fs -> 打开状态回右侧%.1fs -> "
+                    "右侧闭合%.1fs"
                 ),
                 NODE_NAME,
+                self.hold_seconds,
                 self.open_seconds,
+                self.return_right_seconds,
                 self.close_seconds,
             )
             rospy.loginfo(
@@ -777,24 +831,41 @@ class Task3InspectAndDropTest:
                 self.hold_seconds,
             )
         rospy.loginfo(
-            "%s：执行器话题=%s，mode=%d（2=仅执行器），夹爪开=%d，夹爪关=%d",
+            (
+                "%s：执行器指令=%s，反馈=%s，mode=%d（2=仅执行器），"
+                "夹爪开=%d，夹爪关=%d，航向舵机右=%d，中=%d"
+            ),
             NODE_NAME,
             self.actuator_topic,
+            self.actuator_status_topic,
             self.actuator_mode,
             self.clamp_open,
             self.clamp_closed,
+            self.heading_servo_right,
+            self.heading_servo_center,
         )
         rospy.loginfo(
             (
-                "%s：执行器固定字段：补光灯=(%d,%d)，航向舵机=%d，"
+                "%s：执行器固定字段：补光灯=(%d,%d)，"
                 "推进电机=(动作%d,转速%d)；颜色灯随目标颜色自动选择"
             ),
             NODE_NAME,
             self.light1,
             self.light2,
-            self.heading_servo,
             self.drive_cmd,
             self.drive_speed,
+        )
+        rospy.loginfo(
+            (
+                "%s：执行器反馈判定：舵机误差<=%d，连续%d帧到位，"
+                "反馈超时=%.1fs，单阶段到位超时=%.1fs；"
+                "动作保持时间均从反馈确认到位后开始计时"
+            ),
+            NODE_NAME,
+            self.actuator_servo_tolerance,
+            self.actuator_feedback_confirm_frames,
+            self.actuator_status_timeout,
+            self.actuator_stage_timeout,
         )
         if not self.actuator_mode_supported:
             rospy.logerr(
@@ -846,7 +917,6 @@ class Task3InspectAndDropTest:
             "yaw_deg": float(raw_values[9]),
         }
         self.last_status_time = rospy.Time.now()
-
         rospy.loginfo_throttle(
             self.log_interval,
             (
@@ -862,6 +932,46 @@ class Task3InspectAndDropTest:
             self.current_status["vy"],
             self.current_status["vz"],
         )
+
+    def actuator_status_callback(self, message):
+        now = rospy.Time.now()
+        self.actuator_status_sequence += 1
+        self.last_actuator_status_time = now
+        self.latest_actuator_status = {
+            "sequence": self.actuator_status_sequence,
+            "heading_servo": int(message.heading_servo),
+            "clamp_servo": int(message.clamp_servo),
+        }
+
+        safe_match = self.actuator_values_match(
+            message.heading_servo,
+            message.clamp_servo,
+            self.heading_servo_right,
+            self.clamp_closed,
+        )
+        if safe_match:
+            self.actuator_safe_feedback_count = min(
+                self.actuator_safe_feedback_count + 1,
+                self.actuator_feedback_confirm_frames,
+            )
+            if (
+                not self.actuator_safe_feedback_ready
+                and self.actuator_safe_feedback_count
+                >= self.actuator_feedback_confirm_frames
+            ):
+                self.actuator_safe_feedback_ready = True
+                rospy.loginfo(
+                    (
+                        "%s：[执行器反馈] 初始安全位置已确认："
+                        "航向舵机=%d（右），夹爪=%d（闭合），连续%d帧"
+                    ),
+                    NODE_NAME,
+                    message.heading_servo,
+                    message.clamp_servo,
+                    self.actuator_safe_feedback_count,
+                )
+        elif not self.actuator_safe_feedback_ready:
+            self.actuator_safe_feedback_count = 0
 
     def motion_state_callback(self, message):
         self.latest_motion_state = message
@@ -943,6 +1053,8 @@ class Task3InspectAndDropTest:
             raise ValueError("operation_mode 必须是 manual 或 auto")
         if not self.detection_topic:
             raise ValueError("model_detection_topic 不能为空")
+        if not self.actuator_topic or not self.actuator_status_topic:
+            raise ValueError("执行器指令和反馈话题不能为空")
         if not self.target_color:
             raise ValueError("target_color 不能为空")
         if not 0.0 <= self.min_confidence <= 1.0:
@@ -974,8 +1086,29 @@ class Task3InspectAndDropTest:
                 "%s：子任务3需要控制夹爪和三色灯，actuator_mode 应设置为 2",
                 NODE_NAME,
             )
-        if min(self.hold_seconds, self.open_seconds, self.close_seconds) < 0.0:
+        if min(
+                self.hold_seconds,
+                self.open_seconds,
+                self.return_right_seconds,
+                self.close_seconds) < 0.0:
             raise ValueError("动作持续时间不能小于 0")
+        actuator_values = (
+            ("clamp_open", self.clamp_open),
+            ("clamp_closed", self.clamp_closed),
+            ("heading_servo_right", self.heading_servo_right),
+            ("heading_servo_center", self.heading_servo_center),
+        )
+        for name, value in actuator_values:
+            if not 0 <= value <= 255:
+                raise ValueError("{} 必须在0到255之间".format(name))
+        if self.actuator_status_timeout <= 0.0:
+            raise ValueError("actuator_status_timeout 必须大于0")
+        if self.actuator_feedback_confirm_frames < 1:
+            raise ValueError("actuator_feedback_confirm_frames 必须大于等于1")
+        if not 0 <= self.actuator_servo_tolerance <= 255:
+            raise ValueError("actuator_servo_tolerance 必须在0到255之间")
+        if self.actuator_stage_timeout <= 0.0:
+            raise ValueError("actuator_stage_timeout 必须大于0")
         if self.target_color not in self.COLOR_LIGHTS:
             raise ValueError("target_color 必须是 yellow、green 或 red")
         if min(self.log_interval, self.warning_log_interval) <= 0.0:
@@ -2366,6 +2499,13 @@ class Task3InspectAndDropTest:
             )
             return
 
+        if not self.require_safe_actuator_feedback("自动模式动作放行"):
+            self.publish_actuator(
+                self.clamp_closed,
+                "off",
+                self.heading_servo_right,
+            )
+            return
         if not self.capture_action_hold_position():
             rospy.logwarn_throttle(
                 self.warning_log_interval,
@@ -2373,10 +2513,14 @@ class Task3InspectAndDropTest:
                 NODE_NAME,
             )
             return
-        self.publish_actuator(self.clamp_open, self.target_color)
+        self.publish_actuator(
+            self.clamp_closed,
+            self.target_color,
+            self.heading_servo_center,
+        )
         self.set_state(
-            self.OPEN_CLAMP,
-            "方框连续居中 {} 帧且 motion_supervisor 已稳定 HOVER".format(
+            self.HOLD_BEFORE_ACTION,
+            "方框连续居中 {} 帧且motion_supervisor已稳定HOVER，夹爪先移到中间".format(
                 self.auto_center_stable_detection_count
             ),
         )
@@ -3433,7 +3577,197 @@ class Task3InspectAndDropTest:
                     "悬停后第二轮目标识别通过，开始依据中心像素细对准",
                 )
         else:
+            if not self.require_safe_actuator_feedback("人工模式动作放行"):
+                return
             self.set_state(self.HOLD_BEFORE_ACTION, "模型目标已稳定确认")
+
+    def actuator_values_match(
+        self,
+        actual_heading,
+        actual_clamp,
+        expected_heading,
+        expected_clamp,
+    ):
+        return (
+            abs(int(actual_heading) - int(expected_heading))
+            <= self.actuator_servo_tolerance
+            and abs(int(actual_clamp) - int(expected_clamp))
+            <= self.actuator_servo_tolerance
+        )
+
+    def require_safe_actuator_feedback(self, context):
+        if self.actuator_safe_feedback_ready:
+            self.actuator_pre_action_wait_started_at = None
+            return True
+
+        now = rospy.Time.now()
+        if self.actuator_pre_action_wait_started_at is None:
+            self.actuator_pre_action_wait_started_at = now
+        waiting_seconds = (
+            now - self.actuator_pre_action_wait_started_at
+        ).to_sec()
+
+        if self.latest_actuator_status is None:
+            detail = "尚未收到反馈"
+        else:
+            status_age = (
+                now - self.last_actuator_status_time
+            ).to_sec()
+            detail = (
+                "实际=(航向%d,夹爪%d)，目标右侧闭合=(%d,%d)，"
+                "连续=%d/%d，反馈年龄=%.2fs"
+                % (
+                    self.latest_actuator_status["heading_servo"],
+                    self.latest_actuator_status["clamp_servo"],
+                    self.heading_servo_right,
+                    self.clamp_closed,
+                    self.actuator_safe_feedback_count,
+                    self.actuator_feedback_confirm_frames,
+                    status_age,
+                )
+            )
+
+        rospy.logwarn_throttle(
+            self.warning_log_interval,
+            "%s：[执行器反馈] %s等待初始右侧闭合到位；%s",
+            NODE_NAME,
+            context,
+            detail,
+        )
+        if waiting_seconds >= self.actuator_stage_timeout:
+            self.finish_task(
+                False,
+                (
+                    "%s等待执行器初始右侧闭合反馈超过%.1fs；%s"
+                    % (context, self.actuator_stage_timeout, detail)
+                ),
+            )
+        return False
+
+    def actuator_stage_complete(
+        self,
+        expected_heading,
+        expected_clamp,
+        hold_seconds,
+        stage_name,
+    ):
+        now = rospy.Time.now()
+        status = self.latest_actuator_status
+        status_is_fresh = (
+            status is not None
+            and self.last_actuator_status_time is not None
+            and (now - self.last_actuator_status_time).to_sec()
+            <= self.actuator_status_timeout
+        )
+
+        if not status_is_fresh:
+            self.actuator_feedback_match_count = 0
+            self.actuator_feedback_confirmed_at = None
+            if status is None:
+                detail = "尚未收到反馈"
+            else:
+                detail = "反馈年龄=%.2fs，限制=%.2fs" % (
+                    (now - self.last_actuator_status_time).to_sec(),
+                    self.actuator_status_timeout,
+                )
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：[执行器反馈][%s] %s",
+                NODE_NAME,
+                stage_name,
+                detail,
+            )
+        elif (
+            status["sequence"] > self.actuator_feedback_baseline_sequence
+            and status["sequence"]
+            > self.actuator_feedback_last_checked_sequence
+        ):
+            self.actuator_feedback_last_checked_sequence = status["sequence"]
+            matched = self.actuator_values_match(
+                status["heading_servo"],
+                status["clamp_servo"],
+                expected_heading,
+                expected_clamp,
+            )
+            if matched:
+                self.actuator_feedback_match_count = min(
+                    self.actuator_feedback_match_count + 1,
+                    self.actuator_feedback_confirm_frames,
+                )
+            else:
+                self.actuator_feedback_match_count = 0
+                self.actuator_feedback_confirmed_at = None
+
+            rospy.loginfo(
+                (
+                    "%s：[执行器反馈][%s][反馈帧#%d] "
+                    "航向=%d/%d，夹爪=%d/%d，误差=(%d,%d)，"
+                    "到位=%s，连续=%d/%d"
+                ),
+                NODE_NAME,
+                stage_name,
+                status["sequence"],
+                status["heading_servo"],
+                expected_heading,
+                status["clamp_servo"],
+                expected_clamp,
+                abs(status["heading_servo"] - expected_heading),
+                abs(status["clamp_servo"] - expected_clamp),
+                "通过" if matched else "未通过",
+                self.actuator_feedback_match_count,
+                self.actuator_feedback_confirm_frames,
+            )
+            if (
+                self.actuator_feedback_match_count
+                >= self.actuator_feedback_confirm_frames
+                and self.actuator_feedback_confirmed_at is None
+            ):
+                self.actuator_feedback_confirmed_at = now
+                rospy.loginfo(
+                    (
+                        "%s：[执行器反馈][%s] 已确认到位，"
+                        "从现在开始保持%.1fs"
+                    ),
+                    NODE_NAME,
+                    stage_name,
+                    hold_seconds,
+                )
+
+        if self.actuator_feedback_confirmed_at is not None:
+            held_seconds = (
+                now - self.actuator_feedback_confirmed_at
+            ).to_sec()
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：[执行器反馈][%s] 已到位，保持 %.1f/%.1fs",
+                NODE_NAME,
+                stage_name,
+                min(held_seconds, hold_seconds),
+                hold_seconds,
+            )
+            return held_seconds >= hold_seconds
+
+        if self.state_elapsed() >= self.actuator_stage_timeout:
+            actual = (
+                "无"
+                if status is None
+                else "航向%d,夹爪%d"
+                % (status["heading_servo"], status["clamp_servo"])
+            )
+            self.finish_task(
+                False,
+                (
+                    "执行器阶段[%s]到位超时%.1fs，实际=%s，目标=航向%d,夹爪%d"
+                    % (
+                        stage_name,
+                        self.actuator_stage_timeout,
+                        actual,
+                        expected_heading,
+                        expected_clamp,
+                    )
+                ),
+            )
+        return False
 
     def state_elapsed(self):
         return (rospy.Time.now() - self.state_started).to_sec()
@@ -3443,6 +3777,14 @@ class Task3InspectAndDropTest:
         previous_elapsed = self.state_elapsed()
         self.state = state
         self.state_started = rospy.Time.now()
+        self.actuator_feedback_baseline_sequence = getattr(
+            self, "actuator_status_sequence", 0
+        )
+        self.actuator_feedback_last_checked_sequence = (
+            self.actuator_feedback_baseline_sequence
+        )
+        self.actuator_feedback_match_count = 0
+        self.actuator_feedback_confirmed_at = None
         rospy.loginfo(
             "%s：状态切换 %s -> %s，上一状态持续 %.1fs，原因：%s",
             NODE_NAME,
@@ -3452,10 +3794,12 @@ class Task3InspectAndDropTest:
             reason or "无",
         )
 
-    def publish_actuator(self, clamp_servo, color="off"):
+    def publish_actuator(self, clamp_servo, color="off", heading_servo=None):
         red, yellow, green = self.COLOR_LIGHTS.get(
             color, self.COLOR_LIGHTS["off"]
         )
+        if heading_servo is None:
+            heading_servo = self.heading_servo_right
 
         message = ActuatorControl()
         if not hasattr(message, "mode"):
@@ -3469,7 +3813,7 @@ class Task3InspectAndDropTest:
         message.mode = self.actuator_mode
         message.light1 = self.light1
         message.light2 = self.light2
-        message.heading_servo = self.heading_servo
+        message.heading_servo = int(heading_servo)
         message.clamp_servo = int(clamp_servo)
         message.drive_cmd = self.drive_cmd
         message.drive_speed = self.drive_speed
@@ -3629,14 +3973,31 @@ class Task3InspectAndDropTest:
             elif self.state == self.HOLD_BEFORE_ACTION:
                 if self.auto_enabled:
                     self.publish_action_position_hold("动作前最终定点保持")
-                self.publish_actuator(self.clamp_closed, self.target_color)
-                if self.state_elapsed() >= self.hold_seconds:
+                self.publish_actuator(
+                    self.clamp_closed,
+                    self.target_color,
+                    self.heading_servo_center,
+                )
+                if self.actuator_stage_complete(
+                    self.heading_servo_center,
+                    self.clamp_closed,
+                    self.hold_seconds,
+                    "回中并保持闭合",
+                ):
                     rospy.loginfo(
-                        "%s：识别确认完成，打开夹爪执行投放，颜色灯=%s",
+                        (
+                            "%s：反馈确认夹爪已在中间闭合并保持%.1fs，"
+                            "开始打开，颜色灯=%s"
+                        ),
                         NODE_NAME,
+                        self.hold_seconds,
                         self.target_color,
                     )
-                    self.publish_actuator(self.clamp_open, self.target_color)
+                    self.publish_actuator(
+                        self.clamp_open,
+                        self.target_color,
+                        self.heading_servo_center,
+                    )
                     self.set_state(self.OPEN_CLAMP, "开始执行投放动作")
 
             elif self.state == self.OPEN_CLAMP:
@@ -3644,32 +4005,85 @@ class Task3InspectAndDropTest:
                     self.publish_action_position_hold(
                         "开灯和夹爪打开期间最终定点保持"
                     )
-                self.publish_actuator(self.clamp_open, self.target_color)
-                open_elapsed = self.state_elapsed()
-                rospy.loginfo_throttle(
-                    self.log_interval,
-                    "%s：已开%s灯并打开夹爪，最终定点保持 %.1f/%.1fs",
-                    NODE_NAME,
+                self.publish_actuator(
+                    self.clamp_open,
                     self.target_color,
-                    min(open_elapsed, self.open_seconds),
-                    self.open_seconds,
+                    self.heading_servo_center,
                 )
-                if open_elapsed >= self.open_seconds:
+                if self.actuator_stage_complete(
+                    self.heading_servo_center,
+                    self.clamp_open,
+                    self.open_seconds,
+                    "中间打开",
+                ):
                     rospy.loginfo(
-                        "%s：开灯并打开夹爪后已定点保持 %.1fs，关闭夹爪并熄灯",
+                        (
+                            "%s：反馈确认夹爪在中间打开并保持%.1fs，"
+                            "现在保持打开、熄灯并回到右侧"
+                        ),
                         NODE_NAME,
                         self.open_seconds,
                     )
-                    self.publish_actuator(self.clamp_closed, "off")
-                    self.set_state(self.CLOSE_CLAMP, "夹爪打开时间完成")
+                    self.publish_actuator(
+                        self.clamp_open,
+                        "off",
+                        self.heading_servo_right,
+                    )
+                    self.set_state(
+                        self.RETURN_GRIPPER_RIGHT,
+                        "夹爪打开时间完成，开始回到右侧",
+                    )
+
+            elif self.state == self.RETURN_GRIPPER_RIGHT:
+                if self.auto_enabled:
+                    self.publish_action_position_hold(
+                        "夹爪打开状态回右侧期间最终定点保持"
+                    )
+                self.publish_actuator(
+                    self.clamp_open,
+                    "off",
+                    self.heading_servo_right,
+                )
+                if self.actuator_stage_complete(
+                    self.heading_servo_right,
+                    self.clamp_open,
+                    self.return_right_seconds,
+                    "打开状态回右侧",
+                ):
+                    rospy.loginfo(
+                        (
+                            "%s：反馈确认夹爪已打开回到右侧并保持%.1fs，"
+                            "开始关闭夹爪"
+                        ),
+                        NODE_NAME,
+                        self.return_right_seconds,
+                    )
+                    self.publish_actuator(
+                        self.clamp_closed,
+                        "off",
+                        self.heading_servo_right,
+                    )
+                    self.set_state(
+                        self.CLOSE_CLAMP,
+                        "夹爪已回右侧，开始关闭",
+                    )
 
             elif self.state == self.CLOSE_CLAMP:
                 if self.auto_enabled:
                     self.publish_action_position_hold(
                         "夹爪关闭期间最终定点保持"
                 )
-                self.publish_actuator(self.clamp_closed, "off")
-                if self.state_elapsed() >= self.close_seconds:
+                self.publish_actuator(
+                    self.clamp_closed,
+                    "off",
+                    self.heading_servo_right,
+                )
+                if self.actuator_stage_complete(
+                    self.heading_servo_right,
+                    self.clamp_closed,
+                    self.close_seconds,
+                    "右侧关闭",
+                ):
                     if self.auto_enabled and self.post_drop_motion_enabled:
                         if not self.start_post_drop_turn():
                             self.finish_task(
