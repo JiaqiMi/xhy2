@@ -5,9 +5,9 @@
     -->
 
     <!-- Task2 运行参数统一由 config/task2.yaml 提供。 -->
-    <arg name="task2_config_file"
-         default="$(find auv_control)/config/task2.yaml" />
+    <arg name="task2_config_file" default="$(find auv_control)/config/task2.yaml" />
 
+    <!-- 打开节点 -->
     <node pkg="auv_control" type="task2.py" name="task2" output="screen">
         <rosparam command="load" file="$(arg task2_config_file)" />
     </node>
