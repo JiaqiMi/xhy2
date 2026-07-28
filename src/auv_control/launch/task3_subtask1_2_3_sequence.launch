@@ -17,6 +17,11 @@
     <arg name="arrow_model_only" default="false" />
     <arg name="model_bundle_only" default="false" />
 
+    <!-- 与完整任务和三个独立子任务共用唯一固定深度参数。 -->
+    <arg name="task3_config_file"
+         default="$(find auv_control)/config/task3.yaml" />
+    <rosparam command="load" file="$(arg task3_config_file)" />
+
     <!--
       相机驱动已在外部启动时保持false。需要由本联调启动时，
       下视相机和分割节点只由ArUco/方框常驻进程组创建，箭头模型共享图像话题。
