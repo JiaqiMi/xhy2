@@ -167,6 +167,10 @@ class Task3GetTaskTest:
         self.motion_state_timeout = float(rospy.get_param(
             "~motion_state_timeout", DEFAULT_MOTION_STATE_TIMEOUT
         ))
+        self.fixed_depth_m = float(rospy.get_param(
+            "/task3_target_depth_m", 0.60
+        ))
+        self.fixed_map_z = -self.fixed_depth_m
 
         self.turn_enabled = bool(rospy.get_param(
             "~turn_enabled", DEFAULT_TURN_ENABLED
@@ -330,6 +334,8 @@ class Task3GetTaskTest:
     def validate_params(self):
         if self.rate_hz <= 0.0:
             raise ValueError("rate 必须大于 0")
+        if not math.isfinite(self.fixed_depth_m) or self.fixed_depth_m <= 0.0:
+            raise ValueError("task3_target_depth_m必须是大于0的有限数")
         if self.input_mode not in ("topic", "mock"):
             raise ValueError("input_mode 必须是 topic 或 mock")
         if self.input_mode == "topic" and not self.aruco_topic:
@@ -581,7 +587,7 @@ class Task3GetTaskTest:
             goal.header.frame_id = self.hold_map_frame
             goal.pose.position.x = float(translation[0])
             goal.pose.position.y = float(translation[1])
-            goal.pose.position.z = float(translation[2])
+            goal.pose.position.z = self.fixed_map_z
             goal.pose.orientation.x = float(rotation[0])
             goal.pose.orientation.y = float(rotation[1])
             goal.pose.orientation.z = float(rotation[2])
@@ -596,7 +602,7 @@ class Task3GetTaskTest:
             rospy.loginfo(
                 (
                     "%s：已锁存motion_supervisor固定点：%s坐标=(%.3f,%.3f,%.3f)，"
-                    "yaw=%.1fdeg；后续漂移不会更新该点"
+                    "yaw=%.1fdeg；固定深度=%.3fm，启动TF z=%.3f"
                 ),
                 NODE_NAME,
                 self.hold_map_frame,
@@ -604,6 +610,8 @@ class Task3GetTaskTest:
                 goal.pose.position.y,
                 goal.pose.position.z,
                 math.degrees(yaw),
+                self.fixed_depth_m,
+                float(translation[2]),
             )
             return True
 
