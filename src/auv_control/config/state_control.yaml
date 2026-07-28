@@ -1,0 +1,26 @@
+# 状态监控节点配置：任务由键盘 mode=1、2、3 选择。
+keyboard_topic: /auv_keyboard
+finished_topic: /finished
+finished_keyword: finished
+monitor_rate_hz: 2.0
+terminate_wait_seconds: 5.0
+
+tasks:
+  - mode: 1
+    name: task1
+    launch: task1.launch
+    timeout_seconds: 600.0
+    launch_args: []
+  - mode: 2
+    name: task2
+    launch: task2.launch
+    timeout_seconds: 600.0
+    launch_args: []
+  - mode: 3
+    name: task3
+    launch: task3.launch
+    timeout_seconds: 600.0
+    launch_args:
+      - start_arrow_model:=true
+      - start_aruco_model:=true
+      - start_rectangle_model:=true

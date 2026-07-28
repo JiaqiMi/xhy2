@@ -1,7 +1,7 @@
 #! /home/xhy/xhy_env/bin/python
 # -*- coding: utf-8 -*-
 """
-名称：task2_v2.py
+名称：task2.py
 功能：2026 Task 2——采水器采水、送水浮出与返航任务节点
 作者：buyegaid
 监听：/tf，/motion/state，/status/actuator
@@ -39,7 +39,7 @@ from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
-NODE_NAME = 'task2_v2'
+NODE_NAME = 'task2'
 PUSHROD_STOP = 0
 PUSHROD_FORWARD = 1
 MAIN_RATE_HZ = 5.0

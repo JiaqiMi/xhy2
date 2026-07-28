@@ -1,45 +1,93 @@
-# Task2 采水器任务参数。
-# task2_v2.launch 只负责编排节点；本文件集中配置任务运行参数。
+# Task2 采水器任务配置。
+#
+# 加载方式：必须通过 task2.launch 在 <node name="task2"> 内加载；全部键会进入
+# 节点私有命名空间 /task2/<键名>。因此本文件与 task1.yaml、task3.yaml、
+# motion_supervisor.yaml 中的同名键互不覆盖。不要在根命名空间直接执行
+# rosparam load，否则会与其他节点的公共参数发生冲突。
+#
+# 坐标约定：所有位置均在 map 坐标系下，单位为 m；航向角单位为 deg；时长单位为 s。
+# map 的 z 正负方向必须与导航系统和 motion_supervisor 的当前配置一致。
 
-# 坐标系与控制器接口
+# ============================== 坐标系与 ROS 接口 ==============================
+
+# 任务目标使用的全局坐标系；启动时从 map_frame 到 base_frame 锁存起始位置。
 map_frame: map
+# AUV 本体坐标系名称；必须持续存在于 /tf 中。
 base_frame: base_link
+# 发布 geometry_msgs/PoseStamped 绝对导航目标的话题。
 motion_goal_topic: /cmd/motion/goal
+# 订阅 auv_control/MotionState；只有反馈为 HOVER 才能推进导航阶段。
 motion_state_topic: /motion/state
+# 发布 auv_control/ActuatorControl 的执行器控制话题。
 actuator_topic: /cmd/actuator
+# 订阅 auv_control/ActuatorControl 的硬件执行器反馈话题。
 actuator_status_topic: /status/actuator
+# 发布 std_msgs/String 任务成功或失败结果的话题。
 finished_topic: /finished
 
-# 采水、送水与返航目标；坐标均在 map 坐标系下。
+# ============================== 采水、送水与返航目标 ==============================
+
+# 采水、定深送水、下潜返航时使用的 map z；默认 -1.0。
 task_depth: -1.0
+# 送水点在 map 坐标系中的绝对 [x, y]；长度必须为 2。
 delivery_xy: [0.0, 0.0]
+# 到达送水点、浮出和下潜阶段保持的 map 航向角，单位 deg。
 delivery_yaw_deg: 0.0
+# 送水点浮出水面时使用的 map z；默认 0.0。
 surface_depth: 0.0
+# 返回起始 XY 后保持的最终 map 航向角，单位 deg。
 final_yaw_deg: 0.0
+
+# ============================== 采水时序 ==============================
+
+# 推杆前进速度，范围 0~254；数值必须与下位机执行器协议一致。
 pushrod_speed: 250
+# 推杆确认前进后连续采水的时长；执行器反馈异常会暂停并重新计时。
 pushrod_duration: 10.0
+# 在送水点浮出并收到 HOVER 后，保持水面位置的时长。
 surface_hold_seconds: 10.0
+# 返回起始点并收到 HOVER 后，保持最终位置和航向的时长。
 final_hold_seconds: 10.0
 
-# 执行器安全状态与反馈闭环
+# ============================== 执行器安全状态与闭环 ==============================
+
+# 航向舵机最右侧的协议值，范围 0~255；默认 0。
 heading_servo_right: 0
+# 夹爪完全关闭的协议值，范围 0~255；默认 255。
 clamp_closed: 255
+# 推杆前进命令，只能为 1 或 2；默认 1，若实际安装方向相反可改为 2。
 pushrod_forward_cmd: 1
+# 期望状态需连续匹配的 /status/actuator 帧数；必须为正整数。
 feedback_confirm_frames: 2
+# 最新执行器反馈允许的最大年龄；超过后判为反馈失效。
 actuator_status_timeout: 0.6
+# 等待执行器命令获得连续匹配反馈的最长时间；超时后下发安全停止并等待恢复。
 actuator_confirm_timeout: 5.0
 
-# 运动与反馈超时
+# ============================== TF、运动反馈与阶段超时 ==============================
+
+# 等待首帧 map_frame -> base_frame TF 的告警阈值；超时后继续等待且不发布导航目标。
 tf_initial_timeout: 30.0
+# 最新 /motion/state 允许的最大年龄；超过后视为控制器反馈失效。
 motion_state_timeout: 0.5
+# motion 状态失效或 SAFE 持续达到该时长后，切换到最终安全定点。
 motion_recovery_timeout: 10.0
+# 起始锁存点等待 motion_supervisor 进入 HOVER 的最长时间。
 initial_hover_timeout: 120.0
+# 前往送水点且保持 task_depth 时，等待 HOVER 的最长时间。
 delivery_depth_timeout: 180.0
+# 送水点从 task_depth 浮出至 surface_depth 时，等待 HOVER 的最长时间。
 surface_timeout: 120.0
+# 送水点从 surface_depth 下潜回 task_depth 时，等待 HOVER 的最长时间。
 dive_timeout: 120.0
+# 从送水点返回起始 XY 并调整到 final_yaw_deg 时，等待 HOVER 的最长时间。
 return_home_timeout: 180.0
+# 最终安全定点未获得 HOVER 时的严重告警间隔阈值；节点不会因该阈值直接退出。
 final_safe_warning_timeout: 120.0
 
-# 运行日志
+# ============================== 运行日志 ==============================
+
+# 文本日志和结构化 YAML/JSON 复盘数据的保存目录；~ 会展开为运行节点用户的主目录。
 log_directory: ~/.ros/auv_logs/task2
+# true：记录每个控制周期、状态转场及反馈快照；false：仅保留 ROS 文本日志。
 data_log_enabled: true

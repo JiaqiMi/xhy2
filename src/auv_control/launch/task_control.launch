@@ -1,0 +1,21 @@
+<launch>
+    <!-- 键盘任务控制与状态监控节点。 -->
+    <arg name="keyboard_config_file"
+         default="$(find auv_control)/config/keyboard_control.yaml" />
+    <arg name="state_config_file"
+         default="$(find auv_control)/config/state_control.yaml" />
+
+    <node pkg="auv_control"
+          type="keyboard_control.py"
+          name="keyboard_control"
+          output="screen">
+        <rosparam command="load" file="$(arg keyboard_config_file)" />
+    </node>
+
+    <node pkg="auv_control"
+          type="state_control.py"
+          name="state_control"
+          output="screen">
+        <rosparam command="load" file="$(arg state_config_file)" />
+    </node>
+</launch>

@@ -1,328 +1,224 @@
 #! /home/xhy/xhy_env/bin/python
+# -*- coding: utf-8 -*-
 """
-名称： state_control.py
-功能： 状态控制节点
-描述：
-    1. 订阅键盘控制消息，处理状态切换
-        - msg.run: bool, 是否开启自动运行
-        - msg.mode: uint8, 运行阶段
-            0: 待机
-            1: task1        
-            2: task2
-            3: task3
-            4: task4
-            5: task5
-        - g: 开始自动运行
-        - l: 停止自动运行
-    2. 订阅AUV数据消息，更新当前AUV状态信息
-    3. 订阅任务完成消息，处理任务完成逻辑
+名称：state_control.py
+功能：启动任务 launch 并监控其运行状态、完成消息和超时
 作者：buyegaid
+监听：/auv_keyboard、/finished
+发布：无
 记录：
-2025.7.16 16:37
-    1. 添加了状态控制节点，支持自动运行和手动切换状态
-    2. 修改了Keyboard.msg，添加了run字段，表示是否开启自动运行
-2025.8.5 15:20
-    修复空指针bug，记录时间戳
+2025.7.16
+    添加状态控制节点，支持自动运行和手动切换状态。
+2025.8.5
+    修复空指针问题，记录任务开始时间。
+2026.7.28
+    改为管理 task1、task2、task3 的 launch，仅监控运行状态和超时。
+2026.7.28
+    恢复 /finished 驱动的 task1、task2、task3 自动串联。
 """
 
-
-import rospy
-from std_msgs.msg import String
-from auv_control.msg import Keyboard
 import subprocess
 import time
 
-NODE_NAME = "state_control"
+import rospy
+from auv_control.msg import Keyboard
+from std_msgs.msg import String
 
-detect_mode= [1, 2, 3] # 对应: 形状 颜色洞 球
 
-task_name = ["过门", "巡线", "钻洞", "抓球", "上浮"]
-TASKS = [
-    ['rosrun', 'auv_control', 'task1_node.py'], # 过门
-    ['rosrun', 'auv_control', 'task4_node.py'], # 巡线
-    ['rosrun', 'auv_control', 'task2_node.py'], # 钻洞
-    ['rosrun', 'auv_control', 'task3_node.py'], # 抓球
-    ['rosrun', 'auv_control', 'task5_node.py'], # 上浮
-]
-VISION= [
-    None,# 过门
-    ['roslaunch', 'stereo_depth', 'find_line_and_shapes.launch'], # 巡线
-    ['roslaunch', 'stereo_depth', 'find_holes.launch'], # 钻洞
-    ['roslaunch', 'stereo_depth', 'find_balls.launch'], # 抓球
-    None, # 上浮    
-]
+NODE_NAME = 'state_control'
 
-# 每个任务的超时时间（秒）
-TASK_TIMEOUTS = [
-    300,  # 过门 - 5分钟
-    480,  # 巡线 - 5分钟
-    300,  # 钻洞 - 5分钟
-    300,  # 抓球 - 5分钟
-    120,  # 上浮 - 2分钟
-]
 
 class StateControl:
+    """根据键盘消息管理唯一的任务 launch 进程。"""
+
     def __init__(self):
-        # ros相关的初始化
-        rospy.Subscriber('/finished', String, self.finished_callback)
-        rospy.Subscriber('/auv_keyboard', Keyboard, self.keyboard_callback)  # 订阅键盘控制消息
-        self.rate = rospy.Rate(10)  # 10Hz足够了，减少CPU占用
+        self.keyboard_topic = rospy.get_param('~keyboard_topic', '/auv_keyboard')
+        self.finished_topic = rospy.get_param('~finished_topic', '/finished')
+        self.finished_keyword = rospy.get_param('~finished_keyword', 'finished')
+        self.monitor_rate_hz = rospy.get_param('~monitor_rate_hz', 2.0)
+        self.terminate_wait_seconds = rospy.get_param(
+            '~terminate_wait_seconds', 5.0)
+        self.tasks = self._load_tasks(rospy.get_param('~tasks', []))
 
-        # 变量定义
-        self.current_task = 0 # 当前任务序号
-        self.task_process = None # 任务进程
-        self.vision_process = None  # 视觉任务进程
-        self.task_start_time = None  # 任务开始时间
-        self.auto_mode = False  # 是否为自动模式
-        
-        # 输出log
-        rospy.loginfo(f"{NODE_NAME}: 初始化完成")
-
-    def keyboard_callback(self, msg):
-        """
-        只处理状态切换相关消息
-            run = 1时，不关注mode是多少
-            run = 0时，mode发挥作用
-        msg.run: bool, 是否开启自动运行
-        msg.mode: uint8, 运行阶段
-            0: 待机
-            1: task1
-            2: task2
-            3: task3
-            4: task4
-            5: task5
-            g:开始自动运行
-            l:停止自动运行
-
-        """
-        rospy.loginfo(f"{NODE_NAME}: get run {msg.run}, mode {msg.mode}")
-        if msg.run == 1: # 收到自动运行指令，直接开始运行，并不再理会其他指令
-            if self.current_task != 0:  # 如果当前不是待机状态
-                rospy.logwarn(f"{NODE_NAME}: 当前不是待机状态，无法切换到自动运行模式")
-                return
-            else:  # 当前是待机状态
-                self.auto_mode = True  # 设置为自动模式
-                self.start_next_task()
-                rospy.loginfo(f"{NODE_NAME}: 切换到自动运行模式")
-            rospy.loginfo(f"{NODE_NAME}: 收到自动运行指令")
-            return
-        if msg.run == 2: # 结束自动运行，并将状态变为待机  
-            self.auto_mode = False  # 退出自动模式
-            self.current_task = 0
-            self.terminate_current_task()
-            rospy.loginfo(f"{NODE_NAME}: 收到结束自动运行指令")
-            return
-        # 手动切换状态
-        if msg.mode != self.current_task:      
-            self.auto_mode = False  # 手动模式
-            self.current_task = msg.mode
-            self.start_task(self.current_task)      
-            rospy.loginfo(f"{NODE_NAME}: 手动切换状态: {self.current_task} -> {msg.mode}")    
-            # 可在此处添加对应的任务启动逻辑
-
-    def terminate_current_task(self):
-        """
-        终止当前任务和视觉进程
-        """
-        if self.task_process:
-            try:
-                self.task_process.terminate()
-                self.task_process.wait(timeout=5)  # 等待最多5秒
-            except subprocess.TimeoutExpired:
-                self.task_process.kill()  # 强制终止
-                rospy.logwarn(f"{NODE_NAME}: 强制终止任务进程")
-            finally:
-                self.task_process = None
-                
-        if self.vision_process:
-            try:
-                self.vision_process.terminate()
-                self.vision_process.wait(timeout=5)  # 等待最多5秒
-            except subprocess.TimeoutExpired:
-                self.vision_process.kill()  # 强制终止
-                rospy.logwarn(f"{NODE_NAME}: 强制终止视觉进程")
-            finally:
-                self.vision_process = None
-                
+        self.current_task = None
+        self.task_process = None
         self.task_start_time = None
-        rospy.loginfo(f"{NODE_NAME}: 已终止当前任务和视觉进程")
+        self.auto_mode = False
 
-    def start_task(self, task_index:int):
-        """
-        启动指定任务
-        :param task_index: 任务索引 (0-4)
-        """
-        # 首先终止当前任务
-        if self.task_process or self.vision_process:
-            rospy.logwarn(f"{NODE_NAME}: 终止当前运行的任务")
-            self.terminate_current_task()
-            
-        if task_index == 0:  # 待机状态
-            rospy.loginfo(f"{NODE_NAME}: 切换到待机状态")
+        rospy.Subscriber(self.keyboard_topic, Keyboard, self.keyboard_callback)
+        rospy.Subscriber(self.finished_topic, String, self.finished_callback)
+        self.rate = rospy.Rate(self.monitor_rate_hz)
+        rospy.loginfo('%s 初始化完成，可管理任务：%s。', NODE_NAME,
+                      ', '.join(task['name'] for task in self.tasks.values()))
+
+    @staticmethod
+    def _load_tasks(task_configs):
+        """校验并按键盘 mode 建立任务配置索引。"""
+        tasks = {}
+        for config in task_configs:
+            try:
+                mode = int(config['mode'])
+                name = str(config['name'])
+                launch = str(config['launch'])
+                timeout_seconds = float(config['timeout_seconds'])
+            except (KeyError, TypeError, ValueError) as error:
+                rospy.logerr('%s 忽略无效任务配置 %s：%s', NODE_NAME, config, error)
+                continue
+
+            if mode < 1 or timeout_seconds <= 0:
+                rospy.logerr('%s 忽略无效任务配置：%s', NODE_NAME, config)
+                continue
+
+            launch_args = [str(argument) for argument in
+                           config.get('launch_args', [])]
+            tasks[mode] = {
+                'mode': mode,
+                'name': name,
+                'launch': launch,
+                'launch_args': launch_args,
+                'timeout_seconds': timeout_seconds,
+            }
+        return tasks
+
+    def keyboard_callback(self, message):
+        """响应启动指定任务或停止当前任务的键盘指令。"""
+        rospy.loginfo('%s 收到键盘指令：run=%s，mode=%s。', NODE_NAME,
+                      message.run, message.mode)
+        if message.run == 2:
+            self.auto_mode = False
+            self.terminate_current_task('收到停止指令')
             return
-            
-        if task_index < 1 or task_index > len(TASKS):
-            rospy.logerr(f"{NODE_NAME}: 无效的任务索引: {task_index}")
+
+        if message.run == 1:
+            self.start_automatic_tasks()
             return
-            
+
+        if message.run != 0:
+            rospy.logwarn('%s 忽略不支持的 run 值：%s。', NODE_NAME, message.run)
+            return
+
+        task = self.tasks.get(message.mode)
+        if task is None:
+            rospy.logwarn('%s 未配置 mode=%s 对应的任务。', NODE_NAME, message.mode)
+            return
+        self.start_task(task, automatic=False)
+
+    def start_task(self, task, automatic=False):
+        """停止旧任务后，以 roslaunch 启动指定任务。"""
+        self.terminate_current_task('切换任务')
+        command = ['roslaunch', 'auv_control', task['launch']] + task['launch_args']
         try:
-            # 记录任务开始时间
-            self.task_start_time = time.time()
-            # 启动任务进程
-            self.task_process = subprocess.Popen(TASKS[task_index-1])
-            rospy.loginfo(f"{NODE_NAME}: 已启动任务: {task_name[task_index-1]} - {TASKS[task_index-1]}")
-            
-            # 启动视觉进程（如果需要）
-            if VISION[task_index-1] is not None and len(VISION[task_index-1]) > 0:
-                self.vision_process = subprocess.Popen(VISION[task_index-1])
-                rospy.loginfo(f"{NODE_NAME}: 已启动视觉: {VISION[task_index-1]}")
-            
-            
-            
-        except Exception as e:
-            rospy.logerr(f"{NODE_NAME}: 启动任务失败: {e}")
-            self.terminate_current_task()
+            self.task_process = subprocess.Popen(command)
+            self.current_task = task
+            self.task_start_time = time.monotonic()
+            self.auto_mode = automatic
+            rospy.loginfo('%s 已启动 %s：%s。超时 %.0f 秒。', NODE_NAME,
+                          task['name'], ' '.join(command), task['timeout_seconds'])
+        except OSError as error:
+            self.task_process = None
+            self.current_task = None
+            self.task_start_time = None
+            self.auto_mode = False
+            rospy.logerr('%s 启动 %s 失败：%s', NODE_NAME, task['name'], error)
+
+    def start_automatic_tasks(self):
+        """从最小 mode 的任务开始自动串联。"""
+        if not self.tasks:
+            rospy.logerr('%s 没有可用于自动串联的任务配置。', NODE_NAME)
+            return
+        if self.task_process is not None and self.task_process.poll() is None:
+            rospy.logwarn('%s 当前已有任务运行，拒绝启动自动串联。', NODE_NAME)
+            return
+
+        first_mode = min(self.tasks)
+        self.start_task(self.tasks[first_mode], automatic=True)
 
     def start_next_task(self):
-        """
-        启动下一个任务
-        """
-        self.current_task += 1 # 任务序号+1
-        if self.current_task <= len(TASKS):
-            rospy.loginfo(f"{NODE_NAME}: 开始执行任务 {self.current_task}: {task_name[self.current_task-1]}")
-            self.start_task(self.current_task)
-        else:
-            rospy.loginfo(f"{NODE_NAME}: 所有任务已完成")
-            self.auto_mode = False
-            self.current_task = 0
-            rospy.signal_shutdown("所有任务已完成")
-    
-    def check_task_timeout(self):
-        """
-        检查当前任务是否超时
-        """
-        try:
-            # 安全检查：确保所有必要的条件都满足
-            if not self.auto_mode:
-                return False
-                
-            if self.current_task == 0:
-                return False
-                
-            if self.task_start_time is None:
-                rospy.logwarn(f"{NODE_NAME}: 任务 {self.current_task} 没有开始时间记录")
-                return False
-                
-            if self.current_task > len(TASK_TIMEOUTS):
-                rospy.logerr(f"{NODE_NAME}: 任务索引 {self.current_task} 超出超时配置范围")
-                return False
-                
-            # 计算已运行时间
-            current_time = time.time()
-            elapsed_time = current_time - self.task_start_time
-            timeout = TASK_TIMEOUTS[self.current_task-1]
-            
-            # 检查是否超时
-            if elapsed_time > timeout:
-                rospy.logwarn(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) 超时 "
-                             f"({elapsed_time:.1f}s > {timeout}s)，强制进入下一任务")
-                return True
-            
-            # 每30秒输出一次剩余时间提醒
-            if int(elapsed_time) % 30 == 0 and int(elapsed_time) > 0:
-                remaining_time = timeout - elapsed_time
-                rospy.loginfo(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) "
-                             f"剩余时间: {remaining_time:.0f}s")
-            
-            return False
-        except Exception as e:
-            rospy.logerr(f"{NODE_NAME}: 检查任务超时出错: {e}")
-            return False
-    # def check_task_timeout(self):
-    #     """
-    #     检查当前任务是否超时
-    #     """
-    #     # rospy.loginfo_throttle(2,f"{NODE_NAME}: {self.task_start_time},{self.auto_mode},{self.current_task}")
-    #     # 这个判断有问题
-    #     # 如果没有在进行任务，就直接返回
-    #     if not (self.auto_mode or (self.task_start_time is not None and self.current_task != 0)):
-    #         #   不在自动运行模式或者开始时间没有或者当前任务是0，返回false
-    #         return False
-        
-            
-    #     current_time = time.time()
-    #     elapsed_time = current_time - self.task_start_time
-    #     rospy.loginfo_throttle(2, f"{NODE_NAME}:{elapsed_time},{current_time}")
-    #     timeout = TASK_TIMEOUTS[self.current_task-1]
-        
-    #     if elapsed_time > timeout:
-    #         rospy.logwarn(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) 超时 "
-    #                      f"({elapsed_time:.1f}s > {timeout}s)，强制进入下一任务或退出")
-    #         return True
-        
-    #     # 每30秒输出一次剩余时间提醒
-    #     if int(elapsed_time) % 30 == 0 and int(elapsed_time) > 0:
-    #         remaining_time = timeout - elapsed_time
-    #         rospy.loginfo(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) "
-    #                      f"剩余时间: {remaining_time:.0f}s")
-        
-    #     return False
+        """在自动模式下启动当前任务的下一个已配置任务。"""
+        if self.current_task is None:
+            return
 
-    def finished_callback(self, msg):
-        """任务完成回调"""
-        rospy.loginfo(f"{NODE_NAME}: 收到完成信号: {msg.data}")
-        # 包含finished
-        if "finished" in msg.data:
-            rospy.loginfo(f"{NODE_NAME}: 任务 {self.current_task}({task_name[self.current_task-1]}) 完成, 终止当前任务线程")
-            self.terminate_current_task()
-            
-            # 只有在自动模式下才自动进行下一个任务
+        current_mode = self.current_task['mode']
+        next_modes = [mode for mode in sorted(self.tasks) if mode > current_mode]
+        if not next_modes:
+            rospy.loginfo('%s 自动串联任务已全部完成。', NODE_NAME)
+            self.terminate_current_task('自动串联任务完成')
+            self.auto_mode = False
+            return
+        self.start_task(self.tasks[next_modes[0]], automatic=True)
+
+    def terminate_current_task(self, reason):
+        """优雅停止当前 roslaunch，必要时强制结束。"""
+        if self.task_process is None:
+            return
+
+        task_name = self.current_task['name'] if self.current_task else '未知任务'
+        if self.task_process.poll() is None:
+            rospy.loginfo('%s 正在停止 %s：%s。', NODE_NAME, task_name, reason)
+            self.task_process.terminate()
+            try:
+                self.task_process.wait(timeout=self.terminate_wait_seconds)
+            except subprocess.TimeoutExpired:
+                rospy.logwarn('%s 未在 %.1f 秒内退出，强制结束 %s。', NODE_NAME,
+                              self.terminate_wait_seconds, task_name)
+                self.task_process.kill()
+                self.task_process.wait()
+
+        self.task_process = None
+        self.current_task = None
+        self.task_start_time = None
+
+    def finished_callback(self, message):
+        """收到任务完成消息后，在自动模式推进下一任务。"""
+        if self.finished_keyword not in message.data:
+            return
+        if self.current_task is None:
+            rospy.logwarn('%s 收到完成消息，但当前没有运行任务。', NODE_NAME)
+            return
+
+        task_name = self.current_task['name']
+        automatic = self.auto_mode
+        rospy.loginfo('%s 收到 %s 的完成消息：%s。', NODE_NAME, task_name,
+                      message.data)
+        if automatic:
+            self.start_next_task()
+        else:
+            self.terminate_current_task('收到完成消息')
+
+    def monitor_current_task(self):
+        """检测 launch 退出或超过配置时限，并清理任务状态。"""
+        if self.task_process is None or self.current_task is None:
+            return
+
+        exit_code = self.task_process.poll()
+        if exit_code is not None:
+            rospy.loginfo('%s 已退出，退出码：%s。', self.current_task['name'], exit_code)
+            self.task_process = None
+            self.current_task = None
+            self.task_start_time = None
+            self.auto_mode = False
+            return
+
+        elapsed = time.monotonic() - self.task_start_time
+        timeout = self.current_task['timeout_seconds']
+        if elapsed >= timeout:
+            timeout_reason = '运行超时（%.1f 秒，限制 %.1f 秒）' % (elapsed, timeout)
             if self.auto_mode:
+                rospy.logwarn('%s，自动推进下一任务。', timeout_reason)
                 self.start_next_task()
             else:
-                self.current_task = 0  # 手动模式下回到待机状态
+                self.terminate_current_task(timeout_reason)
 
-    # def run(self):
-    #     """主循环"""
-    #     while not rospy.is_shutdown():
-    #         # 检查任务超时
-    #        #  rospy.loginfo("statein loop")
-    #         if self.check_task_timeout():
-    #             rospy.logwarn(f"{NODE_NAME}: 任务超时，强制进入下一任务")
-    #             self.terminate_current_task()
-    #             if self.auto_mode:
-    #                 self.start_next_task()
-    #             else:
-    #                 self.current_task = 0  # 手动模式下回到待机状态
-            
-    #         # 不再发布Control消息，只做状态管理
-    #         self.rate.sleep()
     def run(self):
-        """主循环"""
+        """以固定频率监控当前 launch 进程。"""
         while not rospy.is_shutdown():
-            try:
-                # 检查任务超时
-                if self.auto_mode and self.current_task > 0:  # 只在自动模式且有任务运行时检查超时
-                    if self.check_task_timeout():
-                        rospy.logwarn(f"{NODE_NAME}: 任务超时，强制进入下一任务")
-                        self.terminate_current_task()
-                        if self.auto_mode:  # 再次确认是否还在自动模式
-                            self.start_next_task()
-                            continue  # 跳过本次循环剩余部分，避免检查刚刚初始化的任务
-                        else:
-                            self.current_task = 0  # 手动模式下回到待机状态
-            except Exception as e:
-                rospy.logerr(f"{NODE_NAME}: 主循环出错: {e}")
-            
-            # 不再发布Control消息，只做状态管理
+            self.monitor_current_task()
             self.rate.sleep()
-            
-if __name__ == "__main__":
-    rospy.init_node(f'{NODE_NAME}',anonymous=True)
+
+
+if __name__ == '__main__':
+    rospy.init_node(NODE_NAME)
     try:
-        state = StateControl()
-        state.run()
+        StateControl().run()
     except rospy.ROSInterruptException:
-            # rospy.logerr("ROS Interrupt Exception occurred.")
         pass
-    # rospy.spin()
