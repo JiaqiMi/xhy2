@@ -177,6 +177,12 @@ class Task3Final:
         self.task1_module, self.task2_module, self.task3_module = (
             _load_subtask_modules(package_path)
         )
+        self.fixed_depth_m = float(rospy.get_param(
+            "/task3_target_depth_m", 0.60
+        ))
+        if not math.isfinite(self.fixed_depth_m) or self.fixed_depth_m <= 0.0:
+            raise ValueError("task3_target_depth_m必须是大于0的有限数")
+        self.fixed_map_z = -self.fixed_depth_m
 
         self.task1_params = load_task_params(
             "/test_task3_1_acquire_area"
@@ -390,12 +396,15 @@ class Task3Final:
         rospy.loginfo(
             (
                 "%s：整合节点启动，参数来自统一config/task3.yaml："
-                "子任务1=%d项，子任务2=%d项，子任务3=%d项"
+                "子任务1=%d项，子任务2=%d项，子任务3=%d项；"
+                "统一固定深度=%.3fm（map目标z=%.3f）"
             ),
             NODE_NAME,
             len(self.task1_params),
             len(self.task2_params),
             len(self.task3_params),
+            self.fixed_depth_m,
+            self.fixed_map_z,
         )
         rospy.loginfo(
             (
@@ -601,19 +610,21 @@ class Task3Final:
             goal.header.frame_id = "map"
             goal.pose.position.x = float(translation[0])
             goal.pose.position.y = float(translation[1])
-            goal.pose.position.z = float(translation[2])
+            goal.pose.position.z = self.fixed_map_z
             goal.pose.orientation.x = float(rotation[0])
             goal.pose.orientation.y = float(rotation[1])
             goal.pose.orientation.z = float(rotation[2])
             goal.pose.orientation.w = float(rotation[3])
             rospy.loginfo(
                 (
-                    "%s：已锁存模型预热固定点：x=%.3f，y=%.3f，z=%.3f；"
+                    "%s：已锁存模型预热固定点：x=%.3f，y=%.3f，"
+                    "固定深度=%.3fm（map z=%.3f）；"
                     "模型加载期间不会刷新该目标"
                 ),
                 NODE_NAME,
                 goal.pose.position.x,
                 goal.pose.position.y,
+                self.fixed_depth_m,
                 goal.pose.position.z,
             )
             return goal

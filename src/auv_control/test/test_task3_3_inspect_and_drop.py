@@ -344,6 +344,10 @@ class Task3InspectAndDropTest:
             "~status_linear_velocity_scale",
             DEFAULT_STATUS_LINEAR_VELOCITY_SCALE,
         ))
+        self.fixed_depth_m = float(rospy.get_param(
+            "/task3_target_depth_m", 0.60
+        ))
+        self.fixed_map_z = -self.fixed_depth_m
         self.goal_match_position_tolerance = float(rospy.get_param(
             "~goal_match_position_tolerance",
             DEFAULT_GOAL_MATCH_POSITION_TOLERANCE,
@@ -1051,6 +1055,8 @@ class Task3InspectAndDropTest:
     def validate_params(self):
         if self.operation_mode not in ("manual", "auto"):
             raise ValueError("operation_mode 必须是 manual 或 auto")
+        if not math.isfinite(self.fixed_depth_m) or self.fixed_depth_m <= 0.0:
+            raise ValueError("task3_target_depth_m必须是大于0的有限数")
         if not self.detection_topic:
             raise ValueError("model_detection_topic 不能为空")
         if not self.actuator_topic or not self.actuator_status_topic:
@@ -1448,7 +1454,7 @@ class Task3InspectAndDropTest:
         if status is None or current is None:
             return False
 
-        self.auto_hold_z = current.pose.position.z
+        self.auto_hold_z = self.fixed_map_z
         self.auto_hold_yaw = yaw_from_quaternion(current.pose.orientation)
         self.status_hold_depth = status["depth"]
         self.status_hold_yaw_deg = status["yaw_deg"]
@@ -1462,14 +1468,17 @@ class Task3InspectAndDropTest:
         rospy.loginfo(
             (
                 "%s：固定悬停点已锁存：map=(%.3f,%.3f,%.3f)，yaw=%.2fdeg，"
-                "启动深度=%.3fm；后续不会跟随漂移位置更新"
+                "统一固定深度=%.3fm，启动传感器深度=%.3fm，启动TF z=%.3f；"
+                "后续不会跟随漂移位置更新"
             ),
             NODE_NAME,
             current.pose.position.x,
             current.pose.position.y,
             self.auto_hold_z,
             math.degrees(self.auto_hold_yaw),
+            self.fixed_depth_m,
             self.status_hold_depth,
+            current.pose.position.z,
         )
         return True
 

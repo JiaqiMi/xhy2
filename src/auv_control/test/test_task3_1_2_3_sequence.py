@@ -122,6 +122,11 @@ class Task3Subtask123Sequence:
             "~motion_state_topic", "/motion/state"))
         self.motion_state_timeout = float(rospy.get_param(
             "~motion_state_timeout", 0.5))
+        self.fixed_depth_m = float(rospy.get_param(
+            "/task3_target_depth_m", 0.60))
+        if not math.isfinite(self.fixed_depth_m) or self.fixed_depth_m <= 0.0:
+            raise ValueError("task3_target_depth_m必须是大于0的有限数")
+        self.fixed_map_z = -self.fixed_depth_m
         self.initial_hold_timeout = float(rospy.get_param(
             "~initial_hold_timeout", 30.0))
         self.initial_hold_stable_seconds = float(rospy.get_param(
@@ -688,7 +693,7 @@ class Task3Subtask123Sequence:
             goal.header.frame_id = self.map_frame
             goal.pose.position.x = float(translation[0])
             goal.pose.position.y = float(translation[1])
-            goal.pose.position.z = float(translation[2])
+            goal.pose.position.z = self.fixed_map_z
             goal.pose.orientation.x = float(rotation[0])
             goal.pose.orientation.y = float(rotation[1])
             goal.pose.orientation.z = float(rotation[2])
@@ -698,12 +703,17 @@ class Task3Subtask123Sequence:
                 self.rate.sleep()
                 continue
             rospy.loginfo(
-                "%s：锁存启动定点 x=%.3f, y=%.3f, z=%.3f, yaw=%.1fdeg",
+                (
+                    "%s：锁存启动定点 x=%.3f, y=%.3f, z=%.3f, "
+                    "yaw=%.1fdeg；统一固定深度=%.3fm，启动TF z=%.3f"
+                ),
                 NODE_NAME,
                 goal.pose.position.x,
                 goal.pose.position.y,
                 goal.pose.position.z,
                 math.degrees(yaw),
+                self.fixed_depth_m,
+                float(translation[2]),
             )
             return goal
 
