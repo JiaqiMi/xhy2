@@ -8,6 +8,7 @@ Task1 比赛完整任务：连续巡线，并按巡线前向进度处理黄色�
     2. 巡线期间同时接收黄色/黑色识别，最多保存最近 N 条有效帧；
     3. 任意 K 条有效帧在同一位置聚类后立即把标志投影到红线弧长进度；
     4. 机器人前向进度到达标志进度时原地定点，执行对应灯光/旋转动作；
+       黄色接触开关开启时，灯光后保持 XY/航向下潜，再回到任务保持深度；
     5. 动作完成后继续向前巡线，绝不反向寻找已经错过的标志；
     6. 红线任务正常到达终点后结束，并打印实际/要求动作次数。
 """
@@ -205,6 +206,12 @@ class Task1(Task1LineFollow):
         self.black_light_count = max(1, int(rospy.get_param(
             "~black_light_count", 2
         )))
+        self.yellow_contact_enabled = bool(rospy.get_param(
+            "~yellow_contact_enabled", False
+        ))
+        self.yellow_contact_depth = float(rospy.get_param(
+            "~yellow_contact_depth", -0.8
+        ))
         self.light1 = int(rospy.get_param("~light1", 0))
         self.light2 = int(rospy.get_param("~light2", 0))
         self.heading_servo = int(rospy.get_param("~heading_servo", 0x80))
@@ -227,6 +234,7 @@ class Task1(Task1LineFollow):
         self.marker_resume_state = None
         self.marker_action_phase = None
         self.marker_action_hold_goal = None
+        self.marker_action_dive_goal = None
         self.marker_light_started_at = None
         self.marker_rotation_state = None
         self.commanded_lights = {"red": 0, "green": 0}
@@ -243,13 +251,16 @@ class Task1(Task1LineFollow):
         rospy.on_shutdown(self.shutdown_actuators)
         rospy.loginfo(
             "%s: 完整任务启动；黄色要求=%d，黑色要求=%d，"
-            "有效识别=%d/%d，样本最长保存=%.1f s",
+            "有效识别=%d/%d，样本最长保存=%.1f s；"
+            "黄色接触=%s，绝对目标深度=%.2f m",
             NODE_NAME,
             self.required_counts["yellow"],
             self.required_counts["black"],
             marker_required_valid,
             marker_window_size,
             marker_sample_timeout,
+            "开启" if self.yellow_contact_enabled else "关闭",
+            self.yellow_contact_depth,
         )
         self.write_data_record(
             "task1_configuration",
@@ -277,6 +288,8 @@ class Task1(Task1LineFollow):
             gap_seconds=self.gap_seconds,
             yellow_light_count=self.yellow_light_count,
             black_light_count=self.black_light_count,
+            yellow_contact_enabled=self.yellow_contact_enabled,
+            yellow_contact_depth=self.yellow_contact_depth,
             black_rotation_angle_deg=math.degrees(self.black_rotation_angle),
             black_rotation_direction=self.black_rotation_direction,
             black_rotation_lookahead_deg=math.degrees(
@@ -526,6 +539,8 @@ class Task1(Task1LineFollow):
         action_descriptions = {
             "WAIT_HOVER": "在标志进度处原地定点",
             "LIGHT": "执行%s标志灯光动作" % kind_name,
+            "YELLOW_DIVE": "黄色标志保持水平位置并下潜",
+            "YELLOW_RETURN": "黄色标志保持水平位置并回到任务深度",
             "ROTATE": "执行黑色标志连续旋转",
         }
         return action_descriptions.get(
@@ -588,11 +603,16 @@ class Task1(Task1LineFollow):
             marker_action_hold_goal=self.pose_record(
                 self.marker_action_hold_goal
             ),
+            marker_action_dive_goal=self.pose_record(
+                self.marker_action_dive_goal
+            ),
             rotation=self.rotation_record(),
             commanded_lights=copy.deepcopy(self.commanded_lights),
             use_reference_depth=self.use_reference_depth,
             reference_depth=self.reference_depth,
             active_depth=self.hold_z,
+            yellow_contact_enabled=self.yellow_contact_enabled,
+            yellow_contact_depth=self.yellow_contact_depth,
             use_reference_yaw=self.use_reference_yaw,
             reference_yaw_deg=round(
                 math.degrees(self.reference_yaw), 6
@@ -932,6 +952,14 @@ class Task1(Task1LineFollow):
             current.pose.position.y,
             current_yaw,
         )
+        self.marker_action_dive_goal = None
+        if marker["kind"] == "yellow" and self.yellow_contact_enabled:
+            self.marker_action_dive_goal = copy.deepcopy(
+                self.marker_action_hold_goal
+            )
+            self.marker_action_dive_goal.pose.position.z = (
+                self.yellow_contact_depth
+            )
         self.marker_action_phase = "WAIT_HOVER"
         self.marker_light_started_at = None
         self.marker_rotation_state = None
@@ -953,6 +981,7 @@ class Task1(Task1LineFollow):
             marker=self.marker_entry_record(marker),
             completed_path=round(self.completed_path_length, 6),
             hold_goal=self.pose_record(self.marker_action_hold_goal),
+            dive_goal=self.pose_record(self.marker_action_dive_goal),
             resume_state=self.marker_resume_state,
         )
 
@@ -1000,7 +1029,22 @@ class Task1(Task1LineFollow):
         if cycle_index >= count:
             self.publish_lights(0, 0)
             if kind == "yellow":
-                self.complete_marker_action()
+                if self.yellow_contact_enabled:
+                    self.marker_action_phase = "YELLOW_DIVE"
+                    rospy.loginfo(
+                        "%s: 黄色标志灯光完成；保持 X/Y/航向，下潜到"
+                        "绝对深度 %.2f m",
+                        NODE_NAME,
+                        self.yellow_contact_depth,
+                    )
+                    self.write_data_record(
+                        "marker_action_phase",
+                        marker=self.marker_entry_record(self.active_marker),
+                        next_phase=self.marker_action_phase,
+                        goal=self.pose_record(self.marker_action_dive_goal),
+                    )
+                else:
+                    self.complete_marker_action()
             else:
                 self.marker_action_phase = "ROTATE"
                 self.marker_rotation_state = None
@@ -1016,6 +1060,54 @@ class Task1(Task1LineFollow):
             1 if kind == "yellow" and light_on else 0,
             1 if kind == "black" and light_on else 0,
         )
+
+    def run_yellow_contact(self):
+        if self.marker_action_phase == "YELLOW_DIVE":
+            goal = self.marker_action_dive_goal
+            stage = "下潜"
+        else:
+            goal = self.marker_action_hold_goal
+            stage = "回到任务深度"
+        if goal is None:
+            return
+
+        self.publish_motion_goal(goal)
+        current = self.get_current_pose()
+        rospy.loginfo_throttle(
+            2.0,
+            "%s: 黄色接触%s；当前/目标深度=%.2f/%.2f m，等待 HOVER",
+            NODE_NAME,
+            stage,
+            (
+                current.pose.position.z
+                if current is not None else float("nan")
+            ),
+            goal.pose.position.z,
+        )
+        if not self.motion_arrived():
+            return
+
+        if self.marker_action_phase == "YELLOW_DIVE":
+            self.marker_action_phase = "YELLOW_RETURN"
+            rospy.loginfo(
+                "%s: 黄色接触下潜完成；保持 X/Y/航向，回到任务深度 %.2f m",
+                NODE_NAME,
+                self.marker_action_hold_goal.pose.position.z,
+            )
+            self.write_data_record(
+                "marker_action_phase",
+                marker=self.marker_entry_record(self.active_marker),
+                next_phase=self.marker_action_phase,
+                reached_goal=self.pose_record(self.marker_action_dive_goal),
+                goal=self.pose_record(self.marker_action_hold_goal),
+            )
+        else:
+            rospy.loginfo(
+                "%s: 黄色接触已回到任务深度 %.2f m",
+                NODE_NAME,
+                self.marker_action_hold_goal.pose.position.z,
+            )
+            self.complete_marker_action()
 
     def run_black_rotation(self):
         current = self.get_current_pose()
@@ -1117,6 +1209,8 @@ class Task1(Task1LineFollow):
                 )
         elif self.marker_action_phase == "LIGHT":
             self.run_marker_light()
+        elif self.marker_action_phase in ("YELLOW_DIVE", "YELLOW_RETURN"):
+            self.run_yellow_contact()
         elif self.marker_action_phase == "ROTATE":
             if self.run_black_rotation():
                 self.complete_marker_action()
@@ -1153,6 +1247,7 @@ class Task1(Task1LineFollow):
         self.marker_resume_state = None
         self.marker_action_phase = None
         self.marker_action_hold_goal = None
+        self.marker_action_dive_goal = None
         self.marker_light_started_at = None
         self.marker_rotation_state = None
         if resume_state == self.FOLLOW_LINE:
