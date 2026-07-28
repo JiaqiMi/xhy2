@@ -103,8 +103,8 @@
       节点内只覆盖话题连接；调度和子任务参数全部来自task3.yaml。
     -->
     <node pkg="auv_control"
-          type="task3_final.py"
-          name="task3_final"
+          type="task3.py"
+          name="task3"
           output="screen"
           required="true">
         <param name="arrow_topic" type="string"
