@@ -197,12 +197,12 @@ catkin_install_python(PROGRAMS
   scripts/keyboard_control.py
   scripts/state_control.py
   scripts/task1.py
+  scripts/task2.py
+  scripts/task3.py
   scripts/task1_line_follow.py
   scripts/task1_yaml_logger.py
   scripts/task_v2_common.py
   scripts/task1_v2.py
-  scripts/task2_v2.py
-  scripts/task3_v2.py
   scripts/task4_v2.py
   scripts/vo_nav_fusion.py
   test/motion_auto_sequence_core.py
