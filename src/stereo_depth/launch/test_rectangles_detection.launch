@@ -5,8 +5,10 @@
     <arg name="start_splitter" default="false" />
     <arg name="start_web" default="true" />
 
+    <!-- <arg name="model_path"
+         default="/home/xhy/catkin_ws/models/rectangles0720.pt" /> -->
     <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/rectangles0720.pt" />
+         default="/home/xhy/catkin_ws/models/model_rectangles_260726.pt" />
     <arg name="task_mode" default="detect" />
     <arg name="detect_mode" default="2" />   
     <!-- <arg name="model_path" default="" /> -->

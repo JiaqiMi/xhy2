@@ -192,7 +192,8 @@ roslaunch stereo_depth test_aruco_detection_fisheye.launch
 ```bash
 
 roslaunch stereo_depth test_rosbag.launch \
-  mode:=record
+  mode:=record \
+  start_web:=true
 
 roslaunch stereo_depth test_rosbag.launch \
   mode:=play \
@@ -224,3 +225,98 @@ roslaunch auv_control reset_world origin.launch
 /status/power (SensorStatus.msg)
 /status/auv (AUVData.msg)
 ```
+
+
+<pre>[INFO] [1785035157.785452]: 正在发布 /fisheye_camera/image_raw: 15.13 FPS, 2560x1440
+[INFO] [1785035162.833731]: 正在发布 /fisheye_camera/image_raw: 14.46 FPS, 2560x1440
+[INFO] [1785035168.082419]: 正在发布 /fisheye_camera/image_raw: 13.91 FPS, 2560x1440
+[INFO] [1785035173.122093]: 正在发布 /fisheye_camera/image_raw: 13.69 FPS, 2560x1440
+[INFO] [1785035178.126619]: 正在发布 /fisheye_camera/image_raw: 14.19 FPS, 2560x1440
+*** Added sample 49, p_x = 0.559, p_y = 0.342, p_size = 0.186, skew = 0.066
+[INFO] [1785035183.161030]: 正在发布 /fisheye_camera/image_raw: 15.10 FPS, 2560x1440
+[INFO] [1785035188.176037]: 正在发布 /fisheye_camera/image_raw: 14.96 FPS, 2560x1440
+[INFO] [1785035193.221105]: 正在发布 /fisheye_camera/image_raw: 14.87 FPS, 2560x1440
+[INFO] [1785035198.248960]: 正在发布 /fisheye_camera/image_raw: 14.92 FPS, 2560x1440
+[INFO] [1785035203.301136]: 正在发布 /fisheye_camera/image_raw: 14.05 FPS, 2560x1440
+[INFO] [1785035208.357257]: 正在发布 /fisheye_camera/image_raw: 15.67 FPS, 2560x1440
+[INFO] [1785035213.362566]: 正在发布 /fisheye_camera/image_raw: 15.33 FPS, 2560x1440
+[INFO] [1785035218.521839]: 正在发布 /fisheye_camera/image_raw: 14.73 FPS, 2560x1440
+[INFO] [1785035223.594821]: 正在发布 /fisheye_camera/image_raw: 14.98 FPS, 2560x1440
+[INFO] [1785035228.630748]: 正在发布 /fisheye_camera/image_raw: 15.09 FPS, 2560x1440
+[INFO] [1785035233.638736]: 正在发布 /fisheye_camera/image_raw: 14.98 FPS, 2560x1440
+[INFO] [1785035238.641502]: 正在发布 /fisheye_camera/image_raw: 15.19 FPS, 2560x1440
+[INFO] [1785035243.656855]: 正在发布 /fisheye_camera/image_raw: 15.15 FPS, 2560x1440
+*** Added sample 50, p_x = 0.620, p_y = 0.478, p_size = 0.183, skew = 0.013
+[INFO] [1785035248.687144]: 正在发布 /fisheye_camera/image_raw: 14.31 FPS, 2560x1440
+**** Calibrating ****
+mono fisheye calibration...
+[INFO] [1785035253.745080]: 正在发布 /fisheye_camera/image_raw: 13.05 FPS, 2560x1440
+[INFO] [1785035258.785186]: 正在发布 /fisheye_camera/image_raw: 12.34 FPS, 2560x1440
+[INFO] [1785035263.789221]: 正在发布 /fisheye_camera/image_raw: 11.75 FPS, 2560x1440
+[INFO] [1785035268.889478]: 正在发布 /fisheye_camera/image_raw: 12.16 FPS, 2560x1440
+[INFO] [1785035273.918401]: 正在发布 /fisheye_camera/image_raw: 14.13 FPS, 2560x1440
+[INFO] [1785035278.965445]: 正在发布 /fisheye_camera/image_raw: 11.88 FPS, 2560x1440
+D = [-3.644118474039142, 10.762022360724519, -13.215259515222344, 0.0]
+K = [2852.7131934106355, 0.0, 1255.8019460475261, 0.0, 2871.6742979644077, 650.621689013765, 0.0, 0.0, 1.0]
+R = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+P = [2852.7131934106355, 0.0, 1255.8019460475261, 0.0, 0.0, 2871.6742979644077, 650.621689013765, 0.0, 0.0, 0.0, 1.0, 0.0]
+None
+# oST version 5.0 parameters
+
+
+[image]
+
+width
+2560
+
+height
+1440
+
+[fisheye_camera]
+
+camera matrix
+2852.713193 0.000000 1255.801946
+0.000000 2871.674298 650.621689
+0.000000 0.000000 1.000000
+
+distortion
+-3.644118 10.762022 -13.215260 0.000000
+
+rectification
+1.000000 0.000000 0.000000
+0.000000 1.000000 0.000000
+0.000000 0.000000 1.000000
+
+projection
+2852.713193 0.000000 1255.801946 0.000000
+0.000000 2871.674298 650.621689 0.000000
+0.000000 0.000000 1.000000 0.000000
+
+[INFO] [1785035284.016772]: 正在发布 /fisheye_camera/image_raw: 13.07 FPS, 2560x1440
+Traceback (most recent call last):
+  File &quot;/home/xhy/catkin_ws/src/image_pipeline/camera_calibration/src/camera_calibration/camera_calibrator.py&quot;, line 274, in on_mouse
+    self.c.do_save()
+  File &quot;/home/xhy/catkin_ws/src/image_pipeline/camera_calibration/src/camera_calibration/calibrator.py&quot;, line 677, in do_save
+    self.do_tarfile_save(tf) # Must be overridden in subclasses
+  File &quot;/home/xhy/catkin_ws/src/image_pipeline/camera_calibration/src/camera_calibration/calibrator.py&quot;, line 1034, in do_tarfile_save
+    taradd(name, cv2.imencode(&quot;.png&quot;, im)[1].tostring())
+  File &quot;/home/xhy/catkin_ws/src/image_pipeline/camera_calibration/src/camera_calibration/calibrator.py&quot;, line 1022, in taradd
+    if isinstance(buf, basestring):
+NameError: name &apos;basestring&apos; is not defined
+Traceback (most recent call last):
+  File &quot;/home/xhy/catkin_ws/src/image_pipeline/camera_calibration/src/camera_calibration/camera_calibrator.py&quot;, line 274, in on_mouse
+    self.c.do_save()
+  File &quot;/home/xhy/catkin_ws/src/image_pipeline/camera_calibration/src/camera_calibration/calibrator.py&quot;, line 677, in do_save
+    self.do_tarfile_save(tf) # Must be overridden in subclasses
+  File &quot;/home/xhy/catkin_ws/src/image_pipeline/camera_calibration/src/camera_calibration/calibrator.py&quot;, line 1034, in do_tarfile_save
+    taradd(name, cv2.imencode(&quot;.png&quot;, im)[1].tostring())
+  File &quot;/home/xhy/catkin_ws/src/image_pipeline/camera_calibration/src/camera_calibration/calibrator.py&quot;, line 1022, in taradd
+    if isinstance(buf, basestring):
+NameError: name &apos;basestring&apos; is not defined
+[INFO] [1785035289.109248]: 正在发布 /fisheye_camera/image_raw: 14.95 FPS, 2560x1440
+[INFO] [1785035294.134910]: 正在发布 /fisheye_camera/image_raw: 14.70 FPS, 2560x1440
+[INFO] [1785035299.174001]: 正在发布 /fisheye_camera/image_raw: 15.50 FPS, 2560x1440
+[INFO] [1785035304.215586]: 正在发布 /fisheye_camera/image_raw: 13.08 FPS, 2560x1440
+[INFO] [1785035309.235198]: 正在发布 /fisheye_camera/image_raw: 13.55 FPS, 2560x1440
+[INFO] [1785035314.248592]: 正在发布 /fisheye_camera/image_raw: 13.96 FPS, 2560x1440
+[INFO] [1785035319.278452]: </pre>

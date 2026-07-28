@@ -5,9 +5,10 @@
     <arg name="start_splitter" default="false" />
     <arg name="start_web" default="true" />
 
+    <!-- <arg name="model_path"
+         default="/home/xhy/catkin_ws/models/line0709.pt" /> -->
     <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/line0709.pt" />
-
+         default="/home/xhy/catkin_ws/models/model_line_260726.pt" />
     <!-- 10或20均可 -->
     <arg name="line_sample_count" default="10" />
 

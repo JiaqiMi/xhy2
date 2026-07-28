@@ -28,7 +28,7 @@ finished_topic: /finished
 trajectory_topic: /task1/trajectory
 
 # 启动与搜索
-startup_hold_seconds: 10.0
+startup_hold_seconds: 50.0
 camera_message_timeout: 2.0
 tf_timeout_seconds: 1.0
 line_message_max_age_seconds: 5.0
