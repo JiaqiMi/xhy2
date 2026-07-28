@@ -21,9 +21,14 @@
         1. 迁移至 motion_supervisor 的 /cmd/motion/goal 与 /motion/state 接口。
         2. 新增送水浮出、返回起始点、执行器反馈闭环和异常安全定点流程。
         3. 新增文本日志和结构化 YAML 数据流，记录运行判断、目标与反馈快照。
+    2026.7.28
+        1. 将送水点水平移动、原地浮出和原地下潜拆分，并以控制器当前目标回读防止旧 HOVER 反馈触发深度切换。
+        2. 新增送水点下潜后的推杆反向回收、停止确认和返回起点闭环流程。
+        3. 新增与 motion_supervisor 对齐的逐周期 CSV 日志和 JSON 参数快照，支持完整复盘。
 """
 
 from datetime import datetime
+import csv
 import json
 import logging
 import math
@@ -42,6 +47,7 @@ from tf.transformations import euler_from_quaternion, quaternion_from_euler
 NODE_NAME = 'task2'
 PUSHROD_STOP = 0
 PUSHROD_FORWARD = 1
+PUSHROD_REVERSE = 2
 MAIN_RATE_HZ = 5.0
 
 
@@ -66,16 +72,51 @@ def configure_task_file_logging(node_name, log_directory):
 class Task2V2(object):
     """采水器任务状态机，只使用控制器和执行器的反馈完成状态转场。"""
 
+    # CSV 每行对应一次 5 Hz 主循环；字段与 motion_supervisor 的完整复盘日志对齐。
+    LOG_FIELDS = (
+        'wall_time', 'ros_time', 'elapsed_s', 'task_state',
+        'task_state_elapsed_s', 'finished', 'failure_reason',
+        'decision_name', 'decision_detail', 'active_goal_age_s',
+        'active_goal_x', 'active_goal_y', 'active_goal_z',
+        'active_goal_yaw_deg', 'motion_status_age_s',
+        'motion_state', 'motion_startup_complete', 'motion_goal_active',
+        'motion_goal_matches_active', 'motion_goal_x', 'motion_goal_y',
+        'motion_goal_z', 'motion_goal_yaw_deg', 'motion_position_error',
+        'motion_base_position_error', 'motion_yaw_error_deg',
+        'motion_horizontal_speed', 'motion_yaw_rate_deg_s', 'motion_tx',
+        'motion_ty', 'motion_mz', 'motion_x_axis_state',
+        'motion_y_axis_state', 'motion_yaw_axis_state', 'motion_x_axis_error',
+        'motion_y_axis_error', 'motion_x_axis_speed', 'motion_y_axis_speed',
+        'motion_reason', 'actuator_status_age_s', 'actuator_status_sequence',
+        'actuator_recovering', 'actuator_recovery_reason',
+        'actuator_feedback_match_count', 'actuator_confirmation_elapsed_s',
+        'expected_heading_servo',
+        'expected_clamp_servo', 'expected_drive_cmd', 'expected_drive_speed',
+        'expected_red_light', 'expected_yellow_light', 'expected_green_light',
+        'command_light1', 'command_light2', 'command_heading_servo',
+        'command_clamp_servo', 'command_drive_cmd',
+        'command_drive_speed', 'command_red_light', 'command_yellow_light',
+        'command_green_light', 'feedback_mode', 'feedback_light1',
+        'feedback_light2', 'feedback_heading_servo',
+        'feedback_clamp_servo', 'feedback_drive_cmd', 'feedback_drive_speed',
+        'feedback_red_light', 'feedback_yellow_light', 'feedback_green_light',
+        'sampling_elapsed_s', 'surface_hold_elapsed_s',
+        'retraction_elapsed_s', 'final_hold_elapsed_s',
+    )
+
     WAIT_TF = 'WAIT_TF'
     WAIT_ACTUATOR_INIT = 'WAIT_ACTUATOR_INIT'
     INITIAL_HOLD = 'INITIAL_HOLD'
     WAIT_PUSHROD_START = 'WAIT_PUSHROD_START'
     SAMPLING = 'SAMPLING'
     WAIT_PUSHROD_STOP = 'WAIT_PUSHROD_STOP'
-    DELIVERY_DEPTH = 'DELIVERY_DEPTH'
+    DELIVERY_AT_TASK_DEPTH = 'DELIVERY_AT_TASK_DEPTH'
     SURFACE = 'SURFACE'
     SURFACE_HOLD = 'SURFACE_HOLD'
     DIVE = 'DIVE'
+    WAIT_PUSHROD_RETRACT_START = 'WAIT_PUSHROD_RETRACT_START'
+    RETRACTING = 'RETRACTING'
+    WAIT_PUSHROD_RETRACT_STOP = 'WAIT_PUSHROD_RETRACT_STOP'
     RETURN_HOME = 'RETURN_HOME'
     FINAL_HOLD = 'FINAL_HOLD'
     FINAL_STOP_CONFIRM = 'FINAL_STOP_CONFIRM'
@@ -100,6 +141,8 @@ class Task2V2(object):
             '~finished_topic', '/finished')).strip()
         self.log_directory = os.path.abspath(os.path.expanduser(str(
             rospy.get_param('~log_directory', '~/.ros/auv_logs/task2'))))
+        self.log_enabled = bool(rospy.get_param('~log_enabled', True))
+        self.log_flush_every = int(rospy.get_param('~log_flush_every', 5))
         self.data_log_enabled = bool(rospy.get_param('~data_log_enabled', True))
 
         self.task_depth = float(rospy.get_param('~task_depth', -1.0))
@@ -110,6 +153,8 @@ class Task2V2(object):
         self.pushrod_speed = int(rospy.get_param('~pushrod_speed', 250))
         self.pushrod_duration = float(rospy.get_param(
             '~pushrod_duration', 10.0))
+        self.pushrod_retract_duration = float(rospy.get_param(
+            '~pushrod_retract_duration', 10.0))
         self.surface_hold_seconds = float(rospy.get_param(
             '~surface_hold_seconds', 10.0))
         self.final_hold_seconds = float(rospy.get_param(
@@ -120,8 +165,14 @@ class Task2V2(object):
         self.clamp_closed = int(rospy.get_param('~clamp_closed', 255))
         self.pushrod_forward_cmd = int(rospy.get_param(
             '~pushrod_forward_cmd', PUSHROD_FORWARD))
+        self.pushrod_reverse_cmd = int(rospy.get_param(
+            '~pushrod_reverse_cmd', PUSHROD_REVERSE))
         self.feedback_confirm_frames = int(rospy.get_param(
             '~feedback_confirm_frames', 2))
+        self.goal_match_position_tolerance = float(rospy.get_param(
+            '~goal_match_position_tolerance', 0.03))
+        self.goal_match_yaw_tolerance_deg = float(rospy.get_param(
+            '~goal_match_yaw_tolerance_deg', 2.0))
 
         self.tf_initial_timeout = float(rospy.get_param(
             '~tf_initial_timeout', 30.0))
@@ -149,10 +200,18 @@ class Task2V2(object):
 
         self.ros_log_path, self.ros_log_handler = configure_task_file_logging(
             NODE_NAME, self.log_directory)
+        self.cycle_log_path = None
+        self.cycle_log_file = None
+        self.cycle_log_writer = None
+        self.parameter_snapshot_path = None
+        self.cycle_log_rows_since_flush = 0
+        self.cycle_log_monotonic_started_at = time.monotonic()
         self.data_log_path = None
         self.data_log_file = None
         self.data_log_lock = threading.Lock()
         self.last_decision = {'name': 'startup', 'detail': '等待节点初始化'}
+        self._open_cycle_log()
+        self._write_parameter_snapshot()
         if self.data_log_enabled:
             self._open_data_log()
 
@@ -183,7 +242,7 @@ class Task2V2(object):
         self.active_goal = None
         self.active_goal_started_at = None
         self.initial_goal = None
-        self.delivery_depth_goal = None
+        self.delivery_at_task_depth_goal = None
         self.surface_goal = None
         self.dive_goal = None
         self.return_home_goal = None
@@ -191,6 +250,7 @@ class Task2V2(object):
         self.initial_tf_wait_warned = False
         self.motion_unhealthy_since = None
         self.sampling_started_at = None
+        self.retraction_started_at = None
         self.surface_hold_started_at = None
         self.final_hold_started_at = None
         self.safe_final_started_at = None
@@ -211,6 +271,8 @@ class Task2V2(object):
             'startup',
             log_directory=self.log_directory,
             ros_log_path=self.ros_log_path,
+            cycle_log_path=self.cycle_log_path,
+            parameter_snapshot_path=self.parameter_snapshot_path,
             data_log_path=self.data_log_path,
             task_depth=self.task_depth,
             delivery_xy=self.delivery_xy,
@@ -219,13 +281,15 @@ class Task2V2(object):
             final_yaw_deg=self.final_yaw_deg,
             pushrod_speed=self.pushrod_speed,
             pushrod_duration=self.pushrod_duration,
+            pushrod_retract_duration=self.pushrod_retract_duration,
             surface_hold_seconds=self.surface_hold_seconds,
             final_hold_seconds=self.final_hold_seconds,
             feedback_confirm_frames=self.feedback_confirm_frames,
         )
         rospy.loginfo(
-            '%s: 已启动，主循环 %.1fHz，文本日志=%s，数据日志=%s，等待 %s -> %s 的首帧 TF',
-            NODE_NAME, self.rate_hz, self.ros_log_path, self.data_log_path,
+            '%s: 已启动，主循环 %.1fHz，文本日志=%s，CSV 日志=%s，参数快照=%s，结构化日志=%s，等待 %s -> %s 的首帧 TF',
+            NODE_NAME, self.rate_hz, self.ros_log_path, self.cycle_log_path,
+            self.parameter_snapshot_path, self.data_log_path,
             self.map_frame, self.base_frame)
 
     def _validate_parameters(self):
@@ -242,6 +306,8 @@ class Task2V2(object):
             'final_safe_warning_timeout': self.final_safe_warning_timeout,
             'actuator_status_timeout': self.actuator_status_timeout,
             'actuator_confirm_timeout': self.actuator_confirm_timeout,
+            'goal_match_position_tolerance': self.goal_match_position_tolerance,
+            'goal_match_yaw_tolerance_deg': self.goal_match_yaw_tolerance_deg,
         }
         for name, value in positive_values.items():
             if not math.isfinite(value) or value <= 0.0:
@@ -249,6 +315,7 @@ class Task2V2(object):
 
         non_negative_values = {
             'pushrod_duration': self.pushrod_duration,
+            'pushrod_retract_duration': self.pushrod_retract_duration,
             'surface_hold_seconds': self.surface_hold_seconds,
             'final_hold_seconds': self.final_hold_seconds,
         }
@@ -274,8 +341,14 @@ class Task2V2(object):
             raise ValueError('pushrod_speed 必须在 [0, 254] 内')
         if self.pushrod_forward_cmd not in (1, 2):
             raise ValueError('pushrod_forward_cmd 必须为 1 或 2')
+        if self.pushrod_reverse_cmd not in (1, 2):
+            raise ValueError('pushrod_reverse_cmd 必须为 1 或 2')
+        if self.pushrod_reverse_cmd == self.pushrod_forward_cmd:
+            raise ValueError('pushrod_reverse_cmd 必须与 pushrod_forward_cmd 相反')
         if self.feedback_confirm_frames <= 0:
             raise ValueError('feedback_confirm_frames 必须大于 0')
+        if self.log_flush_every <= 0:
+            raise ValueError('log_flush_every 必须大于 0')
         for name, value in {
                 'heading_servo_right': self.heading_servo_right,
                 'clamp_closed': self.clamp_closed,
@@ -307,6 +380,108 @@ class Task2V2(object):
             self.data_log_path = None
             self.data_log_file = None
             rospy.logwarn('%s: 无法创建结构化数据日志：%s', NODE_NAME, error)
+
+    def _open_cycle_log(self):
+        """创建与 motion_supervisor 一致的逐控制周期 CSV 日志。"""
+        if not self.log_enabled:
+            rospy.logwarn('%s: 完整 CSV 数据日志已禁用', NODE_NAME)
+            return
+        try:
+            os.makedirs(self.log_directory, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+            self.cycle_log_path = os.path.join(
+                self.log_directory, '{}_{}.csv'.format(NODE_NAME, timestamp))
+            self.cycle_log_file = open(
+                self.cycle_log_path, 'w', encoding='utf-8', newline='')
+            self.cycle_log_writer = csv.DictWriter(
+                self.cycle_log_file, fieldnames=self.LOG_FIELDS,
+                extrasaction='ignore')
+            self.cycle_log_writer.writeheader()
+            self.cycle_log_file.flush()
+        except (IOError, OSError) as error:
+            self.cycle_log_path = None
+            self.cycle_log_file = None
+            self.cycle_log_writer = None
+            rospy.logerr('%s: 无法创建 CSV 数据日志，将继续执行任务：%s', NODE_NAME, error)
+
+    def _parameter_snapshot(self):
+        """返回本次运行实际生效的任务、闭环和日志参数。"""
+        return {
+            'map_frame': self.map_frame,
+            'base_frame': self.base_frame,
+            'motion_goal_topic': self.motion_goal_topic,
+            'motion_state_topic': self.motion_state_topic,
+            'actuator_topic': self.actuator_topic,
+            'actuator_status_topic': self.actuator_status_topic,
+            'finished_topic': self.finished_topic,
+            'task_depth': self.task_depth,
+            'delivery_xy': self.delivery_xy,
+            'delivery_yaw_deg': self.delivery_yaw_deg,
+            'surface_depth': self.surface_depth,
+            'final_yaw_deg': self.final_yaw_deg,
+            'pushrod_speed': self.pushrod_speed,
+            'pushrod_duration': self.pushrod_duration,
+            'pushrod_retract_duration': self.pushrod_retract_duration,
+            'surface_hold_seconds': self.surface_hold_seconds,
+            'final_hold_seconds': self.final_hold_seconds,
+            'heading_servo_right': self.heading_servo_right,
+            'clamp_closed': self.clamp_closed,
+            'pushrod_forward_cmd': self.pushrod_forward_cmd,
+            'pushrod_reverse_cmd': self.pushrod_reverse_cmd,
+            'feedback_confirm_frames': self.feedback_confirm_frames,
+            'actuator_status_timeout': self.actuator_status_timeout,
+            'actuator_confirm_timeout': self.actuator_confirm_timeout,
+            'goal_match_position_tolerance': self.goal_match_position_tolerance,
+            'goal_match_yaw_tolerance_deg': self.goal_match_yaw_tolerance_deg,
+            'tf_initial_timeout': self.tf_initial_timeout,
+            'motion_state_timeout': self.motion_state_timeout,
+            'motion_recovery_timeout': self.motion_recovery_timeout,
+            'initial_hover_timeout': self.initial_hover_timeout,
+            'delivery_depth_timeout': self.delivery_depth_timeout,
+            'surface_timeout': self.surface_timeout,
+            'dive_timeout': self.dive_timeout,
+            'return_home_timeout': self.return_home_timeout,
+            'final_safe_warning_timeout': self.final_safe_warning_timeout,
+            'log_enabled': self.log_enabled,
+            'log_directory': self.log_directory,
+            'log_flush_every': self.log_flush_every,
+            'data_log_enabled': self.data_log_enabled,
+        }
+
+    def _write_parameter_snapshot(self):
+        """将实际加载参数另存 JSON，确保 CSV 可以脱离参数服务器复盘。"""
+        if not self.log_enabled:
+            return
+        try:
+            os.makedirs(self.log_directory, exist_ok=True)
+            filename = '{}_parameters_{}.json'.format(
+                NODE_NAME, datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+            self.parameter_snapshot_path = os.path.join(
+                self.log_directory, filename)
+            payload = {
+                'saved_at_local': datetime.now().isoformat(),
+                'main_rate_hz': self.rate_hz,
+                'parameters': self._parameter_snapshot(),
+            }
+            with open(self.parameter_snapshot_path, 'w', encoding='utf-8') as handle:
+                json.dump(payload, handle, ensure_ascii=False,
+                          indent=2, sort_keys=True)
+        except (IOError, OSError, TypeError, ValueError) as error:
+            self.parameter_snapshot_path = None
+            rospy.logerr('%s: 无法保存参数快照，将继续执行任务：%s', NODE_NAME, error)
+
+    def _close_cycle_log(self):
+        """刷新并关闭 CSV 日志，避免节点结束时丢失最后一个控制周期。"""
+        if getattr(self, 'cycle_log_file', None) is None:
+            return
+        try:
+            self.cycle_log_file.flush()
+            self.cycle_log_file.close()
+        except (IOError, OSError) as error:
+            rospy.logerr('%s: 关闭 CSV 数据日志失败：%s', NODE_NAME, error)
+        finally:
+            self.cycle_log_file = None
+            self.cycle_log_writer = None
 
     @staticmethod
     def _safe_log_value(value):
@@ -415,6 +590,129 @@ class Task2V2(object):
             'actuator_status': self._actuator_snapshot(actuator_status),
             'last_decision': getattr(self, 'last_decision', None),
         }
+
+    @staticmethod
+    def _elapsed_or_blank(started_at, now):
+        """返回单调时钟计时；尚未开始的阶段在 CSV 中留空。"""
+        if started_at is None:
+            return ''
+        return max(0.0, now - started_at)
+
+    @staticmethod
+    def _command_field(command, field):
+        """读取命令字典字段；没有期望或命令时在 CSV 中留空。"""
+        if command is None:
+            return ''
+        return command.get(field, '')
+
+    def _write_cycle_log(self, ros_now):
+        """写入一次 5 Hz 主循环的完整任务、控制器和执行器快照。"""
+        if getattr(self, 'cycle_log_writer', None) is None:
+            return
+        with self.lock:
+            motion_state = self.latest_motion_state
+            motion_at = self.latest_motion_state_at
+            actuator_status = self.latest_actuator_status
+            actuator_at = self.latest_actuator_status_at
+            actuator_sequence = self.actuator_status_sequence
+        monotonic_now = time.monotonic()
+        active_goal = self.active_goal
+        motion_goal = None if motion_state is None else motion_state.goal
+        active_yaw = (None if active_goal is None else
+                      self._yaw_from_quaternion(active_goal.pose.orientation))
+        motion_goal_yaw = (None if motion_goal is None else
+                           self._yaw_from_quaternion(motion_goal.pose.orientation))
+        goal_matches, _ = self._motion_goal_matches_active(motion_state)
+        decision = self.last_decision or {}
+        row = {
+            'wall_time': datetime.now().isoformat(timespec='milliseconds'),
+            'ros_time': '{:.9f}'.format(ros_now.to_sec()),
+            'elapsed_s': self._elapsed_or_blank(
+                self.cycle_log_monotonic_started_at, monotonic_now),
+            'task_state': self.state,
+            'task_state_elapsed_s': self._stage_elapsed(),
+            'finished': int(self.finished),
+            'failure_reason': self.failure_reason or '',
+            'decision_name': decision.get('name', ''),
+            'decision_detail': decision.get('detail', ''),
+            'active_goal_age_s': self._elapsed_or_blank(
+                self.active_goal_started_at, monotonic_now),
+            'active_goal_x': '' if active_goal is None else active_goal.pose.position.x,
+            'active_goal_y': '' if active_goal is None else active_goal.pose.position.y,
+            'active_goal_z': '' if active_goal is None else active_goal.pose.position.z,
+            'active_goal_yaw_deg': '' if active_yaw is None else math.degrees(active_yaw),
+            'motion_status_age_s': self._elapsed_or_blank(motion_at, monotonic_now),
+            'motion_state': '' if motion_state is None else motion_state.state,
+            'motion_startup_complete': '' if motion_state is None else int(motion_state.startup_complete),
+            'motion_goal_active': '' if motion_state is None else int(motion_state.goal_active),
+            'motion_goal_matches_active': '' if goal_matches is None else int(goal_matches),
+            'motion_goal_x': '' if motion_goal is None else motion_goal.pose.position.x,
+            'motion_goal_y': '' if motion_goal is None else motion_goal.pose.position.y,
+            'motion_goal_z': '' if motion_goal is None else motion_goal.pose.position.z,
+            'motion_goal_yaw_deg': '' if motion_goal_yaw is None else math.degrees(motion_goal_yaw),
+            'motion_position_error': '' if motion_state is None else motion_state.position_error,
+            'motion_base_position_error': '' if motion_state is None else motion_state.base_position_error,
+            'motion_yaw_error_deg': '' if motion_state is None else math.degrees(motion_state.yaw_error),
+            'motion_horizontal_speed': '' if motion_state is None else motion_state.horizontal_speed,
+            'motion_yaw_rate_deg_s': '' if motion_state is None else math.degrees(motion_state.yaw_rate),
+            'motion_tx': '' if motion_state is None else motion_state.tx,
+            'motion_ty': '' if motion_state is None else motion_state.ty,
+            'motion_mz': '' if motion_state is None else motion_state.mz,
+            'motion_x_axis_state': '' if motion_state is None else motion_state.x_axis_state,
+            'motion_y_axis_state': '' if motion_state is None else motion_state.y_axis_state,
+            'motion_yaw_axis_state': '' if motion_state is None else motion_state.yaw_axis_state,
+            'motion_x_axis_error': '' if motion_state is None else motion_state.x_axis_error,
+            'motion_y_axis_error': '' if motion_state is None else motion_state.y_axis_error,
+            'motion_x_axis_speed': '' if motion_state is None else motion_state.x_axis_speed,
+            'motion_y_axis_speed': '' if motion_state is None else motion_state.y_axis_speed,
+            'motion_reason': '' if motion_state is None else motion_state.reason,
+            'actuator_status_age_s': self._elapsed_or_blank(actuator_at, monotonic_now),
+            'actuator_status_sequence': actuator_sequence,
+            'actuator_recovering': int(self.actuator_recovering),
+            'actuator_recovery_reason': self.actuator_recovery_reason or '',
+            'actuator_feedback_match_count': self.feedback_match_count,
+            'actuator_confirmation_elapsed_s': self._elapsed_or_blank(
+                self.expected_actuator_started_at, monotonic_now),
+            'expected_heading_servo': self._command_field(self.expected_actuator, 'heading_servo'),
+            'expected_clamp_servo': self._command_field(self.expected_actuator, 'clamp_servo'),
+            'expected_drive_cmd': self._command_field(self.expected_actuator, 'drive_cmd'),
+            'expected_drive_speed': self._command_field(self.expected_actuator, 'drive_speed'),
+            'expected_red_light': self._command_field(self.expected_actuator, 'red_light'),
+            'expected_yellow_light': self._command_field(self.expected_actuator, 'yellow_light'),
+            'expected_green_light': self._command_field(self.expected_actuator, 'green_light'),
+            'command_light1': 0,
+            'command_light2': 0,
+            'command_heading_servo': self._command_field(self.last_actuator_command, 'heading_servo'),
+            'command_clamp_servo': self._command_field(self.last_actuator_command, 'clamp_servo'),
+            'command_drive_cmd': self._command_field(self.last_actuator_command, 'drive_cmd'),
+            'command_drive_speed': self._command_field(self.last_actuator_command, 'drive_speed'),
+            'command_red_light': self._command_field(self.last_actuator_command, 'red_light'),
+            'command_yellow_light': self._command_field(self.last_actuator_command, 'yellow_light'),
+            'command_green_light': self._command_field(self.last_actuator_command, 'green_light'),
+            'feedback_mode': '' if actuator_status is None else actuator_status.mode,
+            'feedback_light1': '' if actuator_status is None else actuator_status.light1,
+            'feedback_light2': '' if actuator_status is None else actuator_status.light2,
+            'feedback_heading_servo': '' if actuator_status is None else actuator_status.heading_servo,
+            'feedback_clamp_servo': '' if actuator_status is None else actuator_status.clamp_servo,
+            'feedback_drive_cmd': '' if actuator_status is None else actuator_status.drive_cmd,
+            'feedback_drive_speed': '' if actuator_status is None else actuator_status.drive_speed,
+            'feedback_red_light': '' if actuator_status is None else actuator_status.red_light,
+            'feedback_yellow_light': '' if actuator_status is None else actuator_status.yellow_light,
+            'feedback_green_light': '' if actuator_status is None else actuator_status.green_light,
+            'sampling_elapsed_s': self._elapsed_or_blank(self.sampling_started_at, monotonic_now),
+            'surface_hold_elapsed_s': self._elapsed_or_blank(self.surface_hold_started_at, monotonic_now),
+            'retraction_elapsed_s': self._elapsed_or_blank(self.retraction_started_at, monotonic_now),
+            'final_hold_elapsed_s': self._elapsed_or_blank(self.final_hold_started_at, monotonic_now),
+        }
+        try:
+            self.cycle_log_writer.writerow(row)
+            self.cycle_log_rows_since_flush += 1
+            if self.cycle_log_rows_since_flush >= self.log_flush_every:
+                self.cycle_log_file.flush()
+                self.cycle_log_rows_since_flush = 0
+        except (IOError, OSError, ValueError) as error:
+            rospy.logerr('%s: 写入 CSV 数据日志失败，停止本次 CSV 记录：%s', NODE_NAME, error)
+            self._close_cycle_log()
 
     def _write_data_record(self, event, **data):
         """追加一条独立 YAML 文档，写入判断、状态及全部可用反馈。"""
@@ -540,7 +838,7 @@ class Task2V2(object):
         final_yaw = math.radians(self.final_yaw_deg)
         self.initial_goal = self._make_goal(
             initial_x, initial_y, self.task_depth, initial_yaw)
-        self.delivery_depth_goal = self._make_goal(
+        self.delivery_at_task_depth_goal = self._make_goal(
             self.delivery_xy[0], self.delivery_xy[1], self.task_depth,
             delivery_yaw)
         self.surface_goal = self._make_goal(
@@ -555,7 +853,8 @@ class Task2V2(object):
         self._write_data_record(
             'tf_latched', translation=list(translation), rotation=list(rotation),
             initial_goal=self._pose_snapshot(self.initial_goal),
-            delivery_depth_goal=self._pose_snapshot(self.delivery_depth_goal),
+            delivery_at_task_depth_goal=self._pose_snapshot(
+                self.delivery_at_task_depth_goal),
             surface_goal=self._pose_snapshot(self.surface_goal),
             return_home_goal=self._pose_snapshot(self.return_home_goal))
         rospy.loginfo(
@@ -582,12 +881,20 @@ class Task2V2(object):
             'green_light': 0,
         }
 
-    def _pushrod_command(self):
-        """返回采水期间的推杆前进外设状态。"""
+    def _pushrod_command(self, drive_cmd):
+        """返回指定方向、固定速度的推杆外设状态。"""
         command = self._safe_actuator_command()
-        command['drive_cmd'] = self.pushrod_forward_cmd
+        command['drive_cmd'] = drive_cmd
         command['drive_speed'] = self.pushrod_speed
         return command
+
+    def _pushrod_forward_command(self):
+        """返回采水期间的推杆前进命令。"""
+        return self._pushrod_command(self.pushrod_forward_cmd)
+
+    def _pushrod_reverse_command(self):
+        """返回采水结束后的推杆回收命令，速度与前进阶段完全一致。"""
+        return self._pushrod_command(self.pushrod_reverse_cmd)
 
     def _publish_actuator(self, command):
         """持续下发补光灯关闭和执行器命令。"""
@@ -747,8 +1054,41 @@ class Task2V2(object):
             return False, state, 'motion_supervisor 处于 SAFE'
         return True, state, 'motion 状态正常'
 
+    def _motion_goal_matches_active(self, state):
+        """确认 HOVER 对应当前任务目标，避免上一目标的旧反馈触发深度切换。
+
+        此处不判断 AUV 是否到达目标；到达条件仍完全由 motion_supervisor 的
+        HOVER 给出。比较的仅是控制器反馈中的当前目标是否已切换到本节点锁存目标。
+        """
+        if self.active_goal is None or state is None:
+            return None, '尚无可比较的任务目标或 motion 状态'
+        feedback_goal = state.goal
+        target_yaw = self._yaw_from_quaternion(self.active_goal.pose.orientation)
+        feedback_yaw = self._yaw_from_quaternion(feedback_goal.pose.orientation)
+        if target_yaw is None or feedback_yaw is None:
+            return False, 'motion 反馈目标航向无效'
+        target = self.active_goal.pose.position
+        feedback = feedback_goal.pose.position
+        values = (
+            target.x, target.y, target.z, feedback.x, feedback.y, feedback.z,
+            target_yaw, feedback_yaw)
+        if not all(math.isfinite(value) for value in values):
+            return False, 'motion 反馈目标含无效数值'
+        position_delta = max(
+            abs(target.x - feedback.x), abs(target.y - feedback.y),
+            abs(target.z - feedback.z))
+        yaw_delta = abs(math.atan2(
+            math.sin(target_yaw - feedback_yaw),
+            math.cos(target_yaw - feedback_yaw)))
+        if position_delta > self.goal_match_position_tolerance:
+            return False, '等待控制器切换当前目标，位置差 {:.3f}m'.format(position_delta)
+        if math.degrees(yaw_delta) > self.goal_match_yaw_tolerance_deg:
+            return False, '等待控制器切换当前目标，航向差 {:.2f}deg'.format(
+                math.degrees(yaw_delta))
+        return True, '控制器反馈目标与当前锁存目标一致'
+
     def _controller_hovered(self):
-        """仅通过控制器 HOVER 反馈判断当前目标是否到达。"""
+        """仅通过当前目标对应的控制器 HOVER 反馈判断目标是否到达。"""
         healthy, state, detail = self._motion_health()
         if not healthy:
             return False, False, detail
@@ -761,6 +1101,9 @@ class Task2V2(object):
             return False, True, 'motion_supervisor 尚未完成启动定点'
         if not state.goal_active:
             return False, True, 'motion_supervisor 尚无活动目标'
+        goal_matches, goal_detail = self._motion_goal_matches_active(state)
+        if goal_matches is not True:
+            return False, True, goal_detail
         if state.state != MotionState.HOVER:
             return False, True, '等待 HOVER，当前状态={}'.format(state.state)
         return True, True, '控制器反馈 HOVER'
@@ -912,6 +1255,20 @@ class Task2V2(object):
             1.0, '%s: %s，推杆保持停止并等待 HOVER', NODE_NAME, detail)
         return False
 
+    def _retraction_position_ready(self):
+        """仅在送水点已下潜并 HOVER 时回收推杆，失稳时立即安全停止。"""
+        self._publish_goal()
+        hovered, fallback, detail = self._check_motion_or_fallback('送水点下潜后推杆回收定点')
+        if fallback:
+            return False
+        if hovered:
+            return True
+        self.retraction_started_at = None
+        self._actuator_gate(self._safe_actuator_command(), '回收推杆暂停')
+        rospy.loginfo_throttle(
+            1.0, '%s: %s，推杆保持停止并等待 HOVER', NODE_NAME, detail)
+        return False
+
     def _finish(self, success, reason):
         """停止执行器、发布任务结果并关闭节点。"""
         if self.finished:
@@ -942,6 +1299,7 @@ class Task2V2(object):
                     pass
                 finally:
                     self.data_log_file = None
+        self._close_cycle_log()
         handler = getattr(self, 'ros_log_handler', None)
         if handler is not None:
             try:
@@ -982,7 +1340,7 @@ class Task2V2(object):
         if self.state == self.WAIT_PUSHROD_START:
             if not self._sampling_position_ready():
                 return
-            if self._actuator_gate(self._pushrod_command(), '推杆前进'):
+            if self._actuator_gate(self._pushrod_forward_command(), '推杆前进'):
                 self.sampling_started_at = time.monotonic()
                 self._set_state(self.SAMPLING, '推杆前进反馈确认，开始采水计时')
             return
@@ -990,7 +1348,7 @@ class Task2V2(object):
         if self.state == self.SAMPLING:
             if not self._sampling_position_ready():
                 return
-            if not self._actuator_gate(self._pushrod_command(), '采水推杆保持'):
+            if not self._actuator_gate(self._pushrod_forward_command(), '采水推杆保持'):
                 self.sampling_started_at = None
                 return
             if self.sampling_started_at is None:
@@ -1007,13 +1365,17 @@ class Task2V2(object):
         if self.state == self.WAIT_PUSHROD_STOP:
             self._publish_goal()
             if self._actuator_gate(safe_command, '推杆停止'):
-                self._set_active_goal(self.delivery_depth_goal, '送水点定深')
-                self._set_state(self.DELIVERY_DEPTH, '推杆停止反馈确认')
+                self._set_active_goal(
+                    self.delivery_at_task_depth_goal,
+                    '送水点水平移动（任务深度）')
+                self._set_state(
+                    self.DELIVERY_AT_TASK_DEPTH,
+                    '推杆停止反馈确认，开始在任务深度水平前往送水点')
             return
 
-        if self.state == self.DELIVERY_DEPTH:
+        if self.state == self.DELIVERY_AT_TASK_DEPTH:
             self._navigation_step(
-                '送水点定深', self.delivery_depth_timeout,
+                '送水点水平移动（任务深度）', self.delivery_depth_timeout,
                 self.SURFACE, self.surface_goal)
             return
 
@@ -1033,7 +1395,45 @@ class Task2V2(object):
         if self.state == self.DIVE:
             self._navigation_step(
                 '送水点下潜', self.dive_timeout,
-                self.RETURN_HOME, self.return_home_goal)
+                self.WAIT_PUSHROD_RETRACT_START)
+            return
+
+        if self.state == self.WAIT_PUSHROD_RETRACT_START:
+            if not self._retraction_position_ready():
+                return
+            if self._actuator_gate(
+                    self._pushrod_reverse_command(), '推杆反向回收'):
+                self.retraction_started_at = time.monotonic()
+                self._set_state(
+                    self.RETRACTING,
+                    '推杆反向回收反馈确认，开始计时')
+            return
+
+        if self.state == self.RETRACTING:
+            if not self._retraction_position_ready():
+                return
+            if not self._actuator_gate(
+                    self._pushrod_reverse_command(), '回收推杆保持'):
+                self.retraction_started_at = None
+                return
+            if self.retraction_started_at is None:
+                self.retraction_started_at = time.monotonic()
+            elapsed = time.monotonic() - self.retraction_started_at
+            if elapsed >= self.pushrod_retract_duration:
+                self._set_state(
+                    self.WAIT_PUSHROD_RETRACT_STOP,
+                    '推杆反向回收计时完成，等待停止确认')
+            else:
+                rospy.loginfo_throttle(
+                    1.0, '%s: 推杆反向回收 %.1f/%.1fs', NODE_NAME,
+                    elapsed, self.pushrod_retract_duration)
+            return
+
+        if self.state == self.WAIT_PUSHROD_RETRACT_STOP:
+            self._publish_goal()
+            if self._actuator_gate(safe_command, '回收推杆停止'):
+                self._set_active_goal(self.return_home_goal, '回收完成后返回起始点')
+                self._set_state(self.RETURN_HOME, '推杆回收停止反馈确认')
             return
 
         if self.state == self.RETURN_HOME:
@@ -1065,6 +1465,7 @@ class Task2V2(object):
         """以固定 5 Hz 执行任务状态机，直到任务完成或 ROS 关闭。"""
         while not rospy.is_shutdown():
             self._run_once()
+            self._write_cycle_log(rospy.Time.now())
             self._write_data_record('control_cycle')
             self.rate.sleep()
 

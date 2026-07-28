@@ -16,9 +16,9 @@
     <arg name="start_down_splitter" default="false" />
 
     <!-- 三个模型由本launch一次性启动，任务阶段切换时不关闭。 -->
-    <arg name="start_arrow_model" default="false" />
-    <arg name="start_aruco_model" default="false" />
-    <arg name="start_rectangle_model" default="false" />
+    <arg name="start_arrow_model" default="true" />
+    <arg name="start_aruco_model" default="true" />
+    <arg name="start_rectangle_model" default="true" />
     <arg name="start_arrow_web" default="false" />
     <arg name="start_aruco_web" default="false" />
     <arg name="start_rectangle_web" default="false" />

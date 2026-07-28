@@ -15,9 +15,20 @@
     改为管理 task1、task2、task3 的 launch，仅监控运行状态和超时。
 2026.7.28
     恢复 /finished 驱动的 task1、task2、task3 自动串联。
+2026.7.28
+    将内层 launch 输出逐行转发，修复终端换行错位。
+2026.7.28
+    使用显式 CRLF 输出内层 launch 日志，兼容 roslaunch 管道终端。
+2026.7.28
+    使用 PTY 启动内层 launch，确保日志逐行刷新。
 """
 
+import errno
+import os
+import pty
 import subprocess
+import sys
+import threading
 import time
 
 import rospy
@@ -43,6 +54,8 @@ class StateControl:
         self.current_task = None
         self.task_process = None
         self.task_start_time = None
+        self.task_output_fd = None
+        self.task_output_thread = None
         self.auto_mode = False
 
         rospy.Subscriber(self.keyboard_topic, Keyboard, self.keyboard_callback)
@@ -108,18 +121,83 @@ class StateControl:
         self.terminate_current_task('切换任务')
         command = ['roslaunch', 'auv_control', task['launch']] + task['launch_args']
         try:
-            self.task_process = subprocess.Popen(command)
+            master_fd, slave_fd = pty.openpty()
+            try:
+                self.task_process = subprocess.Popen(
+                    command,
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    close_fds=True)
+            except OSError:
+                os.close(master_fd)
+                raise
+            finally:
+                os.close(slave_fd)
             self.current_task = task
             self.task_start_time = time.monotonic()
             self.auto_mode = automatic
+            self.task_output_fd = master_fd
+            self.task_output_thread = threading.Thread(
+                target=self._forward_task_output,
+                args=(task['name'], master_fd),
+                name='{}_launch_output'.format(task['name']),
+                daemon=True)
+            self.task_output_thread.start()
             rospy.loginfo('%s 已启动 %s：%s。超时 %.0f 秒。', NODE_NAME,
                           task['name'], ' '.join(command), task['timeout_seconds'])
         except OSError as error:
             self.task_process = None
             self.current_task = None
             self.task_start_time = None
+            self.task_output_fd = None
+            self.task_output_thread = None
             self.auto_mode = False
             rospy.logerr('%s 启动 %s 失败：%s', NODE_NAME, task['name'], error)
+
+    @staticmethod
+    def _forward_task_output(task_name, output_fd):
+        """从 PTY 逐行转发内层 roslaunch 输出。"""
+        pending = b''
+        try:
+            while True:
+                try:
+                    chunk = os.read(output_fd, 4096)
+                except OSError as error:
+                    if error.errno in (errno.EIO, errno.EBADF):
+                        break
+                    raise
+                if not chunk:
+                    break
+                pending += chunk
+                while b'\n' in pending:
+                    raw_line, pending = pending.split(b'\n', 1)
+                    line = raw_line.decode('utf-8', errors='replace').rstrip('\r')
+                    if line:
+                        sys.stdout.write('{} launch: {}\r\n'.format(task_name, line))
+                        sys.stdout.flush()
+            if pending:
+                line = pending.decode('utf-8', errors='replace').rstrip('\r')
+                if line:
+                    sys.stdout.write('{} launch: {}\r\n'.format(task_name, line))
+                    sys.stdout.flush()
+        finally:
+            try:
+                os.close(output_fd)
+            except OSError:
+                pass
+
+    def _close_task_output(self):
+        """关闭 PTY 并等待日志转发线程退出。"""
+        if self.task_output_fd is not None:
+            try:
+                os.close(self.task_output_fd)
+            except OSError:
+                pass
+            self.task_output_fd = None
+        if self.task_output_thread is not None:
+            self.task_output_thread.join(timeout=1.0)
+            self.task_output_thread = None
 
     def start_automatic_tasks(self):
         """从最小 mode 的任务开始自动串联。"""
@@ -167,6 +245,7 @@ class StateControl:
         self.task_process = None
         self.current_task = None
         self.task_start_time = None
+        self._close_task_output()
 
     def finished_callback(self, message):
         """收到任务完成消息后，在自动模式推进下一任务。"""
@@ -196,6 +275,7 @@ class StateControl:
             self.task_process = None
             self.current_task = None
             self.task_start_time = None
+            self._close_task_output()
             self.auto_mode = False
             return
 

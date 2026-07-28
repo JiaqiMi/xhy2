@@ -28,24 +28,27 @@ finished_topic: /finished
 # ============================== 采水、送水与返航目标 ==============================
 
 # 采水、定深送水、下潜返航时使用的 map z；默认 -1.0。
-task_depth: -1.0
+task_depth: -0.6
 # 送水点在 map 坐标系中的绝对 [x, y]；长度必须为 2。
-delivery_xy: [0.0, 0.0]
+delivery_xy: [2.0, 1.00]
 # 到达送水点、浮出和下潜阶段保持的 map 航向角，单位 deg。
-delivery_yaw_deg: 0.0
+delivery_yaw_deg: 200.0
 # 送水点浮出水面时使用的 map z；默认 0.0。
-surface_depth: 0.0
+surface_depth: -1.0
 # 返回起始 XY 后保持的最终 map 航向角，单位 deg。
-final_yaw_deg: 0.0
+final_yaw_deg: 200.0
 
 # ============================== 采水时序 ==============================
 
 # 推杆前进速度，范围 0~254；数值必须与下位机执行器协议一致。
 pushrod_speed: 250
 # 推杆确认前进后连续采水的时长；执行器反馈异常会暂停并重新计时。
-pushrod_duration: 10.0
+pushrod_duration: 8.0
+# 推杆在送水点下潜并由控制器确认 HOVER 后的反向回收时长；速度固定复用 pushrod_speed，
+# 执行器或运动反馈异常会先安全停止，恢复后重新计时。
+pushrod_retract_duration: 10.0
 # 在送水点浮出并收到 HOVER 后，保持水面位置的时长。
-surface_hold_seconds: 10.0
+surface_hold_seconds: 20.0
 # 返回起始点并收到 HOVER 后，保持最终位置和航向的时长。
 final_hold_seconds: 10.0
 
@@ -57,12 +60,20 @@ heading_servo_right: 0
 clamp_closed: 255
 # 推杆前进命令，只能为 1 或 2；默认 1，若实际安装方向相反可改为 2。
 pushrod_forward_cmd: 1
+# 推杆反向回收命令，只能为 1 或 2，且必须与 pushrod_forward_cmd 不同；默认 2。
+pushrod_reverse_cmd: 2
 # 期望状态需连续匹配的 /status/actuator 帧数；必须为正整数。
 feedback_confirm_frames: 2
 # 最新执行器反馈允许的最大年龄；超过后判为反馈失效。
 actuator_status_timeout: 0.6
 # 等待执行器命令获得连续匹配反馈的最长时间；超时后下发安全停止并等待恢复。
 actuator_confirm_timeout: 5.0
+# /motion/state 中的控制器当前目标与 task2 锁存目标允许的最大单轴位置差，单位 m。
+# 它只防止上一目标残留的 HOVER 误触发转场，并不自行判断 AUV 是否到达目标。
+goal_match_position_tolerance: 0.03
+# /motion/state 中的控制器当前目标与 task2 锁存目标允许的最大航向差，单位 deg；
+# 到达仍完全以 motion_supervisor 的 HOVER 反馈为准。
+goal_match_yaw_tolerance_deg: 2.0
 
 # ============================== TF、运动反馈与阶段超时 ==============================
 
@@ -74,7 +85,8 @@ motion_state_timeout: 0.5
 motion_recovery_timeout: 10.0
 # 起始锁存点等待 motion_supervisor 进入 HOVER 的最长时间。
 initial_hover_timeout: 120.0
-# 前往送水点且保持 task_depth 时，等待 HOVER 的最长时间。
+# 仅在 task_depth 水平前往送水点时，等待 HOVER 的最长时间；收到当前目标的 HOVER 后，
+# task2 才会发布同一 XY 的 surface_depth 目标，因此水平移动与深度切换完全解耦。
 delivery_depth_timeout: 180.0
 # 送水点从 task_depth 浮出至 surface_depth 时，等待 HOVER 的最长时间。
 surface_timeout: 120.0
@@ -87,7 +99,14 @@ final_safe_warning_timeout: 120.0
 
 # ============================== 运行日志 ==============================
 
-# 文本日志和结构化 YAML/JSON 复盘数据的保存目录；~ 会展开为运行节点用户的主目录。
+# 文本日志、CSV 完整复盘数据、JSON 参数快照和结构化 YAML 事件流的保存目录；
+# ~ 会展开为运行节点用户的主目录。
 log_directory: ~/.ros/auv_logs/task2
-# true：记录每个控制周期、状态转场及反馈快照；false：仅保留 ROS 文本日志。
+# true：以与 motion_supervisor 一致的 CSV 格式记录每个 5 Hz 控制周期，另保存 JSON 参数快照；
+# false：不写 CSV 和参数快照，但不会影响任务控制。
+log_enabled: true
+# CSV 每写入多少个控制周期执行一次 flush；主循环为 5 Hz，默认 5 即约每秒一次。
+log_flush_every: 5
+# true：额外记录 YAML/JSON 文档流，其中包含状态转场、每帧反馈回调和完整判断上下文；
+# false：关闭该补充事件流，仍可通过 CSV 和文本日志复盘。
 data_log_enabled: true
