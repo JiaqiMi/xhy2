@@ -200,7 +200,6 @@ catkin_install_python(PROGRAMS
   scripts/task1_line_follow.py
   scripts/task1_yaml_logger.py
   scripts/task_v2_common.py
-  scripts/task1_v2.py
   scripts/task2_v2.py
   scripts/task3_v2.py
   scripts/task4_v2.py
@@ -210,18 +209,6 @@ catkin_install_python(PROGRAMS
   test/motion_effectiveness_calibration_test.py
   test/motion_goal_test.py
   test/motion_yaw_continuous_test.py
-  test/task1_v3.py
-  test/task1_v3_yaml_logger.py
-  test/test_task1_v2_black_marker.py
-  test/test_task1_v2_line_fitting.py
-  test/test_task1_v2_line_follow.py
-  test/test_task1_v2_los_square.py
-  test/test_task1_v2_yellow_marker.py
-  test/test_task1_v3_black_marker.py
-  test/test_task1_v3_line_fitting.py
-  test/test_task1_v3_line_follow.py
-  test/test_task1_v3_los_square.py
-  test/test_task1_v3_yellow_marker.py
   test/test_task3_1_acquire_area.py
   test/test_task3_1_2_3_sequence.py
   test/test_task3_2_get_task.py
