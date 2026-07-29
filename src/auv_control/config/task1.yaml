@@ -91,6 +91,11 @@ gap_seconds: 0.5
 yellow_light_count: 1
 black_light_count: 2
 
+# 黄色接触动作。false：只执行灯光；true：灯光后保持 X/Y/航向，
+# 下潜到人为设置的绝对 Z 深度，收到 HOVER 后回到 Task1 保持深度。
+yellow_contact_enabled: false
+yellow_contact_depth: -0.8
+
 # 黑色动作：动态超前 90 度，累计一圈后等待最后目标的一次 HOVER
 black_rotation_angle_deg: 360.0
 black_rotation_direction: 1.0
