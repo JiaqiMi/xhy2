@@ -94,8 +94,8 @@ stable_frames: 5                      # 捕获或停稳条件需连续满足的�
 
 # 退出hover的滞回阈值；与捕获阈值形成滞回，避免频繁进出 HOVER。
 hover_exit_position_error: 0.12       # 两种模式统一的 HOVER 水平退出阈值；与捕获阈值形成滞回
-hover_exit_yaw_error_deg: 8.0         # 两种模式统一的 HOVER 航向退出阈值；与捕获阈值形成滞回
-hover_exit_hold_seconds: 0.50         # 两种模式误差连续超限达到此时间才恢复 TRANSLATE
+hover_exit_yaw_error_deg: 8.0         # HOVER 航向退出及 Yaw 制动持续远离目标的统一误差阈值
+hover_exit_hold_seconds: 0.50         # HOVER 或 Yaw 制动误差连续超限达到此时间才恢复跟踪
 mode_ack_timeout: 1.0                 # 接管确认及 HOVER 模式反馈最大允许间隔，单位 s
 
 # 已停用：mode=4 不再使用独立接管保持和异常回退阈值。

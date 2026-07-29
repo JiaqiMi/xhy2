@@ -51,6 +51,8 @@
     加载纯定深 HOVER 退出滞回参数，支持误差持续超限后恢复统一跟踪。
 2026.7.25
     mode=2 与 mode=4 共用 HOVER 进入和退出参数，移除旧接管故障阈值加载。
+2026.7.29
+    记录 Yaw 制动持续远离目标的异常退出请求、等待时间和触发结果。
 """
 
 from __future__ import division
@@ -179,6 +181,9 @@ class MotionSupervisorNode(object):
         'yaw_brake_entry',
         'yaw_brake_entered',
         'yaw_brake_released',
+        'yaw_brake_escape_requested',
+        'yaw_brake_escape_wait_s',
+        'yaw_brake_escape_triggered',
         'yaw_brake_entry_count',
         'yaw_brake_exit_count',
         'yaw_brake_release_wait_s',
@@ -757,6 +762,12 @@ class MotionSupervisorNode(object):
                 diagnostics.get('yaw_brake_entered', False))),
             'yaw_brake_released': int(bool(
                 diagnostics.get('yaw_brake_released', False))),
+            'yaw_brake_escape_requested': int(bool(
+                diagnostics.get('yaw_brake_escape_requested', False))),
+            'yaw_brake_escape_wait_s': diagnostics.get(
+                'yaw_brake_escape_wait_s', ''),
+            'yaw_brake_escape_triggered': int(bool(
+                diagnostics.get('yaw_brake_escape_triggered', False))),
             'yaw_brake_entry_count': diagnostics.get(
                 'yaw_brake_entry_count', ''),
             'yaw_brake_exit_count': diagnostics.get(
