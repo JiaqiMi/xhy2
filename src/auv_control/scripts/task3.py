@@ -32,25 +32,55 @@ from std_msgs.msg import Empty, String
 NODE_NAME = "task3_final"
 _MISSING = object()
 KEY_LOG_MARKER = "[关键]"
-CONSOLE_KEY_PHRASES = (
+CONSOLE_EVENT_PHRASES = (
     KEY_LOG_MARKER,
+    "三个模型均已就绪",
+    "前模型复查通过",
     "任务阶段",
     "状态切换 ",
+    "运动状态切换为",
     "识别成功：ArUco",
     "箭头位置候选组确认通过",
+    "逐帧候选组确认通过",
+    "平均位姿目标已锁定",
+    "平均位姿复核完成",
+    "平均位姿3/10帧复核通过",
     "稳定识别成功",
+    "残缺方框安全点已确认",
+    "残缺方框一次移动目标已发布",
+    "直接投放复核通过",
+    "开始灯光阶段",
+    "灯光阶段完成",
+    "已确认到位",
+    "子任务3完成",
+    "任务成功",
+    "任务结束",
     "转向成功",
+)
+CONSOLE_PROGRESS_PHRASES = (
+    "窗口=",
+    "窗口进度=",
+    "确认进度=",
+    "等待三个模型预热",
+    "模型新帧",
+    "等待MotionState.HOVER",
+    "等待严格到达",
+    "到达判定",
+    "到位=",
+    "进行中",
 )
 
 
 class Task3ConsoleFilter(logging.Filter):
-    """终端仅保留关键INFO，并限制重复WARNING的打印频率。"""
+    """终端仅保留关键事件，并统一限制进度和重复警告的频率。"""
 
-    def __init__(self, warning_repeat_interval):
+    def __init__(self, progress_interval, warning_repeat_interval):
         super().__init__()
+        self.progress_interval = max(0.0, float(progress_interval))
         self.warning_repeat_interval = max(
             0.0, float(warning_repeat_interval)
         )
+        self.last_progress_time = None
         self.last_warning_times = {}
 
     def filter(self, record):
@@ -70,12 +100,34 @@ class Task3ConsoleFilter(logging.Filter):
             self.last_warning_times[warning_key] = now
             return True
 
-        return any(phrase in message for phrase in CONSOLE_KEY_PHRASES)
+        if any(phrase in message for phrase in CONSOLE_EVENT_PHRASES):
+            return True
+
+        if not any(
+            phrase in message for phrase in CONSOLE_PROGRESS_PHRASES
+        ):
+            return False
+
+        now = time.monotonic()
+        if (
+            self.last_progress_time is not None
+            and now - self.last_progress_time < self.progress_interval
+        ):
+            return False
+        self.last_progress_time = now
+        return True
 
 
-def install_console_log_filter(logger, warning_repeat_interval):
+def install_console_log_filter(
+    logger,
+    progress_interval,
+    warning_repeat_interval,
+):
     """只过滤终端处理器，不影响文件日志和ROS话题日志。"""
-    console_filter = Task3ConsoleFilter(warning_repeat_interval)
+    console_filter = Task3ConsoleFilter(
+        progress_interval,
+        warning_repeat_interval,
+    )
     filtered_count = 0
     for handler in logger.handlers:
         if isinstance(handler, logging.FileHandler):
@@ -102,6 +154,10 @@ def configure_file_logging():
     console_key_only = bool(rospy.get_param(
         "/task3_final/console_key_only",
         True,
+    ))
+    progress_interval = float(rospy.get_param(
+        "/task3_final/console_progress_interval",
+        0.5,
     ))
     warning_repeat_interval = float(rospy.get_param(
         "/task3_final/console_warning_repeat_interval",
@@ -139,17 +195,20 @@ def configure_file_logging():
     if console_key_only:
         filtered_count = install_console_log_filter(
             logger,
+            progress_interval,
             warning_repeat_interval,
         )
     rospy.loginfo(
         (
             "%s：%s 整合任务详细日志已启用：%s；"
-            "终端关键日志过滤=%s，终端处理器=%d"
+            "终端关键日志过滤=%s，进度日志间隔=%.2fs，"
+            "终端处理器=%d"
         ),
         NODE_NAME,
         KEY_LOG_MARKER,
         log_path,
         "开启" if console_key_only else "关闭",
+        progress_interval,
         filtered_count,
     )
     return log_path
@@ -486,11 +545,6 @@ class Task3Final:
             "aruco": None,
             "rectangle": None,
         }
-        self.model_topics = {
-            "arrow": self.arrow_topic,
-            "aruco": self.aruco_topic,
-            "rectangle": self.rectangle_topic,
-        }
         self.model_subscribers = [
             rospy.Subscriber(
                 self.arrow_topic,
@@ -661,26 +715,7 @@ class Task3Final:
                         self.finish_task(False, "/status/auv反馈超时")
                         break
 
-                    if self.state == self.INITIAL_HOVER:
-                        self.control_initial_hover()
-                    elif self.state == self.SEARCH_PATTERN:
-                        self.control_search_pattern()
-                    elif self.state == self.CANCEL_WAIT:
-                        self.control_cancel_wait()
-                    elif self.state == self.WAIT_FOR_ARROW:
-                        self.control_wait_for_arrow()
-                    elif self.state == self.COARSE_LATERAL_ALIGN:
-                        self.control_coarse_lateral_align()
-                    elif self.state == self.CONFIRM_DIRECTION:
-                        self.control_confirm_direction()
-                    elif self.state == self.ALIGN_HEADING:
-                        self.control_align_heading()
-                    elif self.state == self.FINE_FORWARD_ALIGN:
-                        self.control_fine_forward_align()
-                    elif self.state == self.MOVE_BASE_OVER_ARROW:
-                        self.control_move_base_over_arrow()
-                    elif self.state == self.FINAL_HOLD:
-                        self.control_final_hold()
+                    self.control_current_state()
 
                     if not self.task_finished:
                         self.publish_active_goal()
@@ -1238,7 +1273,10 @@ class Task3Final:
         try:
             task = self.EmbeddedTask1()
             success, detail = task.run()
-            timed_out = bool(task.embedded_timed_out)
+            timed_out = bool(
+                task.embedded_timed_out
+                or task.pose_average_data_timed_out
+            )
         except Exception as error:
             rospy.logexception("%s：%s发生未处理异常", NODE_NAME, label)
             success = False

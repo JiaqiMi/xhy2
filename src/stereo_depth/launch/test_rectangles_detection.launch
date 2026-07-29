@@ -4,6 +4,8 @@
     <arg name="start_camera" default="false" />
     <arg name="start_splitter" default="false" />
     <arg name="start_web" default="true" />
+    <!-- 独立测试默认打印到终端；整合任务可传log减少终端输出。 -->
+    <arg name="node_output" default="screen" />
 
     <!-- <arg name="model_path"
          default="/home/xhy/catkin_ws/models/rectangles0720.pt" /> -->
@@ -29,12 +31,12 @@
           pkg="stereo_splitter"
           type="split_stereo_image.py"
           name="split_stereo_image"
-          output="screen" />
+          output="$(arg node_output)" />
 
     <node pkg="yolo_bridge"
           type="yolo_wrapper.sh"
           name="yolo_rectangle_detector"
-          output="screen"
+          output="$(arg node_output)"
           launch-prefix="bash">
         <env name="NODE_NAME" value="/yolo_rectangle_detector" />
         
@@ -66,7 +68,7 @@
     <node pkg="stereo_depth"
           type="stereo_depth_node.py"
           name="stereo_depth_rectangle"
-          output="screen">
+          output="$(arg node_output)">
         <param name="task_mode" value="center" />
         <param name="exp_env" value="$(arg exp_env)" />
         <param name="visualization" value="$(arg visualization)" />

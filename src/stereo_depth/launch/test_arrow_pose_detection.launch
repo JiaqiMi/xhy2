@@ -11,6 +11,8 @@
     <arg name="start_splitter" default="false" />
     <arg name="start_web" default="true" />
     <arg name="start_depth" default="true" />
+    <!-- 独立测试默认打印到终端；整合任务可传log减少终端输出。 -->
+    <arg name="node_output" default="screen" />
 
     <!-- 请将训练得到的best.pt复制并重命名到该位置 -->
     <!-- <arg name="model_path"
@@ -64,7 +66,7 @@
           name="usb_cam"
           pkg="usb_cam"
           type="usb_cam_node"
-          output="screen"
+          output="$(arg node_output)"
           launch-prefix="bash -c 'exec &quot;$0&quot; &quot;$@&quot; 2>/dev/null'">
 
         <param name="video_device" value="/dev/video0" />
@@ -78,14 +80,14 @@
           pkg="stereo_splitter"
           type="split_stereo_image.py"
           name="split_stereo_image"
-          output="screen" />
+          output="$(arg node_output)" />
 
     <!-- ================= YOLO Pose ================= -->
 
     <node pkg="yolo_bridge"
           type="yolo_pose_arrow_wrapper.sh"
           name="yolo_arrow_pose_detector"
-          output="screen"
+          output="$(arg node_output)"
           launch-prefix="bash">
 
         <env name="NODE_NAME"
@@ -125,7 +127,7 @@
     <node pkg="stereo_depth"
           type="arrow_pose_direction_node.py"
           name="arrow_pose_direction_node"
-          output="screen">
+          output="$(arg node_output)">
 
         <param name="image_topic"
                value="$(arg input_topic)" />
@@ -179,7 +181,7 @@
           pkg="stereo_depth"
           type="stereo_depth_node.py"
           name="stereo_depth_arrow_pose"
-          output="screen">
+          output="$(arg node_output)">
 
         <param name="task_mode" value="center" />
         <param name="exp_env" value="$(arg exp_env)" />
