@@ -278,6 +278,10 @@ class Task3AcquireAreaTest(object):
         self.status_timeout = float(rospy.get_param(
             "~status_timeout", 0.5
         ))
+        self.fixed_depth_m = float(rospy.get_param(
+            "/task3_target_depth_m", 0.60
+        ))
+        self.fixed_map_z = -self.fixed_depth_m
         self.goal_match_position_tolerance = float(rospy.get_param(
             "~goal_match_position_tolerance", 0.03
         ))
@@ -379,6 +383,8 @@ class Task3AcquireAreaTest(object):
     def validate_params(self):
         if self.rate_hz <= 0.0:
             raise ValueError("rate 必须大于0")
+        if not math.isfinite(self.fixed_depth_m) or self.fixed_depth_m <= 0.0:
+            raise ValueError("task3_target_depth_m必须是大于0的有限数")
         if not all((
             self.arrow_topic,
             self.motion_goal_topic,
@@ -1608,15 +1614,22 @@ class Task3AcquireAreaTest(object):
         self.initial_hold_x = current.pose.position.x
         self.initial_hold_y = current.pose.position.y
         self.initial_hold_yaw = current_yaw
-        self.target_z = current.pose.position.z
+        self.target_z = self.fixed_map_z
         self.target_depth = status["depth"]
         self.control_initialized = True
+        rospy.loginfo(
+            "%s：任务统一固定深度=%.3fm，map目标z=%.3f，启动TF z=%.3f",
+            NODE_NAME,
+            self.fixed_depth_m,
+            self.target_z,
+            current.pose.position.z,
+        )
         self.set_active_goal(
             current.pose.position.x,
             current.pose.position.y,
             self.target_z,
             current_yaw,
-            "只锁存一次启动位置，后续漂移时仍追踪该固定悬停点",
+            "锁存启动水平位置和航向，并使用任务统一固定深度",
         )
         self.set_state(
             self.INITIAL_HOVER,
