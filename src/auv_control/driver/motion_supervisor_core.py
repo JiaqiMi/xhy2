@@ -60,6 +60,10 @@
     纯定深 HOVER 增加带时间滞回的误差退出，保持 mode=2 和统一控制输出连续。
 2026.7.25
     mode=2 与 mode=4 统一使用同一套 HOVER 捕获、退出阈值和持续时间判据。
+2026.7.28
+    正常跟踪与主动刹车统一使用同一组方向性最大输出和力矩变化步长参数。
+2026.7.29
+    收到取消指令时锁存当前目标深度，刹停终点仅使用实时水平位置和航向。
 """
 
 from __future__ import division
@@ -278,14 +282,7 @@ DEFAULT_PARAMETERS = {
     'max_ty_negative': 2000.0,
     'max_mz_positive': 1000.0,
     'max_mz_negative': 1000.0,
-    'brake_max_tx_positive': 2000.0,
-    'brake_max_tx_negative': 3000.0,
-    'brake_max_ty_positive': 2000.0,
-    'brake_max_ty_negative': 4000.0,
-    'brake_max_mz_positive': 3000.0,
-    'brake_max_mz_negative': 3000.0,
-    'force_slew_per_cycle': 10000.0,
-    'brake_force_slew_per_cycle': 10000.0,
+    'force_slew_per_cycle': 1000.0,
     'kv_x_positive': 1000.0,
     'kv_x_negative': 1000.0,
     'kv_y_positive': 2000.0,
@@ -384,6 +381,7 @@ class MotionSupervisorCore(object):
         self.pending_goal = None
         self.cancel_requested = False
         self.cancel_brake_requested = False
+        self.cancel_target_depth = None
         self.recovery_brake_requested = False
         self.x_axis_state = AXIS_HOLD
         self.y_axis_state = AXIS_HOLD
@@ -420,10 +418,7 @@ class MotionSupervisorCore(object):
             'max_tx_positive', 'max_tx_negative',
             'max_ty_positive', 'max_ty_negative',
             'max_mz_positive', 'max_mz_negative',
-            'brake_max_tx_positive', 'brake_max_tx_negative',
-            'brake_max_ty_positive', 'brake_max_ty_negative',
-            'brake_max_mz_positive', 'brake_max_mz_negative',
-            'force_slew_per_cycle', 'brake_force_slew_per_cycle',
+            'force_slew_per_cycle',
             'kv_x_positive', 'kv_x_negative',
             'kv_y_positive', 'kv_y_negative',
             'brake_kv_x_positive', 'brake_kv_x_negative',
@@ -502,10 +497,7 @@ class MotionSupervisorCore(object):
         for name in (
                 'max_tx_positive', 'max_tx_negative',
                 'max_ty_positive', 'max_ty_negative',
-                'max_mz_positive', 'max_mz_negative',
-                'brake_max_tx_positive', 'brake_max_tx_negative',
-                'brake_max_ty_positive', 'brake_max_ty_negative',
-                'brake_max_mz_positive', 'brake_max_mz_negative'):
+                'max_mz_positive', 'max_mz_negative'):
             if self.parameters[name] > PROTOCOL_FORCE_LIMIT:
                 raise ValueError('{} 不能超过协议限制 {}'.format(
                     name, PROTOCOL_FORCE_LIMIT))
@@ -554,6 +546,7 @@ class MotionSupervisorCore(object):
         if self.goal is None:
             changed = self._goal_requires_replan(self.pending_goal, goal)
             self.pending_goal = goal
+            self.cancel_target_depth = None
             if changed:
                 self.goal_changed_pending = True
                 self._reset_motion_references()
@@ -565,6 +558,7 @@ class MotionSupervisorCore(object):
         self.pending_goal = None
         self.cancel_requested = False
         self.cancel_brake_requested = False
+        self.cancel_target_depth = None
         if self.state == CAPTURE and changed:
             self.handover_started_at = None
             self.stable_count = 0
@@ -581,6 +575,7 @@ class MotionSupervisorCore(object):
         self.goal = goal
         self.pending_goal = None
         self.cancel_requested = False
+        self.cancel_target_depth = None
         self.recovery_brake_requested = False
         self._reset_motion_references()
         self.cancel_brake_requested = True
@@ -592,9 +587,12 @@ class MotionSupervisorCore(object):
         self._transition(TRANSLATE_BRAKE, '启动首帧锁定，先执行三轴主动刹停')
 
     def cancel(self):
-        """取消当前运动；停稳后以当前位置进入悬停。"""
+        """取消当前运动；保持目标深度并在水平停稳位置悬停。"""
         if not self.goal_active and self.state == IDLE:
             return
+        active_goal = self.goal if self.goal is not None else self.pending_goal
+        self.cancel_target_depth = (
+            active_goal.z if active_goal is not None else None)
         self.pending_goal = None
         self.cancel_requested = True
         self.cancel_brake_requested = False
@@ -621,6 +619,7 @@ class MotionSupervisorCore(object):
         self.pending_goal = None
         self.cancel_requested = False
         self.cancel_brake_requested = False
+        self.cancel_target_depth = None
         self.x_axis_state = AXIS_TRACK
         self.y_axis_state = AXIS_TRACK
         self.yaw_axis_state = AXIS_TRACK
@@ -695,23 +694,19 @@ class MotionSupervisorCore(object):
         effective_acceleration = self._directional_parameter(
             acceleration_prefix, acceleration)
         maximum_force = self.parameters[
-            'brake_max_{}_{}'.format(
+            'max_{}_{}'.format(
                 force_prefix,
                 'positive' if acceleration > 0.0 else 'negative',
             )]
         return clamp(
             maximum_force * acceleration / max(effective_acceleration, 1e-6),
-            -self.parameters['brake_max_{}_negative'.format(force_prefix)],
-            self.parameters['brake_max_{}_positive'.format(force_prefix)],
+            -self.parameters['max_{}_negative'.format(force_prefix)],
+            self.parameters['max_{}_positive'.format(force_prefix)],
         )
 
-    def _axis_force_limit(self, force_prefix, value, braking):
-        """按轴、控制阶段和实际输出符号限制力。"""
-        limit_prefix = (
-            'brake_max_' + force_prefix
-            if braking
-            else 'max_' + force_prefix
-        )
+    def _axis_force_limit(self, force_prefix, value):
+        """按轴和实际输出符号使用统一参数限制力。"""
+        limit_prefix = 'max_' + force_prefix
         return clamp(
             value,
             -self.parameters[limit_prefix + '_negative'],
@@ -725,17 +720,14 @@ class MotionSupervisorCore(object):
             self.last_tx = self.last_ty = self.last_mz = 0.0
             return 0, 0, 0
 
-        tx = self._axis_force_limit('tx', tx, x_braking)
-        ty = self._axis_force_limit('ty', ty, y_braking)
-        mz = self._axis_force_limit('mz', mz, yaw_braking)
-        normal_step = self.parameters['force_slew_per_cycle']
-        brake_step = self.parameters['brake_force_slew_per_cycle']
-        tx = slew_value(
-            self.last_tx, tx, brake_step if x_braking else normal_step)
-        ty = slew_value(
-            self.last_ty, ty, brake_step if y_braking else normal_step)
-        mz = slew_value(
-            self.last_mz, mz, brake_step if yaw_braking else normal_step)
+        del x_braking, y_braking, yaw_braking
+        tx = self._axis_force_limit('tx', tx)
+        ty = self._axis_force_limit('ty', ty)
+        mz = self._axis_force_limit('mz', mz)
+        force_step = self.parameters['force_slew_per_cycle']
+        tx = slew_value(self.last_tx, tx, force_step)
+        ty = slew_value(self.last_ty, ty, force_step)
+        mz = slew_value(self.last_mz, mz, force_step)
         self.last_tx, self.last_ty, self.last_mz = tx, ty, mz
         return protocol_force(tx), protocol_force(ty), protocol_force(mz)
 
@@ -940,9 +932,9 @@ class MotionSupervisorCore(object):
             inverse[2][0] * tx + inverse[2][1] * ty + inverse[2][2] * mz,
         )
 
-    def _limit_xy_force_vector(self, tx, ty, braking):
+    def _limit_xy_force_vector(self, tx, ty):
         """按可用正负推力形成椭圆限幅，保持二维合力方向。"""
-        limit_prefix = 'brake_max_' if braking else 'max_'
+        limit_prefix = 'max_'
         tx_limit = self.parameters[
             limit_prefix + ('tx_positive' if tx >= 0.0 else 'tx_negative')]
         ty_limit = self.parameters[
@@ -1423,7 +1415,7 @@ class MotionSupervisorCore(object):
             mz += brake_feedforward_mz
 
         tx, ty, mz = self._compensate_effectiveness(tx, ty, mz)
-        tx, ty = self._limit_xy_force_vector(tx, ty, braking_xy)
+        tx, ty = self._limit_xy_force_vector(tx, ty)
         if distance <= self.parameters['control_center_hold_tolerance'] and (
                 math.hypot(map_vx, map_vy)
                 <= self.parameters['horizontal_speed_threshold']):
@@ -1580,11 +1572,17 @@ class MotionSupervisorCore(object):
                 else:
                     return self._brake_output(vehicle)
             if self.cancel_requested:
-                # 取消命令把当前有效位姿锁定为终点；随后仍通过统一三轴
-                # 减速轨迹停车，避免直接切 mode=4 时将运动惯性移交下位机。
+                # 取消命令使用实时水平位置和航向锁定刹停终点，但深度沿用
+                # 收到 cancel 时的目标值，避免深度反馈偏差被改写为新目标。
+                cancel_depth = (
+                    self.cancel_target_depth
+                    if self.cancel_target_depth is not None
+                    else (self.goal.z if self.goal is not None else vehicle.z)
+                )
                 self.goal = MotionGoal(
-                    vehicle.x, vehicle.y, vehicle.z, vehicle.yaw)
+                    vehicle.x, vehicle.y, cancel_depth, vehicle.yaw)
                 self.pending_goal = None
+                self.cancel_target_depth = None
                 self.goal_changed_at = vehicle.now
                 self.goal_changed_pending = False
                 self.cancel_requested = False

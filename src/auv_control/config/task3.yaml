@@ -12,7 +12,7 @@
 # 任务3统一固定深度，单位m，填写水面以下的正深度。
 # 当前map坐标约定为水下Z为负，因此0.60m会作为map z=-0.60下发。
 # 完整任务、三个独立子任务及旧联调入口都读取这一处参数。
-task3_target_depth_m: 0.60
+task3_target_depth_m: 0.90
 
 
 # ============================================================
@@ -73,9 +73,9 @@ test_task3_1_acquire_area:
 
   # 独立运行子任务1时的启动悬停和搜索路径。
   initial_hover_seconds: 10.0
-  search_initial_forward_distance: 0.50
-  search_lateral_distance: 0.20
-  search_second_forward_distance: 0.30
+  search_initial_forward_distance: 0.70
+  search_lateral_distance: 0.30
+  search_second_forward_distance: 0.40
   # 子任务1总超时；第一次和第二次箭头都使用该时间。
   # 超时后，整合任务在容错开关开启时直接前往下一子任务人工点。
   max_wait_seconds: 300.0
@@ -122,7 +122,7 @@ test_task3_1_acquire_area:
 
   # 航向和图像中心对准后，base_link沿当前航向执行的一次性固定前移。
   # 当前实验值为1.0m；目标下发后忽略后续视觉，不回退。
-  base_link_forward_offset: 1.0
+  base_link_forward_offset: 0.5
 
   # 任务侧离底保护和最终悬停
   status_timeout: 1.0
@@ -153,7 +153,7 @@ test_task3_2_get_task:
   turn_enabled: true
   # 只能填写left或right。
   turn_direction: "left"
-  turn_angle_deg: 90.0
+  turn_angle_deg: 95.0
   turn_timeout: 90.0
   turn_stable_seconds: 1.0
   turn_hold_seconds: 1.0
@@ -180,7 +180,7 @@ test_task3_2_get_task:
   # recognition_fallback_color只能填写yellow、green或red。
   # 子任务2识别超时；到时直接使用下面的固定颜色并继续亮灯、转向。
   recognition_fallback_seconds: 30.0
-  recognition_fallback_color: "yellow"
+  recognition_fallback_color: "red"
   mock_aruco_ids: [1, -1, 1, 2, -1, -1, 1]
   mock_frame_interval: 0.2
 
@@ -247,7 +247,7 @@ test_task3_3_inspect_and_drop:
 
   # 自动搜索：先完成悬停和第一段前进，再观察并排的三个颜色方框。
   auto_initial_hover_seconds: 3.0
-  auto_search_first_forward_distance: 0.50
+  auto_search_first_forward_distance: 0.70
   auto_search_second_forward_distance: 0.30
   auto_search_third_forward_distance: 0.20
   # 左移从当前搜索点计算；右移从左移结束位置计算。

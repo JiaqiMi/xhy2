@@ -68,6 +68,31 @@
     <arg name="exp_env" default="water" />
 
     <!-- StereoSGBM参数 -->
+    <!-- <arg name="min_disparity" default="0" />
+    <arg name="num_disparities" default="96" />
+    <arg name="block_size" default="7" /> -->
+
+    <!-- 深度计算配置：
+         roi：只在目标点附近运行SGBM；
+         full：保持原来的全图SGBM。 -->
+    <arg name="depth_compute_mode" default="roi" />
+    <arg name="use_sgbm_3way" default="true" />
+
+    <!-- ROI额外边界，通常保持0即可。 -->
+    <arg name="roi_extra_margin_x" default="0" />
+    <arg name="roi_extra_margin_y" default="0" />
+
+    <!-- 0表示宽度由num_disparities和block_size自动确定。 -->
+    <arg name="roi_min_width" default="0" />
+    <arg name="roi_min_height" default="64" />
+
+    <!-- ROI面积达到全图的该比例后，自动改用全图计算。 -->
+    <arg name="roi_full_frame_threshold" default="0.90" />
+    <arg name="roi_fallback_full_frame" default="true" />
+    <arg name="log_depth_timing" default="true" />
+
+    <!-- SGBM与局部深度统计参数 -->
+    <arg name="window_size" default="25" />
     <arg name="min_disparity" default="0" />
     <arg name="num_disparities" default="96" />
     <arg name="block_size" default="7" />
@@ -200,7 +225,7 @@
     -->
     <node if="$(arg start_depth)"
           pkg="stereo_depth"
-          type="stereo_depth_node.py"
+          type="stereo_depth_node_speed.py"
           name="stereo_depth_arrow_pose"
           output="screen">
 
@@ -247,6 +272,27 @@
                value="/vision/arrow/target_message" />
         <param name="web_pose_topic"
                value="/vision/arrow/pose" />
+
+        <!-- ROI / 全图深度计算切换 -->
+        <param name="window_size" value="$(arg window_size)" />
+        <param name="depth_compute_mode"
+               value="$(arg depth_compute_mode)" />
+        <param name="use_sgbm_3way"
+               value="$(arg use_sgbm_3way)" />
+        <param name="roi_extra_margin_x"
+               value="$(arg roi_extra_margin_x)" />
+        <param name="roi_extra_margin_y"
+               value="$(arg roi_extra_margin_y)" />
+        <param name="roi_min_width"
+               value="$(arg roi_min_width)" />
+        <param name="roi_min_height"
+               value="$(arg roi_min_height)" />
+        <param name="roi_full_frame_threshold"
+               value="$(arg roi_full_frame_threshold)" />
+        <param name="roi_fallback_full_frame"
+               value="$(arg roi_fallback_full_frame)" />
+        <param name="log_depth_timing"
+               value="$(arg log_depth_timing)" />
     </node>
     
     <!-- ================= Web ================= -->
