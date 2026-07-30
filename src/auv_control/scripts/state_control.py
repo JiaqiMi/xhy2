@@ -21,6 +21,8 @@
     使用显式 CRLF 输出内层 launch 日志，兼容 roslaunch 管道终端。
 2026.7.28
     使用 PTY 启动内层 launch，确保日志逐行刷新。
+2026.7.30
+    在 task2 预热 task3 视觉节点，并保持至 task3 结束。
 """
 
 import errno
@@ -50,12 +52,17 @@ class StateControl:
         self.terminate_wait_seconds = rospy.get_param(
             '~terminate_wait_seconds', 5.0)
         self.tasks = self._load_tasks(rospy.get_param('~tasks', []))
+        self.vision_prewarm = self._load_vision_prewarm(
+            rospy.get_param('~task3_vision_prewarm', {}))
 
         self.current_task = None
         self.task_process = None
         self.task_start_time = None
         self.task_output_fd = None
         self.task_output_thread = None
+        self.vision_process = None
+        self.vision_output_fd = None
+        self.vision_output_thread = None
         self.auto_mode = False
 
         rospy.Subscriber(self.keyboard_topic, Keyboard, self.keyboard_callback)
@@ -93,6 +100,28 @@ class StateControl:
             }
         return tasks
 
+    @staticmethod
+    def _load_vision_prewarm(config):
+        """读取 task3 视觉预热进程配置。"""
+        if not config:
+            return None
+        try:
+            launch = str(config['launch'])
+            active_modes = {int(mode) for mode in config['active_modes']}
+        except (KeyError, TypeError, ValueError) as error:
+            rospy.logerr('%s task3 视觉预热配置无效：%s', NODE_NAME, error)
+            return None
+        if not launch or not active_modes:
+            rospy.logerr('%s task3 视觉预热配置为空。', NODE_NAME)
+            return None
+        return {
+            'name': str(config.get('name', 'task3_vision')),
+            'launch': launch,
+            'launch_args': [str(argument) for argument in
+                            config.get('launch_args', [])],
+            'active_modes': active_modes,
+        }
+
     def keyboard_callback(self, message):
         """响应启动指定任务或停止当前任务的键盘指令。"""
         rospy.loginfo('%s 收到键盘指令：run=%s，mode=%s。', NODE_NAME,
@@ -100,6 +129,7 @@ class StateControl:
         if message.run == 2:
             self.auto_mode = False
             self.terminate_current_task('收到停止指令')
+            self.terminate_vision_prewarm('收到停止指令')
             return
 
         if message.run == 1:
@@ -119,6 +149,7 @@ class StateControl:
     def start_task(self, task, automatic=False):
         """停止旧任务后，以 roslaunch 启动指定任务。"""
         self.terminate_current_task('切换任务')
+        self.ensure_vision_prewarm(task['mode'])
         command = ['roslaunch', 'auv_control', task['launch']] + task['launch_args']
         try:
             master_fd, slave_fd = pty.openpty()
@@ -199,6 +230,75 @@ class StateControl:
             self.task_output_thread.join(timeout=1.0)
             self.task_output_thread = None
 
+    def ensure_vision_prewarm(self, task_mode):
+        """按任务阶段启动或保留 task3 视觉预热进程。"""
+        if self.vision_prewarm is None:
+            return
+        if task_mode not in self.vision_prewarm['active_modes']:
+            self.terminate_vision_prewarm('切换到非视觉预热任务')
+            return
+        if self.vision_process is not None and self.vision_process.poll() is None:
+            return
+
+        self._close_vision_output()
+        command = ['roslaunch', 'auv_control', self.vision_prewarm['launch']]
+        command += self.vision_prewarm['launch_args']
+        try:
+            master_fd, slave_fd = pty.openpty()
+            try:
+                self.vision_process = subprocess.Popen(
+                    command,
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    close_fds=True)
+            except OSError:
+                os.close(master_fd)
+                raise
+            finally:
+                os.close(slave_fd)
+            self.vision_output_fd = master_fd
+            self.vision_output_thread = threading.Thread(
+                target=self._forward_task_output,
+                args=(self.vision_prewarm['name'], master_fd),
+                name='{}_output'.format(self.vision_prewarm['name']),
+                daemon=True)
+            self.vision_output_thread.start()
+            rospy.loginfo('%s 已启动 task3 视觉预热：%s。', NODE_NAME,
+                          ' '.join(command))
+        except OSError as error:
+            self.vision_process = None
+            self.vision_output_fd = None
+            self.vision_output_thread = None
+            rospy.logerr('%s 启动 task3 视觉预热失败：%s', NODE_NAME, error)
+
+    def _close_vision_output(self):
+        """关闭 task3 视觉预热的 PTY 输出。"""
+        if self.vision_output_fd is not None:
+            try:
+                os.close(self.vision_output_fd)
+            except OSError:
+                pass
+            self.vision_output_fd = None
+        if self.vision_output_thread is not None:
+            self.vision_output_thread.join(timeout=1.0)
+            self.vision_output_thread = None
+
+    def terminate_vision_prewarm(self, reason):
+        """结束 task3 视觉预热进程及其节点。"""
+        if self.vision_process is None:
+            return
+        if self.vision_process.poll() is None:
+            rospy.loginfo('%s 正在停止 task3 视觉预热：%s。', NODE_NAME, reason)
+            self.vision_process.terminate()
+            try:
+                self.vision_process.wait(timeout=self.terminate_wait_seconds)
+            except subprocess.TimeoutExpired:
+                self.vision_process.kill()
+                self.vision_process.wait()
+        self.vision_process = None
+        self._close_vision_output()
+
     def start_automatic_tasks(self):
         """从最小 mode 的任务开始自动串联。"""
         if not self.tasks:
@@ -221,6 +321,7 @@ class StateControl:
         if not next_modes:
             rospy.loginfo('%s 自动串联任务已全部完成。', NODE_NAME)
             self.terminate_current_task('自动串联任务完成')
+            self.terminate_vision_prewarm('自动串联任务完成')
             self.auto_mode = False
             return
         self.start_task(self.tasks[next_modes[0]], automatic=True)
@@ -262,7 +363,10 @@ class StateControl:
         if automatic:
             self.start_next_task()
         else:
+            completed_mode = self.current_task['mode']
             self.terminate_current_task('收到完成消息')
+            if completed_mode == 3:
+                self.terminate_vision_prewarm('task3 完成')
 
     def monitor_current_task(self):
         """检测 launch 退出或超过配置时限，并清理任务状态。"""
@@ -271,12 +375,16 @@ class StateControl:
 
         exit_code = self.task_process.poll()
         if exit_code is not None:
+            exited_mode = self.current_task['mode']
             rospy.loginfo('%s 已退出，退出码：%s。', self.current_task['name'], exit_code)
             self.task_process = None
             self.current_task = None
             self.task_start_time = None
             self._close_task_output()
             self.auto_mode = False
+            if (self.vision_prewarm is not None and
+                    exited_mode in self.vision_prewarm['active_modes']):
+                self.terminate_vision_prewarm('任务异常退出')
             return
 
         elapsed = time.monotonic() - self.task_start_time

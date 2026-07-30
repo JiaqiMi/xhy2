@@ -15,21 +15,23 @@ log_enabled: true                                 # 是否记录当前/目标位
 log_directory: ~/.ros/auv_logs/motion_supervisor  # CSV 日志目录，每次启动自动新建带时间戳文件
 log_flush_every: 20                               # 每累计多少个控制周期刷新磁盘，20 Hz 下约每秒刷新
 
-# 正常运动限幅；参数后缀表示本周期实际输出力或力矩的正负号
-max_tx_positive: 2000.0             # 正常运动阶段正 TX 最大值
-max_tx_negative: 2250.0             # 正常运动阶段负 TX 绝对值上限
-max_ty_positive: 4000.0             # 正常运动阶段正 TY 最大值
-max_ty_negative: 6600.0             # 正常运动阶段负 TY 绝对值上限
-max_mz_positive: 3000.0             # 正常转向阶段正 MZ 最大值
-max_mz_negative: 3500.0             # 正常转向阶段负 MZ 绝对值上限
-brake_max_tx_positive: 2000.0       # 主动刹车阶段正 TX 最大值
-brake_max_tx_negative: 1800.0       # 主动刹车阶段负 TX 绝对值上限
-brake_max_ty_positive: 2000.0       # 主动刹车阶段正 TY 最大值
-brake_max_ty_negative: 4000.0       # 主动刹车阶段负 TY 绝对值上限
-brake_max_mz_positive: 2000.0       # 主动刹转阶段正 MZ 最大值
-brake_max_mz_negative: 3000.0       # 主动刹转阶段负 MZ 绝对值上限
-force_slew_per_cycle: 1000.0        # 正常运动每控制周期允许的最大力矩变化量
-brake_force_slew_per_cycle: 10000.0 # 刹车每控制周期允许的最大力矩变化量
+# 正常跟踪与主动刹车共用方向性限幅和步长；参数后缀表示实际输出正负号。
+max_tx_positive: 2000.0             # 正 TX 最大值
+max_tx_negative: 2250.0             # 负 TX 绝对值上限
+max_ty_positive: 4000.0             # 正 TY 最大值
+max_ty_negative: 6600.0             # 负 TY 绝对值上限
+max_mz_positive: 3000.0             # 正 MZ 最大值
+max_mz_negative: 3500.0             # 负 MZ 绝对值上限
+force_slew_per_cycle: 1000.0        # 所有阶段每控制周期允许的最大力或力矩变化量
+
+# 已停用：主动刹车不再使用独立最大限幅和步长，保留末次值供历史配置对照。
+# brake_max_tx_positive: 2000.0
+# brake_max_tx_negative: 2250.0
+# brake_max_ty_positive: 4000.0
+# brake_max_ty_negative: 6000.0
+# brake_max_mz_positive: 3000.0
+# brake_max_mz_negative: 3500.0
+# brake_force_slew_per_cycle: 10000.0
 
 # 统一三轴速度环增益；yaw 的正负按 map 航向角速度误差选择，对应最终 MZ 正负。
 kv_x_positive: 13900.0              # 配合正 TX=900，提高 X 正向跟踪速度但保留方向性限幅
@@ -92,8 +94,8 @@ stable_frames: 5                      # 捕获或停稳条件需连续满足的�
 
 # 退出hover的滞回阈值；与捕获阈值形成滞回，避免频繁进出 HOVER。
 hover_exit_position_error: 0.12       # 两种模式统一的 HOVER 水平退出阈值；与捕获阈值形成滞回
-hover_exit_yaw_error_deg: 8.0         # 两种模式统一的 HOVER 航向退出阈值；与捕获阈值形成滞回
-hover_exit_hold_seconds: 0.50         # 两种模式误差连续超限达到此时间才恢复 TRANSLATE
+hover_exit_yaw_error_deg: 8.0         # HOVER 航向退出及 Yaw 制动持续远离目标的统一误差阈值
+hover_exit_hold_seconds: 0.50         # HOVER 或 Yaw 制动误差连续超限达到此时间才恢复跟踪
 mode_ack_timeout: 1.0                 # 接管确认及 HOVER 模式反馈最大允许间隔，单位 s
 
 # 已停用：mode=4 不再使用独立接管保持和异常回退阈值。

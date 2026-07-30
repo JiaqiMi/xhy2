@@ -174,6 +174,7 @@ include_directories(
 catkin_install_python(PROGRAMS
   scripts/basic_detection.py
   scripts/stereo_depth_node.py
+  scripts/stereo_depth_node_speed.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

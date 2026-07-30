@@ -43,7 +43,7 @@ final_yaw_deg: 200.0
 # 推杆前进速度，范围 0~254；数值必须与下位机执行器协议一致。
 pushrod_speed: 250
 # 推杆确认前进后连续采水的时长；执行器反馈异常会暂停并重新计时。
-pushrod_duration: 8.0
+pushrod_duration: 10.0
 # 推杆在送水点下潜并由控制器确认 HOVER 后的反向回收时长；速度固定复用 pushrod_speed，
 # 执行器或运动反馈异常会先安全停止，恢复后重新计时。
 pushrod_retract_duration: 10.0
