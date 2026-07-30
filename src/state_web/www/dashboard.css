@@ -1,3 +1,15 @@
+/*
+名称：dashboard.css
+功能：state_web 仪表盘布局与视觉样式
+作者：xhy
+监听：无
+发布：无
+记录：
+2026.7.30
+    增加地图向上航向输入控件样式。
+    增加水池范围绘制模式及操作按钮样式。
+*/
+
 :root {
     color-scheme: dark;
     --page-bg: #07111f;
@@ -265,6 +277,36 @@ input {
     font-size: 12px;
 }
 
+.map-heading-control {
+    display: inline-flex;
+    min-height: 30px;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 7px;
+    border: 1px solid #34506d;
+    border-radius: 7px;
+    background: #0d1d2d;
+    color: #c9d8e8;
+    font-size: 12px;
+}
+
+.map-heading-control input {
+    width: 66px;
+    height: 24px;
+    padding: 2px 5px;
+    border: 1px solid #42617f;
+    border-radius: 4px;
+    outline: none;
+    background: #071522;
+    color: #f1f7fc;
+    text-align: right;
+}
+
+.map-heading-control input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(67, 199, 255, 0.16);
+}
+
 .map-legend {
     display: inline-flex;
     align-items: center;
@@ -297,6 +339,18 @@ input {
 .map-controls button:hover {
     border-color: var(--accent);
     color: #fff;
+}
+
+.map-controls button.is-active {
+    border-color: var(--warn);
+    background: #493719;
+    color: #fff0c7;
+    box-shadow: 0 0 0 2px rgba(255, 190, 69, 0.14);
+}
+
+.map-controls button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
 }
 
 .navigation-layout {
@@ -334,6 +388,10 @@ input {
 .xy-card canvas.is-dragging,
 .z-card canvas.is-dragging {
     cursor: grabbing;
+}
+
+.xy-card canvas.is-drawing {
+    cursor: crosshair;
 }
 
 .canvas-hint {

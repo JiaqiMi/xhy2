@@ -3,9 +3,14 @@
 """
 名称：state_web_core.py
 功能：state_web 使用的纯 Python 数据处理工具
+作者：xhy
+监听：无
+发布：无
 记录：
 2026.7.17
     新增角度归一化、姿态换算、话题健康状态和原点版本管理。
+2026.7.30
+    新增检测图像坐标到当前相机帧的分辨率映射。
 """
 
 import math
@@ -46,6 +51,41 @@ def safe_float(value):
     except (TypeError, ValueError):
         return None
     return result if math.isfinite(result) else None
+
+
+def map_pixel_to_frame(point, frame_width, frame_height,
+                       source_width=None, source_height=None):
+    """将检测图像中的像素点缩放并裁剪到当前相机帧。"""
+    try:
+        target_width = int(frame_width)
+        target_height = int(frame_height)
+    except (TypeError, ValueError):
+        return None
+    if target_width <= 0 or target_height <= 0:
+        return None
+
+    if isinstance(point, dict):
+        u = safe_float(point.get("u", point.get("x")))
+        v = safe_float(point.get("v", point.get("y")))
+    elif isinstance(point, (list, tuple)) and len(point) >= 2:
+        u = safe_float(point[0])
+        v = safe_float(point[1])
+    else:
+        return None
+    if u is None or v is None:
+        return None
+
+    source_width = safe_float(source_width)
+    source_height = safe_float(source_height)
+    if source_width is not None and source_width > 0:
+        u *= target_width / source_width
+    if source_height is not None and source_height > 0:
+        v *= target_height / source_height
+
+    return (
+        max(0, min(target_width - 1, int(round(u)))),
+        max(0, min(target_height - 1, int(round(v)))),
+    )
 
 
 def vision_packet_status(packet, now, timeout, frame_stamp=None,

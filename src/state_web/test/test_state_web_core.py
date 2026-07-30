@@ -3,9 +3,14 @@
 """
 名称：test_state_web_core.py
 功能：state_web 纯数据处理单元测试
+作者：xhy
+监听：无
+发布：无
 记录：
 2026.7.17
     覆盖角度、姿态、超时、FPS、原点版本和无效数值处理。
+2026.7.30
+    覆盖检测坐标在不同图像分辨率之间的映射与裁剪。
 """
 
 import math
@@ -26,6 +31,7 @@ from state_web_core import (  # noqa: E402
     horizon_transform,
     has_vision_detections,
     normalize_heading,
+    map_pixel_to_frame,
     quaternion_to_euler_deg,
     sanitize_json,
     select_attitude,
@@ -36,6 +42,41 @@ from state_web_core import (  # noqa: E402
 
 
 class StateWebCoreTest(unittest.TestCase):
+
+    def test_map_pixel_to_frame_scales_aruco_coordinates(self):
+        self.assertEqual(
+            map_pixel_to_frame(
+                {"u": 640, "v": 360},
+                1920,
+                1080,
+                source_width=1280,
+                source_height=720,
+            ),
+            (960, 540),
+        )
+        self.assertEqual(
+            map_pixel_to_frame(
+                [160, 180],
+                640,
+                360,
+                source_width=1280,
+                source_height=720,
+            ),
+            (80, 90),
+        )
+
+    def test_map_pixel_to_frame_clips_and_handles_invalid_source_size(self):
+        self.assertEqual(
+            map_pixel_to_frame(
+                {"x": 2000, "y": -10},
+                1920,
+                1080,
+                source_width=0,
+                source_height=None,
+            ),
+            (1919, 0),
+        )
+        self.assertIsNone(map_pixel_to_frame(None, 1920, 1080, 1280, 720))
 
     def test_heading_normalization(self):
         self.assertAlmostEqual(normalize_heading(361.5), 1.5)

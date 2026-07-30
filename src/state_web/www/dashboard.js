@@ -1,11 +1,176 @@
 "use strict";
 
+/*
+名称：dashboard.js
+功能：state_web 状态渲染、相机状态与导航地图交互
+作者：xhy
+监听：Web 状态接口与用户交互
+发布：仪表盘绘制及浏览器地图朝向、水池范围设置
+记录：
+2026.7.30
+    增加可持久化的手动地图旋转，支持指定航向为上。
+    增加拖拽对角点绘制并持久化水池 N/E 边界。
+    水池矩形改为按绘制时地图航向确定方向，并保存世界坐标角点。
+*/
+
+const MAP_UP_HEADING_KEY = "state_web.map_up_heading_deg";
+const POOL_BOUNDARY_KEY = "state_web.pool_boundary_ned";
+
+
+function normalizeMapHeading(value) {
+    const heading = Number(value);
+    if (!Number.isFinite(heading)) return null;
+    return ((heading % 360) + 360) % 360;
+}
+
+
+function loadMapUpHeading() {
+    try {
+        return normalizeMapHeading(
+            window.localStorage.getItem(MAP_UP_HEADING_KEY),
+        ) ?? 0;
+    } catch (error) {
+        return 0;
+    }
+}
+
+
+function saveMapUpHeading(heading) {
+    try {
+        window.localStorage.setItem(
+            MAP_UP_HEADING_KEY,
+            String(heading),
+        );
+    } catch (error) {
+        // 浏览器禁用本地存储时，本次页面内设置仍然有效。
+    }
+}
+
+
+function mapPointToWorld(mapNorth, mapEast, heading) {
+    const rotation = heading * Math.PI / 180;
+    const rotationCos = Math.cos(rotation);
+    const rotationSin = Math.sin(rotation);
+    return {
+        east: mapEast * rotationCos + mapNorth * rotationSin,
+        north: -mapEast * rotationSin + mapNorth * rotationCos,
+    };
+}
+
+
+function normalizePoolBoundary(value) {
+    if (!value || typeof value !== "object") return null;
+
+    if (Array.isArray(value.corners) && value.corners.length === 4) {
+        const corners = value.corners.map((point) => ({
+            north: finiteNumber(point?.north),
+            east: finiteNumber(point?.east),
+        }));
+        if (corners.some((point) => (
+            point.north === null || point.east === null
+        ))) {
+            return null;
+        }
+        const heading = normalizeMapHeading(value.headingDeg);
+        if (heading === null) return null;
+        const widthM = Math.hypot(
+            corners[1].north - corners[0].north,
+            corners[1].east - corners[0].east,
+        );
+        const lengthM = Math.hypot(
+            corners[2].north - corners[1].north,
+            corners[2].east - corners[1].east,
+        );
+        return {
+            headingDeg: heading,
+            corners,
+            lengthM,
+            widthM,
+        };
+    }
+
+    // 兼容旧版固定 N/E 边界，迁移后按 0° 北向上处理。
+    const northMin = finiteNumber(value.northMin);
+    const northMax = finiteNumber(value.northMax);
+    const eastMin = finiteNumber(value.eastMin);
+    const eastMax = finiteNumber(value.eastMax);
+    if ([northMin, northMax, eastMin, eastMax].includes(null)) return null;
+    const normalizedNorthMin = Math.min(northMin, northMax);
+    const normalizedNorthMax = Math.max(northMin, northMax);
+    const normalizedEastMin = Math.min(eastMin, eastMax);
+    const normalizedEastMax = Math.max(eastMin, eastMax);
+    return {
+        headingDeg: 0,
+        corners: [
+            {north: normalizedNorthMin, east: normalizedEastMin},
+            {north: normalizedNorthMin, east: normalizedEastMax},
+            {north: normalizedNorthMax, east: normalizedEastMax},
+            {north: normalizedNorthMax, east: normalizedEastMin},
+        ],
+        lengthM: normalizedNorthMax - normalizedNorthMin,
+        widthM: normalizedEastMax - normalizedEastMin,
+    };
+}
+
+
+function poolBoundaryFromMapPoints(first, second, heading) {
+    if (!first || !second) return null;
+    const mapNorthMin = Math.min(first.north, second.north);
+    const mapNorthMax = Math.max(first.north, second.north);
+    const mapEastMin = Math.min(first.east, second.east);
+    const mapEastMax = Math.max(first.east, second.east);
+    return normalizePoolBoundary({
+        headingDeg: heading,
+        corners: [
+            mapPointToWorld(mapNorthMin, mapEastMin, heading),
+            mapPointToWorld(mapNorthMin, mapEastMax, heading),
+            mapPointToWorld(mapNorthMax, mapEastMax, heading),
+            mapPointToWorld(mapNorthMax, mapEastMin, heading),
+        ],
+    });
+}
+
+
+function loadPoolBounds() {
+    try {
+        const saved = window.localStorage.getItem(POOL_BOUNDARY_KEY);
+        return saved ? normalizePoolBoundary(JSON.parse(saved)) : null;
+    } catch (error) {
+        return null;
+    }
+}
+
+
+function savePoolBounds(bounds) {
+    try {
+        if (bounds) {
+            window.localStorage.setItem(
+                POOL_BOUNDARY_KEY,
+                JSON.stringify(bounds),
+            );
+        } else {
+            window.localStorage.removeItem(POOL_BOUNDARY_KEY);
+        }
+    } catch (error) {
+        // 浏览器禁用本地存储时，本次页面内设置仍然有效。
+    }
+}
+
+
 const dashboardState = {
     status: null,
     connected: false,
     mapScale: 20,
     mapPanX: 0,
     mapPanY: 0,
+    mapUpHeading: loadMapUpHeading(),
+    poolBounds: loadPoolBounds(),
+    poolDraftBounds: null,
+    poolDrawing: false,
+    poolDrawStartMap: null,
+    poolDrawHeading: 0,
+    poolDrawStartClientX: 0,
+    poolDrawStartClientY: 0,
     zScale: 20,
     zPanY: 0,
     dragging: false,
@@ -840,6 +1005,221 @@ function drawActualFrameArrow(ctx, points, heading, options) {
 }
 
 
+function clipLineToCanvas(start, end, width, height) {
+    const deltaX = end.x - start.x;
+    const deltaY = end.y - start.y;
+    let minimum = 0;
+    let maximum = 1;
+    const boundaries = [
+        [-deltaX, start.x],
+        [deltaX, width - start.x],
+        [-deltaY, start.y],
+        [deltaY, height - start.y],
+    ];
+
+    for (const [direction, distance] of boundaries) {
+        if (Math.abs(direction) < 1e-9) {
+            if (distance < 0) return null;
+            continue;
+        }
+        const ratio = distance / direction;
+        if (direction < 0) {
+            minimum = Math.max(minimum, ratio);
+        } else {
+            maximum = Math.min(maximum, ratio);
+        }
+        if (minimum > maximum) return null;
+    }
+
+    return [
+        {
+            x: start.x + minimum * deltaX,
+            y: start.y + minimum * deltaY,
+        },
+        {
+            x: start.x + maximum * deltaX,
+            y: start.y + maximum * deltaY,
+        },
+    ];
+}
+
+
+function drawMapCompass(ctx, width, upHeading) {
+    const center = {x: Math.max(42, width - 48), y: 50};
+    const arrowLength = 24;
+    const axes = [
+        {label: "N", heading: -upHeading, color: "#43c7ff"},
+        {label: "E", heading: 90 - upHeading, color: "#ffbe45"},
+    ];
+
+    ctx.save();
+    ctx.font = "bold 11px Consolas, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const axis of axes) {
+        const radians = axis.heading * Math.PI / 180;
+        const tip = {
+            x: center.x + Math.sin(radians) * arrowLength,
+            y: center.y - Math.cos(radians) * arrowLength,
+        };
+        ctx.strokeStyle = axis.color;
+        ctx.fillStyle = axis.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(center.x, center.y);
+        ctx.lineTo(tip.x, tip.y);
+        ctx.stroke();
+        ctx.fillText(
+            axis.label,
+            tip.x + Math.sin(radians) * 9,
+            tip.y - Math.cos(radians) * 9,
+        );
+    }
+    ctx.fillStyle = "#d9e8f5";
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = "10px Microsoft YaHei, Consolas, monospace";
+    ctx.fillText(
+        `上 ${numberText(upHeading, upHeading % 1 ? 1 : 0, "°")}`,
+        center.x,
+        center.y + 39,
+    );
+    ctx.restore();
+}
+
+
+function createMapTransform(width, height) {
+    const scale = dashboardState.mapScale;
+    const originX = width / 2 + dashboardState.mapPanX;
+    const originY = height / 2 + dashboardState.mapPanY;
+    const rotation = dashboardState.mapUpHeading * Math.PI / 180;
+    const rotationCos = Math.cos(rotation);
+    const rotationSin = Math.sin(rotation);
+    const mapToWorld = (mapNorth, mapEast) => ({
+        east: mapEast * rotationCos + mapNorth * rotationSin,
+        north: -mapEast * rotationSin + mapNorth * rotationCos,
+    });
+    const screenToMap = (screenX, screenY) => ({
+        east: (screenX - originX) / scale,
+        north: (originY - screenY) / scale,
+    });
+
+    return {
+        scale,
+        worldToScreen(north, east) {
+            const mapEast = east * rotationCos - north * rotationSin;
+            const mapNorth = east * rotationSin + north * rotationCos;
+            return {
+                x: originX + mapEast * scale,
+                y: originY - mapNorth * scale,
+            };
+        },
+        mapToWorld,
+        screenToMap,
+        screenToWorld(screenX, screenY) {
+            const point = screenToMap(screenX, screenY);
+            return mapToWorld(point.north, point.east);
+        },
+    };
+}
+
+
+function drawPoolBoundary(ctx, worldToScreen, boundary, draft = false) {
+    if (!boundary) return;
+    const corners = boundary.corners.map((point) => (
+        worldToScreen(point.north, point.east)
+    ));
+    const centerWorld = boundary.corners.reduce(
+        (center, point) => ({
+            north: center.north + point.north / 4,
+            east: center.east + point.east / 4,
+        }),
+        {north: 0, east: 0},
+    );
+    const positiveWorld = {
+        north: (
+            boundary.corners[2].north + boundary.corners[3].north
+        ) / 2,
+        east: (
+            boundary.corners[2].east + boundary.corners[3].east
+        ) / 2,
+    };
+    const center = worldToScreen(centerWorld.north, centerWorld.east);
+    const positive = worldToScreen(
+        positiveWorld.north,
+        positiveWorld.east,
+    );
+
+    ctx.save();
+    ctx.fillStyle = draft
+        ? "rgba(255, 190, 69, 0.12)"
+        : "rgba(67, 199, 255, 0.10)";
+    ctx.strokeStyle = draft ? "#ffbe45" : "#43c7ff";
+    ctx.lineWidth = draft ? 2.5 : 2;
+    ctx.setLineDash(draft ? [7, 5] : []);
+    ctx.beginPath();
+    ctx.moveTo(corners[0].x, corners[0].y);
+    for (let index = 1; index < corners.length; index += 1) {
+        ctx.lineTo(corners[index].x, corners[index].y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = draft ? "#ffbe45" : "#43c7ff";
+    for (const corner of corners) {
+        ctx.beginPath();
+        ctx.arc(corner.x, corner.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // 从矩形中心指向绘制时的“地图上方”，明确水池正方向。
+    const directionX = positive.x - center.x;
+    const directionY = positive.y - center.y;
+    const directionLength = Math.hypot(directionX, directionY);
+    if (directionLength >= 6) {
+        const unitX = directionX / directionLength;
+        const unitY = directionY / directionLength;
+        const normalX = -unitY;
+        const normalY = unitX;
+        const headLength = 9;
+        const headWidth = 5;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(center.x, center.y);
+        ctx.lineTo(positive.x, positive.y);
+        ctx.lineTo(
+            positive.x - unitX * headLength + normalX * headWidth,
+            positive.y - unitY * headLength + normalY * headWidth,
+        );
+        ctx.moveTo(positive.x, positive.y);
+        ctx.lineTo(
+            positive.x - unitX * headLength - normalX * headWidth,
+            positive.y - unitY * headLength - normalY * headWidth,
+        );
+        ctx.stroke();
+    }
+
+    const label = [
+        draft ? "水池范围（绘制中）" : "水池范围",
+        `正向 ${numberText(boundary.headingDeg, 0, "°")}`,
+        `中心 N ${numberText(centerWorld.north, 2)}`,
+        `E ${numberText(centerWorld.east, 2)}`,
+        `${numberText(boundary.lengthM, 2)} × ${numberText(boundary.widthM, 2)} m`,
+    ].join(" · ");
+    ctx.font = "bold 11px Microsoft YaHei, Consolas, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(3, 16, 24, 0.95)";
+    ctx.strokeText(label, center.x, center.y - 8);
+    ctx.fillText(label, center.x, center.y - 8);
+    ctx.restore();
+}
+
+
 function drawXYMap(data) {
     const canvas = document.getElementById("xy-canvas");
     const {context: ctx, width, height} = resizeCanvas(canvas);
@@ -847,14 +1227,22 @@ function drawXYMap(data) {
     ctx.fillStyle = "#07111d";
     ctx.fillRect(0, 0, width, height);
 
-    const scale = dashboardState.mapScale;
-    const originX = width / 2 + dashboardState.mapPanX;
-    const originY = height / 2 + dashboardState.mapPanY;
+    const mapTransform = createMapTransform(width, height);
+    const {scale, worldToScreen, screenToWorld} = mapTransform;
+    const upHeading = dashboardState.mapUpHeading;
     const gridStep = niceDistance(70 / scale);
-    const eastMin = -originX / scale;
-    const eastMax = (width - originX) / scale;
-    const northMin = (originY - height) / scale;
-    const northMax = originY / scale;
+    const visibleCorners = [
+        screenToWorld(0, 0),
+        screenToWorld(width, 0),
+        screenToWorld(0, height),
+        screenToWorld(width, height),
+    ];
+    const eastValues = visibleCorners.map((point) => point.east);
+    const northValues = visibleCorners.map((point) => point.north);
+    const eastMin = Math.min(...eastValues);
+    const eastMax = Math.max(...eastValues);
+    const northMin = Math.min(...northValues);
+    const northMax = Math.max(...northValues);
 
     ctx.lineWidth = 1;
     ctx.font = "10px Consolas, monospace";
@@ -865,15 +1253,26 @@ function drawXYMap(data) {
         east <= eastMax + gridStep * 0.5;
         east += gridStep
     ) {
-        const screenX = originX + east * scale;
+        const line = clipLineToCanvas(
+            worldToScreen(northMin - gridStep, east),
+            worldToScreen(northMax + gridStep, east),
+            width,
+            height,
+        );
+        if (!line) continue;
         const isAxis = Math.abs(east) < gridStep * 0.01;
         ctx.strokeStyle = isAxis ? "#3c799c" : "#19354a";
         ctx.beginPath();
-        ctx.moveTo(screenX, 0);
-        ctx.lineTo(screenX, height);
+        ctx.moveTo(line[0].x, line[0].y);
+        ctx.lineTo(line[1].x, line[1].y);
         ctx.stroke();
+        const labelPoint = line[0].y <= line[1].y ? line[0] : line[1];
         ctx.fillStyle = "#66849d";
-        ctx.fillText(numberText(east, gridStep < 1 ? 1 : 0), screenX + 3, 3);
+        ctx.fillText(
+            numberText(east, gridStep < 1 ? 1 : 0),
+            Math.max(3, Math.min(width - 36, labelPoint.x + 3)),
+            Math.max(3, Math.min(height - 14, labelPoint.y + 3)),
+        );
     }
 
     for (
@@ -881,21 +1280,36 @@ function drawXYMap(data) {
         north <= northMax + gridStep * 0.5;
         north += gridStep
     ) {
-        const screenY = originY - north * scale;
+        const line = clipLineToCanvas(
+            worldToScreen(north, eastMin - gridStep),
+            worldToScreen(north, eastMax + gridStep),
+            width,
+            height,
+        );
+        if (!line) continue;
         const isAxis = Math.abs(north) < gridStep * 0.01;
         ctx.strokeStyle = isAxis ? "#3c799c" : "#19354a";
         ctx.beginPath();
-        ctx.moveTo(0, screenY);
-        ctx.lineTo(width, screenY);
+        ctx.moveTo(line[0].x, line[0].y);
+        ctx.lineTo(line[1].x, line[1].y);
         ctx.stroke();
+        const labelPoint = line[0].x <= line[1].x ? line[0] : line[1];
         ctx.fillStyle = "#66849d";
-        ctx.fillText(numberText(north, gridStep < 1 ? 1 : 0), 4, screenY + 3);
+        ctx.fillText(
+            numberText(north, gridStep < 1 ? 1 : 0),
+            Math.max(3, Math.min(width - 36, labelPoint.x + 3)),
+            Math.max(3, Math.min(height - 14, labelPoint.y + 3)),
+        );
     }
 
-    const worldToScreen = (north, east) => ({
-        x: originX + east * scale,
-        y: originY - north * scale,
-    });
+    const poolBounds = dashboardState.poolDraftBounds
+        || dashboardState.poolBounds;
+    drawPoolBoundary(
+        ctx,
+        worldToScreen,
+        poolBounds,
+        Boolean(dashboardState.poolDraftBounds),
+    );
 
     const tfData = data.tf?.data || {};
     const position = tfData.position_m;
@@ -907,6 +1321,9 @@ function drawXYMap(data) {
     const actualHeading = finiteNumber(
         tfData.orientation_deg?.heading_deg,
     );
+    const mapActualHeading = actualHeading === null
+        ? null
+        : normalizeMapHeading(actualHeading - upHeading);
     const framePoses = tfData.frame_poses || {};
     const frameScreen = (framePose) => {
         const frameNorth = finiteNumber(framePose?.position_m?.x);
@@ -933,6 +1350,9 @@ function drawXYMap(data) {
     const targetHeading = finiteNumber(
         targetPose?.orientation_deg?.heading_deg,
     );
+    const mapTargetHeading = targetHeading === null
+        ? null
+        : normalizeMapHeading(targetHeading - upHeading);
 
     if (actualScreen && targetScreen) {
         ctx.save();
@@ -949,7 +1369,7 @@ function drawXYMap(data) {
 
     if (targetScreen) {
         const annotation = snapshotAnnotation(data.pose_command);
-        drawDirectionalPose(ctx, targetScreen, targetHeading, {
+        drawDirectionalPose(ctx, targetScreen, mapTargetHeading, {
             color: data.pose_command?.online ? "#ff62cf" : "#7f8994",
             label: [
                 `目标 base_link N ${numberText(targetNorth, 2)}  E ${numberText(targetEast, 2)}`,
@@ -971,7 +1391,7 @@ function drawXYMap(data) {
             drawActualFrameArrow(
                 ctx,
                 actualFramePoints,
-                actualHeading,
+                mapActualHeading,
                 {
                     color: actualColor,
                     label: actualLabel,
@@ -982,7 +1402,7 @@ function drawXYMap(data) {
                 },
             );
         } else {
-            drawDirectionalPose(ctx, actualScreen, actualHeading, {
+            drawDirectionalPose(ctx, actualScreen, mapActualHeading, {
                 color: actualColor,
                 label: actualLabel,
             });
@@ -1010,13 +1430,7 @@ function drawXYMap(data) {
         barY - 18,
     );
 
-    ctx.fillStyle = "#8fb4ce";
-    ctx.fillText("Y / East →", Math.max(8, width - 80), height - 18);
-    ctx.save();
-    ctx.translate(12, 72);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillText("X / North →", 0, 0);
-    ctx.restore();
+    drawMapCompass(ctx, width, upHeading);
 
     const notices = [];
     if (!data.tf?.online) {
@@ -1413,12 +1827,137 @@ async function refreshStatus() {
 }
 
 
+function mapHeadingText() {
+    const heading = dashboardState.mapUpHeading;
+    return heading % 1
+        ? heading.toFixed(1)
+        : heading.toFixed(0);
+}
+
+
+function updateMapHint() {
+    const hint = document.getElementById("map-hint");
+    if (dashboardState.poolDrawing) {
+        hint.textContent = dashboardState.poolDrawStartMap
+            ? `松开完成水池矩形 · 上方 ${mapHeadingText()}°`
+            : `按住并拖拽水池两个对角点 · 上方 ${mapHeadingText()}°`;
+    } else {
+        hint.textContent =
+            `滚轮缩放 · 拖拽平移 · 上方 ${mapHeadingText()}°`;
+    }
+}
+
+
+function updateMapHeadingControls() {
+    const headingText = mapHeadingText();
+    document.getElementById("map-up-heading").value = headingText;
+    updateMapHint();
+}
+
+
+function configureMapHeading() {
+    const input = document.getElementById("map-up-heading");
+    const applyButton = document.getElementById("apply-map-heading");
+    const northUpButton = document.getElementById("north-up-map");
+
+    const redraw = () => {
+        updateMapHeadingControls();
+        if (dashboardState.status) drawXYMap(dashboardState.status);
+    };
+    const applyInput = () => {
+        const heading = finiteNumber(input.value);
+        if (
+            heading === null
+            || !Number.isInteger(heading)
+            || heading < 0
+            || heading > 359
+        ) {
+            input.setCustomValidity("请输入 0 到 359 之间的整数航向");
+            input.reportValidity();
+            return;
+        }
+        input.setCustomValidity("");
+        dashboardState.mapUpHeading = normalizeMapHeading(heading);
+        saveMapUpHeading(dashboardState.mapUpHeading);
+        redraw();
+    };
+
+    input.addEventListener("input", () => input.setCustomValidity(""));
+    input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") applyInput();
+    });
+    applyButton.addEventListener("click", applyInput);
+    northUpButton.addEventListener("click", () => {
+        dashboardState.mapUpHeading = 0;
+        saveMapUpHeading(0);
+        redraw();
+    });
+    updateMapHeadingControls();
+}
+
+
+function updatePoolBoundaryControls() {
+    const canvas = document.getElementById("xy-canvas");
+    const drawButton = document.getElementById("draw-pool-boundary");
+    const clearButton = document.getElementById("clear-pool-boundary");
+    drawButton.textContent = dashboardState.poolDrawing
+        ? "取消绘制"
+        : (dashboardState.poolBounds ? "重画水池" : "绘制水池");
+    drawButton.classList.toggle(
+        "is-active",
+        dashboardState.poolDrawing,
+    );
+    clearButton.disabled = !(
+        dashboardState.poolBounds
+        || dashboardState.poolDraftBounds
+    );
+    canvas.classList.toggle("is-drawing", dashboardState.poolDrawing);
+    updateMapHint();
+}
+
+
+function configurePoolBoundary() {
+    const drawButton = document.getElementById("draw-pool-boundary");
+    const clearButton = document.getElementById("clear-pool-boundary");
+
+    drawButton.addEventListener("click", () => {
+        dashboardState.poolDrawing = !dashboardState.poolDrawing;
+        dashboardState.poolDraftBounds = null;
+        dashboardState.poolDrawStartMap = null;
+        updatePoolBoundaryControls();
+        if (dashboardState.status) drawXYMap(dashboardState.status);
+    });
+    clearButton.addEventListener("click", () => {
+        dashboardState.poolBounds = null;
+        dashboardState.poolDraftBounds = null;
+        dashboardState.poolDrawing = false;
+        dashboardState.poolDrawStartMap = null;
+        savePoolBounds(null);
+        updatePoolBoundaryControls();
+        if (dashboardState.status) drawXYMap(dashboardState.status);
+    });
+    updatePoolBoundaryControls();
+}
+
+
 function configureMapInteraction() {
     const canvas = document.getElementById("xy-canvas");
     const zCanvas = document.getElementById("z-canvas");
+    const pointerMap = (event) => {
+        const rect = canvas.getBoundingClientRect();
+        const transform = createMapTransform(rect.width, rect.height);
+        return transform.screenToMap(
+            event.clientX - rect.left,
+            event.clientY - rect.top,
+        );
+    };
+    const redrawXYMap = () => {
+        drawXYMap(dashboardState.status || {});
+    };
 
     canvas.addEventListener("wheel", (event) => {
         event.preventDefault();
+        if (dashboardState.poolDrawing) return;
         const factor = Math.exp(-event.deltaY * 0.0012);
         dashboardState.mapScale = Math.max(
             4,
@@ -1428,6 +1967,21 @@ function configureMapInteraction() {
     }, {passive: false});
 
     canvas.addEventListener("pointerdown", (event) => {
+        if (dashboardState.poolDrawing) {
+            dashboardState.poolDrawStartMap = pointerMap(event);
+            dashboardState.poolDrawHeading = dashboardState.mapUpHeading;
+            dashboardState.poolDrawStartClientX = event.clientX;
+            dashboardState.poolDrawStartClientY = event.clientY;
+            dashboardState.poolDraftBounds = poolBoundaryFromMapPoints(
+                dashboardState.poolDrawStartMap,
+                dashboardState.poolDrawStartMap,
+                dashboardState.poolDrawHeading,
+            );
+            canvas.setPointerCapture(event.pointerId);
+            updatePoolBoundaryControls();
+            redrawXYMap();
+            return;
+        }
         dashboardState.dragging = true;
         dashboardState.dragStartX = event.clientX;
         dashboardState.dragStartY = event.clientY;
@@ -1438,6 +1992,18 @@ function configureMapInteraction() {
     });
 
     canvas.addEventListener("pointermove", (event) => {
+        if (
+            dashboardState.poolDrawing
+            && dashboardState.poolDrawStartMap
+        ) {
+            dashboardState.poolDraftBounds = poolBoundaryFromMapPoints(
+                dashboardState.poolDrawStartMap,
+                pointerMap(event),
+                dashboardState.poolDrawHeading,
+            );
+            redrawXYMap();
+            return;
+        }
         if (!dashboardState.dragging) return;
         dashboardState.mapPanX = (
             dashboardState.dragPanX
@@ -1452,7 +2018,39 @@ function configureMapInteraction() {
         if (dashboardState.status) drawNavigation(dashboardState.status);
     });
 
-    const stopDragging = (event) => {
+    const stopDragging = (event, cancelled = false) => {
+        if (
+            dashboardState.poolDrawing
+            && dashboardState.poolDrawStartMap
+        ) {
+            const dragDistance = Math.hypot(
+                event.clientX - dashboardState.poolDrawStartClientX,
+                event.clientY - dashboardState.poolDrawStartClientY,
+            );
+            const bounds = cancelled
+                ? null
+                : poolBoundaryFromMapPoints(
+                    dashboardState.poolDrawStartMap,
+                    pointerMap(event),
+                    dashboardState.poolDrawHeading,
+                );
+            const hasArea = bounds
+                && bounds.lengthM > 1e-6
+                && bounds.widthM > 1e-6;
+            if (dragDistance >= 4 && hasArea) {
+                dashboardState.poolBounds = bounds;
+                dashboardState.poolDrawing = false;
+                savePoolBounds(bounds);
+            }
+            dashboardState.poolDraftBounds = null;
+            dashboardState.poolDrawStartMap = null;
+            if (canvas.hasPointerCapture(event.pointerId)) {
+                canvas.releasePointerCapture(event.pointerId);
+            }
+            updatePoolBoundaryControls();
+            redrawXYMap();
+            return;
+        }
         dashboardState.dragging = false;
         canvas.classList.remove("is-dragging");
         if (canvas.hasPointerCapture(event.pointerId)) {
@@ -1460,7 +2058,10 @@ function configureMapInteraction() {
         }
     };
     canvas.addEventListener("pointerup", stopDragging);
-    canvas.addEventListener("pointercancel", stopDragging);
+    canvas.addEventListener(
+        "pointercancel",
+        (event) => stopDragging(event, true),
+    );
 
     zCanvas.addEventListener("wheel", (event) => {
         event.preventDefault();
@@ -1527,6 +2128,8 @@ function configureMapInteraction() {
 
 
 function initialize() {
+    configureMapHeading();
+    configurePoolBoundary();
     configureMapInteraction();
     window.addEventListener("resize", () => {
         if (dashboardState.status) drawNavigation(dashboardState.status);
