@@ -607,6 +607,7 @@ summary {
 }
 
 @media (max-width: 760px) {
+
     .topbar,
     .panel-title {
         align-items: flex-start;

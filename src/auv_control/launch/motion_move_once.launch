@@ -40,7 +40,7 @@
     <!--
       relative 模式等待 map -> base_link TF 的最长时间，单位 s。
     -->
-    <arg name="goal_tf_timeout" default="5.0" />
+    <arg name="hover_duration" default="3.0" />
 
     <!-- 两种模式进入 HOVER 后的保持时长，单位 s；完成后节点退出。 -->
     <arg name="hover_duration" default="3.0" />

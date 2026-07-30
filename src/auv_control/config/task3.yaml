@@ -12,7 +12,7 @@
 # 任务3统一固定深度，单位m，填写水面以下的正深度。
 # 当前map坐标约定为水下Z为负，因此0.60m会作为map z=-0.60下发。
 # 完整任务、三个独立子任务及旧联调入口都读取这一处参数。
-task3_target_depth_m: 0.90
+task3_target_depth_m: 0.6
 
 
 # ============================================================
@@ -88,9 +88,9 @@ test_task3_1_acquire_area:
   enable_final_visual_alignment: false
 
   # motion_supervisor反馈与取消保护
-  motion_state_timeout: 2.0
-  motion_startup_timeout: 20.0
-  cancel_timeout: 15.0
+  motion_state_timeout: 3.0
+  motion_startup_timeout: 25.0
+  cancel_timeout: 120.0
 
   # MotionState.goal与任务最近目标的允许差。
   # 这些参数只防止旧HOVER误判，不改变motion_supervisor内部控制精度。
@@ -101,12 +101,12 @@ test_task3_1_acquire_area:
 
   # 独立运行子任务1时的启动悬停和搜索路径。
   initial_hover_seconds: 10.0
-  search_initial_forward_distance: 0.70
-  search_lateral_distance: 0.30
-  search_second_forward_distance: 0.40
+  search_initial_forward_distance: 1.5
+  search_lateral_distance: 0.8
+  search_second_forward_distance: 0.8
   # 子任务1总超时；第一次和第二次箭头都使用该时间。
   # 超时后，整合任务在容错开关开启时直接前往下一子任务人工点。
-  max_wait_seconds: 300.0
+  max_wait_seconds: 120
 
   # 箭头模型图像尺寸和完整可见门槛
   image_width: 640.0
@@ -260,7 +260,7 @@ test_task3_3_inspect_and_drop:
   # motion_supervisor反馈和取消保护
   motion_state_timeout: 2.0
   motion_startup_timeout: 20.0
-  cancel_timeout: 50.0
+  cancel_timeout: 60.0
   goal_match_position_tolerance: 0.03
   goal_match_depth_tolerance: 0.03
   goal_match_yaw_tolerance_deg: 2.0
@@ -429,51 +429,50 @@ task3_final:
   # 不再执行前进、左右搜索；超过该时间仍失败则不投放并前往出口点。
   box_point_recheck_timeout: 30.0
 
-  # 所有点都是执行reset_world_origin.launch成功后，map坐标系中的绝对目标。
-  # x、y单位m；yaw_deg单位deg；深度统一使用文件顶部task3_target_depth_m。
+  # 除task3_start外，其余点都是执行reset_world_origin.launch成功后，
+  # map坐标系中的绝对目标。x、y单位m；yaw_deg单位deg；
+  # 深度统一使用文件顶部task3_target_depth_m。
   # 开关为false时允许保留“待测”；开关改为true前必须全部换成有限数字。
   timeout_skip_targets:
-    # 整个任务3入口点；前一个大任务（任务2）超时后也移动到这里开始任务3。
+    # 任务3启动时锁存机器人当前x、y，只调整到下面的map绝对航向。
     task3_start:
-      x: "待测"
-      y: "待测"
-      yaw_deg: "待测"
+      yaw_deg: 215
     # 第一次箭头正常完成或超时后，都移动到子任务2的ArUco识别点。
     subtask2:
-      x: "待测"
-      y: "待测"
-      yaw_deg: "待测"
+      x: "-4.68"
+      y: "-5.95"
+      yaw_deg: "215"
     # 子任务2完成固定颜色兜底/正常识别及90度转向后，移动到第二个箭头起始点。
     # ArUco识别超时由子任务2内部处理，不在总调度层跳过。
     # yaw_deg填写完成该90度转向后，第二个箭头阶段期望保持的map绝对航向。
     second_arrow:
-      x: "待测"
-      y: "待测"
-      yaw_deg: "待测"
+      x: "-5.57"
+      y: "-5.96"
+      yaw_deg: "125"
     # 第二次箭头正常完成或超时后，都移动到子任务3彩色方框任务的起始点。
     subtask3:
-      x: "待测"
-      y: "待测"
-      yaw_deg: "待测"
+      x: "-5.53"
+      y: "-6.66"
+      yaw_deg: "125"
     # 子任务3首次识别超时后，根据ArUco得到的目标颜色选择其中一个点。
     # 三个点应设置在机器人能够从下视相机看到对应颜色方框的位置。
     box_red:
-      x: "待测"
-      y: "待测"
-      yaw_deg: "待测"
+      x: "-6.8"
+      y: "-5.50"
+      yaw_deg: "125"
     box_yellow:
-      x: "待测"
-      y: "待测"
-      yaw_deg: "待测"
+      x: "-6.09"
+      y: "-4.32"
+      yaw_deg: "125"
     box_green:
-      x: "待测"
-      y: "待测"
-      yaw_deg: "待测"
+      x: "-5.55"
+      y: "-3.55"
+      yaw_deg: "125"
     # 正常投放完成或颜色点原地复核仍超时后，都移动到任务3出口点。
     mission_exit:
-      x: "待测"
-      y: "待测"
-      yaw_deg: "待测"
+      x: "0"
+      y: "0"
+      yaw_deg: "35"
 
   # 整合模式已经在模型预热和阶段交接中统一悬停，因此关闭子任务内部
   # 重复的启动与结束等待。独立运行子任务时仍使用各子任务自己的参数。

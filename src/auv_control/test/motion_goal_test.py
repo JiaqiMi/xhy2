@@ -3,7 +3,9 @@
 """
 名称：motion_goal_test.py
 功能：向 motion_supervisor 发布一次 map 目标
+功能：向 motion_supervisor 发布一次 map 目标
 作者：BroXu
+监听：/motion/state (auv_control/MotionState)
 监听：/motion/state (auv_control/MotionState)
 发布：/cmd/motion/goal (geometry_msgs/PoseStamped)
 说明：
@@ -36,6 +38,7 @@ import sys
 import rospy
 import tf
 from auv_control.msg import MotionState
+from auv_control.msg import MotionState
 from geometry_msgs.msg import PoseStamped
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
@@ -51,6 +54,62 @@ from motion_supervisor_core import relative_target_xy, wrap_angle
 
 DEFAULT_TARGET_Z = -0.6
 SUPPORTED_OFFSET_FRAMES = ('base_link', 'map')
+
+
+class MotionGoalOnceNode(object):
+    """发布一次绝对目标，确认定点接管后等待并退出。"""
+
+    def __init__(self):
+        self.target = None
+        self.hover_started_at = None
+        self.goal_published_at = None
+        self.hover_duration = 3.0
+        self.state_timeout = 0.5
+        self.position_tolerance = 0.01
+        self.yaw_tolerance = math.radians(1.0)
+
+    def state_callback(self, message):
+        """仅接受当前目标对应的新鲜 HOVER 状态。"""
+        if self.target is None or self.goal_published_at is None:
+            return
+        age = (rospy.Time.now() - message.header.stamp).to_sec()
+        if age < 0.0 or age > self.state_timeout:
+            self.hover_started_at = None
+            return
+        if message.header.stamp < self.goal_published_at:
+            return
+        if (message.state != MotionState.HOVER
+                or not message.startup_complete
+                or not self._goal_matches(message.goal)):
+            self.hover_started_at = None
+            return
+        if self.hover_started_at is None:
+            self.hover_started_at = rospy.Time.now()
+            rospy.loginfo(
+                'motion_goal_test: 目标已进入 HOVER，保持 %.1f s 后退出',
+                self.hover_duration)
+
+    def _goal_matches(self, goal):
+        """判断状态机当前采用的目标是否为本节点发布的目标。"""
+        position = goal.pose.position
+        target_position = self.target.pose.position
+        if (abs(position.x - target_position.x) > self.position_tolerance
+                or abs(position.y - target_position.y) > self.position_tolerance
+                or abs(position.z - target_position.z) > self.position_tolerance):
+            return False
+        goal_yaw = euler_from_quaternion((
+            goal.pose.orientation.x,
+            goal.pose.orientation.y,
+            goal.pose.orientation.z,
+            goal.pose.orientation.w,
+        ))[2]
+        target_yaw = euler_from_quaternion((
+            self.target.pose.orientation.x,
+            self.target.pose.orientation.y,
+            self.target.pose.orientation.z,
+            self.target.pose.orientation.w,
+        ))[2]
+        return abs(wrap_angle(goal_yaw - target_yaw)) <= self.yaw_tolerance
 
 
 class MotionGoalOnceNode(object):
@@ -191,6 +250,7 @@ def main():
     target.pose.position.x = target_x
     target.pose.position.y = target_y
     target.pose.position.z = target_z
+    quaternion = quaternion_from_euler(0.0, 0.0, target_yaw)
     quaternion = quaternion_from_euler(0.0, 0.0, target_yaw)
     target.pose.orientation.x = quaternion[0]
     target.pose.orientation.y = quaternion[1]

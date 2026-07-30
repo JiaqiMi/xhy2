@@ -23,7 +23,7 @@
         true：使用 model_line_260726.pt
         false：使用 line0709.pt
     -->
-    <arg name="model_flag" default="false" />
+    <arg name="model_flag" default="true" />
 
     <arg name="new_model_path"
          default="/home/xhy/catkin_ws/models/model_arrow_260726.pt" />
@@ -92,7 +92,7 @@
     <arg name="log_depth_timing" default="true" />
 
     <!-- SGBM与局部深度统计参数 -->
-    <arg name="window_size" default="25" />
+    <!-- <arg name="window_size" default="25" /> -->
     <arg name="min_disparity" default="0" />
     <arg name="num_disparities" default="96" />
     <arg name="block_size" default="7" />

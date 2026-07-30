@@ -23,7 +23,7 @@
     <arg name="top_k" default="3" />
     <arg name="rate" default="5.0" />
     <arg name="visualization" default="0" />
-    <arg name="web_port" default="8080" />
+    <arg name="web_port" default="8081" />
 
     <!-- 深度计算配置：
          roi：只在目标点附近运行SGBM；
