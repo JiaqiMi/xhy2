@@ -24,6 +24,8 @@
     补光灯与执行器控制帧改为各自 0.5Hz 持续下发，执行器帧固定错开 0.25 秒。
     下发不再等待 ACK；ACTUATOR_FB 仅更新锁存状态，/status/actuator 改为 5Hz 持续发布。
     按协议将 result=0x03 识别为 EXEC_OK，当前执行器状态使用 5 秒节流日志输出。
+2026.7.30
+    补光灯与执行器控制帧下发频率调整为 2Hz，缩短任务执行器闭环的命令与反馈延迟。
 """
 
 import socket
@@ -62,7 +64,7 @@ class SensorActuatorNode:
     CMD_ACTUATOR = 0x30
     OP_SET = 0x00
     FLAG_NEED_ACK = 0x01
-    CONTROL_SEND_RATE_HZ = 0.5
+    CONTROL_SEND_RATE_HZ = 2.0
     ACTUATOR_SEND_OFFSET_S = 0.25
     STATUS_PUBLISH_RATE_HZ = 5
     SEND_LOOP_RATE_HZ = 20
@@ -441,7 +443,7 @@ class SensorActuatorNode:
             )
 
     def send_loop(self):
-        """持续发送两类控制帧：各 0.5Hz，执行器帧固定滞后 0.25 秒。"""
+        """持续发送两类控制帧：各 2Hz，执行器帧固定滞后 0.25 秒。"""
         rate = rospy.Rate(self.SEND_LOOP_RATE_HZ)
         interval = 1.0 / self.CONTROL_SEND_RATE_HZ
         next_camera_send = time.monotonic()
