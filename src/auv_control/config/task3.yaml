@@ -12,7 +12,7 @@
 # 任务3统一固定深度，单位m，填写水面以下的正深度。
 # 当前map坐标约定为水下Z为负，因此0.60m会作为map z=-0.60下发。
 # 完整任务、三个独立子任务及旧联调入口都读取这一处参数。
-task3_target_depth_m: 0.60
+task3_target_depth_m: 0.90
 
 
 # ============================================================
@@ -54,9 +54,37 @@ test_task3_1_acquire_area:
   # 航向与横移联合对准连续通过帧数。
   heading_aligned_detection_count: 2
 
+  # 新旧对准逻辑切换。
+  # true：使用“停稳后3/10帧三维位置+方向平均 -> 一次性移动 ->
+  #       HOVER后重新3/10帧复核 -> 必要时单次微调”的新逻辑。
+  # false：完整恢复原来的图像中心粗对准、连续航向和细对准逻辑。
+  pose_average_alignment_enabled: true
+  # stereo_depth/test_arrow_pose_detection.launch发布的箭头三维位置。
+  arrow_pose_topic: "/vision/arrow/target_message"
+  # 方向JSON时间戳与三维位置时间戳的最大配对误差，单位s。
+  pose_average_sync_tolerance: 0.05
+  # 当前模型的方向JSON与三维位置可能使用不同来源时间戳；
+  # 源时间戳无法配对时，允许按ROS回调到达时间进行兼容配对。
+  pose_average_receive_tolerance: 0.80
+  # 同一候选组内三维位置相对平均位置的最大抖动，单位m。
+  pose_average_position_tolerance_m: 0.12
+  # 到达HOVER后重新识别时，计算出的水平目标残差小于该值才允许最终前移。
+  pose_average_verify_position_tolerance_m: 0.08
+  # 单次平均位姿目标允许的最大水平移动距离，防止异常三维位置造成大幅运动。
+  pose_average_max_move_m: 1.00
+  # 首次采集或到达后复核在该时间内仍凑不齐3/10帧时，
+  # 立即结束子任务；整合任务会把它识别为超时并进入已有容错流程。
+  pose_average_data_timeout_seconds: 15.0
+  # 新平均位姿流程的严格实际到达门槛。
+  # 即使motion_supervisor仍报告HOVER，实际误差未通过也不会开始复核。
+  pose_average_arrival_position_tolerance_m: 0.03
+  pose_average_arrival_depth_tolerance_m: 0.03
+  pose_average_arrival_yaw_tolerance_deg: 5.0
+
   # false：最后固定前移前不再检查最终视觉中心、方向和连续帧，
   #        只等待当前目标对应的MotionState.HOVER。
   # true：保留最终视觉中心、方向和连续帧判断。
+  # 该参数只对pose_average_alignment_enabled=false的旧逻辑生效。
   enable_final_visual_alignment: false
 
   # motion_supervisor反馈与取消保护
@@ -73,9 +101,11 @@ test_task3_1_acquire_area:
 
   # 独立运行子任务1时的启动悬停和搜索路径。
   initial_hover_seconds: 10.0
-  search_initial_forward_distance: 0.50
-  search_lateral_distance: 0.20
-  search_second_forward_distance: 0.30
+  search_initial_forward_distance: 0.70
+  search_lateral_distance: 0.30
+  search_second_forward_distance: 0.40
+  # 子任务1总超时；第一次和第二次箭头都使用该时间。
+  # 超时后，整合任务在容错开关开启时直接前往下一子任务人工点。
   max_wait_seconds: 300.0
 
   # 箭头模型图像尺寸和完整可见门槛
@@ -120,7 +150,7 @@ test_task3_1_acquire_area:
 
   # 航向和图像中心对准后，base_link沿当前航向执行的一次性固定前移。
   # 当前实验值为1.0m；目标下发后忽略后续视觉，不回退。
-  base_link_forward_offset: 1.0
+  base_link_forward_offset: 0.5
 
   # 任务侧离底保护和最终悬停
   status_timeout: 1.0
@@ -151,7 +181,7 @@ test_task3_2_get_task:
   turn_enabled: true
   # 只能填写left或right。
   turn_direction: "left"
-  turn_angle_deg: 90.0
+  turn_angle_deg: 95.0
   turn_timeout: 90.0
   turn_stable_seconds: 1.0
   turn_hold_seconds: 1.0
@@ -176,8 +206,9 @@ test_task3_2_get_task:
   recognition_timeout: 60.0
     # 超过30秒仍未满足3/10帧时，不再继续等待ID，直接按固定颜色执行。
   # recognition_fallback_color只能填写yellow、green或red。
+  # 子任务2识别超时；到时直接使用下面的固定颜色并继续亮灯、转向。
   recognition_fallback_seconds: 30.0
-  recognition_fallback_color: "yellow"
+  recognition_fallback_color: "red"
   mock_aruco_ids: [1, -1, 1, 2, -1, -1, 1]
   mock_frame_interval: 0.2
 
@@ -222,6 +253,8 @@ test_task3_3_inspect_and_drop:
   stable_center_tolerance_px: 40.0
   stable_area_tolerance_ratio: 0.35
   detection_timeout: 2.0
+  # 子任务3首次搜索、识别和对准的总超时。
+  # 超时后，整合任务前往目标颜色对应的人工方框点原地复核。
   max_wait_seconds: 300.0
 
   # motion_supervisor反馈和取消保护
@@ -242,7 +275,7 @@ test_task3_3_inspect_and_drop:
 
   # 自动搜索：先完成悬停和第一段前进，再观察并排的三个颜色方框。
   auto_initial_hover_seconds: 3.0
-  auto_search_first_forward_distance: 0.50
+  auto_search_first_forward_distance: 0.70
   auto_search_second_forward_distance: 0.30
   auto_search_third_forward_distance: 0.20
   # 左移从当前搜索点计算；右移从左移结束位置计算。
@@ -254,7 +287,32 @@ test_task3_3_inspect_and_drop:
   # false：完全跳过颜色布局推断，直接执行原三段定步长搜索。
   auto_color_fast_search_enabled: true
 
-  # 视觉细对准增益和单次位置小步
+  # 新旧方框对准逻辑切换。
+  # true：适用于50cm大方框。3/10帧确认后，从当前可见bbox内部选择
+  #       带安全边距的投放点，只执行一次位置移动；到HOVER后再次
+  #       3/10帧宽松复核，通过后直接开灯、开夹爪。
+  # false：完整使用下面原有的连续视觉细对准逻辑。
+  partial_box_direct_drop_enabled: true
+  # 可见bbox四周预留的像素边距；防止把夹爪投放点放在检测框边缘。
+  # bbox本身较小时，代码会自动缩小边距，不会产生无效安全区。
+  partial_box_safe_margin_px: 15.0
+  # 一次移动的前后、左右增益。图像半宽或半高的误差分别对应这里的距离。
+  # 方向相反仍使用下面已有的auto_forward_sign/auto_lateral_sign调整。
+  partial_box_direct_forward_gain_m: 0.30
+  partial_box_direct_lateral_gain_m: 0.30
+  # 单次合成水平位移上限，防止残缺bbox异常造成大幅运动。
+  partial_box_direct_max_move_m: 0.30
+  # HOVER后复核时，估算剩余水平位移不超过该值即可直接投放。
+  # 如果投放参考点已经位于bbox安全区内，也直接判定通过。
+  partial_box_verify_tolerance_m: 0.10
+  # 一次移动到HOVER后，等待3/10帧宽松复核的最长时间。
+  partial_box_verify_timeout: 5.0
+  # 宽松复核未通过时允许追加的一次性修正次数。
+  # 次数用完仍不通过会回退到下面保留的原连续细对准。
+  partial_box_direct_max_corrections: 1
+
+  # 原有连续视觉细对准参数。关闭上面的新开关时完整使用；
+  # 新模式复核失败并回退时也继续使用，现有实验值保持不变。
   auto_visual_forward_gain_m: 0.10
   auto_visual_lateral_gain_m: 0.10
   auto_visual_min_step_m: 0.10
@@ -264,7 +322,9 @@ test_task3_3_inspect_and_drop:
   auto_forward_sign: 1.0
   auto_lateral_sign: 1.0
 
-  # 方框目标中心、像素容差和图像尺寸回退值
+  # 图像对准参考点、像素容差和图像尺寸回退值。
+  # 新直接投放模式下，这两个比例代表夹爪投放点在图像中的标定位置；
+  # 原细对准模式下仍代表希望方框中心到达的位置。
   auto_target_center_u_ratio: 0.5
   auto_target_center_v_ratio: 0.5
   auto_center_tolerance_u_px: 40.0
@@ -315,6 +375,10 @@ test_task3_3_inspect_and_drop:
   actuator_mode: 2
   clamp_open: 0
   clamp_closed: 255
+  # 方向舵机损坏时设为false：跳过“移到中间”和“回到右侧”，
+  # 投放只执行夹爪打开、夹爪闭合，并且到位反馈只判断夹爪。
+  # 舵机修复后设为true，即恢复原来的“中间打开、右侧闭合”完整动作。
+  heading_servo_enabled: false
   # 航向舵机协议：0=右，128=中，255=左。
   heading_servo_right: 0
   heading_servo_center: 128
@@ -331,6 +395,14 @@ test_task3_3_inspect_and_drop:
 task3_final:
   rate: 10.0
   log_directory: "~/.ros/auv_logs/task3"
+  # true：终端只显示关键阶段、识别成功、跳点、超时、警告和错误；
+  # 完整逐帧识别、运动反馈和执行器信息仍全部写入上面的单个日志文件。
+  console_key_only: true
+  # 终端中的识别窗口、运动等待和执行器反馈进度统一限频。
+  # 0.5秒对应最高约2Hz；状态切换、3/10确认、子任务开始/结束不受此限制。
+  console_progress_interval: 0.5
+  # 终端中同类WARNING重复出现的最短间隔；ERROR不做频率限制。
+  console_warning_repeat_interval: 3.0
 
   # 等待三个模型开始持续发布的最长时间和最低帧数。
   model_ready_timeout: 90.0
@@ -344,6 +416,64 @@ task3_final:
   motion_state_timeout: 2.0
   # 启动时锁存map到base_link固定悬停点的最长等待时间。
   startup_tf_timeout: 8.0
+
+  # 子任务超时跳点容错总开关。第一版只依据上面三个子任务的时间参数
+  # 判断是否跳点，不做目标是否超出相机视野的推断。
+  # 填完下面8组人工测量点并完成水下验证后，再手动改为true。
+  timeout_skip_enabled: false
+  # 从当前刹停点移动到下一阶段人工测量点的最长时间。
+  timeout_skip_move_timeout: 120.0
+  # motion_supervisor到达目标并进入HOVER后，还需连续稳定的时间。
+  timeout_skip_arrival_stable_seconds: 2.0
+  # 子任务3首次超时并到达指定颜色方框点后，只在原地重新识别和对准，
+  # 不再执行前进、左右搜索；超过该时间仍失败则不投放并前往出口点。
+  box_point_recheck_timeout: 30.0
+
+  # 所有点都是执行reset_world_origin.launch成功后，map坐标系中的绝对目标。
+  # x、y单位m；yaw_deg单位deg；深度统一使用文件顶部task3_target_depth_m。
+  # 开关为false时允许保留“待测”；开关改为true前必须全部换成有限数字。
+  timeout_skip_targets:
+    # 整个任务3入口点；前一个大任务（任务2）超时后也移动到这里开始任务3。
+    task3_start:
+      x: "待测"
+      y: "待测"
+      yaw_deg: "待测"
+    # 第一次箭头正常完成或超时后，都移动到子任务2的ArUco识别点。
+    subtask2:
+      x: "待测"
+      y: "待测"
+      yaw_deg: "待测"
+    # 子任务2完成固定颜色兜底/正常识别及90度转向后，移动到第二个箭头起始点。
+    # ArUco识别超时由子任务2内部处理，不在总调度层跳过。
+    # yaw_deg填写完成该90度转向后，第二个箭头阶段期望保持的map绝对航向。
+    second_arrow:
+      x: "待测"
+      y: "待测"
+      yaw_deg: "待测"
+    # 第二次箭头正常完成或超时后，都移动到子任务3彩色方框任务的起始点。
+    subtask3:
+      x: "待测"
+      y: "待测"
+      yaw_deg: "待测"
+    # 子任务3首次识别超时后，根据ArUco得到的目标颜色选择其中一个点。
+    # 三个点应设置在机器人能够从下视相机看到对应颜色方框的位置。
+    box_red:
+      x: "待测"
+      y: "待测"
+      yaw_deg: "待测"
+    box_yellow:
+      x: "待测"
+      y: "待测"
+      yaw_deg: "待测"
+    box_green:
+      x: "待测"
+      y: "待测"
+      yaw_deg: "待测"
+    # 正常投放完成或颜色点原地复核仍超时后，都移动到任务3出口点。
+    mission_exit:
+      x: "待测"
+      y: "待测"
+      yaw_deg: "待测"
 
   # 整合模式已经在模型预热和阶段交接中统一悬停，因此关闭子任务内部
   # 重复的启动与结束等待。独立运行子任务时仍使用各子任务自己的参数。

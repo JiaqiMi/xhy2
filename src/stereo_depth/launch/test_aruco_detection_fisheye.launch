@@ -53,6 +53,8 @@
     <!-- 避免与test_web.launch的8081冲突 -->
     <arg name="start_web" default="true" />
     <arg name="web_port" default="8085" />
+    <!-- 独立测试默认打印到终端；整合任务可传log减少终端输出。 -->
+    <arg name="node_output" default="screen" />
 
     <include if="$(arg start_driver)"
              file="$(find fisheye_camera_driver)/launch/driver.launch">
@@ -68,7 +70,7 @@
     <node pkg="stereo_depth"
           type="aruco_fisheye_node.py"
           name="fisheye_aruco_node"
-          output="screen">
+          output="$(arg node_output)">
 
         <rosparam command="load" file="$(arg calibration_file)" />
 
