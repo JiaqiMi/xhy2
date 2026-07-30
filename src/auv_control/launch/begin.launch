@@ -1,4 +1,9 @@
 <launch>
+    <!--
+      修改记录：
+      2026.7.31
+        启动 motion_supervisor 时透传 low/high 完整参数档位，默认使用 low。
+    -->
     <!-- begin.launch — 启动下位机驱动和tf -->
     <!-- 用法: roslaunch auv_control begin.launch -->
 
@@ -13,7 +18,11 @@
     <!-- <include file="$(find auv_control)/launch/param.launch"/> -->
     <arg name="save_dir" default="$(env HOME)/.ros/auv_logs" />
     <arg name="save_max_file_size" default="52428800" />
-    <arg name="motion_supervisor_config_file"  default="$(find auv_control)/config/motion_supervisor.yaml" />
+    <arg name="motion_supervisor_profile" default="low" />
+    <arg name="motion_supervisor_low_config_file"
+         default="$(find auv_control)/config/motion_supervisor_low.yaml" />
+    <arg name="motion_supervisor_high_config_file"
+         default="$(find auv_control)/config/motion_supervisor_high.yaml" />
     <arg name="tf_config_file" default="$(find auv_control)/config/auv_tf.yaml" />
 
     <!-- 下位机ip -->
@@ -126,7 +135,11 @@
     <include if="$(arg start_motion_supervisor)"
              file="$(find auv_control)/launch/motion_supervisor_prototype.launch">
         <arg name="start_goal_test" value="false" />
-        <arg name="config_file" value="$(arg motion_supervisor_config_file)" />
+        <arg name="motion_profile" value="$(arg motion_supervisor_profile)" />
+        <arg name="low_config_file"
+             value="$(arg motion_supervisor_low_config_file)" />
+        <arg name="high_config_file"
+             value="$(arg motion_supervisor_high_config_file)" />
         <arg name="tf_config_file" value="$(arg tf_config_file)" />
     </include>
 </launch>

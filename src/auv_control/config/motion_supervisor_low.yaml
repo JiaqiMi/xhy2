@@ -1,3 +1,8 @@
+# motion_supervisor 低速参数
+# 记录：
+# 2026.7.31
+#   将当前完整参数命名为 low 档，由 launch 的 motion_profile 参数选择。
+
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
 control_rate_hz: 20.0       # 统一三轴速度闭环频率；目标可保持 5 Hz 发布

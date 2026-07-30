@@ -24,7 +24,8 @@ src/auv_control/test/test_task3_3_inspect_and_drop.py
 src/auv_control/launch/task3_subtask3_inspect_and_drop.launch
 src/auv_control/driver/motion_supervisor.py
 src/auv_control/driver/motion_supervisor_core.py
-src/auv_control/config/motion_supervisor.yaml
+src/auv_control/config/motion_supervisor_low.yaml
+src/auv_control/config/motion_supervisor_high.yaml
 ```
 
 ## 2. 必须先理解的控制边界
@@ -544,7 +545,8 @@ roslaunch auv_control task3_subtask3_inspect_and_drop.launch \
 参数文件：
 
 ```text
-src/auv_control/config/motion_supervisor.yaml
+src/auv_control/config/motion_supervisor_low.yaml
+src/auv_control/config/motion_supervisor_high.yaml
 ```
 
 修改后必须重启 `motion_supervisor`。一次只调整一类参数并保存对应 rosbag、CSV和视频时间点。
