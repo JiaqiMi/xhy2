@@ -12,7 +12,8 @@
 # 任务3统一固定深度，单位m，填写水面以下的正深度。
 # 当前map坐标约定为水下Z为负，因此0.60m会作为map z=-0.60下发。
 # 完整任务、三个独立子任务及旧联调入口都读取这一处参数。
-task3_target_depth_m: 0.6
+task3_target_depth_m: 0.45
+
 
 
 # ============================================================
@@ -58,7 +59,7 @@ test_task3_1_acquire_area:
   # true：使用“停稳后3/10帧三维位置+方向平均 -> 一次性移动 ->
   #       HOVER后重新3/10帧复核 -> 必要时单次微调”的新逻辑。
   # false：完整恢复原来的图像中心粗对准、连续航向和细对准逻辑。
-  pose_average_alignment_enabled: true
+  pose_average_alignment_enabled: false
   # stereo_depth/test_arrow_pose_detection.launch发布的箭头三维位置。
   arrow_pose_topic: "/vision/arrow/target_message"
   # 方向JSON时间戳与三维位置时间戳的最大配对误差，单位s。
@@ -90,7 +91,7 @@ test_task3_1_acquire_area:
   # motion_supervisor反馈与取消保护
   motion_state_timeout: 3.0
   motion_startup_timeout: 25.0
-  cancel_timeout: 120.0
+  cancel_timeout: 180.0
 
   # MotionState.goal与任务最近目标的允许差。
   # 这些参数只防止旧HOVER误判，不改变motion_supervisor内部控制精度。

@@ -4,10 +4,11 @@
 功能：state_web 仪表盘页面结构
 作者：xhy
 监听：用户地图交互
-发布：地图朝向设置
+发布：地图朝向与水池范围设置
 记录：
 2026.7.30
     增加指定向上航向的地图手动旋转控件。
+    增加通过拖拽对角点绘制、重画和清除水池范围的控件。
 -->
 <html lang="zh-CN">
 
@@ -100,6 +101,12 @@
                         </button>
                         <button id="north-up-map" type="button" title="恢复 0° 北向上">
                             北向上
+                        </button>
+                        <button id="draw-pool-boundary" type="button" title="在地图上拖拽水池的两个对角点">
+                            绘制水池
+                        </button>
+                        <button id="clear-pool-boundary" type="button" title="清除已保存的水池范围">
+                            清除水池
                         </button>
                         <button id="reset-map" type="button" title="重置 2D 位置图和深度图">
                             回到原点
