@@ -319,7 +319,7 @@ class Task3Final:
         "rectangle": String,
     }
     TIMEOUT_SKIP_TARGET_LABELS = {
-        "task3_start": "任务3入口/第一次箭头起始点",
+        "task3_start": "任务3入口初始航向",
         "subtask2": "子任务2 ArUco识别点",
         "second_arrow": "第二个箭头起始点",
         "subtask3": "子任务3彩色方框起始点",
@@ -615,6 +615,18 @@ class Task3Final:
                 self.box_point_recheck_timeout,
             )
             for key, target in self.timeout_skip_targets.items():
+                if key == "task3_start":
+                    rospy.logwarn(
+                        (
+                            "%s：容错目标[%s] 启动时锁存当前map x/y，"
+                            "固定深度=%.3fm，yaw=%.1fdeg"
+                        ),
+                        NODE_NAME,
+                        self.TIMEOUT_SKIP_TARGET_LABELS[key],
+                        self.fixed_depth_m,
+                        target["yaw_deg"],
+                    )
+                    continue
                 rospy.logwarn(
                     "%s：容错目标[%s] map=(%.3f,%.3f,%.3f)，yaw=%.1fdeg",
                     NODE_NAME,
@@ -631,7 +643,7 @@ class Task3Final:
             )
 
     def load_timeout_skip_targets(self):
-        """仅在容错开启时解析人工测量的map绝对目标。"""
+        """仅在容错开启时解析入口航向和人工测量的map绝对目标。"""
         if not self.timeout_skip_enabled:
             return {}
         raw_targets = rospy.get_param(
@@ -648,15 +660,22 @@ class Task3Final:
                 raise ValueError(
                     "超时跳点目标{}尚未配置".format(key)
                 )
+            fields = (
+                ("yaw_deg",)
+                if key == "task3_start"
+                else ("x", "y", "yaw_deg")
+            )
             try:
                 target = {
-                    "x": float(raw_target["x"]),
-                    "y": float(raw_target["y"]),
-                    "yaw_deg": float(raw_target["yaw_deg"]),
+                    field: float(raw_target[field])
+                    for field in fields
                 }
             except (KeyError, TypeError, ValueError):
                 raise ValueError(
-                    "超时跳点目标{}必须填写数字x、y、yaw_deg".format(key)
+                    "超时跳点目标{}必须填写数字{}".format(
+                        key,
+                        "、".join(fields),
+                    )
                 )
             if not all(math.isfinite(value) for value in target.values()):
                 raise ValueError(
@@ -809,22 +828,7 @@ class Task3Final:
             )
 
     def capture_startup_hold_goal(self):
-        """只读取一次启动位姿，避免定点目标跟随漂移。"""
-        if self.timeout_skip_enabled:
-            goal = self.make_timeout_skip_goal("task3_start")
-            rospy.logwarn(
-                (
-                    "%s：容错开启，模型预热期间直接移动到任务3入口点："
-                    "map=(%.3f,%.3f,%.3f)，yaw=%.1fdeg"
-                ),
-                NODE_NAME,
-                goal.pose.position.x,
-                goal.pose.position.y,
-                goal.pose.position.z,
-                self.timeout_skip_targets["task3_start"]["yaw_deg"],
-            )
-            return goal
-
+        """只锁存一次启动位置；容错开启时使用配置的初始航向。"""
         deadline = time.monotonic() + self.startup_tf_timeout
         while not rospy.is_shutdown() and time.monotonic() < deadline:
             try:
@@ -858,6 +862,26 @@ class Task3Final:
             goal.pose.position.x = float(translation[0])
             goal.pose.position.y = float(translation[1])
             goal.pose.position.z = self.fixed_map_z
+            if self.timeout_skip_enabled:
+                yaw_deg = self.timeout_skip_targets[
+                    "task3_start"
+                ]["yaw_deg"]
+                half_yaw = math.radians(yaw_deg) * 0.5
+                goal.pose.orientation.z = math.sin(half_yaw)
+                goal.pose.orientation.w = math.cos(half_yaw)
+                rospy.logwarn(
+                    (
+                        "%s：已锁存任务3启动位置：map=(%.3f,%.3f,%.3f)；"
+                        "仅调整到固定初始航向yaw=%.1fdeg"
+                    ),
+                    NODE_NAME,
+                    goal.pose.position.x,
+                    goal.pose.position.y,
+                    goal.pose.position.z,
+                    yaw_deg,
+                )
+                return goal
+
             goal.pose.orientation.x = float(rotation[0])
             goal.pose.orientation.y = float(rotation[1])
             goal.pose.orientation.z = float(rotation[2])
@@ -1130,6 +1154,10 @@ class Task3Final:
 
     def make_timeout_skip_goal(self, target_key):
         """把人工测量点转换为motion_supervisor绝对目标。"""
+        if target_key == "task3_start":
+            raise ValueError(
+                "task3_start只配置初始航向，必须通过启动位姿锁存生成目标"
+            )
         target = self.timeout_skip_targets[target_key]
         yaw = math.radians(target["yaw_deg"])
         half_yaw = yaw * 0.5
@@ -1443,7 +1471,7 @@ class Task3Final:
         skipped_stages = []
         movement_timeouts = []
         rospy.loginfo(
-            "%s：%s 完整任务3开始，等待入口定点和三个模型就绪",
+            "%s：%s 完整任务3开始，锁存入口位置并等待三个模型就绪",
             NODE_NAME,
             KEY_LOG_MARKER,
         )
@@ -1456,12 +1484,12 @@ class Task3Final:
                 startup_hold_goal,
                 self.timeout_skip_move_timeout,
                 self.timeout_skip_arrival_stable_seconds,
-                "任务3入口点",
+                "任务3入口初始航向",
             )
         ):
-            movement_timeouts.append("任务3入口点")
+            movement_timeouts.append("任务3入口初始航向")
             rospy.logwarn(
-                "%s：任务3入口点移动超时，继续模型预热和第一次箭头流程",
+                "%s：任务3入口初始航向调整超时，继续模型预热和第一次箭头流程",
                 NODE_NAME,
             )
         if not self.wait_for_all_models(startup_hold_goal):

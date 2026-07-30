@@ -25,6 +25,8 @@
         1. 将送水点水平移动、原地浮出和原地下潜拆分，并以控制器当前目标回读防止旧 HOVER 反馈触发深度切换。
         2. 新增送水点下潜后的推杆反向回收、停止确认和返回起点闭环流程。
         3. 新增与 motion_supervisor 对齐的逐周期 CSV 日志和 JSON 参数快照，支持完整复盘。
+    2026.7.30
+        1. 将无新执行器反馈帧与反馈不匹配区分，保留已累计的连续匹配帧，避免 5 Hz 主循环清零确认计数。
 """
 
 from datetime import datetime
@@ -946,7 +948,8 @@ class Task2V2(object):
         if age > self.actuator_status_timeout:
             return None, '执行器反馈超时 {:.2f}s'.format(age)
         if sequence == self.feedback_checked_sequence:
-            return False, '等待下一帧执行器反馈'
+            # 本循环未收到新帧不代表上一帧失配；只等待，不清零已累计匹配帧。
+            return None, '等待下一帧执行器反馈'
         self.feedback_checked_sequence = sequence
         matched = (
             status.heading_servo == command['heading_servo'] and

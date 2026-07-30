@@ -1,11 +1,56 @@
 "use strict";
 
+/*
+名称：dashboard.js
+功能：state_web 状态渲染、相机状态与导航地图交互
+作者：xhy
+监听：Web 状态接口与用户交互
+发布：仪表盘绘制及浏览器地图朝向设置
+记录：
+2026.7.30
+    增加可持久化的手动地图旋转，支持指定航向为上。
+*/
+
+const MAP_UP_HEADING_KEY = "state_web.map_up_heading_deg";
+
+
+function normalizeMapHeading(value) {
+    const heading = Number(value);
+    if (!Number.isFinite(heading)) return null;
+    return ((heading % 360) + 360) % 360;
+}
+
+
+function loadMapUpHeading() {
+    try {
+        return normalizeMapHeading(
+            window.localStorage.getItem(MAP_UP_HEADING_KEY),
+        ) ?? 0;
+    } catch (error) {
+        return 0;
+    }
+}
+
+
+function saveMapUpHeading(heading) {
+    try {
+        window.localStorage.setItem(
+            MAP_UP_HEADING_KEY,
+            String(heading),
+        );
+    } catch (error) {
+        // 浏览器禁用本地存储时，本次页面内设置仍然有效。
+    }
+}
+
+
 const dashboardState = {
     status: null,
     connected: false,
     mapScale: 20,
     mapPanX: 0,
     mapPanY: 0,
+    mapUpHeading: loadMapUpHeading(),
     zScale: 20,
     zPanY: 0,
     dragging: false,
@@ -161,9 +206,8 @@ function setAxisRows(containerId, rows) {
 
 function badge(label, online, alarm = false, warning = false) {
     const element = document.createElement("span");
-    element.className = `badge ${
-        alarm ? "alarm" : (warning ? "warning" : (online ? "online" : "offline"))
-    }`;
+    element.className = `badge ${alarm ? "alarm" : (warning ? "warning" : (online ? "online" : "offline"))
+        }`;
     element.textContent = label;
     return element;
 }
@@ -191,7 +235,7 @@ function renderGlobalBadges(data) {
         Boolean(data.tf?.online),
     ));
     ["left", "right", "fisheye"].forEach((name) => {
-        const labels = {left: "左目", right: "右目", fisheye: "鱼眼"};
+        const labels = { left: "左目", right: "右目", fisheye: "鱼眼" };
         fragment.appendChild(badge(
             `${labels[name]}${data.streams?.[name]?.online ? "在线" : "离线"}`,
             Boolean(data.streams?.[name]?.online),
@@ -325,42 +369,42 @@ function renderCoreStatus(data) {
         {
             label: "实际位置",
             cells: [
-                {axis: "X / North", value: numberText(tfPosition.x, 3, " m"), className: tfClass},
-                {axis: "Y / East", value: numberText(tfPosition.y, 3, " m"), className: tfClass},
-                {axis: "Z / Down", value: numberText(tfPosition.z, 3, " m"), className: tfClass},
+                { axis: "X / North", value: numberText(tfPosition.x, 3, " m"), className: tfClass },
+                { axis: "Y / East", value: numberText(tfPosition.y, 3, " m"), className: tfClass },
+                { axis: "Z / Down", value: numberText(tfPosition.z, 3, " m"), className: tfClass },
             ],
         },
         {
             label: "目标位置",
             cells: [
-                {axis: "X / North", value: numberText(targetPosition.x, 3, " m"), className: commandClass},
-                {axis: "Y / East", value: numberText(targetPosition.y, 3, " m"), className: commandClass},
-                {axis: "Z / Down", value: numberText(targetPosition.z, 3, " m"), className: commandClass},
+                { axis: "X / North", value: numberText(targetPosition.x, 3, " m"), className: commandClass },
+                { axis: "Y / East", value: numberText(targetPosition.y, 3, " m"), className: commandClass },
+                { axis: "Z / Down", value: numberText(targetPosition.z, 3, " m"), className: commandClass },
             ],
         },
         {
             label: "位置误差",
             title: "目标位置减实际 TF 位置",
             cells: [
-                {axis: "ΔX", value: numberText(numericDifference(targetPosition.x, tfPosition.x), 3, " m"), className: poseErrorClass},
-                {axis: "ΔY", value: numberText(numericDifference(targetPosition.y, tfPosition.y), 3, " m"), className: poseErrorClass},
-                {axis: "ΔZ", value: numberText(numericDifference(targetPosition.z, tfPosition.z), 3, " m"), className: poseErrorClass},
+                { axis: "ΔX", value: numberText(numericDifference(targetPosition.x, tfPosition.x), 3, " m"), className: poseErrorClass },
+                { axis: "ΔY", value: numberText(numericDifference(targetPosition.y, tfPosition.y), 3, " m"), className: poseErrorClass },
+                { axis: "ΔZ", value: numberText(numericDifference(targetPosition.z, tfPosition.z), 3, " m"), className: poseErrorClass },
             ],
         },
         {
             label: "实际姿态",
             cells: [
-                {axis: "Roll", value: numberText(tfOrientation.roll_deg, 2, "°"), className: tfClass},
-                {axis: "Pitch", value: numberText(tfOrientation.pitch_deg, 2, "°"), className: tfClass},
-                {axis: "Heading", value: numberText(tfOrientation.heading_deg, 2, "°"), className: tfClass},
+                { axis: "Roll", value: numberText(tfOrientation.roll_deg, 2, "°"), className: tfClass },
+                { axis: "Pitch", value: numberText(tfOrientation.pitch_deg, 2, "°"), className: tfClass },
+                { axis: "Heading", value: numberText(tfOrientation.heading_deg, 2, "°"), className: tfClass },
             ],
         },
         {
             label: "目标姿态",
             cells: [
-                {axis: "Roll", value: numberText(targetOrientation.roll_deg, 2, "°"), className: commandClass},
-                {axis: "Pitch", value: numberText(targetOrientation.pitch_deg, 2, "°"), className: commandClass},
-                {axis: "Heading", value: numberText(targetOrientation.heading_deg, 2, "°"), className: commandClass},
+                { axis: "Roll", value: numberText(targetOrientation.roll_deg, 2, "°"), className: commandClass },
+                { axis: "Pitch", value: numberText(targetOrientation.pitch_deg, 2, "°"), className: commandClass },
+                { axis: "Heading", value: numberText(targetOrientation.heading_deg, 2, "°"), className: commandClass },
             ],
         },
         {
@@ -386,34 +430,34 @@ function renderCoreStatus(data) {
             label: "实际力 / 力矩",
             title: "每列依次显示平移力 T 与旋转力矩 M",
             cells: [
-                {axis: "TX / MX", value: `${integerText(actualForce.tx)} / ${integerText(actualForce.mx)}`, className: feedbackClass},
-                {axis: "TY / MY", value: `${integerText(actualForce.ty)} / ${integerText(actualForce.my)}`, className: feedbackClass},
-                {axis: "TZ / MZ", value: `${integerText(actualForce.tz)} / ${integerText(actualForce.mz)}`, className: feedbackClass},
+                { axis: "TX / MX", value: `${integerText(actualForce.tx)} / ${integerText(actualForce.mx)}`, className: feedbackClass },
+                { axis: "TY / MY", value: `${integerText(actualForce.ty)} / ${integerText(actualForce.my)}`, className: feedbackClass },
+                { axis: "TZ / MZ", value: `${integerText(actualForce.tz)} / ${integerText(actualForce.mz)}`, className: feedbackClass },
             ],
         },
         {
             label: "目标力 / 力矩",
             title: "cmdned 指令；每列依次显示平移力 T 与旋转力矩 M",
             cells: [
-                {axis: "TX / MX", value: `${integerText(targetForce.tx)} / ${integerText(targetForce.mx)}`, className: commandClass},
-                {axis: "TY / MY", value: `${integerText(targetForce.ty)} / ${integerText(targetForce.my)}`, className: commandClass},
-                {axis: "TZ / MZ", value: `${integerText(targetForce.tz)} / ${integerText(targetForce.mz)}`, className: commandClass},
+                { axis: "TX / MX", value: `${integerText(targetForce.tx)} / ${integerText(targetForce.mx)}`, className: commandClass },
+                { axis: "TY / MY", value: `${integerText(targetForce.ty)} / ${integerText(targetForce.my)}`, className: commandClass },
+                { axis: "TZ / MZ", value: `${integerText(targetForce.tz)} / ${integerText(targetForce.mz)}`, className: commandClass },
             ],
         },
         {
             label: "线速度",
             cells: [
-                {axis: "X", value: numberText(linear.x, 3, " m/s"), className: velocityClass},
-                {axis: "Y", value: numberText(linear.y, 3, " m/s"), className: velocityClass},
-                {axis: "Z", value: numberText(linear.z, 3, " m/s"), className: velocityClass},
+                { axis: "X", value: numberText(linear.x, 3, " m/s"), className: velocityClass },
+                { axis: "Y", value: numberText(linear.y, 3, " m/s"), className: velocityClass },
+                { axis: "Z", value: numberText(linear.z, 3, " m/s"), className: velocityClass },
             ],
         },
         {
             label: "角速度",
             cells: [
-                {axis: "X", value: numberText(radToDeg(angular.x), 2, "°/s"), className: velocityClass},
-                {axis: "Y", value: numberText(radToDeg(angular.y), 2, "°/s"), className: velocityClass},
-                {axis: "Z", value: numberText(radToDeg(angular.z), 2, "°/s"), className: velocityClass},
+                { axis: "X", value: numberText(radToDeg(angular.x), 2, "°/s"), className: velocityClass },
+                { axis: "Y", value: numberText(radToDeg(angular.y), 2, "°/s"), className: velocityClass },
+                { axis: "Z", value: numberText(radToDeg(angular.z), 2, "°/s"), className: velocityClass },
             ],
         },
     ]);
@@ -442,10 +486,10 @@ function renderMotionState(data) {
                 ? "--"
                 : (motion.goal_active ? "是" : "否"),
         },
-        {label: "位置误差", value: numberText(motion.position_error_m, 3, " m")},
-        {label: "航向误差", value: numberText(radToDeg(motion.yaw_error_rad), 2, "°")},
-        {label: "水平速度", value: numberText(motion.horizontal_speed_mps, 3, " m/s")},
-        {label: "航向角速度", value: numberText(radToDeg(motion.yaw_rate_radps), 2, "°/s")},
+        { label: "位置误差", value: numberText(motion.position_error_m, 3, " m") },
+        { label: "航向误差", value: numberText(radToDeg(motion.yaw_error_rad), 2, "°") },
+        { label: "水平速度", value: numberText(motion.horizontal_speed_mps, 3, " m/s") },
+        { label: "航向角速度", value: numberText(radToDeg(motion.yaw_rate_radps), 2, "°/s") },
         {
             label: "监督输出",
             value: `TX ${integerText(force.tx)} · TY ${integerText(force.ty)} · MZ ${integerText(force.mz)}`,
@@ -474,16 +518,16 @@ function renderActuatorStatus(data) {
             value: snapshotText(data.actuator_feedback),
             className: snapshotClass(data.actuator_feedback),
         },
-        {label: "指令模式", value: command.mode_name || "--"},
-        {label: "补光灯1 指令/状态", value: `${integerText(command.light1)} / ${integerText(feedback.light1)}`},
-        {label: "补光灯2 指令/状态", value: `${integerText(command.light2)} / ${integerText(feedback.light2)}`},
-        {label: "航向舵机 指令/反馈", value: `${integerText(command.heading_servo)} / ${integerText(feedback.heading_servo)}`},
-        {label: "夹爪舵机 指令/反馈", value: `${integerText(command.clamp_servo)} / ${integerText(feedback.clamp_servo)}`},
-        {label: "推杆动作 指令/反馈", value: `${integerText(command.drive_cmd)} / ${integerText(feedback.drive_cmd)}`},
-        {label: "推杆速度 指令/反馈", value: `${integerText(command.drive_speed)} / ${integerText(feedback.drive_speed)}`},
-        {label: "红灯 指令/反馈", value: `${integerText(command.red_light)} / ${integerText(feedback.red_light)}`},
-        {label: "黄灯 指令/反馈", value: `${integerText(command.yellow_light)} / ${integerText(feedback.yellow_light)}`},
-        {label: "绿灯 指令/反馈", value: `${integerText(command.green_light)} / ${integerText(feedback.green_light)}`},
+        { label: "指令模式", value: command.mode_name || "--" },
+        { label: "补光灯1 指令/状态", value: `${integerText(command.light1)} / ${integerText(feedback.light1)}` },
+        { label: "补光灯2 指令/状态", value: `${integerText(command.light2)} / ${integerText(feedback.light2)}` },
+        { label: "航向舵机 指令/反馈", value: `${integerText(command.heading_servo)} / ${integerText(feedback.heading_servo)}` },
+        { label: "夹爪舵机 指令/反馈", value: `${integerText(command.clamp_servo)} / ${integerText(feedback.clamp_servo)}` },
+        { label: "推杆动作 指令/反馈", value: `${integerText(command.drive_cmd)} / ${integerText(feedback.drive_cmd)}` },
+        { label: "推杆速度 指令/反馈", value: `${integerText(command.drive_speed)} / ${integerText(feedback.drive_speed)}` },
+        { label: "红灯 指令/反馈", value: `${integerText(command.red_light)} / ${integerText(feedback.red_light)}` },
+        { label: "黄灯 指令/反馈", value: `${integerText(command.yellow_light)} / ${integerText(feedback.yellow_light)}` },
+        { label: "绿灯 指令/反馈", value: `${integerText(command.green_light)} / ${integerText(feedback.green_light)}` },
     ]);
 }
 
@@ -592,20 +636,20 @@ function renderPowerStatus(data) {
             value: power1.valid === undefined ? "--" : (power1.valid ? "是" : "否"),
             className: power1.valid === false ? "bad" : "",
         },
-        {label: "电源1 电压", value: numberText(power1.voltage_v, 2, " V")},
-        {label: "电源1 电流", value: numberText(power1.current_a, 2, " A")},
-        {label: "电源1 功率", value: numberText(power1.power_w, 2, " W")},
+        { label: "电源1 电压", value: numberText(power1.voltage_v, 2, " V") },
+        { label: "电源1 电流", value: numberText(power1.current_a, 2, " A") },
+        { label: "电源1 功率", value: numberText(power1.power_w, 2, " W") },
         {
             label: "电源2 有效",
             value: power2.valid === undefined ? "--" : (power2.valid ? "是" : "否"),
             className: power2.valid === false ? "bad" : "",
         },
-        {label: "电源2 电压", value: numberText(power2.voltage_v, 2, " V")},
-        {label: "电源2 电流", value: numberText(power2.current_a, 2, " A")},
-        {label: "电源2 功率", value: numberText(power2.power_w, 2, " W")},
-        {label: "舱内温度", value: numberText(sensor.temperature_c, 1, " ℃")},
-        {label: "控制电压", value: numberText(sensor.voltage_v, 2, " V")},
-        {label: "系统电流", value: numberText(sensor.current_a, 2, " A")},
+        { label: "电源2 电压", value: numberText(power2.voltage_v, 2, " V") },
+        { label: "电源2 电流", value: numberText(power2.current_a, 2, " A") },
+        { label: "电源2 功率", value: numberText(power2.power_w, 2, " W") },
+        { label: "舱内温度", value: numberText(sensor.temperature_c, 1, " ℃") },
+        { label: "控制电压", value: numberText(sensor.voltage_v, 2, " V") },
+        { label: "系统电流", value: numberText(sensor.current_a, 2, " A") },
         {
             label: "漏水告警",
             value: leak === undefined ? "--" : (leak ? "告警" : "正常"),
@@ -616,9 +660,9 @@ function renderPowerStatus(data) {
             value: hexadecimal(sensor.fault_status, 4),
             className: fault === null ? "" : (fault > 0 ? "bad" : "good"),
         },
-        {label: "传感器有效位", value: hexadecimal(sensor.sensor_valid, 2)},
-        {label: "传感器更新位", value: hexadecimal(sensor.sensor_updated, 2)},
-        {label: "设备电源位", value: hexadecimal(sensor.power_status, 4)},
+        { label: "传感器有效位", value: hexadecimal(sensor.sensor_valid, 2) },
+        { label: "传感器更新位", value: hexadecimal(sensor.sensor_updated, 2) },
+        { label: "设备电源位", value: hexadecimal(sensor.power_status, 4) },
     ]);
 }
 
@@ -631,12 +675,12 @@ function renderSystemStatus(data) {
             value: data.ready ? "已就绪" : "等待原点或 TF",
             className: data.ready ? "good" : "bad",
         },
-        {label: "世界坐标系", value: data.frames?.world || "--"},
-        {label: "机器人坐标系", value: data.frames?.base || "--"},
-        {label: "原点版本", value: integerText(origin.revision)},
-        {label: "原点纬度", value: numberText(origin.latitude_deg, 7, "°")},
-        {label: "原点经度", value: numberText(origin.longitude_deg, 7, "°")},
-        {label: "原点深度", value: numberText(origin.depth_m, 3, " m")},
+        { label: "世界坐标系", value: data.frames?.world || "--" },
+        { label: "机器人坐标系", value: data.frames?.base || "--" },
+        { label: "原点版本", value: integerText(origin.revision) },
+        { label: "原点纬度", value: numberText(origin.latitude_deg, 7, "°") },
+        { label: "原点经度", value: numberText(origin.longitude_deg, 7, "°") },
+        { label: "原点深度", value: numberText(origin.depth_m, 3, " m") },
     ];
 
     Object.entries(data.topic_health || {}).forEach(([name, health]) => {
@@ -665,7 +709,7 @@ function resizeCanvas(canvas) {
     }
     const context = canvas.getContext("2d");
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    return {context, width, height};
+    return { context, width, height };
 }
 
 
@@ -763,7 +807,7 @@ function drawActualFrameArrow(ctx, points, heading, options) {
         label,
         frameNames,
     } = options;
-    const {base, camera} = points;
+    const { base, camera } = points;
 
     ctx.save();
     ctx.strokeStyle = color;
@@ -840,9 +884,93 @@ function drawActualFrameArrow(ctx, points, heading, options) {
 }
 
 
+function clipLineToCanvas(start, end, width, height) {
+    const deltaX = end.x - start.x;
+    const deltaY = end.y - start.y;
+    let minimum = 0;
+    let maximum = 1;
+    const boundaries = [
+        [-deltaX, start.x],
+        [deltaX, width - start.x],
+        [-deltaY, start.y],
+        [deltaY, height - start.y],
+    ];
+
+    for (const [direction, distance] of boundaries) {
+        if (Math.abs(direction) < 1e-9) {
+            if (distance < 0) return null;
+            continue;
+        }
+        const ratio = distance / direction;
+        if (direction < 0) {
+            minimum = Math.max(minimum, ratio);
+        } else {
+            maximum = Math.min(maximum, ratio);
+        }
+        if (minimum > maximum) return null;
+    }
+
+    return [
+        {
+            x: start.x + minimum * deltaX,
+            y: start.y + minimum * deltaY,
+        },
+        {
+            x: start.x + maximum * deltaX,
+            y: start.y + maximum * deltaY,
+        },
+    ];
+}
+
+
+function drawMapCompass(ctx, width, upHeading) {
+    const center = { x: Math.max(42, width - 48), y: 50 };
+    const arrowLength = 24;
+    const axes = [
+        { label: "N", heading: -upHeading, color: "#43c7ff" },
+        { label: "E", heading: 90 - upHeading, color: "#ffbe45" },
+    ];
+
+    ctx.save();
+    ctx.font = "bold 11px Consolas, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const axis of axes) {
+        const radians = axis.heading * Math.PI / 180;
+        const tip = {
+            x: center.x + Math.sin(radians) * arrowLength,
+            y: center.y - Math.cos(radians) * arrowLength,
+        };
+        ctx.strokeStyle = axis.color;
+        ctx.fillStyle = axis.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(center.x, center.y);
+        ctx.lineTo(tip.x, tip.y);
+        ctx.stroke();
+        ctx.fillText(
+            axis.label,
+            tip.x + Math.sin(radians) * 9,
+            tip.y - Math.cos(radians) * 9,
+        );
+    }
+    ctx.fillStyle = "#d9e8f5";
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = "10px Microsoft YaHei, Consolas, monospace";
+    ctx.fillText(
+        `上 ${numberText(upHeading, upHeading % 1 ? 1 : 0, "°")}`,
+        center.x,
+        center.y + 39,
+    );
+    ctx.restore();
+}
+
+
 function drawXYMap(data) {
     const canvas = document.getElementById("xy-canvas");
-    const {context: ctx, width, height} = resizeCanvas(canvas);
+    const { context: ctx, width, height } = resizeCanvas(canvas);
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = "#07111d";
     ctx.fillRect(0, 0, width, height);
@@ -850,11 +978,40 @@ function drawXYMap(data) {
     const scale = dashboardState.mapScale;
     const originX = width / 2 + dashboardState.mapPanX;
     const originY = height / 2 + dashboardState.mapPanY;
+    const upHeading = dashboardState.mapUpHeading;
+    const rotation = upHeading * Math.PI / 180;
+    const rotationCos = Math.cos(rotation);
+    const rotationSin = Math.sin(rotation);
     const gridStep = niceDistance(70 / scale);
-    const eastMin = -originX / scale;
-    const eastMax = (width - originX) / scale;
-    const northMin = (originY - height) / scale;
-    const northMax = originY / scale;
+
+    const worldToScreen = (north, east) => {
+        const mapEast = east * rotationCos - north * rotationSin;
+        const mapNorth = east * rotationSin + north * rotationCos;
+        return {
+            x: originX + mapEast * scale,
+            y: originY - mapNorth * scale,
+        };
+    };
+    const screenToWorld = (screenX, screenY) => {
+        const mapEast = (screenX - originX) / scale;
+        const mapNorth = (originY - screenY) / scale;
+        return {
+            east: mapEast * rotationCos + mapNorth * rotationSin,
+            north: -mapEast * rotationSin + mapNorth * rotationCos,
+        };
+    };
+    const visibleCorners = [
+        screenToWorld(0, 0),
+        screenToWorld(width, 0),
+        screenToWorld(0, height),
+        screenToWorld(width, height),
+    ];
+    const eastValues = visibleCorners.map((point) => point.east);
+    const northValues = visibleCorners.map((point) => point.north);
+    const eastMin = Math.min(...eastValues);
+    const eastMax = Math.max(...eastValues);
+    const northMin = Math.min(...northValues);
+    const northMax = Math.max(...northValues);
 
     ctx.lineWidth = 1;
     ctx.font = "10px Consolas, monospace";
@@ -865,15 +1022,26 @@ function drawXYMap(data) {
         east <= eastMax + gridStep * 0.5;
         east += gridStep
     ) {
-        const screenX = originX + east * scale;
+        const line = clipLineToCanvas(
+            worldToScreen(northMin - gridStep, east),
+            worldToScreen(northMax + gridStep, east),
+            width,
+            height,
+        );
+        if (!line) continue;
         const isAxis = Math.abs(east) < gridStep * 0.01;
         ctx.strokeStyle = isAxis ? "#3c799c" : "#19354a";
         ctx.beginPath();
-        ctx.moveTo(screenX, 0);
-        ctx.lineTo(screenX, height);
+        ctx.moveTo(line[0].x, line[0].y);
+        ctx.lineTo(line[1].x, line[1].y);
         ctx.stroke();
+        const labelPoint = line[0].y <= line[1].y ? line[0] : line[1];
         ctx.fillStyle = "#66849d";
-        ctx.fillText(numberText(east, gridStep < 1 ? 1 : 0), screenX + 3, 3);
+        ctx.fillText(
+            numberText(east, gridStep < 1 ? 1 : 0),
+            Math.max(3, Math.min(width - 36, labelPoint.x + 3)),
+            Math.max(3, Math.min(height - 14, labelPoint.y + 3)),
+        );
     }
 
     for (
@@ -881,21 +1049,27 @@ function drawXYMap(data) {
         north <= northMax + gridStep * 0.5;
         north += gridStep
     ) {
-        const screenY = originY - north * scale;
+        const line = clipLineToCanvas(
+            worldToScreen(north, eastMin - gridStep),
+            worldToScreen(north, eastMax + gridStep),
+            width,
+            height,
+        );
+        if (!line) continue;
         const isAxis = Math.abs(north) < gridStep * 0.01;
         ctx.strokeStyle = isAxis ? "#3c799c" : "#19354a";
         ctx.beginPath();
-        ctx.moveTo(0, screenY);
-        ctx.lineTo(width, screenY);
+        ctx.moveTo(line[0].x, line[0].y);
+        ctx.lineTo(line[1].x, line[1].y);
         ctx.stroke();
+        const labelPoint = line[0].x <= line[1].x ? line[0] : line[1];
         ctx.fillStyle = "#66849d";
-        ctx.fillText(numberText(north, gridStep < 1 ? 1 : 0), 4, screenY + 3);
+        ctx.fillText(
+            numberText(north, gridStep < 1 ? 1 : 0),
+            Math.max(3, Math.min(width - 36, labelPoint.x + 3)),
+            Math.max(3, Math.min(height - 14, labelPoint.y + 3)),
+        );
     }
-
-    const worldToScreen = (north, east) => ({
-        x: originX + east * scale,
-        y: originY - north * scale,
-    });
 
     const tfData = data.tf?.data || {};
     const position = tfData.position_m;
@@ -907,6 +1081,9 @@ function drawXYMap(data) {
     const actualHeading = finiteNumber(
         tfData.orientation_deg?.heading_deg,
     );
+    const mapActualHeading = actualHeading === null
+        ? null
+        : normalizeMapHeading(actualHeading - upHeading);
     const framePoses = tfData.frame_poses || {};
     const frameScreen = (framePose) => {
         const frameNorth = finiteNumber(framePose?.position_m?.x);
@@ -933,6 +1110,9 @@ function drawXYMap(data) {
     const targetHeading = finiteNumber(
         targetPose?.orientation_deg?.heading_deg,
     );
+    const mapTargetHeading = targetHeading === null
+        ? null
+        : normalizeMapHeading(targetHeading - upHeading);
 
     if (actualScreen && targetScreen) {
         ctx.save();
@@ -949,7 +1129,7 @@ function drawXYMap(data) {
 
     if (targetScreen) {
         const annotation = snapshotAnnotation(data.pose_command);
-        drawDirectionalPose(ctx, targetScreen, targetHeading, {
+        drawDirectionalPose(ctx, targetScreen, mapTargetHeading, {
             color: data.pose_command?.online ? "#ff62cf" : "#7f8994",
             label: [
                 `目标 base_link N ${numberText(targetNorth, 2)}  E ${numberText(targetEast, 2)}`,
@@ -971,7 +1151,7 @@ function drawXYMap(data) {
             drawActualFrameArrow(
                 ctx,
                 actualFramePoints,
-                actualHeading,
+                mapActualHeading,
                 {
                     color: actualColor,
                     label: actualLabel,
@@ -982,7 +1162,7 @@ function drawXYMap(data) {
                 },
             );
         } else {
-            drawDirectionalPose(ctx, actualScreen, actualHeading, {
+            drawDirectionalPose(ctx, actualScreen, mapActualHeading, {
                 color: actualColor,
                 label: actualLabel,
             });
@@ -1010,13 +1190,7 @@ function drawXYMap(data) {
         barY - 18,
     );
 
-    ctx.fillStyle = "#8fb4ce";
-    ctx.fillText("Y / East →", Math.max(8, width - 80), height - 18);
-    ctx.save();
-    ctx.translate(12, 72);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillText("X / North →", 0, 0);
-    ctx.restore();
+    drawMapCompass(ctx, width, upHeading);
 
     const notices = [];
     if (!data.tf?.online) {
@@ -1046,7 +1220,7 @@ function drawXYMap(data) {
 
 function drawZAxis(data) {
     const canvas = document.getElementById("z-canvas");
-    const {context: ctx, width, height} = resizeCanvas(canvas);
+    const { context: ctx, width, height } = resizeCanvas(canvas);
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = "#07111d";
     ctx.fillRect(0, 0, width, height);
@@ -1177,7 +1351,7 @@ function drawZAxis(data) {
 
 function drawHeading(data) {
     const canvas = document.getElementById("heading-canvas");
-    const {context: ctx, width, height} = resizeCanvas(canvas);
+    const { context: ctx, width, height } = resizeCanvas(canvas);
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = "#07111d";
     ctx.fillRect(0, 0, width, height);
@@ -1266,7 +1440,7 @@ function drawHeading(data) {
 
 function drawHorizon(data) {
     const canvas = document.getElementById("horizon-canvas");
-    const {context: ctx, width, height} = resizeCanvas(canvas);
+    const { context: ctx, width, height } = resizeCanvas(canvas);
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = "#07111d";
     ctx.fillRect(0, 0, width, height);
@@ -1398,7 +1572,7 @@ function renderDashboard(data) {
 
 async function refreshStatus() {
     try {
-        const response = await fetch("/api/status", {cache: "no-store"});
+        const response = await fetch("/api/status", { cache: "no-store" });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         dashboardState.connected = true;
@@ -1410,6 +1584,58 @@ async function refreshStatus() {
         const container = document.getElementById("global-badges");
         container.replaceChildren(badge("Web 连接失败", false));
     }
+}
+
+
+function updateMapHeadingControls() {
+    const heading = dashboardState.mapUpHeading;
+    const headingText = heading % 1
+        ? heading.toFixed(1)
+        : heading.toFixed(0);
+    document.getElementById("map-up-heading").value = headingText;
+    document.getElementById("map-hint").textContent =
+        `滚轮缩放 · 拖拽平移 · 上方 ${headingText}°`;
+}
+
+
+function configureMapHeading() {
+    const input = document.getElementById("map-up-heading");
+    const applyButton = document.getElementById("apply-map-heading");
+    const northUpButton = document.getElementById("north-up-map");
+
+    const redraw = () => {
+        updateMapHeadingControls();
+        if (dashboardState.status) drawXYMap(dashboardState.status);
+    };
+    const applyInput = () => {
+        const heading = finiteNumber(input.value);
+        if (
+            heading === null
+            || !Number.isInteger(heading)
+            || heading < 0
+            || heading > 359
+        ) {
+            input.setCustomValidity("请输入 0 到 359 之间的整数航向");
+            input.reportValidity();
+            return;
+        }
+        input.setCustomValidity("");
+        dashboardState.mapUpHeading = normalizeMapHeading(heading);
+        saveMapUpHeading(dashboardState.mapUpHeading);
+        redraw();
+    };
+
+    input.addEventListener("input", () => input.setCustomValidity(""));
+    input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") applyInput();
+    });
+    applyButton.addEventListener("click", applyInput);
+    northUpButton.addEventListener("click", () => {
+        dashboardState.mapUpHeading = 0;
+        saveMapUpHeading(0);
+        redraw();
+    });
+    updateMapHeadingControls();
 }
 
 
@@ -1425,7 +1651,7 @@ function configureMapInteraction() {
             Math.min(420, dashboardState.mapScale * factor),
         );
         if (dashboardState.status) drawNavigation(dashboardState.status);
-    }, {passive: false});
+    }, { passive: false });
 
     canvas.addEventListener("pointerdown", (event) => {
         dashboardState.dragging = true;
@@ -1485,7 +1711,7 @@ function configureMapInteraction() {
             - rect.height / 2
         );
         if (dashboardState.status) drawZAxis(dashboardState.status);
-    }, {passive: false});
+    }, { passive: false });
 
     zCanvas.addEventListener("pointerdown", (event) => {
         dashboardState.zDragging = true;
@@ -1527,6 +1753,7 @@ function configureMapInteraction() {
 
 
 function initialize() {
+    configureMapHeading();
     configureMapInteraction();
     window.addEventListener("resize", () => {
         if (dashboardState.status) drawNavigation(dashboardState.status);
