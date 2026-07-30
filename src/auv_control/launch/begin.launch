@@ -3,6 +3,10 @@
       修改记录：
       2026.7.31
         启动 motion_supervisor 时透传 low/high 完整参数档位，默认使用 low。
+      2026.7.31
+        为 actuator 节点增加共通的数据保存开关和目录参数。
+      2026.7.31
+        统一 sensor、actuator、debug、nav 节点的数据保存输入参数。
     -->
     <!-- begin.launch — 启动下位机驱动和tf -->
     <!-- 用法: roslaunch auv_control begin.launch -->
@@ -16,8 +20,10 @@
 
     <!-- 包含任务参数 -->
     <!-- <include file="$(find auv_control)/launch/param.launch"/> -->
+    <arg name="save_data" default="true" />
     <arg name="save_dir" default="$(env HOME)/.ros/auv_logs" />
     <arg name="save_max_file_size" default="52428800" />
+    <arg name="save_flush_every" default="1" />
     <arg name="motion_supervisor_profile" default="low" />
     <arg name="motion_supervisor_low_config_file"
          default="$(find auv_control)/config/motion_supervisor_low.yaml" />
@@ -50,26 +56,30 @@
     <node pkg="auv_control" type="sensor_status_node.py" name="sensor_status_node" output="screen">
         <param name="sensor_ip" value="$(arg vehicle_ip)" />
         <param name="sensor_port" value="5064" />
-        <param name="save_raw_data" type="bool" value="true" />
+        <param name="save_raw_data" type="bool" value="$(arg save_data)" />
         <param name="raw_save_dir" type="string" value="$(arg save_dir)" />
         <param name="raw_max_file_size" type="int" value="$(arg save_max_file_size)" />
-        <param name="raw_flush_every" type="int" value="1" />
+        <param name="raw_flush_every" type="int" value="$(arg save_flush_every)" />
     </node>
 
     <!-- 传感器执行器 (TCP 5064, 补光灯/舵机/推杆控制) -->
     <node pkg="auv_control" type="sensor_actuator_node.py" name="sensor_actuator_node" output="screen">
         <param name="sensor_ip" value="$(arg vehicle_ip)" />
         <param name="sensor_port" value="5064" />
+        <param name="save_data" type="bool" value="$(arg save_data)" />
+        <param name="save_dir" type="string" value="$(arg save_dir)/actuator_node" />
+        <param name="max_file_size" type="int" value="$(arg save_max_file_size)" />
+        <param name="flush_every" type="int" value="$(arg save_flush_every)" />
     </node>
 
     <!-- 调试驱动 V2 (TCP 5063, 支持定深/定深定向/定点三种模式) -->
     <node pkg="auv_control" type="debug_driver_v2.py" name="debug_driver_v2" output="screen">
         <param name="debug_ip" value="$(arg vehicle_ip)"/>
         <param name="debug_port" value="5063"/>
-        <param name="save_raw_data" type="bool" value="true" />
+        <param name="save_raw_data" type="bool" value="$(arg save_data)" />
         <param name="raw_save_dir" type="string" value="$(arg save_dir)" />
         <param name="raw_max_file_size" type="int" value="$(arg save_max_file_size)" />
-        <param name="raw_flush_every" type="int" value="1" />
+        <param name="raw_flush_every" type="int" value="$(arg save_flush_every)" />
         <param name="send_rate_hz" type="double" value="$(arg debug_send_rate_hz)" />
     </node>
 
@@ -78,10 +88,10 @@
         <param name="nav_ip" value="$(arg vehicle_ip)" />
         <param name="nav_port" value="5066" />
         <param name="save_data" type="bool" value="false" />
-        <param name="save_raw_data" type="bool" value="true" />
+        <param name="save_raw_data" type="bool" value="$(arg save_data)" />
         <param name="raw_save_dir" type="string" value="$(arg save_dir)" />
         <param name="raw_max_file_size" type="int" value="$(arg save_max_file_size)" />
-        <param name="raw_flush_every" type="int" value="1" />
+        <param name="raw_flush_every" type="int" value="$(arg save_flush_every)" />
     </node>
 
     <!-- 整合保存 debug、sensor、nav 的 ROS 消息 -->
