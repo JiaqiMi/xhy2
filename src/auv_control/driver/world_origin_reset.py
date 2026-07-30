@@ -5,23 +5,30 @@
 功能：通过稳定识别红色圆形，一次性重置 map 坐标系原点
 作者：buyegaid
 订阅：/obj/target_message(TargetDetection.msg)
+      /status/auv(AUVData.msg)
       /world_origin_reset_result(Bool.msg)
 发布：/world_origin_reset_candidate(PoseStamped.msg)
 记录：
 2026.7.13
     新增红色圆形稳定观测、TF 转换、原点重置请求与确认超时保护。
+2026.7.31
+    红圆深度改用 DVL 高度与 base_link 到相机的 TF 高度计算，视觉深度仅记录对比。
 """
+
+import math
+import threading
 
 import rospy
 import tf
-from auv_control.msg import TargetDetection
+from auv_control.msg import AUVData, TargetDetection
 from geometry_msgs.msg import PointStamped, PoseStamped
 from std_msgs.msg import Bool
 
 from world_origin_reset_utils import (
     RobustPointEstimator,
+    camera_depth_from_dvl,
     is_matching_target,
-    is_valid_camera_point,
+    is_valid_camera_xy,
 )
 
 
@@ -36,12 +43,19 @@ class WorldOriginResetNode:
         self.result_topic = rospy.get_param(
             "~result_topic", "/world_origin_reset_result"
         )
+        self.status_topic = rospy.get_param("~status_topic", "/status/auv")
         self.target_class = rospy.get_param("~target_class", "red")
         self.source_frame = rospy.get_param("~source_frame", "camera")
+        self.base_frame = rospy.get_param("~base_frame", "base_link")
         self.reference_frame = rospy.get_param("~reference_frame", "map")
         self.min_confidence = float(rospy.get_param("~min_confidence", 0.7))
-        self.min_depth = float(rospy.get_param("~min_depth", 0.1))
-        self.max_depth = float(rospy.get_param("~max_depth", 3.0))
+        self.status_timeout = float(rospy.get_param("~status_timeout_sec", 0.5))
+        self.require_dvl_altitude_valid = bool(
+            rospy.get_param("~require_dvl_altitude_valid", True)
+        )
+        self.dvl_altitude_valid_bit = int(
+            rospy.get_param("~dvl_altitude_valid_bit", 6)
+        )
         self.tf_ready_timeout = float(rospy.get_param("~tf_ready_timeout_sec", 30.0))
         # 限时
         self.observation_timeout = float(rospy.get_param("~observation_timeout_sec", 180.0))
@@ -58,6 +72,10 @@ class WorldOriginResetNode:
         self.sampling_started_at = None
         self.candidate_sent_at = None
         self.candidate_sent = False
+        self.status_lock = threading.RLock()
+        self.latest_dvl_altitude = None
+        self.latest_status_stamp = None
+        self.latest_status_received_at = None
 
         self.candidate_pub = rospy.Publisher(
             self.candidate_topic, PoseStamped, queue_size=1
@@ -67,14 +85,72 @@ class WorldOriginResetNode:
         rospy.Subscriber(
             self.target_topic, TargetDetection, self.target_callback, queue_size=10
         )
+        rospy.Subscriber(
+            self.status_topic, AUVData, self.status_callback, queue_size=10
+        )
 
         # 订阅结果更新
         rospy.Subscriber(self.result_topic, Bool, self.result_callback, queue_size=1)
         self.watchdog = rospy.Timer(rospy.Duration(0.5), self.watchdog_callback)
 
         rospy.loginfo(
-            "world_origin_reset: 已启动，等待 class_name=%s 的稳定目标", self.target_class
+            "world_origin_reset: 已启动，等待 class_name=%s 的稳定目标和 DVL 高度",
+            self.target_class,
         )
+
+    def status_callback(self, msg):
+        """缓存最新有效 DVL 高度，供同一时段的红圆观测使用。"""
+        altitude = float(msg.pose.altitude)
+        if not math.isfinite(altitude):
+            with self.status_lock:
+                self.latest_dvl_altitude = None
+                self.latest_status_stamp = None
+                self.latest_status_received_at = None
+            rospy.logwarn_throttle(2.0, "world_origin_reset: 忽略非有限 DVL 高度")
+            return
+
+        dvl_altitude_mask = 1 << self.dvl_altitude_valid_bit
+        if (
+                self.require_dvl_altitude_valid
+                and not (int(msg.sensor.sensor_valid) & dvl_altitude_mask)):
+            with self.status_lock:
+                self.latest_dvl_altitude = None
+                self.latest_status_stamp = None
+                self.latest_status_received_at = None
+            rospy.logwarn_throttle(
+                2.0,
+                "world_origin_reset: DVL 高度无效，sensor_valid=0x%02X",
+                msg.sensor.sensor_valid,
+            )
+            return
+
+        with self.status_lock:
+            self.latest_dvl_altitude = altitude
+            self.latest_status_stamp = msg.header.stamp
+            self.latest_status_received_at = rospy.Time.now()
+
+    def get_current_dvl_altitude(self):
+        """返回未超时的最新 DVL 高度及其状态帧时间戳。"""
+        with self.status_lock:
+            altitude = self.latest_dvl_altitude
+            stamp = self.latest_status_stamp
+            received_at = self.latest_status_received_at
+
+        if altitude is None or received_at is None:
+            rospy.logwarn_throttle(2.0, "world_origin_reset: 尚未收到有效 DVL 高度")
+            return None
+
+        reference_time = stamp if stamp is not None and not stamp.is_zero() else received_at
+        age = (rospy.Time.now() - reference_time).to_sec()
+        if age > self.status_timeout:
+            rospy.logwarn_throttle(
+                2.0,
+                "world_origin_reset: DVL 高度已超时 %.3fs（限制 %.3fs）",
+                age,
+                self.status_timeout,
+            )
+            return None
+        return altitude, reference_time, max(age, 0.0)
 
     def target_callback(self, msg):
         """验证观测、转换到 map，并在稳定后发布唯一候选点。"""
@@ -103,37 +179,96 @@ class WorldOriginResetNode:
         ):
             return
 
-        # 将相机坐标系下的观测点转换到 map 坐标系
-        camera_point = (
+        # 视觉仅提供平面位置；其 z 仅用于与 DVL 推导深度进行日志对比。
+        visual_camera_z = float(msg.pose.pose.position.z)
+        camera_xy = (
             msg.pose.pose.position.x,
             msg.pose.pose.position.y,
-            msg.pose.pose.position.z,
         )
-        if not is_valid_camera_point(camera_point, self.min_depth, self.max_depth):
-            rospy.logwarn_throttle(2.0, "world_origin_reset: 忽略无效的相机坐标")
+        if not is_valid_camera_xy(camera_xy):
+            rospy.logwarn_throttle(2.0, "world_origin_reset: 忽略无效的相机平面坐标")
             return
 
-        # 将相机坐标系下的点转换到 map 坐标系
-        point = PointStamped()
-        point.header = msg.pose.header
-        point.point.x, point.point.y, point.point.z = camera_point
+        dvl_data = self.get_current_dvl_altitude()
+        if dvl_data is None:
+            return
+        dvl_altitude, _status_stamp, dvl_age = dvl_data
+
         try:
             self.tf_listener.waitForTransform(
                 self.reference_frame,
-                point.header.frame_id,
-                point.header.stamp,
+                self.source_frame,
+                msg.pose.header.stamp,
                 rospy.Duration(0.1),
             )
-            map_point = self.tf_listener.transformPoint(self.reference_frame, point)
+            self.tf_listener.waitForTransform(
+                self.base_frame,
+                self.source_frame,
+                msg.pose.header.stamp,
+                rospy.Duration(0.1),
+            )
+            base_to_camera_translation, _ = self.tf_listener.lookupTransform(
+                self.base_frame,
+                self.source_frame,
+                msg.pose.header.stamp,
+            )
         except tf.Exception as error:
             rospy.logwarn_throttle(
                 2.0,
-                "world_origin_reset: 等待 %s 到 %s 的 TF: %s",
-                point.header.frame_id,
+                "world_origin_reset: 等待 %s 到 %s/base_link 的 TF: %s",
+                self.source_frame,
                 self.reference_frame,
                 error,
             )
             return
+
+        try:
+            dvl_camera_z = camera_depth_from_dvl(
+                dvl_altitude, base_to_camera_translation[2]
+            )
+        except ValueError as error:
+            rospy.logwarn_throttle(
+                2.0, "world_origin_reset: 无法计算 DVL 推导深度: %s", error
+            )
+            return
+
+        point = PointStamped()
+        point.header = msg.pose.header
+        point.point.x, point.point.y, point.point.z = camera_xy[0], camera_xy[1], dvl_camera_z
+        try:
+            map_point = self.tf_listener.transformPoint(self.reference_frame, point)
+        except tf.Exception as error:
+            rospy.logwarn_throttle(
+                2.0, "world_origin_reset: 转换 DVL 推导点到 map 失败: %s", error
+            )
+            return
+
+        visual_map_z = None
+        if math.isfinite(visual_camera_z):
+            visual_point = PointStamped()
+            visual_point.header = msg.pose.header
+            visual_point.point.x = camera_xy[0]
+            visual_point.point.y = camera_xy[1]
+            visual_point.point.z = visual_camera_z
+            try:
+                visual_map_z = self.tf_listener.transformPoint(
+                    self.reference_frame, visual_point
+                ).point.z
+            except tf.Exception:
+                pass
+
+        rospy.loginfo(
+            "world_origin_reset: 深度对比 DVL高度=%.3fm, 相机TF z=%.3fm, "
+            "采用相机z=%.3fm, 采用map z=%.3fm, 视觉相机z=%s, 视觉TF map z=%s, "
+            "DVL帧龄=%.3fs",
+            dvl_altitude,
+            base_to_camera_translation[2],
+            dvl_camera_z,
+            map_point.point.z,
+            "%.3f" % visual_camera_z if math.isfinite(visual_camera_z) else "无效",
+            "%.3f" % visual_map_z if visual_map_z is not None else "无效",
+            dvl_age,
+        )
 
         # 开启采样计时器，并将观测点添加到稳健估计器中
         if self.sampling_started_at is None:
@@ -144,7 +279,10 @@ class WorldOriginResetNode:
         candidate = self.estimator.add(
             (map_point.point.x, map_point.point.y, map_point.point.z)
         )
-        rospy.loginfo("world_origin_reset: 加入有效point %s", (map_point.point.x, map_point.point.y, map_point.point.z))
+        rospy.loginfo(
+            "world_origin_reset: 加入有效点 %s",
+            (map_point.point.x, map_point.point.y, map_point.point.z),
+        )
         if candidate is None:
             return
 
