@@ -49,6 +49,8 @@ models/
 /src/auv_control/test/test_world_origin_reset_utils.py
 /src/auv_control/test/test_motion_supervisor_hover_exit.py
 /src/auv_control/test/test_motion_supervisor_force_limits.py
+/src/auv_control/test/test_motion_supervisor_cancel_depth.py
+/src/auv_control/test/test_motion_supervisor_yaw_brake_exit.py
 
 *.jpg
 *.mkv
