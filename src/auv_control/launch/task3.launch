@@ -25,6 +25,11 @@
     <arg name="arrow_web_port" default="8083" />
     <arg name="aruco_web_port" default="8082" />
     <arg name="rectangle_web_port" default="8080" />
+    <!--
+      整合运行时三个模型的详细输出写入ROS日志，避免绕过task3.py的
+      中文关键日志过滤器刷满终端。模型独立launch的默认值仍为screen。
+    -->
+    <arg name="model_node_output" default="log" />
 
     <!-- 模型、控制器、状态和执行器话题属于进程连接，不属于调优参数。 -->
     <arg name="arrow_topic" default="/vision/arrow/direction" />
@@ -64,6 +69,7 @@
             <arg name="start_web" value="$(arg start_arrow_web)" />
             <arg name="start_depth" value="true" />
             <arg name="web_port" value="$(arg arrow_web_port)" />
+            <arg name="node_output" value="$(arg model_node_output)" />
         </include>
     </group>
 
@@ -79,6 +85,7 @@
                  value="$(arg aruco_web_pose_topic)" />
             <arg name="start_web" value="$(arg start_aruco_web)" />
             <arg name="web_port" value="$(arg aruco_web_port)" />
+            <arg name="node_output" value="$(arg model_node_output)" />
         </include>
     </group>
 
@@ -95,6 +102,7 @@
             <arg name="start_splitter" value="$(arg start_down_splitter)" />
             <arg name="start_web" value="$(arg start_rectangle_web)" />
             <arg name="web_port" value="$(arg rectangle_web_port)" />
+            <arg name="node_output" value="$(arg model_node_output)" />
         </include>
     </group>
 

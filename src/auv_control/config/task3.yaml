@@ -54,9 +54,37 @@ test_task3_1_acquire_area:
   # 航向与横移联合对准连续通过帧数。
   heading_aligned_detection_count: 2
 
+  # 新旧对准逻辑切换。
+  # true：使用“停稳后3/10帧三维位置+方向平均 -> 一次性移动 ->
+  #       HOVER后重新3/10帧复核 -> 必要时单次微调”的新逻辑。
+  # false：完整恢复原来的图像中心粗对准、连续航向和细对准逻辑。
+  pose_average_alignment_enabled: true
+  # stereo_depth/test_arrow_pose_detection.launch发布的箭头三维位置。
+  arrow_pose_topic: "/vision/arrow/target_message"
+  # 方向JSON时间戳与三维位置时间戳的最大配对误差，单位s。
+  pose_average_sync_tolerance: 0.05
+  # 当前模型的方向JSON与三维位置可能使用不同来源时间戳；
+  # 源时间戳无法配对时，允许按ROS回调到达时间进行兼容配对。
+  pose_average_receive_tolerance: 0.80
+  # 同一候选组内三维位置相对平均位置的最大抖动，单位m。
+  pose_average_position_tolerance_m: 0.12
+  # 到达HOVER后重新识别时，计算出的水平目标残差小于该值才允许最终前移。
+  pose_average_verify_position_tolerance_m: 0.08
+  # 单次平均位姿目标允许的最大水平移动距离，防止异常三维位置造成大幅运动。
+  pose_average_max_move_m: 1.00
+  # 首次采集或到达后复核在该时间内仍凑不齐3/10帧时，
+  # 立即结束子任务；整合任务会把它识别为超时并进入已有容错流程。
+  pose_average_data_timeout_seconds: 15.0
+  # 新平均位姿流程的严格实际到达门槛。
+  # 即使motion_supervisor仍报告HOVER，实际误差未通过也不会开始复核。
+  pose_average_arrival_position_tolerance_m: 0.03
+  pose_average_arrival_depth_tolerance_m: 0.03
+  pose_average_arrival_yaw_tolerance_deg: 5.0
+
   # false：最后固定前移前不再检查最终视觉中心、方向和连续帧，
   #        只等待当前目标对应的MotionState.HOVER。
   # true：保留最终视觉中心、方向和连续帧判断。
+  # 该参数只对pose_average_alignment_enabled=false的旧逻辑生效。
   enable_final_visual_alignment: false
 
   # motion_supervisor反馈与取消保护
@@ -259,7 +287,32 @@ test_task3_3_inspect_and_drop:
   # false：完全跳过颜色布局推断，直接执行原三段定步长搜索。
   auto_color_fast_search_enabled: true
 
-  # 视觉细对准增益和单次位置小步
+  # 新旧方框对准逻辑切换。
+  # true：适用于50cm大方框。3/10帧确认后，从当前可见bbox内部选择
+  #       带安全边距的投放点，只执行一次位置移动；到HOVER后再次
+  #       3/10帧宽松复核，通过后直接开灯、开夹爪。
+  # false：完整使用下面原有的连续视觉细对准逻辑。
+  partial_box_direct_drop_enabled: true
+  # 可见bbox四周预留的像素边距；防止把夹爪投放点放在检测框边缘。
+  # bbox本身较小时，代码会自动缩小边距，不会产生无效安全区。
+  partial_box_safe_margin_px: 15.0
+  # 一次移动的前后、左右增益。图像半宽或半高的误差分别对应这里的距离。
+  # 方向相反仍使用下面已有的auto_forward_sign/auto_lateral_sign调整。
+  partial_box_direct_forward_gain_m: 0.30
+  partial_box_direct_lateral_gain_m: 0.30
+  # 单次合成水平位移上限，防止残缺bbox异常造成大幅运动。
+  partial_box_direct_max_move_m: 0.30
+  # HOVER后复核时，估算剩余水平位移不超过该值即可直接投放。
+  # 如果投放参考点已经位于bbox安全区内，也直接判定通过。
+  partial_box_verify_tolerance_m: 0.10
+  # 一次移动到HOVER后，等待3/10帧宽松复核的最长时间。
+  partial_box_verify_timeout: 5.0
+  # 宽松复核未通过时允许追加的一次性修正次数。
+  # 次数用完仍不通过会回退到下面保留的原连续细对准。
+  partial_box_direct_max_corrections: 1
+
+  # 原有连续视觉细对准参数。关闭上面的新开关时完整使用；
+  # 新模式复核失败并回退时也继续使用，现有实验值保持不变。
   auto_visual_forward_gain_m: 0.10
   auto_visual_lateral_gain_m: 0.10
   auto_visual_min_step_m: 0.10
@@ -269,7 +322,9 @@ test_task3_3_inspect_and_drop:
   auto_forward_sign: 1.0
   auto_lateral_sign: 1.0
 
-  # 方框目标中心、像素容差和图像尺寸回退值
+  # 图像对准参考点、像素容差和图像尺寸回退值。
+  # 新直接投放模式下，这两个比例代表夹爪投放点在图像中的标定位置；
+  # 原细对准模式下仍代表希望方框中心到达的位置。
   auto_target_center_u_ratio: 0.5
   auto_target_center_v_ratio: 0.5
   auto_center_tolerance_u_px: 40.0
@@ -343,6 +398,9 @@ task3_final:
   # true：终端只显示关键阶段、识别成功、跳点、超时、警告和错误；
   # 完整逐帧识别、运动反馈和执行器信息仍全部写入上面的单个日志文件。
   console_key_only: true
+  # 终端中的识别窗口、运动等待和执行器反馈进度统一限频。
+  # 0.5秒对应最高约2Hz；状态切换、3/10确认、子任务开始/结束不受此限制。
+  console_progress_interval: 0.5
   # 终端中同类WARNING重复出现的最短间隔；ERROR不做频率限制。
   console_warning_repeat_interval: 3.0
 

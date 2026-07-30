@@ -27,7 +27,6 @@ from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
 NODE_NAME = "test_task3_3_inspect_and_drop"
-MODE_POSITION = 4
 
 
 def configure_task_file_logging(subtask_name):
@@ -138,6 +137,14 @@ DEFAULT_AUTO_CENTER_TOLERANCE_U_PX = 35.0
 DEFAULT_AUTO_CENTER_TOLERANCE_V_PX = 35.0
 DEFAULT_AUTO_IMAGE_WIDTH = 640.0
 DEFAULT_AUTO_IMAGE_HEIGHT = 480.0
+DEFAULT_PARTIAL_BOX_DIRECT_DROP_ENABLED = False
+DEFAULT_PARTIAL_BOX_SAFE_MARGIN_PX = 15.0
+DEFAULT_PARTIAL_BOX_DIRECT_FORWARD_GAIN_M = 0.30
+DEFAULT_PARTIAL_BOX_DIRECT_LATERAL_GAIN_M = 0.30
+DEFAULT_PARTIAL_BOX_DIRECT_MAX_MOVE_M = 0.30
+DEFAULT_PARTIAL_BOX_VERIFY_TOLERANCE_M = 0.10
+DEFAULT_PARTIAL_BOX_VERIFY_TIMEOUT = 5.0
+DEFAULT_PARTIAL_BOX_DIRECT_MAX_CORRECTIONS = 1
 DEFAULT_LOG_INTERVAL = 1.0
 DEFAULT_WARNING_LOG_INTERVAL = 2.0
 
@@ -180,6 +187,8 @@ class Task3InspectAndDropTest:
     CLOSE_CLAMP = 6
     POST_DROP_TURN = 7
     POST_DROP_FORWARD = 8
+    AUTO_DIRECT_MOVE = 9
+    AUTO_DIRECT_VERIFY = 10
 
     STATE_NAMES = {
         WAIT_FOR_TARGET: "等待目标颜色方框",
@@ -191,6 +200,8 @@ class Task3InspectAndDropTest:
         CLOSE_CLAMP: "关闭夹爪",
         POST_DROP_TURN: "投放后左转",
         POST_DROP_FORWARD: "投放后向前离场",
+        AUTO_DIRECT_MOVE: "残缺方框一次移动",
+        AUTO_DIRECT_VERIFY: "残缺方框宽松复核",
     }
 
     SEARCH_STEP_NAMES = {
@@ -460,6 +471,38 @@ class Task3InspectAndDropTest:
         self.auto_image_height = float(rospy.get_param(
             "~auto_image_height", DEFAULT_AUTO_IMAGE_HEIGHT
         ))
+        self.partial_box_direct_drop_enabled = bool(rospy.get_param(
+            "~partial_box_direct_drop_enabled",
+            DEFAULT_PARTIAL_BOX_DIRECT_DROP_ENABLED,
+        ))
+        self.partial_box_safe_margin_px = float(rospy.get_param(
+            "~partial_box_safe_margin_px",
+            DEFAULT_PARTIAL_BOX_SAFE_MARGIN_PX,
+        ))
+        self.partial_box_direct_forward_gain_m = float(rospy.get_param(
+            "~partial_box_direct_forward_gain_m",
+            DEFAULT_PARTIAL_BOX_DIRECT_FORWARD_GAIN_M,
+        ))
+        self.partial_box_direct_lateral_gain_m = float(rospy.get_param(
+            "~partial_box_direct_lateral_gain_m",
+            DEFAULT_PARTIAL_BOX_DIRECT_LATERAL_GAIN_M,
+        ))
+        self.partial_box_direct_max_move_m = float(rospy.get_param(
+            "~partial_box_direct_max_move_m",
+            DEFAULT_PARTIAL_BOX_DIRECT_MAX_MOVE_M,
+        ))
+        self.partial_box_verify_tolerance_m = float(rospy.get_param(
+            "~partial_box_verify_tolerance_m",
+            DEFAULT_PARTIAL_BOX_VERIFY_TOLERANCE_M,
+        ))
+        self.partial_box_verify_timeout = float(rospy.get_param(
+            "~partial_box_verify_timeout",
+            DEFAULT_PARTIAL_BOX_VERIFY_TIMEOUT,
+        ))
+        self.partial_box_direct_max_corrections = int(rospy.get_param(
+            "~partial_box_direct_max_corrections",
+            DEFAULT_PARTIAL_BOX_DIRECT_MAX_CORRECTIONS,
+        ))
         self.log_interval = float(rospy.get_param(
             "~log_interval", DEFAULT_LOG_INTERVAL
         ))
@@ -571,6 +614,11 @@ class Task3InspectAndDropTest:
         self.last_visual_goal_time = None
         self.visual_center_hold_requested = False
         self.visual_stop_locked = False
+        self.partial_box_pending_target = None
+        self.partial_box_verified_target = None
+        self.partial_box_direct_goal_started_at = None
+        self.partial_box_verify_started_at = None
+        self.partial_box_direct_correction_count = 0
         self.fallback_search_tail = [
             ("forward", self.auto_search_second_forward_distance),
             ("left", self.auto_search_left_distance),
@@ -789,7 +837,8 @@ class Task3InspectAndDropTest:
             )
             rospy.loginfo(
                 (
-                    "%s：自动对齐：目标中心=(%.2fW, %.2fH)，容差=(%.1fpx, %.1fpx)，"
+                    "%s：图像对准参考点=(%.2fW, %.2fH)，"
+                    "原细对准容差=(%.1fpx, %.1fpx)，"
                     "连续居中确认=%d帧"
                 ),
                 NODE_NAME,
@@ -798,6 +847,25 @@ class Task3InspectAndDropTest:
                 self.auto_center_tolerance_u_px,
                 self.auto_center_tolerance_v_px,
                 self.auto_center_stable_detection_count,
+            )
+            rospy.loginfo(
+                (
+                    "%s：残缺方框直接投放=%s；bbox安全边距=%.1fpx，"
+                    "一次移动增益=(前后%.2fm,左右%.2fm)，最大位移=%.2fm；"
+                    "HOVER后按%d/%d帧宽松复核，残差<=%.2fm，"
+                    "复核超时=%.1fs，最多追加%d次修正"
+                ),
+                NODE_NAME,
+                "开启" if self.partial_box_direct_drop_enabled else "关闭",
+                self.partial_box_safe_margin_px,
+                self.partial_box_direct_forward_gain_m,
+                self.partial_box_direct_lateral_gain_m,
+                self.partial_box_direct_max_move_m,
+                self.auto_search_stable_detection_count,
+                self.stable_detection_window_size,
+                self.partial_box_verify_tolerance_m,
+                self.partial_box_verify_timeout,
+                self.partial_box_direct_max_corrections,
             )
             rospy.loginfo(
                 (
@@ -1015,8 +1083,8 @@ class Task3InspectAndDropTest:
                 message.reason or "无",
             )
             self.last_motion_state_value = message.state
-        if message.state != MotionState.SAFE:
-            self.motion_ready_once = True
+        # SAFE只作为普通状态记录，不再触发任务失败或阻止反馈就绪。
+        self.motion_ready_once = True
         rospy.loginfo_throttle(
             self.log_interval,
             (
@@ -1255,6 +1323,19 @@ class Task3InspectAndDropTest:
             raise ValueError("自动居中容差不能小于 0")
         if min(self.auto_image_width, self.auto_image_height) <= 0.0:
             raise ValueError("自动控制默认图像尺寸必须大于 0")
+        if self.partial_box_safe_margin_px < 0.0:
+            raise ValueError("partial_box_safe_margin_px 不能小于0")
+        if min(
+            self.partial_box_direct_forward_gain_m,
+            self.partial_box_direct_lateral_gain_m,
+            self.partial_box_direct_max_move_m,
+            self.partial_box_verify_timeout,
+        ) <= 0.0:
+            raise ValueError("残缺方框一次移动增益、最大距离和复核时间必须大于0")
+        if self.partial_box_verify_tolerance_m < 0.0:
+            raise ValueError("partial_box_verify_tolerance_m 不能小于0")
+        if self.partial_box_direct_max_corrections < 0:
+            raise ValueError("partial_box_direct_max_corrections 不能小于0")
 
     def get_current_pose(self, context="自动控制"):
         if not self.auto_enabled or self.tf_listener is None:
@@ -1743,21 +1824,6 @@ class Task3InspectAndDropTest:
                 ),
             )
             return False
-        if self.latest_motion_state.state == MotionState.SAFE:
-            rospy.logerr_throttle(
-                self.warning_log_interval,
-                "%s：motion_supervisor 进入 SAFE，原因=%s",
-                NODE_NAME,
-                self.latest_motion_state.reason or "未知",
-            )
-            if self.motion_ready_once or elapsed >= self.motion_startup_timeout:
-                self.finish_task(
-                    False,
-                    "motion_supervisor 进入 SAFE：{}".format(
-                        self.latest_motion_state.reason or "未知原因"
-                    ),
-                )
-            return False
         return True
 
     def request_motion_cancel(self, reason, discard_search_resume=False):
@@ -1837,21 +1903,9 @@ class Task3InspectAndDropTest:
         return True
 
     def action_status_is_stable(self, status):
-        pose_errors = self.status_pose_errors(status)
-        checks = self.actual_arrival_checks()
-        if pose_errors is None or checks is None:
-            return False
-        depth_error, yaw_error_deg = pose_errors
-        message = self.latest_motion_state
         return (
-            self.motion_arrived()
-            # and status["control_mode"] == MODE_POSITION
-            # and message.horizontal_speed
-            # <= self.auto_action_max_horizontal_speed
-            # and abs(status["vz"]) <= self.auto_action_max_vertical_speed
-            # and abs(message.yaw_rate) <= self.auto_action_max_yaw_rate
-            # and abs(depth_error) <= self.auto_action_max_depth_error
-            # and abs(yaw_error_deg) <= self.auto_action_max_yaw_error_deg
+            self.status_pose_errors(status) is not None
+            and self.motion_arrived()
         )
 
     def capture_action_hold_position(self):
@@ -2303,6 +2357,350 @@ class Task3InspectAndDropTest:
         normalized_u = error_u_px / max(image_width * 0.5, 1.0)
         normalized_v = error_v_px / max(image_height * 0.5, 1.0)
         return error_u_px, error_v_px, normalized_u, normalized_v
+
+    @staticmethod
+    def partial_box_safe_axis(lower, upper, requested_margin):
+        """返回可见bbox内部的安全区；目标过小时自动缩小边距。"""
+        half_size = max(0.0, (upper - lower) * 0.5)
+        applied_margin = min(
+            requested_margin,
+            max(0.0, half_size - 1.0),
+        )
+        safe_lower = lower + applied_margin
+        safe_upper = upper - applied_margin
+        if safe_lower > safe_upper:
+            center = (lower + upper) * 0.5
+            return center, center, 0.0
+        return safe_lower, safe_upper, applied_margin
+
+    def prepare_partial_box_direct_detection(self, detection):
+        """从残缺bbox内选择距离投放参考点最近的安全可见位置。"""
+        prepared = dict(detection)
+        image_width = prepared.get(
+            "image_width", self.auto_image_width
+        )
+        image_height = prepared.get(
+            "image_height", self.auto_image_height
+        )
+        desired_u = image_width * self.auto_target_center_u_ratio
+        desired_v = image_height * self.auto_target_center_v_ratio
+
+        x1 = clamp(prepared["x1"], 0.0, image_width)
+        x2 = clamp(prepared["x2"], 0.0, image_width)
+        y1 = clamp(prepared["y1"], 0.0, image_height)
+        y2 = clamp(prepared["y2"], 0.0, image_height)
+        safe_x1, safe_x2, margin_u = self.partial_box_safe_axis(
+            x1, x2, self.partial_box_safe_margin_px
+        )
+        safe_y1, safe_y2, margin_v = self.partial_box_safe_axis(
+            y1, y2, self.partial_box_safe_margin_px
+        )
+        aim_u = clamp(desired_u, safe_x1, safe_x2)
+        aim_v = clamp(desired_v, safe_y1, safe_y2)
+
+        prepared["raw_center_u"] = prepared["center_u"]
+        prepared["raw_center_v"] = prepared["center_v"]
+        prepared["center_u"] = aim_u
+        prepared["center_v"] = aim_v
+        prepared["direct_safe_x1"] = safe_x1
+        prepared["direct_safe_x2"] = safe_x2
+        prepared["direct_safe_y1"] = safe_y1
+        prepared["direct_safe_y2"] = safe_y2
+        prepared["direct_margin_u"] = margin_u
+        prepared["direct_margin_v"] = margin_v
+        prepared["direct_drop_reference_inside"] = (
+            safe_x1 <= desired_u <= safe_x2
+            and safe_y1 <= desired_v <= safe_y2
+        )
+        return prepared
+
+    def partial_box_direct_offsets(self, target, limit_move):
+        error_u_px, error_v_px, normalized_u, normalized_v = (
+            self.auto_target_errors(target)
+        )
+        forward = (
+            -normalized_v
+            * self.partial_box_direct_forward_gain_m
+            * self.auto_forward_sign
+        )
+        right = (
+            normalized_u
+            * self.partial_box_direct_lateral_gain_m
+            * self.auto_lateral_sign
+        )
+        raw_distance = math.hypot(forward, right)
+        limited = False
+        if (
+            limit_move
+            and raw_distance > self.partial_box_direct_max_move_m
+        ):
+            scale = self.partial_box_direct_max_move_m / raw_distance
+            forward *= scale
+            right *= scale
+            limited = True
+        return {
+            "error_u_px": error_u_px,
+            "error_v_px": error_v_px,
+            "forward": forward,
+            "right": right,
+            "distance": math.hypot(forward, right),
+            "raw_distance": raw_distance,
+            "limited": limited,
+        }
+
+    def start_partial_box_direct_goal(self):
+        target = self.partial_box_pending_target
+        if target is None:
+            return False
+        current = self.get_current_pose("生成残缺方框一次移动目标")
+        if current is None:
+            return False
+
+        offsets = self.partial_box_direct_offsets(
+            target,
+            limit_move=True,
+        )
+        self.set_body_offset_goal(
+            current,
+            offsets["forward"],
+            offsets["right"],
+            (
+                "残缺方框安全可见点一次移动：像素误差"
+                "(u=%+.1f,v=%+.1f)"
+            )
+            % (
+                offsets["error_u_px"],
+                offsets["error_v_px"],
+            ),
+        )
+        self.partial_box_direct_goal_started_at = rospy.Time.now()
+        self.partial_box_verified_target = None
+        rospy.loginfo(
+            (
+                "%s：残缺方框一次移动目标已发布：安全点=(%.1f,%.1f)，"
+                "像素误差=(u=%+.1f,v=%+.1f)，本体偏置="
+                "(前%+.3f,右%+.3f)m，原始估算距离=%.3fm，"
+                "最大限制=%.3fm%s"
+            ),
+            NODE_NAME,
+            target["center_u"],
+            target["center_v"],
+            offsets["error_u_px"],
+            offsets["error_v_px"],
+            offsets["forward"],
+            offsets["right"],
+            offsets["raw_distance"],
+            self.partial_box_direct_max_move_m,
+            "，已限幅" if offsets["limited"] else "",
+        )
+        return True
+
+    def handle_partial_box_direct_move(self):
+        if self.partial_box_pending_target is None:
+            self.finish_task(False, "残缺方框一次移动缺少稳定目标")
+            return
+        if (
+            self.partial_box_direct_goal_started_at is None
+            and not self.start_partial_box_direct_goal()
+        ):
+            return
+        if not self.motion_arrived():
+            self.log_arrival_gate("残缺方框一次移动到达判定")
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：残缺方框一次移动进行中，motion=%s",
+                NODE_NAME,
+                self.current_motion_state_name(),
+            )
+            return
+
+        self.reset_stability()
+        self.current_auto_target = None
+        self.partial_box_verified_target = None
+        self.partial_box_verify_started_at = rospy.Time.now()
+        self.set_state(
+            self.AUTO_DIRECT_VERIFY,
+            (
+                "一次移动已由HOVER确认，开始%d/%d帧宽松复核"
+                % (
+                    self.auto_search_stable_detection_count,
+                    self.stable_detection_window_size,
+                )
+            ),
+        )
+
+    def fallback_to_original_fine_alignment(self, reason):
+        target = (
+            self.partial_box_verified_target
+            or self.current_auto_target
+            or self.partial_box_pending_target
+        )
+        if target is None:
+            self.partial_box_pending_target = None
+            self.partial_box_verified_target = None
+            self.partial_box_direct_goal_started_at = None
+            self.partial_box_verify_started_at = None
+            self.reset_stability()
+            self.reset_auto_search_step()
+            self.set_state(
+                self.WAIT_FOR_TARGET,
+                "%s；没有可用目标，恢复原搜索流程" % reason,
+            )
+            return
+
+        fallback_target = dict(target)
+        fallback_target["center_u"] = fallback_target.get(
+            "mean_raw_center_u",
+            fallback_target.get(
+                "raw_center_u", fallback_target["center_u"]
+            ),
+        )
+        fallback_target["center_v"] = fallback_target.get(
+            "mean_raw_center_v",
+            fallback_target.get(
+                "raw_center_v", fallback_target["center_v"]
+            ),
+        )
+        self.current_auto_target = fallback_target
+        self.last_target_time = rospy.Time.now()
+        self.partial_box_pending_target = None
+        self.partial_box_verified_target = None
+        self.partial_box_direct_goal_started_at = None
+        self.partial_box_verify_started_at = None
+        self.reset_auto_center_stability("切换到原细对准")
+        rospy.logwarn(
+            "%s：%s；回退到保留的原连续视觉细对准",
+            NODE_NAME,
+            reason,
+        )
+        self.set_state(
+            self.AUTO_APPROACH,
+            "残缺方框直接投放未通过，恢复原细对准",
+        )
+
+    def handle_partial_box_direct_verify(self):
+        if not self.motion_arrived():
+            self.log_arrival_gate("残缺方框宽松复核定点保持")
+            return
+        if self.partial_box_verify_started_at is None:
+            self.partial_box_verify_started_at = rospy.Time.now()
+
+        elapsed = (
+            rospy.Time.now() - self.partial_box_verify_started_at
+        ).to_sec()
+        target = self.partial_box_verified_target
+        if target is None:
+            if elapsed >= self.partial_box_verify_timeout:
+                if self.current_auto_target is None:
+                    self.partial_box_pending_target = None
+                self.fallback_to_original_fine_alignment(
+                    "宽松复核%.1fs内没有形成%d/%d帧稳定候选组"
+                    % (
+                        self.partial_box_verify_timeout,
+                        self.auto_search_stable_detection_count,
+                        self.stable_detection_window_size,
+                    )
+                )
+                return
+            rospy.loginfo_throttle(
+                self.log_interval,
+                (
+                    "%s：残缺方框宽松复核进行中 %.1f/%.1fs，"
+                    "窗口=%d/%d帧，等待%d帧一致"
+                ),
+                NODE_NAME,
+                elapsed,
+                self.partial_box_verify_timeout,
+                len(self.detection_frame_window),
+                self.stable_detection_window_size,
+                self.auto_search_stable_detection_count,
+            )
+            return
+
+        offsets = self.partial_box_direct_offsets(
+            target,
+            limit_move=False,
+        )
+        inside_count = int(target.get("direct_inside_count", 0))
+        required_count = self.auto_search_stable_detection_count
+        inside_ready = inside_count >= required_count
+        residual_ready = (
+            offsets["raw_distance"]
+            <= self.partial_box_verify_tolerance_m
+        )
+        if not inside_ready and not residual_ready:
+            if (
+                self.partial_box_direct_correction_count
+                < self.partial_box_direct_max_corrections
+            ):
+                self.partial_box_direct_correction_count += 1
+                self.partial_box_pending_target = target
+                self.partial_box_verified_target = None
+                self.partial_box_direct_goal_started_at = None
+                self.partial_box_verify_started_at = None
+                self.reset_stability()
+                self.set_state(
+                    self.AUTO_DIRECT_MOVE,
+                    (
+                        "宽松复核残差%.3fm超过%.3fm，执行第%d/%d次"
+                        "一次性修正"
+                    )
+                    % (
+                        offsets["raw_distance"],
+                        self.partial_box_verify_tolerance_m,
+                        self.partial_box_direct_correction_count,
+                        self.partial_box_direct_max_corrections,
+                    ),
+                )
+                return
+            self.fallback_to_original_fine_alignment(
+                "宽松复核残差%.3fm超过%.3fm且修正次数已用完"
+                % (
+                    offsets["raw_distance"],
+                    self.partial_box_verify_tolerance_m,
+                )
+            )
+            return
+
+        status = self.get_recent_status("残缺方框直接投放动作放行")
+        if status is None:
+            return
+        if not self.action_status_is_stable(status):
+            self.log_arrival_gate("残缺方框直接投放动作放行")
+            return
+        if not self.require_safe_actuator_feedback("残缺方框直接投放"):
+            self.publish_actuator(
+                self.clamp_closed,
+                "off",
+                self.heading_servo_right,
+            )
+            return
+        if not self.capture_action_hold_position():
+            return
+
+        rospy.loginfo(
+            (
+                "%s：直接投放复核通过：最近%d帧中安全区覆盖=%d帧，"
+                "估算剩余位移=%.3f/<=%.3fm；不再执行连续细对准"
+            ),
+            NODE_NAME,
+            self.stable_detection_window_size,
+            inside_count,
+            offsets["raw_distance"],
+            self.partial_box_verify_tolerance_m,
+        )
+        self.start_drop_action(
+            (
+                "残缺方框%d/%d帧宽松复核通过，安全区覆盖=%d帧，"
+                "剩余位移=%.3fm"
+            )
+            % (
+                required_count,
+                self.stable_detection_window_size,
+                inside_count,
+                offsets["raw_distance"],
+            )
+        )
 
     def visual_step(self, normalized_error, gain, sign):
         raw_step = gain * normalized_error * sign
@@ -3054,6 +3452,21 @@ class Task3InspectAndDropTest:
             )
         )
 
+    def record_invalid_model_frame(self, frame_index, reason):
+        if self.state == self.AUTO_APPROACH:
+            self.current_auto_target = None
+            self.reset_auto_center_stability(reason)
+            return
+        if self.state in (
+            self.WAIT_FOR_TARGET,
+            self.AUTO_DIRECT_VERIFY,
+        ) or (
+            self.state == self.AUTO_HOVER_CONFIRM
+            and self.hover_confirmation_ready
+        ):
+            self.add_detection_sample(None, frame_index, reason)
+            self.add_color_scene_sample(None, frame_index, reason)
+
     def detection_callback(self, message):
         now = rospy.Time.now()
         previous_model_message_time = self.last_model_message_time
@@ -3062,7 +3475,11 @@ class Task3InspectAndDropTest:
         frame_index = self.model_frame_index
 
         if (
-            self.state in (self.WAIT_FOR_TARGET, self.AUTO_HOVER_CONFIRM)
+            self.state in (
+                self.WAIT_FOR_TARGET,
+                self.AUTO_HOVER_CONFIRM,
+                self.AUTO_DIRECT_VERIFY,
+            )
             and previous_model_message_time is not None
             and (now - previous_model_message_time).to_sec()
             > self.detection_timeout
@@ -3090,19 +3507,9 @@ class Task3InspectAndDropTest:
                 NODE_NAME,
                 str(exc),
             )
-            if self.state == self.AUTO_APPROACH:
-                self.current_auto_target = None
-                self.reset_auto_center_stability("模型 JSON 解析失败")
-            elif self.state == self.WAIT_FOR_TARGET or (
-                self.state == self.AUTO_HOVER_CONFIRM
-                and self.hover_confirmation_ready
-            ):
-                self.add_detection_sample(
-                    None, frame_index, "模型 JSON 解析失败"
-                )
-                self.add_color_scene_sample(
-                    None, frame_index, "模型 JSON 解析失败"
-                )
+            self.record_invalid_model_frame(
+                frame_index, "模型 JSON 解析失败"
+            )
             return
 
         if not isinstance(payload, dict):
@@ -3111,19 +3518,9 @@ class Task3InspectAndDropTest:
                 "%s：模型 JSON 根节点不是对象",
                 NODE_NAME,
             )
-            if self.state == self.AUTO_APPROACH:
-                self.current_auto_target = None
-                self.reset_auto_center_stability("模型 JSON 根节点无效")
-            elif self.state == self.WAIT_FOR_TARGET or (
-                self.state == self.AUTO_HOVER_CONFIRM
-                and self.hover_confirmation_ready
-            ):
-                self.add_detection_sample(
-                    None, frame_index, "模型 JSON 根节点无效"
-                )
-                self.add_color_scene_sample(
-                    None, frame_index, "模型 JSON 根节点无效"
-                )
+            self.record_invalid_model_frame(
+                frame_index, "模型 JSON 根节点无效"
+            )
             return
 
         raw_detections = payload.get("detections", [])
@@ -3133,19 +3530,9 @@ class Task3InspectAndDropTest:
                 "%s：模型 JSON 的 detections 不是数组",
                 NODE_NAME,
             )
-            if self.state == self.AUTO_APPROACH:
-                self.current_auto_target = None
-                self.reset_auto_center_stability("模型 detections 字段无效")
-            elif self.state == self.WAIT_FOR_TARGET or (
-                self.state == self.AUTO_HOVER_CONFIRM
-                and self.hover_confirmation_ready
-            ):
-                self.add_detection_sample(
-                    None, frame_index, "模型 detections 字段无效"
-                )
-                self.add_color_scene_sample(
-                    None, frame_index, "模型 detections 字段无效"
-                )
+            self.record_invalid_model_frame(
+                frame_index, "模型 detections 字段无效"
+            )
             return
 
         image_width = self.finite_number(payload.get("image_width"))
@@ -3176,6 +3563,7 @@ class Task3InspectAndDropTest:
             self.WAIT_FOR_TARGET,
             self.AUTO_HOVER_CONFIRM,
             self.AUTO_APPROACH,
+            self.AUTO_DIRECT_VERIFY,
         ):
             return
         if (
@@ -3199,6 +3587,15 @@ class Task3InspectAndDropTest:
             if self.label_matches(item["class_name"])
             and item["confidence"] >= self.min_confidence
         ]
+        if (
+            self.auto_enabled
+            and self.partial_box_direct_drop_enabled
+            and self.state != self.AUTO_APPROACH
+        ):
+            candidates = [
+                self.prepare_partial_box_direct_detection(item)
+                for item in candidates
+            ]
         if not candidates:
             if self.state == self.AUTO_APPROACH:
                 self.current_auto_target = None
@@ -3277,6 +3674,8 @@ class Task3InspectAndDropTest:
             )
             return
 
+        if self.state == self.AUTO_DIRECT_VERIFY:
+            self.current_auto_target = best
         self.add_detection_sample(best, frame_index)
         if self.color_observation_is_ready():
             self.add_color_scene_sample(
@@ -3354,6 +3753,8 @@ class Task3InspectAndDropTest:
         stage_name = (
             "悬停复核"
             if self.state == self.AUTO_HOVER_CONFIRM
+            else "直接投放复核"
+            if self.state == self.AUTO_DIRECT_VERIFY
             else "搜索识别" if self.auto_enabled else "人工识别"
         )
         if detection is not None:
@@ -3546,6 +3947,19 @@ class Task3InspectAndDropTest:
         latest["mean_center_v"] = statistics.median(
             item["center_v"] for item in samples
         )
+        latest["mean_raw_center_u"] = statistics.median(
+            item.get("raw_center_u", item["center_u"])
+            for item in samples
+        )
+        latest["mean_raw_center_v"] = statistics.median(
+            item.get("raw_center_v", item["center_v"])
+            for item in samples
+        )
+        latest["direct_inside_count"] = sum(
+            1
+            for item in samples
+            if item.get("direct_drop_reference_inside", False)
+        )
         rospy.loginfo(
             (
                 "%s：稳定识别成功：颜色=%s，模型标签=%s，平均置信度=%.3f，"
@@ -3592,18 +4006,53 @@ class Task3InspectAndDropTest:
             elif self.state == self.AUTO_HOVER_CONFIRM:
                 latest["center_u"] = latest["mean_center_u"]
                 latest["center_v"] = latest["mean_center_v"]
-                self.current_auto_target = latest
-                self.reset_auto_center_stability()
-                self.visual_stop_locked = False
                 self.hover_confirmation_ready = False
                 self.hover_confirmation_hover_at = None
                 self.hover_confirmation_started_at = None
                 self.hover_confirmation_resume_goal = None
                 self.detection_frame_window = []
-                self.set_state(
-                    self.AUTO_APPROACH,
-                    "悬停后第二轮目标识别通过，开始依据中心像素细对准",
-                )
+                if self.partial_box_direct_drop_enabled:
+                    self.partial_box_pending_target = latest
+                    self.partial_box_verified_target = None
+                    self.partial_box_direct_goal_started_at = None
+                    self.partial_box_verify_started_at = None
+                    self.partial_box_direct_correction_count = 0
+                    self.current_auto_target = None
+                    rospy.loginfo(
+                        (
+                            "%s：残缺方框安全点已确认：投放参考点被安全区"
+                            "覆盖%d/%d帧，原bbox中心中位数=(%.1f,%.1f)，"
+                            "安全投放点中位数=(%.1f,%.1f)"
+                        ),
+                        NODE_NAME,
+                        latest["direct_inside_count"],
+                        len(samples),
+                        latest["mean_raw_center_u"],
+                        latest["mean_raw_center_v"],
+                        latest["center_u"],
+                        latest["center_v"],
+                    )
+                    self.set_state(
+                        self.AUTO_DIRECT_MOVE,
+                        "悬停后3/10帧确认通过，按可见安全区执行一次移动",
+                    )
+                else:
+                    self.current_auto_target = latest
+                    self.reset_auto_center_stability()
+                    self.visual_stop_locked = False
+                    self.set_state(
+                        self.AUTO_APPROACH,
+                        "悬停后第二轮目标识别通过，开始依据中心像素细对准",
+                    )
+            elif (
+                self.state == self.AUTO_DIRECT_VERIFY
+                and self.partial_box_direct_drop_enabled
+            ):
+                latest["center_u"] = latest["mean_center_u"]
+                latest["center_v"] = latest["mean_center_v"]
+                self.partial_box_verified_target = latest
+                self.current_auto_target = latest
+                self.detection_frame_window = []
         else:
             if not self.require_safe_actuator_feedback("人工模式动作放行"):
                 return
@@ -4024,6 +4473,8 @@ class Task3InspectAndDropTest:
                     self.WAIT_FOR_TARGET,
                     self.AUTO_HOVER_CONFIRM,
                     self.AUTO_APPROACH,
+                    self.AUTO_DIRECT_MOVE,
+                    self.AUTO_DIRECT_VERIFY,
                 )
                 and elapsed >= self.max_wait_seconds
             ):
@@ -4074,6 +4525,14 @@ class Task3InspectAndDropTest:
             elif self.state == self.AUTO_APPROACH:
                 self.publish_actuator(self.clamp_closed, "off")
                 self.approach_target_automatically()
+
+            elif self.state == self.AUTO_DIRECT_MOVE:
+                self.publish_actuator(self.clamp_closed, "off")
+                self.handle_partial_box_direct_move()
+
+            elif self.state == self.AUTO_DIRECT_VERIFY:
+                self.publish_actuator(self.clamp_closed, "off")
+                self.handle_partial_box_direct_verify()
 
             elif self.state == self.HOLD_BEFORE_ACTION:
                 if self.auto_enabled:
