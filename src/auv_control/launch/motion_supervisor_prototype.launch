@@ -16,7 +16,7 @@
 
     <!--
       是否启用 motion_supervisor 每控制周期 CSV 完整数据日志。
-      true：记录当前/目标位姿、误差、原始/滤波速度、状态、模式和 TX/TY/MZ；
+      true：记录位姿、速度、状态、模式、TX/TY/MZ 和两路推进电源数据；
       false：只保留 ROS 控制台日志和用户自行启动的 rosbag。
     -->
     <arg name="log_enabled" default="true" />
@@ -24,7 +24,7 @@
     <!--
       CSV 完整数据日志目录。
       默认保存到运行 ROS 节点用户的 ~/.ros/auv_logs/motion_supervisor，
-      每次启动生成独立的 motion_supervisor_时间戳.csv 文件。
+      每次启动生成独立文件，达到 50 MiB 后以 _1、_2 等下划线编号分卷。
     -->
     <arg name="log_directory"
          default="$(env HOME)/.ros/auv_logs/motion_supervisor" />

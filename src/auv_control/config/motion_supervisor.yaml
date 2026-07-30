@@ -14,6 +14,8 @@ startup_hover_frames: 5     # 首帧锁定位姿进入 HOVER 后保持的发布�
 log_enabled: true                                 # 是否记录当前/目标位姿、速度、状态、模式和力矩等完整数据
 log_directory: ~/.ros/auv_logs/motion_supervisor  # CSV 日志目录，每次启动自动新建带时间戳文件
 log_flush_every: 20                               # 每累计多少个控制周期刷新磁盘，20 Hz 下约每秒刷新
+log_max_file_size_mb: 50.0                        # 单个 CSV 最大 50 MiB，后续分卷追加 _1、_2 等编号
+power_feedback_timeout: 1.0                       # /status/power 超过此时间未更新时标记为不新鲜，不影响控制
 
 # 正常跟踪与主动刹车共用方向性限幅和步长；参数后缀表示实际输出正负号。
 max_tx_positive: 2000.0             # 正 TX 最大值
