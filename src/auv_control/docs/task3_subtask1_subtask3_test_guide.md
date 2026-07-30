@@ -5,7 +5,7 @@
 本文只说明以下两个任务节点的测试流程和运动控制问题：
 
 - 子任务1：识别箭头、搜索、视觉对准航向，并使 `base_link` 到达箭头上方；
-- 子任务3：识别指定颜色方框，人工或自动对准后开灯、打开夹爪并结束任务。
+- 子任务3：识别指定颜色方框，自动对准后先固定前进，再执行投放、返回原点并上浮结束。
 
 识别模型本身的漏检、误检和训练数据问题不在本文展开。本文重点回答：
 
@@ -301,10 +301,12 @@ roslaunch auv_control task3_subtask1_acquire_area.launch \
 
 ```text
 固定启动点悬停10秒
--> 前进0.50m
--> 第一层左0.20m、右0.20m、回中
+-> 前进0.70m
+-> 第一层左0.30m、右0.30m、回中
+-> 再前进0.40m
+-> 第二层左0.30m、右0.30m、回中
 -> 再前进0.30m
--> 第二层左0.20m、右0.20m
+-> 第三层左0.30m、右0.30m
 ```
 
 搜索中出现第一帧有效位置后：
@@ -356,13 +358,11 @@ cancel并定点
 沿机器人当前前方前移 base_link_forward_offset
 ```
 
-默认 `base_link_forward_offset=0.35m`。前移过程中：
+默认 `base_link_forward_offset=0.50m`。前移过程中：
 
-- 继续实时观察完整箭头；
-- 只根据 `u` 误差修正左右位置；
-- 继续修正航向；
-- `v` 误差只记录，因为前后目标已经由0.35m安装偏置确定；
-- 完整箭头、左右位置和航向连续5帧通过，且目标进入 `HOVER` 后进入最终保持；
+- 继续接收并记录完整箭头识别结果；
+- 不再根据 `u`、`v` 或箭头方向修改目标；
+- 只等待这一次固定前移目标进入 `HOVER`，随后进入最终保持；
 - 最终 `HOVER` 和深度连续保持10秒，任务成功并发布 cancel。
 
 如果最后机器人停在箭头前方，增大 `base_link_forward_offset`；如果越过箭头，减小该参数。该参数应依据相机光心、`base_link` 和目标期望对齐点的实际安装尺寸标定，不应该通过修改视觉增益补偿。
@@ -464,7 +464,7 @@ roslaunch auv_control task3_subtask3_inspect_and_drop.launch \
 - 识别到连续3帧稳定方框后立即 cancel；
 - 细对准根据图像 `v` 误差前后移动，根据 `u` 误差左右移动；
 - 方框连续5帧居中后锁定最终点，不再继续叠加视觉目标；
-- 只有稳定 `HOVER` 和动作门槛全部通过才会开灯、打开夹爪。
+- 只有动作门槛通过、投放前固定前进到达 `HOVER` 后才会开灯、打开夹爪。
 
 ### 6.4 正式自动流程
 
@@ -478,15 +478,19 @@ roslaunch auv_control task3_subtask3_inspect_and_drop.launch \
 -> 根据中心像素误差发布前后、左右小步
 -> 连续5帧居中
 -> 锁定最终固定点并等待稳定HOVER
+-> 沿当前航向固定前进0.10m并等待HOVER
 -> 开对应颜色灯并打开夹爪
--> 定点保持3秒
+-> 定点保持5秒
 -> 关闭夹爪和灯
+-> 原地左转
+-> 返回map原点(0,0)并等待HOVER
+-> 向map z=0持续上浮5秒
 -> 发布/finished并cancel
 ```
 
-搜索路径全部完成仍未识别到目标时，子任务3会保持最后定点继续等待，直到 `max_wait_seconds` 超时。目标在细对准中丢失超过 `detection_timeout` 时，会刹停并返回当前搜索步骤。
+搜索路径全部完成仍未识别到目标时，子任务3立即结束本轮搜索并交给总任务执行cancel恢复和唯一一次重试，不再停在最后一点空等。目标在细对准中丢失超过 `detection_timeout` 时，会刹停并返回当前搜索步骤。
 
-子任务3 launch 中任务节点没有设置 `required=true`。任务节点结束后，如果模型仍由同一个 launch 启动，roslaunch可能继续运行；看到 `/finished` 且夹爪和灯关闭后，可在该终端按 `Ctrl+C` 关闭剩余模型和网页节点。
+子任务3 launch 中任务节点设置了 `required=true`。上浮5秒并发布 `/finished` 后，任务节点退出会关闭该 launch 启动的模型和网页节点。
 
 ## 7. 任务侧参数怎样调
 
@@ -536,6 +540,8 @@ roslaunch auv_control task3_subtask3_inspect_and_drop.launch \
 | 居中计数反复清零 | `auto_center_tolerance_u_px/v_px` | 先看像素误差，再小幅放宽 |
 | 搜索阶段3帧难以通过 | `auto_search_stable_detection_count`、`stable_center_tolerance_px`、`stable_area_tolerance_ratio` | 先看逐帧日志，再调整稳定门槛 |
 | 已居中但不执行夹爪 | `arrival_*`、`auto_action_*`、`status_timeout` | 看动作放行日志中第一个未通过项 |
+| 投放前前进距离不合适 | `pre_drop_forward_distance` | 默认0.10m，按夹爪与相机安装偏置标定 |
+| 返回原点或上浮时序不合适 | `post_drop_step_timeout`、`post_drop_ascent_seconds` | 分别调整回原点超时和上浮持续时间 |
 | `/status/auv`速度单位不为m/s | `status_linear_velocity_scale` | 依据协议换算，例如毫米每秒需乘0.001 |
 | 总流程等待太久或太短 | `max_wait_seconds`、`detection_timeout` | 依据模型实际频率设置，不用于掩盖断流 |
 
