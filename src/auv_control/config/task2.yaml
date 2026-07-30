@@ -2,7 +2,8 @@
 #
 # 加载方式：必须通过 task2.launch 在 <node name="task2"> 内加载；全部键会进入
 # 节点私有命名空间 /task2/<键名>。因此本文件与 task1.yaml、task3.yaml、
-# motion_supervisor.yaml 中的同名键互不覆盖。不要在根命名空间直接执行
+# motion_supervisor_low.yaml或motion_supervisor_high.yaml中的同名键互不覆盖。
+# 不要在根命名空间直接执行
 # rosparam load，否则会与其他节点的公共参数发生冲突。
 #
 # 坐标约定：所有位置均在 map 坐标系下，单位为 m；航向角单位为 deg；时长单位为 s。

@@ -178,7 +178,7 @@ Task 3 当前使用的话题约定：
 现场推荐调参顺序：
 
 1. 先让机器人保持不动，对照网页视频和逐帧日志确认箭头中心、角度、方向标签及 `min_confidence` 正确。
-2. 先减小三个搜索距离验证路径顺序和左右方向；搜索速度和刹车由 `motion_supervisor.yaml` 统一调节，不在任务脚本中调推力。
+2. 先减小三个搜索距离验证路径顺序和左右方向；搜索速度和刹车由所选 `motion_supervisor_low.yaml` 或 `motion_supervisor_high.yaml` 统一调节，不在任务脚本中调推力。
 3. 粗对准先确认 `visual_lateral_sign`，确保机器人只左右横移且航向不变；再观察日志中的bbox四边和“完整可见”结果，调整边缘留白与最小框尺寸。
 4. 细对准先把 `fine_visual_max_step_m` 和 `fine_yaw_max_step_deg` 保持在较小值，确认航向未稳定前日志中的前后步长始终为0。
 5. 航向稳定后再确认 `visual_forward_sign` 和 `yaw_correction_sign`；若移动方向相反只改对应符号。
@@ -519,7 +519,7 @@ supervisor接口和到达判定：
 | `actuator_mode` | `2` | 仅执行器模式 |
 | `clamp_open/clamp_closed` | `0/255` | 夹爪开/关值 |
 
-`motion_supervisor` 常用运动参数位于 `src/auv_control/config/motion_supervisor.yaml`，它们不是子任务3 launch 参数，修改后需要重启 supervisor：
+`motion_supervisor` 常用运动参数位于 `src/auv_control/config/motion_supervisor_low.yaml` 和 `motion_supervisor_high.yaml`，它们不是子任务3 launch 参数，修改后需要重启 supervisor：
 
 | 参数 | 当前值 | 主要作用 |
 | --- | --- | --- |

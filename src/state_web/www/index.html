@@ -4,10 +4,11 @@
 功能：state_web 仪表盘页面结构
 作者：xhy
 监听：用户地图交互
-发布：地图朝向设置
+发布：地图朝向与水池范围设置
 记录：
 2026.7.30
     增加指定向上航向的地图手动旋转控件。
+    增加通过拖拽对角点绘制、重画和清除水池范围的控件。
 -->
 <html lang="zh-CN">
 
@@ -80,40 +81,62 @@
                 <div id="camera-fisheye-meta" class="camera-meta">--</div>
             </section>
 
-            <section class="panel navigation-panel">
-                <div class="panel-title navigation-title">
-                    <div>
-                        <h2>NED 实际与目标位姿</h2>
-                        <span class="subtitle">XY 地图可指定向上航向，Z/Down 向下</span>
-                    </div>
-                    <div class="map-controls">
-                        <span class="map-legend actual">实际 TF：base_link → camera</span>
-                        <span class="map-legend target">目标 cmdned：base_link</span>
-                        <label class="map-heading-control" for="map-up-heading">
-                            <span>向上航向</span>
-                            <input id="map-up-heading" type="number" min="0" max="359" step="1" inputmode="decimal"
-                                aria-label="地图向上航向">
-                            <span>°</span>
-                        </label>
-                        <button id="apply-map-heading" type="button" title="应用地图向上航向">
-                            应用
-                        </button>
-                        <button id="north-up-map" type="button" title="恢复 0° 北向上">
-                            北向上
-                        </button>
-                        <button id="reset-map" type="button" title="重置 2D 位置图和深度图">
-                            回到原点
-                        </button>
+        <section class="panel navigation-panel">
+            <div class="panel-title navigation-title">
+                <div>
+                    <h2>NED 实际与目标位姿</h2>
+                    <span class="subtitle">XY 地图可指定向上航向，Z/Down 向下</span>
+                </div>
+                <div class="map-controls">
+                    <span class="map-legend actual">实际 TF：base_link → camera</span>
+                    <span class="map-legend target">目标 cmdned：base_link</span>
+                    <label class="map-heading-control"
+                           for="map-up-heading">
+                        <span>向上航向</span>
+                        <input id="map-up-heading"
+                               type="number"
+                               min="0"
+                               max="359"
+                               step="1"
+                               inputmode="decimal"
+                               aria-label="地图向上航向">
+                        <span>°</span>
+                    </label>
+                    <button id="apply-map-heading"
+                            type="button"
+                            title="应用地图向上航向">
+                        应用
+                    </button>
+                    <button id="north-up-map"
+                            type="button"
+                            title="恢复 0° 北向上">
+                        北向上
+                    </button>
+                    <button id="draw-pool-boundary"
+                            type="button"
+                            title="在地图上拖拽水池的两个对角点">
+                        绘制水池
+                    </button>
+                    <button id="clear-pool-boundary"
+                            type="button"
+                            title="清除已保存的水池范围">
+                        清除水池
+                    </button>
+                    <button id="reset-map"
+                            type="button"
+                            title="重置 2D 位置图和深度图">
+                        回到原点
+                    </button>
+                </div>
+            </div>
+
+            <div class="navigation-layout">
+                <div class="canvas-card xy-card">
+                    <canvas id="xy-canvas"></canvas>
+                    <div id="map-hint" class="canvas-hint">
+                        滚轮缩放 · 拖拽平移 · 上方 0°
                     </div>
                 </div>
-
-                <div class="navigation-layout">
-                    <div class="canvas-card xy-card">
-                        <canvas id="xy-canvas"></canvas>
-                        <div id="map-hint" class="canvas-hint">
-                            滚轮缩放 · 拖拽平移 · 上方 0°
-                        </div>
-                    </div>
 
                     <div class="canvas-card z-card">
                         <canvas id="z-canvas"></canvas>

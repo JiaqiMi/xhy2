@@ -26,11 +26,18 @@
     按协议将 result=0x03 识别为 EXEC_OK，当前执行器状态使用 5 秒节流日志输出。
 2026.7.30
     补光灯与执行器控制帧下发频率调整为 2Hz，缩短任务执行器闭环的命令与反馈延迟。
+2026.7.31
+    新增执行器命令与当前状态 JSONL 保存，默认写入 ~/.ros/auvlog/actuator_node。
+2026.7.31
+    修正数据保存目录为 ~/.ros/auv_logs/actuator_node，与 sensor_status_node 同级。
 """
 
+import json
+import os
 import socket
 import threading
 import time
+from datetime import datetime
 
 import rospy
 
@@ -111,6 +118,24 @@ class SensorActuatorNode:
         self.fb_error = 0x00
         self.fb_actuator_error = 0x00
 
+        # --- 命令与状态数据保存 ---
+        self.data_saving_enable = rospy.get_param('~save_data', True)
+        self.data_save_dir = os.path.expanduser(rospy.get_param(
+            '~save_dir', '~/.ros/auv_logs/actuator_node',
+        ))
+        self.data_save_file_name = rospy.get_param('~save_file', '')
+        self.data_max_file_size = max(1, int(rospy.get_param(
+            '~max_file_size', 50 * 1024 * 1024,
+        )))
+        self.data_flush_every = max(1, int(rospy.get_param('~flush_every', 1)))
+        self.data_write_count = 0
+        self.data_save_file = None
+        self.data_save_base_name = ''
+        self.data_file_index = 0
+        self.data_file_lock = threading.Lock()
+        if self.data_saving_enable:
+            self._open_data_save_file()
+
         # --- 发送线程 ---
         self.is_sending = True
         self.send_thread = None
@@ -125,6 +150,146 @@ class SensorActuatorNode:
 
         self.connect()
         rospy.loginfo("sensor_actuator: 已启动（执行器控制+反馈模式）")
+
+    # ============================================================
+    # 命令与状态数据保存
+    # ============================================================
+
+    def _open_data_save_file(self):
+        """创建执行器数据目录并打开本次运行的 JSONL 文件。"""
+        if not self.data_save_file_name:
+            self.data_save_file_name = datetime.now().strftime(
+                'actuator_%Y%m%d_%H%M%S.jsonl'
+            )
+        self.data_save_base_name = self.data_save_file_name
+        self.data_file_index = 0
+        os.makedirs(self.data_save_dir, exist_ok=True)
+        self._open_data_file(self.data_save_base_name)
+
+    def _open_data_file(self, file_name):
+        """打开指定的数据文件分卷。"""
+        path = os.path.join(self.data_save_dir, file_name)
+        self.data_save_file = open(path, 'a', encoding='utf-8')
+        rospy.loginfo(f"sensor_actuator: 命令与状态数据将保存到 {path}")
+
+    def _rotate_data_file_if_needed(self, record_size):
+        """写入前检查文件大小，超过上限时切换到下一分卷。"""
+        if self.data_save_file is None:
+            return
+
+        current_size = self.data_save_file.tell()
+        if current_size == 0 or current_size + record_size <= self.data_max_file_size:
+            return
+
+        self.data_save_file.flush()
+        self.data_save_file.close()
+        self.data_file_index += 1
+        file_stem, extension = os.path.splitext(self.data_save_base_name)
+        self._open_data_file(f'{file_stem}_{self.data_file_index}{extension}')
+
+    @staticmethod
+    def _stamp_to_dict(stamp):
+        """将 ROS 时间转换为不丢失纳秒精度的可序列化字典。"""
+        seconds = int(stamp.secs)
+        nanoseconds = int(stamp.nsecs)
+        return {
+            'secs': seconds,
+            'nsecs': nanoseconds,
+            'timestamp_ns': seconds * 1000000000 + nanoseconds,
+        }
+
+    def _command_to_dict(self, msg):
+        """完整提取收到的 ActuatorControl 原始字段。"""
+        return {
+            'mode': int(msg.mode),
+            'light1': int(msg.light1),
+            'light2': int(msg.light2),
+            'heading_servo': int(msg.heading_servo),
+            'clamp_servo': int(msg.clamp_servo),
+            'drive_cmd': int(msg.drive_cmd),
+            'drive_speed': int(msg.drive_speed),
+            'red_light': int(msg.red_light),
+            'yellow_light': int(msg.yellow_light),
+            'green_light': int(msg.green_light),
+        }
+
+    def _status_to_dict(self):
+        """在锁内读取完整命令缓存与执行器硬件反馈状态。"""
+        with self.lock:
+            return {
+                'published_status': {
+                    'mode': 0,
+                    'light1': self.light1,
+                    'light2': self.light2,
+                    'heading_servo': self.fb_heading,
+                    'clamp_servo': self.fb_clamp,
+                    'drive_cmd': self.fb_drive_cmd,
+                    'drive_speed': self.fb_drive_speed,
+                    'red_light': self.fb_red,
+                    'yellow_light': self.fb_yellow,
+                    'green_light': self.fb_green,
+                },
+                'command_cache': {
+                    'light1': self.light1,
+                    'light2': self.light2,
+                    'heading_servo': self.heading_servo,
+                    'clamp_servo': self.clamp_servo,
+                    'drive_cmd': self.drive_cmd,
+                    'drive_speed': self.drive_speed,
+                    'red_light': self.red_light,
+                    'yellow_light': self.yellow_light,
+                    'green_light': self.green_light,
+                },
+                'actuator_feedback': {
+                    'heading_servo': self.fb_heading,
+                    'clamp_servo': self.fb_clamp,
+                    'drive_cmd': self.fb_drive_cmd,
+                    'drive_speed': self.fb_drive_speed,
+                    'red_light': self.fb_red,
+                    'yellow_light': self.fb_yellow,
+                    'green_light': self.fb_green,
+                    'result': self.fb_result,
+                    'result_name': self.RESULT_NAMES.get(
+                        self.fb_result, 'UNKNOWN',
+                    ),
+                    'error': self.fb_error,
+                    'actuator_error': self.fb_actuator_error,
+                },
+            }
+
+    def _save_data_record(self, record):
+        """线程安全地追加一条执行器命令或状态记录。"""
+        if not self.data_saving_enable:
+            return
+
+        try:
+            record_line = json.dumps(record, ensure_ascii=False) + '\n'
+            with self.data_file_lock:
+                if self.data_save_file is None:
+                    return
+                self._rotate_data_file_if_needed(len(record_line.encode('utf-8')))
+                self.data_save_file.write(record_line)
+                self.data_write_count += 1
+                if self.data_write_count % self.data_flush_every == 0:
+                    self.data_save_file.flush()
+        except Exception as error:
+            rospy.logerr_throttle(5.0, 'sensor_actuator: 保存数据失败: %s', error)
+
+    def _save_command_record(self, msg, received_stamp):
+        """保存收到命令的原始字段与回调入口时间戳。"""
+        self._save_data_record({
+            'event': 'command_received',
+            'received_stamp': self._stamp_to_dict(received_stamp),
+            'command': self._command_to_dict(msg),
+        })
+
+    def _save_status_record(self, stamp):
+        """保存当前命令缓存与每个执行器的最新硬件反馈。"""
+        self._save_data_record({
+            'event': 'status_snapshot',
+            'stamp': self._stamp_to_dict(stamp),
+            'status': self._status_to_dict(),
+        })
 
     # ============================================================
     # TCP 连接
@@ -311,6 +476,7 @@ class SensorActuatorNode:
     def _status_timer_callback(self, _event):
         """以 5Hz 持续发布锁存状态，并按固定频率记录当前执行器状态。"""
         self._publish_status()
+        self._save_status_record(rospy.Time.now())
         with self.lock:
             values = (
                 self.fb_heading,
@@ -338,6 +504,8 @@ class SensorActuatorNode:
 
     def actuator_callback(self, msg):
         """按 mode 更新补光灯或执行器命令缓存。"""
+        received_stamp = rospy.Time.now()
+        self._save_command_record(msg, received_stamp)
         try:
             if msg.mode == 1:
                 new_light1 = max(0, min(100, msg.light1))
@@ -490,6 +658,11 @@ class SensorActuatorNode:
         finally:
             self.is_sending = False
             self.status_timer.shutdown()
+            if self.data_save_file is not None:
+                with self.data_file_lock:
+                    self.data_save_file.flush()
+                    self.data_save_file.close()
+                    self.data_save_file = None
             if self.send_thread and self.send_thread.is_alive():
                 self.send_thread.join(timeout=2)
             if self.sock:

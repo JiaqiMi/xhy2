@@ -205,6 +205,8 @@ catkin_install_python(PROGRAMS
   scripts/vo_nav_fusion.py
   test/motion_auto_sequence_core.py
   test/motion_axis_auto_test.py
+  test/motion_depth_auto_test.py
+  test/motion_depth_auto_test_core.py
   test/motion_effectiveness_calibration_test.py
   test/motion_goal_test.py
   test/motion_yaw_continuous_test.py

@@ -1,11 +1,16 @@
 <launch>
     <!--
-      Yaw 单轴自动测试：±30°、±60°、±90°，每个幅值重复三次。
-      每一步均返回初始航向，并等待上位机 HOVER 稳定保持后再继续。
+      Yaw 单轴自动测试：依次正向旋转到数组目标并返回初始航向。
+      每一步等待上位机 HOVER 稳定保持后再继续。
     -->
     <arg name="pure_depth_control" default="true" />
     <arg name="target_z" default="-0.9" />
+    <!-- 旧名称 repetitions 保留兼容；新调用使用 cycle_count。 -->
     <arg name="repetitions" default="2" />
+    <arg name="cycle_count" default="$(arg repetitions)" />
+    <!-- 旧名称 yaw_magnitudes_deg 保留兼容；新调用使用 target_angles_deg。 -->
+    <arg name="yaw_magnitudes_deg" default="[30.0, 60.0, 90.0]" />
+    <arg name="target_angles_deg" default="$(arg yaw_magnitudes_deg)" />
     <arg name="action_timeout" default="120.0" />
     <arg name="hover_hold_seconds" default="2.0" />
     <arg name="acceptance_yaw_tolerance_deg" default="5.0" />
@@ -15,7 +20,8 @@
         <arg name="axis" value="yaw" />
         <arg name="pure_depth_control" value="$(arg pure_depth_control)" />
         <arg name="target_z" value="$(arg target_z)" />
-        <arg name="repetitions" value="$(arg repetitions)" />
+        <arg name="cycle_count" value="$(arg cycle_count)" />
+        <arg name="target_angles_deg" value="$(arg target_angles_deg)" />
         <arg name="action_timeout" value="$(arg action_timeout)" />
         <arg name="hover_hold_seconds" value="$(arg hover_hold_seconds)" />
         <arg name="acceptance_yaw_tolerance_deg"

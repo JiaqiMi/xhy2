@@ -1,11 +1,16 @@
 <launch>
     <!--
-      Y 轴左右自动测试：±0.5、±1.0、±1.5 m，每个幅值重复三次。
-      运行前必须单独启动 motion_supervisor，并保证左右方向均不会碰壁。
+      Y 轴自动测试：依次横移到数组目标并返回同一基准点。
+      运行前必须单独启动 motion_supervisor，只需保证目标侧有足够空间。
     -->
     <arg name="pure_depth_control" default="true" />
     <arg name="target_z" default="-0.9" />
+    <!-- 旧名称 repetitions 保留兼容；新调用使用 cycle_count。 -->
     <arg name="repetitions" default="2" />
+    <arg name="cycle_count" default="$(arg repetitions)" />
+    <!-- 旧名称 translation_magnitudes 保留兼容；新调用使用 target_distances。 -->
+    <arg name="translation_magnitudes" default="[0.5, 1.0, 1.5]" />
+    <arg name="target_distances" default="$(arg translation_magnitudes)" />
     <arg name="action_timeout" default="120.0" />
     <arg name="hover_hold_seconds" default="2.0" />
     <arg name="acceptance_position_tolerance" default="0.10" />
@@ -20,7 +25,8 @@
         <arg name="axis" value="y" />
         <arg name="pure_depth_control" value="$(arg pure_depth_control)" />
         <arg name="target_z" value="$(arg target_z)" />
-        <arg name="repetitions" value="$(arg repetitions)" />
+        <arg name="cycle_count" value="$(arg cycle_count)" />
+        <arg name="target_distances" value="$(arg target_distances)" />
         <arg name="action_timeout" value="$(arg action_timeout)" />
         <arg name="hover_hold_seconds" value="$(arg hover_hold_seconds)" />
         <arg name="acceptance_position_tolerance"

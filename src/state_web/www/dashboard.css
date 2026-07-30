@@ -7,6 +7,7 @@
 记录：
 2026.7.30
     增加地图向上航向输入控件样式。
+    增加水池范围绘制模式及操作按钮样式。
 */
 
 :root {
@@ -340,6 +341,18 @@ input {
     color: #fff;
 }
 
+.map-controls button.is-active {
+    border-color: var(--warn);
+    background: #493719;
+    color: #fff0c7;
+    box-shadow: 0 0 0 2px rgba(255, 190, 69, 0.14);
+}
+
+.map-controls button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
 .navigation-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 118px minmax(170px, 0.42fr);
@@ -375,6 +388,10 @@ input {
 .xy-card canvas.is-dragging,
 .z-card canvas.is-dragging {
     cursor: grabbing;
+}
+
+.xy-card canvas.is-drawing {
+    cursor: crosshair;
 }
 
 .canvas-hint {

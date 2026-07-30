@@ -5,12 +5,18 @@
     <arg name="pure_depth_control" default="true" />
     <!-- 下位机定深和最终定点采用的 NED 绝对目标深度，单位 m。 -->
     <arg name="target_z" default="-0.9" />
-    <!-- 每个幅值执行“正向、原点、负向、原点”的重复次数。 -->
+    <!-- 兼容旧参数：等价于 cycle_count；新调用请使用 cycle_count。 -->
     <arg name="repetitions" default="3" />
-    <!-- X/Y 测试幅值，单位 m，必须是 YAML 正数列表。 -->
+    <!-- 完整目标数组重复执行的循环次数。 -->
+    <arg name="cycle_count" default="$(arg repetitions)" />
+    <!-- 兼容旧参数：等价于 target_distances；新调用请使用 target_distances。 -->
     <arg name="translation_magnitudes" default="[0.5, 1.0, 1.5]" />
-    <!-- Yaw 测试幅值，单位 deg，必须是 YAML 正数列表。 -->
+    <!-- X/Y 单侧目标距离数组，单位 m；每个目标完成后返回同一基准点。 -->
+    <arg name="target_distances" default="$(arg translation_magnitudes)" />
+    <!-- 兼容旧参数：等价于 target_angles_deg；新调用请使用 target_angles_deg。 -->
     <arg name="yaw_magnitudes_deg" default="[30.0, 60.0, 90.0]" />
+    <!-- Yaw 单侧目标角度数组，单位 deg；每个目标完成后返回初始航向。 -->
+    <arg name="target_angles_deg" default="$(arg yaw_magnitudes_deg)" />
     <!-- 目标重复发布频率，单位 Hz，应与 motion_supervisor 控制频率一致。 -->
     <arg name="publish_rate_hz" default="5.0" />
     <!-- 等待 motion_supervisor 首次 startup_complete+HOVER 的超时，单位 s。 -->
@@ -55,11 +61,11 @@
         <param name="axis" value="$(arg axis)" />
         <param name="pure_depth_control" value="$(arg pure_depth_control)" />
         <param name="target_z" value="$(arg target_z)" />
-        <param name="repetitions" value="$(arg repetitions)" />
+        <param name="cycle_count" value="$(arg cycle_count)" />
         <rosparam subst_value="true"
-                  param="translation_magnitudes">$(arg translation_magnitudes)</rosparam>
+                  param="target_distances">$(arg target_distances)</rosparam>
         <rosparam subst_value="true"
-                  param="yaw_magnitudes_deg">$(arg yaw_magnitudes_deg)</rosparam>
+                  param="target_angles_deg">$(arg target_angles_deg)</rosparam>
         <param name="publish_rate_hz" value="$(arg publish_rate_hz)" />
         <param name="startup_timeout" value="$(arg startup_timeout)" />
         <param name="action_timeout" value="$(arg action_timeout)" />
