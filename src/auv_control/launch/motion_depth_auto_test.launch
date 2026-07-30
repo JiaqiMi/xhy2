@@ -1,0 +1,71 @@
+<launch>
+    <!--
+      绝对深度阶跃自动测试。
+      目标仍经 motion_supervisor 下发；motion_supervisor 透传深度，
+      测试节点根据 map -> base_link TF 独立判断深度到达和稳定。
+    -->
+    <!-- 绝对 NED 深度数组，单位 m；每个目标后返回启动时锁定的 TF 深度。 -->
+    <arg name="target_depths" default="[-0.3, -0.6, -0.9]" />
+    <!-- 完整目标数组重复执行次数。 -->
+    <arg name="cycle_count" default="2" />
+    <!-- 深度目标重复发布频率，单位 Hz。 -->
+    <arg name="publish_rate_hz" default="5.0" />
+    <!-- 等待 motion_supervisor 启动、HOVER 和 TF 的超时，单位 s。 -->
+    <arg name="startup_timeout" default="60.0" />
+    <!-- 单个绝对深度目标最长等待时间，单位 s。 -->
+    <arg name="action_timeout" default="120.0" />
+    <!-- 锁定启动位姿后第一步前的等待时间，单位 s。 -->
+    <arg name="start_delay" default="2.0" />
+    <!-- /motion/state 与 TF 的最大允许年龄，单位 s。 -->
+    <arg name="feedback_timeout" default="0.5" />
+    <arg name="tf_feedback_timeout" default="0.5" />
+    <!-- motion_supervisor 状态反馈中的目标匹配容差。 -->
+    <arg name="goal_position_tolerance" default="0.05" />
+    <arg name="goal_depth_tolerance" default="0.05" />
+    <arg name="goal_yaw_tolerance_deg" default="2.0" />
+    <!--
+      data2 的稳态绝对深度误差 P95 为 0.095 m，默认用 0.10 m；
+      TF 垂向速度阈值仍用于排除穿越目标和持续漂移。
+    -->
+    <arg name="acceptance_depth_tolerance" default="0.10" />
+    <arg name="stable_vertical_speed_threshold" default="0.015" />
+    <arg name="required_stable_seconds" default="5.0" />
+    <!-- TF 垂向速度采用窗口最小二乘拟合，降低单帧差分噪声。 -->
+    <arg name="vertical_speed_window_seconds" default="2.0" />
+    <arg name="minimum_speed_window_seconds" default="1.0" />
+    <!-- 自动测试摘要 CSV 目录；完整曲线由 motion_supervisor 日志保存。 -->
+    <arg name="log_directory"
+         default="$(env HOME)/.ros/auv_logs/motion_auto_test" />
+
+    <node pkg="auv_control" type="motion_depth_auto_test.py"
+          name="motion_depth_auto_test" output="screen">
+        <rosparam subst_value="true"
+                  param="target_depths">$(arg target_depths)</rosparam>
+        <param name="cycle_count" value="$(arg cycle_count)" />
+        <param name="publish_rate_hz" value="$(arg publish_rate_hz)" />
+        <param name="startup_timeout" value="$(arg startup_timeout)" />
+        <param name="action_timeout" value="$(arg action_timeout)" />
+        <param name="start_delay" value="$(arg start_delay)" />
+        <param name="feedback_timeout" value="$(arg feedback_timeout)" />
+        <param name="tf_feedback_timeout"
+               value="$(arg tf_feedback_timeout)" />
+        <param name="goal_position_tolerance"
+               value="$(arg goal_position_tolerance)" />
+        <param name="goal_depth_tolerance"
+               value="$(arg goal_depth_tolerance)" />
+        <param name="goal_yaw_tolerance_deg"
+               value="$(arg goal_yaw_tolerance_deg)" />
+        <param name="acceptance_depth_tolerance"
+               value="$(arg acceptance_depth_tolerance)" />
+        <param name="stable_vertical_speed_threshold"
+               value="$(arg stable_vertical_speed_threshold)" />
+        <param name="required_stable_seconds"
+               value="$(arg required_stable_seconds)" />
+        <param name="vertical_speed_window_seconds"
+               value="$(arg vertical_speed_window_seconds)" />
+        <param name="minimum_speed_window_seconds"
+               value="$(arg minimum_speed_window_seconds)" />
+        <param name="log_directory" value="$(arg log_directory)" />
+    </node>
+</launch>
+
