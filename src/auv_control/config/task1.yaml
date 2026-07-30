@@ -8,7 +8,7 @@ map_frame: map
 use_reference_depth: true
 reference_depth: -0.6
 # false：使用机器人启动时的当前航向；true：先旋转到参考航向，
-# 收到 HOVER 后再开始 startup_hold_seconds 定点等待
+# 收到 HOVER 且识别/运动话题均有数据后，再定点缓冲 startup_hold_seconds
 use_reference_yaw: true
 reference_yaw_deg: -45.0
 line_tracking_frame: camera
@@ -28,7 +28,7 @@ finished_topic: /finished
 trajectory_topic: /task1/trajectory
 
 # 启动与搜索
-startup_hold_seconds: 50.0
+startup_hold_seconds: 3.0
 camera_message_timeout: 2.0
 tf_timeout_seconds: 1.0
 line_message_max_age_seconds: 5.0
@@ -51,6 +51,8 @@ curve_freeze_min_length: 0.15
 curve_freeze_min_advance: 0.10
 curve_freeze_overlap_distance: 0.25
 endpoint_growth_tolerance: 0.08
+# 最后中点 HOVER 后，待固定尾段小于该值则不搜索、直接结束
+endpoint_pending_extension_tolerance: 0.20
 
 # LOS。控制端给出一次新鲜 HOVER 即认为当前目标到达。
 los_lookahead_distance: 0.6
@@ -77,7 +79,7 @@ marker_window_size: 10
 marker_required_valid: 3
 marker_sample_timeout: 10.0
 marker_cluster_distance: 0.25
-marker_duplicate_distance: 0.40
+marker_duplicate_distance: 0.60
 marker_line_max_distance: 0.50
 marker_progress_tolerance: 0.15
 
@@ -91,10 +93,13 @@ gap_seconds: 1
 yellow_light_count: 1
 black_light_count: 2
 
-# 黄色接触动作。false：只执行灯光；true：灯光后保持 X/Y/航向，
-# 下潜到人为设置的绝对 Z 深度，收到 HOVER 后回到 Task1 保持深度。
+# 黄色接触动作。黄色按 camera 巡线进度触发并用 camera 水平投影定点；
+# 下潜到绝对 Z 深度后由 Task1 按深度误差判断，超时也会自动上浮。
+# 回到 Task1 保持深度后仍等待控制端 HOVER。
 yellow_contact_enabled: true
 yellow_contact_depth: -0.3
+yellow_contact_depth_tolerance: 0.05
+yellow_dive_timeout: 10.0
 
 # 黑色动作：动态超前 90 度，累计一圈后等待最后目标的一次 HOVER
 black_rotation_angle_deg: 360.0
