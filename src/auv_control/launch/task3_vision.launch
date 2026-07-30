@@ -1,0 +1,66 @@
+<launch>
+    <!-- task3 三个视觉模型的独立常驻进程组，可由 task2 预热。 -->
+    <arg name="start_fisheye_driver" default="false" />
+    <arg name="start_down_camera" default="false" />
+    <arg name="start_down_splitter" default="false" />
+    <arg name="start_arrow_model" default="true" />
+    <arg name="start_aruco_model" default="true" />
+    <arg name="start_rectangle_model" default="true" />
+    <arg name="start_arrow_web" default="false" />
+    <arg name="start_aruco_web" default="false" />
+    <arg name="start_rectangle_web" default="false" />
+    <arg name="arrow_web_port" default="8083" />
+    <arg name="aruco_web_port" default="8082" />
+    <arg name="rectangle_web_port" default="8080" />
+    <arg name="model_node_output" default="log" />
+
+    <arg name="arrow_topic" default="/vision/arrow/direction" />
+    <arg name="aruco_topic" default="/vision/aruco/target_message" />
+    <arg name="aruco_web_detection_topic"
+         default="/vision/aruco/detections" />
+    <arg name="aruco_web_pose_topic" default="/vision/aruco/pose" />
+    <arg name="rectangle_target_topic"
+         default="/vision/rectangle/target_message" />
+    <arg name="rectangle_detection_topic"
+         default="/vision/rectangle/detections" />
+    <arg name="rectangle_pose_topic" default="/vision/rectangle/pose" />
+
+    <group if="$(arg start_arrow_model)">
+        <remap from="/vision/arrow/direction" to="$(arg arrow_topic)" />
+        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
+            <arg name="start_camera" value="false" />
+            <arg name="start_splitter" value="false" />
+            <arg name="start_web" value="$(arg start_arrow_web)" />
+            <arg name="start_depth" value="true" />
+            <arg name="web_port" value="$(arg arrow_web_port)" />
+            <arg name="node_output" value="$(arg model_node_output)" />
+        </include>
+    </group>
+
+    <group if="$(arg start_aruco_model)" ns="task3_final/aruco_pipeline">
+        <include file="$(find stereo_depth)/launch/test_aruco_detection_fisheye.launch">
+            <arg name="start_driver" value="$(arg start_fisheye_driver)" />
+            <arg name="target_output_topic" value="$(arg aruco_topic)" />
+            <arg name="web_detection_topic" value="$(arg aruco_web_detection_topic)" />
+            <arg name="web_pose_topic" value="$(arg aruco_web_pose_topic)" />
+            <arg name="start_web" value="$(arg start_aruco_web)" />
+            <arg name="web_port" value="$(arg aruco_web_port)" />
+            <arg name="node_output" value="$(arg model_node_output)" />
+        </include>
+    </group>
+
+    <group if="$(arg start_rectangle_model)">
+        <remap from="/vision/rectangle/target_message"
+               to="$(arg rectangle_target_topic)" />
+        <remap from="/vision/rectangle/detections"
+               to="$(arg rectangle_detection_topic)" />
+        <remap from="/vision/rectangle/pose" to="$(arg rectangle_pose_topic)" />
+        <include file="$(find stereo_depth)/launch/test_rectangles_detection.launch">
+            <arg name="start_camera" value="$(arg start_down_camera)" />
+            <arg name="start_splitter" value="$(arg start_down_splitter)" />
+            <arg name="start_web" value="$(arg start_rectangle_web)" />
+            <arg name="web_port" value="$(arg rectangle_web_port)" />
+            <arg name="node_output" value="$(arg model_node_output)" />
+        </include>
+    </group>
+</launch>
