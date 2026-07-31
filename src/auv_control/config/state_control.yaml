@@ -5,11 +5,17 @@ finished_keyword: finished
 monitor_rate_hz: 2.0
 terminate_wait_seconds: 5.0
 
-# task2 开始时预热 task3 的三个视觉模型；task3 期间复用同一组进程。
+# 设为 false 时不预热，task3 会在自身 launch 中启动三个视觉模型。
+# 设为 true 时 task2 预热，task3 复用该组模型而不重复启动。
 task3_vision_prewarm:
+  enabled: true
   name: task3_vision
   launch: task3_vision.launch
   launch_args: []
+  task3_reuse_launch_args:
+    - start_arrow_model:=false
+    - start_aruco_model:=false
+    - start_rectangle_model:=false
   active_modes: [2, 3]
 
 tasks:
@@ -27,7 +33,4 @@ tasks:
     name: task3
     launch: task3.launch
     timeout_seconds: 600.0
-    launch_args:
-      - start_arrow_model:=false
-      - start_aruco_model:=false
-      - start_rectangle_model:=false
+    launch_args: []

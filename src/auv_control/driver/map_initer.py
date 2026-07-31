@@ -15,6 +15,10 @@
 2026.7.13
     允许在同一轮运行中重复接收原点重置请求，每次均以当前原点为基准更新。
     AUV 状态订阅话题调整为 /status/auv。
+2026.7.31
+    红圆原点重置时直接采用候选点的 DVL 推导深度，不再叠加旧 map 的 z 偏移。
+2026.7.31
+    候选点 z 调整为池底绝对深度，重置后 NED 的 D=0 对齐泳池地平面。
 """
 
 import threading
@@ -94,7 +98,7 @@ class MapIniter:
             )
 
     def reset_callback(self, candidate):
-        """将旧 map 中的红圆候选点换算为新的经纬深原点。"""
+        """将候选点的 map 平面坐标和池底绝对深度换算为新原点。"""
         with self.lock:
             if not self.initialized or self.wfm is None:
                 rospy.logwarn("map_initer: 初始原点未就绪，拒绝重置请求")
@@ -115,7 +119,10 @@ class MapIniter:
                 self.reset_result_pub.publish(Bool(data=False))
                 return
 
-            latitude, longitude, depth = self.wfm.ned_to_lld(*point)
+            # 候选点 z 是池底绝对深度，不能再视作旧 map 的相对 Down 偏移；
+            # 仅用 map 平面坐标换算经纬度，随后直接采用该绝对深度。
+            latitude, longitude, _ = self.wfm.ned_to_lld(point[0], point[1], 0.0)
+            depth = point[2]
             if not np.all(np.isfinite([latitude, longitude, depth])):
                 rospy.logerr("map_initer: 候选点无法换算为有效经纬深")
                 self.reset_result_pub.publish(Bool(data=False))

@@ -1,5 +1,8 @@
 <launch>
-    <!-- task3 三个视觉模型的独立常驻进程组，可由 task2 预热。 -->
+    <!--
+      task3 三个视觉模型的独立常驻进程组，可由 task2 预热。
+      箭头和方框深度计算使用 speed launch 的 ROI 优化节点。
+    -->
     <arg name="start_fisheye_driver" default="false" />
     <arg name="start_down_camera" default="false" />
     <arg name="start_down_splitter" default="false" />
@@ -27,13 +30,12 @@
 
     <group if="$(arg start_arrow_model)">
         <remap from="/vision/arrow/direction" to="$(arg arrow_topic)" />
-        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
+        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection_speed.launch">
             <arg name="start_camera" value="false" />
             <arg name="start_splitter" value="false" />
             <arg name="start_web" value="$(arg start_arrow_web)" />
             <arg name="start_depth" value="true" />
             <arg name="web_port" value="$(arg arrow_web_port)" />
-            <arg name="node_output" value="$(arg model_node_output)" />
         </include>
     </group>
 
@@ -55,12 +57,11 @@
         <remap from="/vision/rectangle/detections"
                to="$(arg rectangle_detection_topic)" />
         <remap from="/vision/rectangle/pose" to="$(arg rectangle_pose_topic)" />
-        <include file="$(find stereo_depth)/launch/test_rectangles_detection.launch">
+        <include file="$(find stereo_depth)/launch/test_rectangles_detection_speed.launch">
             <arg name="start_camera" value="$(arg start_down_camera)" />
             <arg name="start_splitter" value="$(arg start_down_splitter)" />
             <arg name="start_web" value="$(arg start_rectangle_web)" />
             <arg name="web_port" value="$(arg rectangle_web_port)" />
-            <arg name="node_output" value="$(arg model_node_output)" />
         </include>
     </group>
 </launch>
