@@ -4,10 +4,10 @@
       运行阶段持续发布“当前航向 + lookahead_yaw_offset_deg”，达到 turns 圈后
       切换为起始航向的最终定点目标并等待 HOVER。全程锁定起始 base_link 位置。
     -->
-    <arg name="target_z" default="-0.65" />
+    <arg name="target_z" default="-0.1" />
     <arg name="turns" default="3" />
     <!-- 正值为 map 航向正方向，负值为反方向；绝对值为滚动前视偏置。 -->
-    <arg name="lookahead_yaw_offset_deg" default="-155.0" />
+    <arg name="lookahead_yaw_offset_deg" default="150.0" />
     <arg name="publish_rate_hz" default="10.0" />
     <arg name="startup_timeout" default="60.0" />
     <arg name="rotation_timeout" default="600.0" />

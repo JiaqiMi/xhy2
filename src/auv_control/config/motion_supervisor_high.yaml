@@ -27,12 +27,6 @@
 # 2026.8.1
 #   data4 显示正转在 25000 下已平稳、反转仍有周期性 MZ/角速度摆动；最大期望角速度降至 20 deg/s，
 #   并仅降低负向跟踪增益以反映推进效率和动态响应差异。
-# 2026.8.1
-#   确认 yaw_max_rate 是纯 P 环的内部角速度参考上限而非实际速度目标；恢复 25 deg/s 参考，
-#   以获得约 20 deg/s 的实际稳态角速度，实际目标不再直接写入该参数。
-# 2026.8.1
-#   以 data5 最新参数快照（020730）为基线同步本地 high 档；保留已确认的 1 deg HOVER 航向标准，
-#   反向 MZ 限幅从实测的 3000 提升至 3500，用于验证反向长时间触顶是否解除；P 增益和刹车模型不额外提高。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -54,7 +48,6 @@ log_max_file_size_mb: 50.0                        # 单个 CSV 最大 50 MiB，�
 power_feedback_timeout: 1.0                       # /status/power 超过此时间未更新时标记为不新鲜，不影响控制
 
 # 正常跟踪与主动刹车共用方向性限幅和步长；参数后缀表示实际输出正负号。
-# 统一负轴是正轴的1.5倍，便于调参
 max_tx_positive: 2000.0             # 正 TX 最大值
 max_tx_negative: 3000.0             # 负 TX 绝对值上限
 max_ty_positive: 4000.0             # 正 TY 最大值
@@ -77,8 +70,8 @@ kv_x_positive: 20000.0              # 高速首轮：提高正向速度误差对
 kv_x_negative: 22000.0              # 高速首轮：保留负向推进效率差异
 kv_y_positive: 45000.0              # 高速首轮：目标正向约 0.10 m/s
 kv_y_negative: 65000.0              # 高速首轮：目标负向约 0.10 m/s
-kp_yaw_positive: 18000.0            # data5 参数快照值；正向连续旋转仅 7.1% 帧触顶
-kp_yaw_negative: 18000.0            # data5 参数快照值；反向先通过提高限幅而非提高 P 增益解除触顶
+kp_yaw_positive: 18000.0            # data3 正转误差 P90=6.45 deg/s 时可避免持续触及 +3000，先消除跟踪饱和
+kp_yaw_negative: 18000.0            # data4 反转同增益仍在 -17～-21 deg/s 周期摆动，降低反馈放大；正反推进动态不共用增益
 
 # 定点模式锁存制动时的速度环增益；仍按最终 TX/TY 输出符号区分正反车效率。
 brake_kv_x_positive: 20000.0
@@ -111,7 +104,7 @@ brake_reference_acceleration_tx_negative: 0.020 # 负 TX 制动已使用约 65% 
 brake_reference_acceleration_ty_positive: 0.010 # 正 TY 制动已使用约 66% 限幅，保留耦合补偿余量
 brake_reference_acceleration_ty_negative: 0.012 # 两向统一计划减速度，方向差异仍由有效值保留
 angular_brake_acceleration_mz_positive: 0.242   # +3000 跨零速实测约 15.39 deg/s^2，保留 10% 后换算为 rad/s^2
-angular_brake_acceleration_mz_negative: 0.242   # data5 参数快照值；待 -3500 下独立反向刹停标定后再更新有效减速度模型
+angular_brake_acceleration_mz_negative: 0.242   #TODO 参数快照值；待 -3500 下独立反向刹停标定后再更新有效减速度模型
 angular_brake_reference_acceleration_mz_positive_deg_s2: 3.50 # 计划值仍显著低于 +MZ 标定有效减速度，减少长时间低力矩刹转
 angular_brake_reference_acceleration_mz_negative_deg_s2: 3.50 # 计划值仍显著低于 -MZ 标定有效减速度，正反向使用同一首轮轨迹
 control_delay: 0.45                 # 反馈、计算、通信和执行的综合延迟估计，单位 s
@@ -122,14 +115,14 @@ brake_margin_ty_negative: 0.03      # 与三轴内部位置死区统一，给 Y 
 yaw_brake_margin_positive_deg: 0.8  # 航向捕获标准收紧为 1 deg；由低位置增益提前降速，余量须小于捕获容差
 yaw_brake_margin_negative_deg: 0.8  # 与正向一致，满足核心参数校验并保留 0.2 deg 捕获裕量
 
-# 进入hover阈值
+# 进入hover阈值,也就是代表着定位精度
 capture_radius: 0.04                  # 两种模式到达 HOVER 的外层水平位置误差，满足旋转时位置精度 4 cm
 control_center_hold_tolerance: 0.03   # 当前锁存控制中心的二维圆形位置死区，单位 m
 horizontal_speed_threshold: 0.008     # data6 中 0.01 m/s 仍持续漂移，收紧三轴停稳判定
-yaw_tolerance_deg: 1.0                # 最终航向允许误差，单位 deg
+yaw_tolerance_deg: 2.0                # 最终航向允许误差，单位 deg
 yaw_control_tolerance_deg: 1.0        # mode=2 上位机航向保持死区，与最终航向精度一致
 yaw_rate_threshold_deg_s: 0.3         # 判定转动停稳的角速度上限，单位 deg/s
-stable_frames: 5                      # 捕获或停稳条件需连续满足的控制帧数，20 Hz 下约为 0.25 s
+stable_frames: 2                      # 捕获或停稳条件需连续满足的控制帧数，8Hz下改为2帧
 
 # 退出hover的滞回阈值；与捕获阈值形成滞回，避免频繁进出 HOVER。
 hover_exit_position_error: 0.12       # 两种模式统一的 HOVER 水平退出阈值；与捕获阈值形成滞回
@@ -145,7 +138,7 @@ mode_ack_timeout: 1.0                 # 接管确认及 HOVER 模式反馈最大
 # hover_fault_yaw_error_deg: 20.0
 
 # 统一三轴位置-速度-力控制。
-xy_max_speed: 0.30
+xy_max_speed: 0.30 # xy的最大参考速度，暂定为0.3m/s
 xy_position_gain: 2.00
 xy_max_acceleration: 0.40
 xy_max_jerk: 0.40
@@ -154,7 +147,7 @@ xy_brake_jerk: 0.20  # 定点制动速度参考的最大 jerk，单位 m/s^3
 # 预测停车距离内且合速度达到进入阈值时锁存刹停；低于退出阈值才恢复跟踪。
 xy_brake_enter_speed: 0.020
 xy_brake_exit_speed: 0.012
-yaw_max_rate_deg_s: 30.0 # data5 参数快照值；纯 P 环内部参考上限，实测可形成约 20 deg/s 的连续实际角速度
+yaw_max_rate_deg_s: 30.0  # 高速任务目标角速度调整为 30 deg/s，避免以更高参考持续驱动推进器
 yaw_position_gain: 0.22 # 仅在 120 deg 及以上动作达到 25 deg/s；短角度动作提前收敛，避免反复刹转
 yaw_max_acceleration_deg_s2: 20.0
 yaw_max_jerk_deg_s3: 35.0 # 5 Hz 前视目标跨过 5 deg 重规划阈值后，减小角速度参考恢复时的力矩阶跃；不影响刹转 jerk
