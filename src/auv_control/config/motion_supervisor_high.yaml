@@ -7,6 +7,9 @@
 #   根据远距离任务制动力矩余量，提高 high 档三轴计划减速度。
 # 2026.7.31
 #   根据手控满力矩跨零速标定，按近零速减速度中位数保留 10% 余量更新六方向有效减速度。
+# 2026.8.1
+#   根据 260801 data1 的定角与连续旋转测试，降低近目标角速度参考、提高速度跟踪，
+#   并提高计划刹转建立速度和停车余量；保留当日已标定的有效刹转减速度与 MZ 限幅。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -51,8 +54,8 @@ kv_x_positive: 20000.0              # 高速首轮：提高正向速度误差对
 kv_x_negative: 22000.0              # 高速首轮：保留负向推进效率差异
 kv_y_positive: 45000.0              # 高速首轮：目标正向约 0.10 m/s
 kv_y_negative: 65000.0              # 高速首轮：目标负向约 0.10 m/s
-kp_yaw_positive: 28000.0            # 高速首轮：提高正向角速度跟踪力矩
-kp_yaw_negative: 33000.0            # 高速首轮：保留负向旋转效率差异
+kp_yaw_positive: 36000.0            # 25 deg/s 跟踪时 +MZ 常未触顶，按实测速度误差提高跟踪力矩
+kp_yaw_negative: 42000.0            # 保持与 -MZ 可用力矩相匹配的方向性增益，缩小连续旋转速度缺口
 
 # 定点模式锁存制动时的速度环增益；仍按最终 TX/TY 输出符号区分正反车效率。
 brake_kv_x_positive: 20000.0
@@ -86,15 +89,15 @@ brake_reference_acceleration_ty_positive: 0.010 # 正 TY 制动已使用约 66% 
 brake_reference_acceleration_ty_negative: 0.012 # 两向统一计划减速度，方向差异仍由有效值保留
 angular_brake_acceleration_mz_positive: 0.242   # +3000 跨零速实测约 15.39 deg/s^2，保留 10% 后换算为 rad/s^2
 angular_brake_acceleration_mz_negative: 0.389   # -4500 跨零速实测约 24.78 deg/s^2，保留 10% 后换算为 rad/s^2
-angular_brake_reference_acceleration_mz_positive_deg_s2: 2.60 # 90 deg 行程允许约 20 deg/s 参考
-angular_brake_reference_acceleration_mz_negative_deg_s2: 2.60 # 仍低于负 MZ 实测有效减速度
+angular_brake_reference_acceleration_mz_positive_deg_s2: 3.50 # 计划值仍显著低于 +MZ 标定有效减速度，减少长时间低力矩刹转
+angular_brake_reference_acceleration_mz_negative_deg_s2: 3.50 # 计划值仍显著低于 -MZ 标定有效减速度，正反向使用同一首轮轨迹
 control_delay: 0.45                 # 反馈、计算、通信和执行的综合延迟估计，单位 s
 brake_margin_tx_positive: 0.03      # data7 原 0.18 m 导致距目标约 0.12 m 已停低速并重复制动
 brake_margin_tx_negative: 0.03      # 与内部位置死区一致，并保留实测减速度偏差的防超调余量
 brake_margin_ty_positive: 0.03      # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
 brake_margin_ty_negative: 0.03      # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
-yaw_brake_margin_positive_deg: 1.5  # 小于纯定深航向保持容差，避免刹停与重新追踪循环
-yaw_brake_margin_negative_deg: 1.5  # 小于纯定深航向保持容差，避免刹停与重新追踪循环
+yaw_brake_margin_positive_deg: 4.0  # 260801 测试停车越界中位数约 3 deg，提前进入刹转并覆盖反馈/执行迟滞
+yaw_brake_margin_negative_deg: 4.0  # 与正向一致，优先满足无超调而非最短停车时间
 
 # 进入hover阈值
 capture_radius: 0.07                  # 两种模式到达 HOVER 的外层水平位置误差
@@ -129,10 +132,10 @@ xy_brake_jerk: 0.20  # 定点制动速度参考的最大 jerk，单位 m/s^3
 xy_brake_enter_speed: 0.020
 xy_brake_exit_speed: 0.012
 yaw_max_rate_deg_s: 25.0
-yaw_position_gain: 1.50
+yaw_position_gain: 1.00
 yaw_max_acceleration_deg_s2: 20.0
 yaw_max_jerk_deg_s3: 60.0
-yaw_brake_jerk_deg_s3: 5.0 # 定点刹转角速度参考的最大 jerk，单位 deg/s^3
+yaw_brake_jerk_deg_s3: 15.0 # 8 Hz 下缩短刹转加速度建立时间，避免计划减速度长期低于实际停车需求
 
 # 航向刹停迟滞；高于 0.6 deg/s 才进入，低于 0.2 deg/s 才退出。
 yaw_brake_enter_rate_deg_s: 0.6
