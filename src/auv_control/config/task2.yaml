@@ -45,8 +45,8 @@ final_yaw_deg: 210
 pushrod_speed: 250
 # 推杆确认前进后连续采水的时长；执行器反馈异常会暂停并重新计时。
 pushrod_duration: 10.0
-# 推杆在送水点下潜并由控制器确认 HOVER 后的反向回收时长；速度固定复用 pushrod_speed，
-# 执行器或运动反馈异常会先安全停止，恢复后重新计时。
+# 推杆在送水点下潜并由控制器确认 HOVER 后启动反向回收；启动后与返回起始点并行，
+# 速度固定复用 pushrod_speed。执行器反馈异常会先安全停止，恢复后重新计时。
 pushrod_retract_duration: 10.0
 # 在送水点浮出并收到 HOVER 后，保持水面位置的时长。
 surface_hold_seconds: 20.0

@@ -3,6 +3,8 @@
 # 2026.7.31
 #   由低速完整参数建立 high 档，目标为 X 约 0.20 m/s、Y 约 0.10 m/s、
 #   Yaw 约 20 deg/s；保留当前最大输出、有效减速度和刹车速度环参数。
+# 2026.7.31
+#   根据远距离任务制动力矩余量，提高 high 档三轴计划减速度。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -19,17 +21,18 @@ startup_hover_frames: 5     # 首帧锁定位姿进入 HOVER 后保持的发布�
 # 每个控制周期的完整 CSV 记录；目录中的 ~ 会展开为运行节点用户的主目录
 log_enabled: true                                 # 是否记录当前/目标位姿、速度、状态、模式和力矩等完整数据
 log_directory: ~/.ros/auv_logs/motion_supervisor  # CSV 日志目录，每次启动自动新建带时间戳文件
-log_flush_every: 20                               # 每累计多少个控制周期刷新磁盘，20 Hz 下约每秒刷新
+log_flush_every: 10.0                              # 每累计多少个控制周期刷新磁盘，20 Hz 下约每秒刷新
 log_max_file_size_mb: 50.0                        # 单个 CSV 最大 50 MiB，后续分卷追加 _1、_2 等编号
 power_feedback_timeout: 1.0                       # /status/power 超过此时间未更新时标记为不新鲜，不影响控制
 
 # 正常跟踪与主动刹车共用方向性限幅和步长；参数后缀表示实际输出正负号。
+# 统一负轴是正轴的1.5倍，便于调参
 max_tx_positive: 2000.0             # 正 TX 最大值
-max_tx_negative: 2250.0             # 负 TX 绝对值上限
+max_tx_negative: 3000.0             # 负 TX 绝对值上限
 max_ty_positive: 4000.0             # 正 TY 最大值
-max_ty_negative: 6600.0             # 负 TY 绝对值上限
+max_ty_negative: 6000.0             # 负 TY 绝对值上限
 max_mz_positive: 3000.0             # 正 MZ 最大值
-max_mz_negative: 3500.0             # 负 MZ 绝对值上限
+max_mz_negative: 4500.0             # 负 MZ 绝对值上限
 force_slew_per_cycle: 1000.0        # 所有阶段每控制周期允许的最大力或力矩变化量
 
 # 已停用：主动刹车不再使用独立最大限幅和步长，保留末次值供历史配置对照。
@@ -75,9 +78,9 @@ brake_acceleration_ty_positive: 0.016 # data1 正 TY 满输出等效约 0.016 m/
 brake_acceleration_ty_negative: 0.019 # data1 负 TY 满输出等效约 0.019 m/s^2；对应 Y 正向运动
 
 # 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
-brake_reference_acceleration_tx_positive: 0.024 # 高速停车包络；低于正 TX 实测有效减速度
-brake_reference_acceleration_tx_negative: 0.024 # 高速停车包络；低于负 TX 实测有效减速度
-brake_reference_acceleration_ty_positive: 0.012 # 允许 0.5 m 行程生成约 0.10 m/s 参考
+brake_reference_acceleration_tx_positive: 0.022 # 正 TX 制动峰值未碰限，提高计划减速度并保留力矩余量
+brake_reference_acceleration_tx_negative: 0.020 # 负 TX 制动已使用约 65% 限幅，保守提高避免过冲
+brake_reference_acceleration_ty_positive: 0.010 # 正 TY 制动已使用约 66% 限幅，保留耦合补偿余量
 brake_reference_acceleration_ty_negative: 0.012 # 两向统一计划减速度，方向差异仍由有效值保留
 angular_brake_acceleration_mz_positive: 0.074   # data1 正 MZ 满输出等效约 4.24 deg/s^2；对应负向 yaw 运动
 angular_brake_acceleration_mz_negative: 0.088   # data1 负 MZ 满输出等效约 5.04 deg/s^2；对应正向 yaw 运动

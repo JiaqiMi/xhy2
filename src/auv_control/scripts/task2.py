@@ -27,6 +27,9 @@
         3. 新增与 motion_supervisor 对齐的逐周期 CSV 日志和 JSON 参数快照，支持完整复盘。
     2026.7.30
         1. 将无新执行器反馈帧与反馈不匹配区分，保留已累计的连续匹配帧，避免 5 Hz 主循环清零确认计数。
+    2026.7.31
+        1. 推杆反向回收在送水点下潜确认后与返回起始点并行执行；前推采水仍保持起始点 HOVER。
+        2. 最终悬停默认时长调整为 3 秒，缩短任务完成等待。
 """
 
 from datetime import datetime
@@ -160,7 +163,7 @@ class Task2V2(object):
         self.surface_hold_seconds = float(rospy.get_param(
             '~surface_hold_seconds', 10.0))
         self.final_hold_seconds = float(rospy.get_param(
-            '~final_hold_seconds', 10.0))
+            '~final_hold_seconds', 3.0))
 
         self.heading_servo_right = int(rospy.get_param(
             '~heading_servo_right', 0))
@@ -1258,15 +1261,14 @@ class Task2V2(object):
             1.0, '%s: %s，推杆保持停止并等待 HOVER', NODE_NAME, detail)
         return False
 
-    def _retraction_position_ready(self):
-        """仅在送水点已下潜并 HOVER 时回收推杆，失稳时立即安全停止。"""
+    def _retraction_start_position_ready(self):
+        """仅在送水点下潜 HOVER 后启动回收；启动后允许与返航并行。"""
         self._publish_goal()
         hovered, fallback, detail = self._check_motion_or_fallback('送水点下潜后推杆回收定点')
         if fallback:
             return False
         if hovered:
             return True
-        self.retraction_started_at = None
         self._actuator_gate(self._safe_actuator_command(), '回收推杆暂停')
         rospy.loginfo_throttle(
             1.0, '%s: %s，推杆保持停止并等待 HOVER', NODE_NAME, detail)
@@ -1402,22 +1404,26 @@ class Task2V2(object):
             return
 
         if self.state == self.WAIT_PUSHROD_RETRACT_START:
-            if not self._retraction_position_ready():
+            if not self._retraction_start_position_ready():
                 return
             if self._actuator_gate(
                     self._pushrod_reverse_command(), '推杆反向回收'):
                 self.retraction_started_at = time.monotonic()
+                self._set_active_goal(
+                    self.return_home_goal, '反向回收并返回起始点')
                 self._set_state(
                     self.RETRACTING,
-                    '推杆反向回收反馈确认，开始计时')
+                    '推杆反向回收反馈确认，开始返航并计时')
             return
 
         if self.state == self.RETRACTING:
-            if not self._retraction_position_ready():
-                return
+            self._publish_goal()
             if not self._actuator_gate(
-                    self._pushrod_reverse_command(), '回收推杆保持'):
+                    self._pushrod_reverse_command(), '返航中回收推杆'):
                 self.retraction_started_at = None
+                return
+            _, fallback, detail = self._check_motion_or_fallback('返航中回收推杆')
+            if fallback:
                 return
             if self.retraction_started_at is None:
                 self.retraction_started_at = time.monotonic()
@@ -1428,14 +1434,13 @@ class Task2V2(object):
                     '推杆反向回收计时完成，等待停止确认')
             else:
                 rospy.loginfo_throttle(
-                    1.0, '%s: 推杆反向回收 %.1f/%.1fs', NODE_NAME,
+                    1.0, '%s: %s，推杆反向回收 %.1f/%.1fs', NODE_NAME, detail,
                     elapsed, self.pushrod_retract_duration)
             return
 
         if self.state == self.WAIT_PUSHROD_RETRACT_STOP:
             self._publish_goal()
             if self._actuator_gate(safe_command, '回收推杆停止'):
-                self._set_active_goal(self.return_home_goal, '回收完成后返回起始点')
                 self._set_state(self.RETURN_HOME, '推杆回收停止反馈确认')
             return
 
