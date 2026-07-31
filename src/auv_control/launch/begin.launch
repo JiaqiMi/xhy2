@@ -37,7 +37,7 @@
     <arg name="vehicle_ip" default="192.168.1.115" />
 
     <!-- debug_driver_v2 向下位机发送完整控制帧的频率，单位 Hz。 -->
-    <arg name="debug_send_rate_hz" default="10.0" />
+    <arg name="debug_send_rate_hz" default="8.0" />
     <arg name="dvl_altitude_timeout_sec" default="0.5" />
     
     <!-- web 参数 -->    
