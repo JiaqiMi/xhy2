@@ -9,6 +9,8 @@
 记录：
 2026.7.13
     新增中位数与 MAD 离群值剔除工具，供 world_origin_reset.py 调用。
+2026.7.31
+    新增 DVL 高度与相机 TF 高度的深度换算及相机平面坐标校验。
 """
 
 import numpy as np
@@ -27,14 +29,22 @@ def is_matching_target(class_name, target_type, confidence, expected_class, min_
         return False
 
 
-def is_valid_camera_point(point, min_depth, max_depth):
-    """检查相机坐标点是否有限且处于允许的深度范围。"""
+def is_valid_camera_xy(point):
+    """检查视觉提供的相机平面坐标是否有限。"""
     values = np.asarray(point, dtype=float)
     return (
-        values.shape == (3,)
+        values.shape == (2,)
         and np.all(np.isfinite(values))
-        and min_depth <= values[2] <= max_depth
     )
+
+
+def camera_depth_from_dvl(dvl_altitude, base_to_camera_z):
+    """按前右下坐标系将 DVL 高度换算为相机坐标系的 z。"""
+    values = np.asarray((dvl_altitude, base_to_camera_z), dtype=float)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("DVL 高度和相机 TF z 必须为有限值")
+    # base_link -> camera 的 z 为负时表示相机高于 base_link，因此需相减。
+    return float(dvl_altitude - base_to_camera_z)
 
 
 class RobustPointEstimator:

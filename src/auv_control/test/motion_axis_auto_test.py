@@ -11,8 +11,8 @@
     /cmd/motion/goal (geometry_msgs/PoseStamped)
     /cmd/motion/cancel (std_msgs/Empty，仅异常退出时)
 说明：
-    1. 平移默认测试 ±0.5、±1.0、±1.5 m，航向默认测试 ±30°、±60°、±90°；
-    2. 每个幅值重复三次，顺序为正向、原点、负向、原点；
+    1. 平移默认测试 0.5、1.0、1.5 m，航向默认测试 30°、60°、90°；
+    2. 每个循环依次执行各数组目标，每个目标均按正向、基准点排列；
     3. 每一步必须匹配当前目标并持续处于 HOVER 后才进入下一步；
     4. 本节点只发布 motion_supervisor 目标，不能替代 motion_supervisor。
 记录：
@@ -22,6 +22,8 @@
     X/Y 测试增加实际位置验收、连续停稳等待、停滞诊断和刹停方向分类。
 2026.7.22
     适配纯定深上位机 HOVER，移除测试验收对 mode=4 接管的固定假设。
+2026.7.31
+    改为单侧目标往返基准点，新增循环次数和目标数组参数并兼容旧名称。
 """
 
 from __future__ import division
@@ -50,7 +52,7 @@ if TEST_DIR not in sys.path:
     sys.path.insert(0, TEST_DIR)
 
 from motion_auto_sequence_core import (  # noqa: E402
-    build_axis_sequence,
+    build_out_and_back_sequence,
     classify_signed_stop_error,
     goal_matches,
     relative_goal,
@@ -129,7 +131,15 @@ class MotionAxisAutoTest(object):
             if self.pure_depth_control
             else 'legacy_mode4_handover'
         )
-        self.repetitions = int(rospy.get_param('~repetitions', 3))
+        if rospy.has_param('~cycle_count'):
+            self.cycle_count = int(rospy.get_param('~cycle_count'))
+        else:
+            self.cycle_count = int(rospy.get_param('~repetitions', 3))
+            if rospy.has_param('~repetitions'):
+                rospy.logwarn(
+                    '%s: 参数 ~repetitions 已兼容映射为 ~cycle_count',
+                    NODE_NAME,
+                )
         self.target_z = float(rospy.get_param('~target_z', -0.9))
         self.publish_rate_hz = float(
             rospy.get_param('~publish_rate_hz', 5.0))
@@ -172,12 +182,30 @@ class MotionAxisAutoTest(object):
                 '~/.ros/auv_logs/motion_auto_test'))))
 
         if self.axis in ('x', 'y'):
-            magnitudes = rospy.get_param(
-                '~translation_magnitudes', [0.5, 1.0, 1.5])
-            self.magnitudes = tuple(float(value) for value in magnitudes)
+            if rospy.has_param('~target_distances'):
+                targets = rospy.get_param('~target_distances')
+            else:
+                targets = rospy.get_param(
+                    '~translation_magnitudes', [0.5, 1.0, 1.5])
+                if rospy.has_param('~translation_magnitudes'):
+                    rospy.logwarn(
+                        '%s: 参数 ~translation_magnitudes 已兼容映射为 '
+                        '~target_distances',
+                        NODE_NAME,
+                    )
+            self.magnitudes = tuple(float(value) for value in targets)
         elif self.axis == 'yaw':
-            degrees = rospy.get_param(
-                '~yaw_magnitudes_deg', [30.0, 60.0, 90.0])
+            if rospy.has_param('~target_angles_deg'):
+                degrees = rospy.get_param('~target_angles_deg')
+            else:
+                degrees = rospy.get_param(
+                    '~yaw_magnitudes_deg', [30.0, 60.0, 90.0])
+                if rospy.has_param('~yaw_magnitudes_deg'):
+                    rospy.logwarn(
+                        '%s: 参数 ~yaw_magnitudes_deg 已兼容映射为 '
+                        '~target_angles_deg',
+                        NODE_NAME,
+                    )
             self.magnitudes = tuple(
                 math.radians(float(value)) for value in degrees)
         else:
@@ -221,6 +249,8 @@ class MotionAxisAutoTest(object):
                 or self.stall_force_threshold < 0.0
                 or self.stop_classification_tolerance < 0.0):
             raise ValueError('频率和超时必须为正数，稳定保持时间不能为负数')
+        if self.cycle_count <= 0:
+            raise ValueError('cycle_count 必须大于 0')
         if (
                 self.axis in ('x', 'y')
                 and self.inter_step_stable_seconds < 2.0):
@@ -231,8 +261,8 @@ class MotionAxisAutoTest(object):
             else self.hover_hold_seconds
         )
 
-        self.steps = build_axis_sequence(
-            self.axis, self.magnitudes, self.repetitions)
+        self.steps = build_out_and_back_sequence(
+            self.axis, self.magnitudes, self.cycle_count)
         self.tf_listener = tf.TransformListener()
         self.latest_state = None
         self.latest_state_received_at = None

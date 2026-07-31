@@ -9,12 +9,15 @@
 说明：
     1. X、Y 偏置均相对测试开始时锁定的 base_link 坐标系；
     2. Yaw 偏置相对测试开始时锁定的初始航向；
-    3. 每个幅值按“正向、原点、负向、原点”排列。
+    3. 常规自动测试按“单侧目标、基准点”排列；
+    4. 有效性标定仍可使用“正向、原点、负向、原点”序列。
 记录：
 2026.7.18
     新增 X、Y、Yaw 单轴自动往返测试的纯算法工具。
 2026.7.19
     增加 X/Y 刹停方向分类、实际位置验收和零输出停滞判据。
+2026.7.31
+    增加按循环遍历目标数组的单侧往返序列，保留旧双向标定序列。
 """
 
 from __future__ import division
@@ -80,6 +83,40 @@ def build_axis_sequence(axis, magnitudes, repetitions=3):
                     repetition,
                     phase,
                     sign * magnitude,
+                ))
+    return steps
+
+
+def build_out_and_back_sequence(axis, targets, cycle_count=3):
+    """按循环生成“单侧目标、基准点”序列。
+
+    每个循环依次遍历 targets；每个目标均先从锁定基准点向正方向运动，
+    再返回同一基准点。这样测试范围只占基准点的一侧，同时返回阶段仍能
+    覆盖反向运动。
+    """
+    axis = str(axis).strip().lower()
+    if axis not in SUPPORTED_AXES:
+        raise ValueError('axis 仅支持 {}'.format(', '.join(SUPPORTED_AXES)))
+    values = _positive_finite(targets, 'targets')
+    cycle_count = int(cycle_count)
+    if cycle_count <= 0:
+        raise ValueError('cycle_count 必须大于 0')
+
+    steps = []
+    phases = (
+        ('positive', 1.0),
+        ('return_after_positive', 0.0),
+    )
+    for cycle in range(1, cycle_count + 1):
+        for target in values:
+            for phase, scale in phases:
+                steps.append(SequenceStep(
+                    len(steps) + 1,
+                    axis,
+                    target,
+                    cycle,
+                    phase,
+                    scale * target,
                 ))
     return steps
 

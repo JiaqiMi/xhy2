@@ -10,6 +10,7 @@
 2026.7.30
     增加可持久化的手动地图旋转，支持指定航向为上。
     增加拖拽对角点绘制并持久化水池 N/E 边界。
+    水池矩形改为按绘制时地图航向确定方向，并保存世界坐标角点。
 */
 
 const MAP_UP_HEADING_KEY = "state_web.map_up_heading_deg";
@@ -46,29 +47,86 @@ function saveMapUpHeading(heading) {
 }
 
 
-function normalizePoolBounds(value) {
-    if (!value || typeof value !== "object") return null;
-    const northA = finiteNumber(value.northMin);
-    const northB = finiteNumber(value.northMax);
-    const eastA = finiteNumber(value.eastMin);
-    const eastB = finiteNumber(value.eastMax);
-    if ([northA, northB, eastA, eastB].includes(null)) return null;
+function mapPointToWorld(mapNorth, mapEast, heading) {
+    const rotation = heading * Math.PI / 180;
+    const rotationCos = Math.cos(rotation);
+    const rotationSin = Math.sin(rotation);
     return {
-        northMin: Math.min(northA, northB),
-        northMax: Math.max(northA, northB),
-        eastMin: Math.min(eastA, eastB),
-        eastMax: Math.max(eastA, eastB),
+        east: mapEast * rotationCos + mapNorth * rotationSin,
+        north: -mapEast * rotationSin + mapNorth * rotationCos,
     };
 }
 
 
-function poolBoundsFromPoints(first, second) {
+function normalizePoolBoundary(value) {
+    if (!value || typeof value !== "object") return null;
+
+    if (Array.isArray(value.corners) && value.corners.length === 4) {
+        const corners = value.corners.map((point) => ({
+            north: finiteNumber(point?.north),
+            east: finiteNumber(point?.east),
+        }));
+        if (corners.some((point) => (
+            point.north === null || point.east === null
+        ))) {
+            return null;
+        }
+        const heading = normalizeMapHeading(value.headingDeg);
+        if (heading === null) return null;
+        const widthM = Math.hypot(
+            corners[1].north - corners[0].north,
+            corners[1].east - corners[0].east,
+        );
+        const lengthM = Math.hypot(
+            corners[2].north - corners[1].north,
+            corners[2].east - corners[1].east,
+        );
+        return {
+            headingDeg: heading,
+            corners,
+            lengthM,
+            widthM,
+        };
+    }
+
+    // 兼容旧版固定 N/E 边界，迁移后按 0° 北向上处理。
+    const northMin = finiteNumber(value.northMin);
+    const northMax = finiteNumber(value.northMax);
+    const eastMin = finiteNumber(value.eastMin);
+    const eastMax = finiteNumber(value.eastMax);
+    if ([northMin, northMax, eastMin, eastMax].includes(null)) return null;
+    const normalizedNorthMin = Math.min(northMin, northMax);
+    const normalizedNorthMax = Math.max(northMin, northMax);
+    const normalizedEastMin = Math.min(eastMin, eastMax);
+    const normalizedEastMax = Math.max(eastMin, eastMax);
+    return {
+        headingDeg: 0,
+        corners: [
+            {north: normalizedNorthMin, east: normalizedEastMin},
+            {north: normalizedNorthMin, east: normalizedEastMax},
+            {north: normalizedNorthMax, east: normalizedEastMax},
+            {north: normalizedNorthMax, east: normalizedEastMin},
+        ],
+        lengthM: normalizedNorthMax - normalizedNorthMin,
+        widthM: normalizedEastMax - normalizedEastMin,
+    };
+}
+
+
+function poolBoundaryFromMapPoints(first, second, heading) {
     if (!first || !second) return null;
-    return normalizePoolBounds({
-        northMin: first.north,
-        northMax: second.north,
-        eastMin: first.east,
-        eastMax: second.east,
+    const mapNorthMin = Math.min(first.north, second.north);
+    const mapNorthMax = Math.max(first.north, second.north);
+    const mapEastMin = Math.min(first.east, second.east);
+    const mapEastMax = Math.max(first.east, second.east);
+    return normalizePoolBoundary({
+        headingDeg: heading,
+        corners: [
+            mapPointToWorld(mapNorthMin, mapEastMin, heading),
+            mapPointToWorld(mapNorthMin, mapEastMax, heading),
+            mapPointToWorld(mapNorthMax, mapEastMax, heading),
+            mapPointToWorld(mapNorthMax, mapEastMin, heading),
+        ],
     });
 }
 
@@ -76,7 +134,7 @@ function poolBoundsFromPoints(first, second) {
 function loadPoolBounds() {
     try {
         const saved = window.localStorage.getItem(POOL_BOUNDARY_KEY);
-        return saved ? normalizePoolBounds(JSON.parse(saved)) : null;
+        return saved ? normalizePoolBoundary(JSON.parse(saved)) : null;
     } catch (error) {
         return null;
     }
@@ -109,7 +167,8 @@ const dashboardState = {
     poolBounds: loadPoolBounds(),
     poolDraftBounds: null,
     poolDrawing: false,
-    poolDrawStartWorld: null,
+    poolDrawStartMap: null,
+    poolDrawHeading: 0,
     poolDrawStartClientX: 0,
     poolDrawStartClientY: 0,
     zScale: 20,
@@ -985,11 +1044,11 @@ function clipLineToCanvas(start, end, width, height) {
 
 
 function drawMapCompass(ctx, width, upHeading) {
-    const center = { x: Math.max(42, width - 48), y: 50 };
+    const center = {x: Math.max(42, width - 48), y: 50};
     const arrowLength = 24;
     const axes = [
-        { label: "N", heading: -upHeading, color: "#43c7ff" },
-        { label: "E", heading: 90 - upHeading, color: "#ffbe45" },
+        {label: "N", heading: -upHeading, color: "#43c7ff"},
+        {label: "E", heading: 90 - upHeading, color: "#ffbe45"},
     ];
 
     ctx.save();
@@ -1036,6 +1095,14 @@ function createMapTransform(width, height) {
     const rotation = dashboardState.mapUpHeading * Math.PI / 180;
     const rotationCos = Math.cos(rotation);
     const rotationSin = Math.sin(rotation);
+    const mapToWorld = (mapNorth, mapEast) => ({
+        east: mapEast * rotationCos + mapNorth * rotationSin,
+        north: -mapEast * rotationSin + mapNorth * rotationCos,
+    });
+    const screenToMap = (screenX, screenY) => ({
+        east: (screenX - originX) / scale,
+        north: (originY - screenY) / scale,
+    });
 
     return {
         scale,
@@ -1047,32 +1114,41 @@ function createMapTransform(width, height) {
                 y: originY - mapNorth * scale,
             };
         },
+        mapToWorld,
+        screenToMap,
         screenToWorld(screenX, screenY) {
-            const mapEast = (screenX - originX) / scale;
-            const mapNorth = (originY - screenY) / scale;
-            return {
-                east: mapEast * rotationCos + mapNorth * rotationSin,
-                north: -mapEast * rotationSin + mapNorth * rotationCos,
-            };
+            const point = screenToMap(screenX, screenY);
+            return mapToWorld(point.north, point.east);
         },
     };
 }
 
 
-function drawPoolBoundary(ctx, worldToScreen, bounds, draft = false) {
-    if (!bounds) return;
-    const corners = [
-        worldToScreen(bounds.northMin, bounds.eastMin),
-        worldToScreen(bounds.northMin, bounds.eastMax),
-        worldToScreen(bounds.northMax, bounds.eastMax),
-        worldToScreen(bounds.northMax, bounds.eastMin),
-    ];
-    const center = worldToScreen(
-        (bounds.northMin + bounds.northMax) / 2,
-        (bounds.eastMin + bounds.eastMax) / 2,
+function drawPoolBoundary(ctx, worldToScreen, boundary, draft = false) {
+    if (!boundary) return;
+    const corners = boundary.corners.map((point) => (
+        worldToScreen(point.north, point.east)
+    ));
+    const centerWorld = boundary.corners.reduce(
+        (center, point) => ({
+            north: center.north + point.north / 4,
+            east: center.east + point.east / 4,
+        }),
+        {north: 0, east: 0},
     );
-    const northLength = bounds.northMax - bounds.northMin;
-    const eastLength = bounds.eastMax - bounds.eastMin;
+    const positiveWorld = {
+        north: (
+            boundary.corners[2].north + boundary.corners[3].north
+        ) / 2,
+        east: (
+            boundary.corners[2].east + boundary.corners[3].east
+        ) / 2,
+    };
+    const center = worldToScreen(centerWorld.north, centerWorld.east);
+    const positive = worldToScreen(
+        positiveWorld.north,
+        positiveWorld.east,
+    );
 
     ctx.save();
     ctx.fillStyle = draft
@@ -1098,11 +1174,39 @@ function drawPoolBoundary(ctx, worldToScreen, bounds, draft = false) {
         ctx.fill();
     }
 
+    // 从矩形中心指向绘制时的“地图上方”，明确水池正方向。
+    const directionX = positive.x - center.x;
+    const directionY = positive.y - center.y;
+    const directionLength = Math.hypot(directionX, directionY);
+    if (directionLength >= 6) {
+        const unitX = directionX / directionLength;
+        const unitY = directionY / directionLength;
+        const normalX = -unitY;
+        const normalY = unitX;
+        const headLength = 9;
+        const headWidth = 5;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(center.x, center.y);
+        ctx.lineTo(positive.x, positive.y);
+        ctx.lineTo(
+            positive.x - unitX * headLength + normalX * headWidth,
+            positive.y - unitY * headLength + normalY * headWidth,
+        );
+        ctx.moveTo(positive.x, positive.y);
+        ctx.lineTo(
+            positive.x - unitX * headLength - normalX * headWidth,
+            positive.y - unitY * headLength - normalY * headWidth,
+        );
+        ctx.stroke();
+    }
+
     const label = [
         draft ? "水池范围（绘制中）" : "水池范围",
-        `N ${numberText(bounds.northMin, 2)} ~ ${numberText(bounds.northMax, 2)}`,
-        `E ${numberText(bounds.eastMin, 2)} ~ ${numberText(bounds.eastMax, 2)}`,
-        `${numberText(northLength, 2)} × ${numberText(eastLength, 2)} m`,
+        `正向 ${numberText(boundary.headingDeg, 0, "°")}`,
+        `中心 N ${numberText(centerWorld.north, 2)}`,
+        `E ${numberText(centerWorld.east, 2)}`,
+        `${numberText(boundary.lengthM, 2)} × ${numberText(boundary.widthM, 2)} m`,
     ].join(" · ");
     ctx.font = "bold 11px Microsoft YaHei, Consolas, monospace";
     ctx.textAlign = "center";
@@ -1123,7 +1227,7 @@ function drawXYMap(data) {
     ctx.fillRect(0, 0, width, height);
 
     const mapTransform = createMapTransform(width, height);
-    const { scale, worldToScreen, screenToWorld } = mapTransform;
+    const {scale, worldToScreen, screenToWorld} = mapTransform;
     const upHeading = dashboardState.mapUpHeading;
     const gridStep = niceDistance(70 / scale);
     const visibleCorners = [
@@ -1733,7 +1837,7 @@ function mapHeadingText() {
 function updateMapHint() {
     const hint = document.getElementById("map-hint");
     if (dashboardState.poolDrawing) {
-        hint.textContent = dashboardState.poolDrawStartWorld
+        hint.textContent = dashboardState.poolDrawStartMap
             ? `松开完成水池矩形 · 上方 ${mapHeadingText()}°`
             : `按住并拖拽水池两个对角点 · 上方 ${mapHeadingText()}°`;
     } else {
@@ -1818,7 +1922,7 @@ function configurePoolBoundary() {
     drawButton.addEventListener("click", () => {
         dashboardState.poolDrawing = !dashboardState.poolDrawing;
         dashboardState.poolDraftBounds = null;
-        dashboardState.poolDrawStartWorld = null;
+        dashboardState.poolDrawStartMap = null;
         updatePoolBoundaryControls();
         if (dashboardState.status) drawXYMap(dashboardState.status);
     });
@@ -1826,7 +1930,7 @@ function configurePoolBoundary() {
         dashboardState.poolBounds = null;
         dashboardState.poolDraftBounds = null;
         dashboardState.poolDrawing = false;
-        dashboardState.poolDrawStartWorld = null;
+        dashboardState.poolDrawStartMap = null;
         savePoolBounds(null);
         updatePoolBoundaryControls();
         if (dashboardState.status) drawXYMap(dashboardState.status);
@@ -1838,10 +1942,10 @@ function configurePoolBoundary() {
 function configureMapInteraction() {
     const canvas = document.getElementById("xy-canvas");
     const zCanvas = document.getElementById("z-canvas");
-    const pointerWorld = (event) => {
+    const pointerMap = (event) => {
         const rect = canvas.getBoundingClientRect();
         const transform = createMapTransform(rect.width, rect.height);
-        return transform.screenToWorld(
+        return transform.screenToMap(
             event.clientX - rect.left,
             event.clientY - rect.top,
         );
@@ -1863,12 +1967,14 @@ function configureMapInteraction() {
 
     canvas.addEventListener("pointerdown", (event) => {
         if (dashboardState.poolDrawing) {
-            dashboardState.poolDrawStartWorld = pointerWorld(event);
+            dashboardState.poolDrawStartMap = pointerMap(event);
+            dashboardState.poolDrawHeading = dashboardState.mapUpHeading;
             dashboardState.poolDrawStartClientX = event.clientX;
             dashboardState.poolDrawStartClientY = event.clientY;
-            dashboardState.poolDraftBounds = poolBoundsFromPoints(
-                dashboardState.poolDrawStartWorld,
-                dashboardState.poolDrawStartWorld,
+            dashboardState.poolDraftBounds = poolBoundaryFromMapPoints(
+                dashboardState.poolDrawStartMap,
+                dashboardState.poolDrawStartMap,
+                dashboardState.poolDrawHeading,
             );
             canvas.setPointerCapture(event.pointerId);
             updatePoolBoundaryControls();
@@ -1887,11 +1993,12 @@ function configureMapInteraction() {
     canvas.addEventListener("pointermove", (event) => {
         if (
             dashboardState.poolDrawing
-            && dashboardState.poolDrawStartWorld
+            && dashboardState.poolDrawStartMap
         ) {
-            dashboardState.poolDraftBounds = poolBoundsFromPoints(
-                dashboardState.poolDrawStartWorld,
-                pointerWorld(event),
+            dashboardState.poolDraftBounds = poolBoundaryFromMapPoints(
+                dashboardState.poolDrawStartMap,
+                pointerMap(event),
+                dashboardState.poolDrawHeading,
             );
             redrawXYMap();
             return;
@@ -1913,7 +2020,7 @@ function configureMapInteraction() {
     const stopDragging = (event, cancelled = false) => {
         if (
             dashboardState.poolDrawing
-            && dashboardState.poolDrawStartWorld
+            && dashboardState.poolDrawStartMap
         ) {
             const dragDistance = Math.hypot(
                 event.clientX - dashboardState.poolDrawStartClientX,
@@ -1921,20 +2028,21 @@ function configureMapInteraction() {
             );
             const bounds = cancelled
                 ? null
-                : poolBoundsFromPoints(
-                    dashboardState.poolDrawStartWorld,
-                    pointerWorld(event),
+                : poolBoundaryFromMapPoints(
+                    dashboardState.poolDrawStartMap,
+                    pointerMap(event),
+                    dashboardState.poolDrawHeading,
                 );
             const hasArea = bounds
-                && bounds.northMax - bounds.northMin > 1e-6
-                && bounds.eastMax - bounds.eastMin > 1e-6;
+                && bounds.lengthM > 1e-6
+                && bounds.widthM > 1e-6;
             if (dragDistance >= 4 && hasArea) {
                 dashboardState.poolBounds = bounds;
                 dashboardState.poolDrawing = false;
                 savePoolBounds(bounds);
             }
             dashboardState.poolDraftBounds = null;
-            dashboardState.poolDrawStartWorld = null;
+            dashboardState.poolDrawStartMap = null;
             if (canvas.hasPointerCapture(event.pointerId)) {
                 canvas.releasePointerCapture(event.pointerId);
             }
