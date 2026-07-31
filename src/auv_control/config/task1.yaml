@@ -84,6 +84,7 @@ marker_sample_timeout: 10.0
 marker_cluster_distance: 0.25
 marker_duplicate_distance: 0.60
 marker_line_max_distance: 0.50
+# 黄色（hand）和黑色（base_link）的投影最多允许超前标志点的距离
 marker_progress_tolerance: 0.15
 
 # 每类动作要求次数；到终点时不足也正常结束
