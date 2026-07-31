@@ -10,6 +10,17 @@
 # 2026.8.1
 #   根据 260801 data1 的定角与连续旋转测试，降低近目标角速度参考、提高速度跟踪，
 #   并提高计划刹转建立速度和停车余量；保留当日已标定的有效刹转减速度与 MZ 限幅。
+# 2026.8.1
+#   根据 260801 data2，限制短角度动作的目标角速度，并将三轴捕获标准收紧到航向 1 deg、位置 0.04 m。
+# 2026.8.1
+#   根据 260801 data3，连续旋转的重复刹停只发生在最终定点的低速回摆，
+#   提高 Yaw 刹车进入阈值以保留主刹停并抑制微小回摆重复锁存。
+# 2026.8.1
+#   根据 data3 的 5 Hz 连续旋转逐帧分析，降低负向角速度反馈限环，并降低重规划后的参考 jerk；
+#   不修改状态机、目标回调、速度反馈滤波或已标定的刹转减速度。
+# 2026.8.1
+#   依据 data3 的 MZ 饱和分布，降低两向跟踪增益并取消每周期输出限斜率；
+#   连续旋转 5 Hz 的重规划阈值提高到实测目标步长 10.11 deg 之上，保留大目标更新响应。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -38,7 +49,7 @@ max_ty_positive: 4000.0             # 正 TY 最大值
 max_ty_negative: 6000.0             # 负 TY 绝对值上限
 max_mz_positive: 3000.0             # 正 MZ 最大值
 max_mz_negative: 4500.0             # 负 MZ 绝对值上限
-force_slew_per_cycle: 1000.0        # 所有阶段每控制周期允许的最大力或力矩变化量
+force_slew_per_cycle: 10000.0       # 等于协议上限，取消每周期 TX/TY/MZ 限斜率；各轴最大输出限幅仍生效
 
 # 已停用：主动刹车不再使用独立最大限幅和步长，保留末次值供历史配置对照。
 # brake_max_tx_positive: 2000.0
@@ -54,8 +65,8 @@ kv_x_positive: 20000.0              # 高速首轮：提高正向速度误差对
 kv_x_negative: 22000.0              # 高速首轮：保留负向推进效率差异
 kv_y_positive: 45000.0              # 高速首轮：目标正向约 0.10 m/s
 kv_y_negative: 65000.0              # 高速首轮：目标负向约 0.10 m/s
-kp_yaw_positive: 36000.0            # 25 deg/s 跟踪时 +MZ 常未触顶，按实测速度误差提高跟踪力矩
-kp_yaw_negative: 42000.0            # 保持与 -MZ 可用力矩相匹配的方向性增益，缩小连续旋转速度缺口
+kp_yaw_positive: 25000.0            # data3 正转误差 P90=6.45 deg/s 时可避免持续触及 +3000，先消除跟踪饱和
+kp_yaw_negative: 25000.0            # data3 反转误差 P10=-9.72 deg/s 时可避免持续触及 -4500，抑制原始 MZ 来回饱和
 
 # 定点模式锁存制动时的速度环增益；仍按最终 TX/TY 输出符号区分正反车效率。
 brake_kv_x_positive: 20000.0
@@ -96,15 +107,15 @@ brake_margin_tx_positive: 0.03      # data7 原 0.18 m 导致距目标约 0.12 m
 brake_margin_tx_negative: 0.03      # 与内部位置死区一致，并保留实测减速度偏差的防超调余量
 brake_margin_ty_positive: 0.03      # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
 brake_margin_ty_negative: 0.03      # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
-yaw_brake_margin_positive_deg: 4.0  # 260801 测试停车越界中位数约 3 deg，提前进入刹转并覆盖反馈/执行迟滞
-yaw_brake_margin_negative_deg: 4.0  # 与正向一致，优先满足无超调而非最短停车时间
+yaw_brake_margin_positive_deg: 0.8  # 航向捕获标准收紧为 1 deg；由低位置增益提前降速，余量须小于捕获容差
+yaw_brake_margin_negative_deg: 0.8  # 与正向一致，满足核心参数校验并保留 0.2 deg 捕获裕量
 
 # 进入hover阈值
-capture_radius: 0.07                  # 两种模式到达 HOVER 的外层水平位置误差
+capture_radius: 0.04                  # 两种模式到达 HOVER 的外层水平位置误差，满足旋转时位置精度 4 cm
 control_center_hold_tolerance: 0.03   # 当前锁存控制中心的二维圆形位置死区，单位 m
 horizontal_speed_threshold: 0.008     # data6 中 0.01 m/s 仍持续漂移，收紧三轴停稳判定
-yaw_tolerance_deg: 5.0                # 最终航向允许误差，单位 deg
-yaw_control_tolerance_deg: 2.0        # mode=2 上位机航向保持死区；mode=4 进入仍使用 yaw_tolerance_deg
+yaw_tolerance_deg: 1.0                # 最终航向允许误差，单位 deg
+yaw_control_tolerance_deg: 1.0        # mode=2 上位机航向保持死区，与最终航向精度一致
 yaw_rate_threshold_deg_s: 0.3         # 判定转动停稳的角速度上限，单位 deg/s
 stable_frames: 5                      # 捕获或停稳条件需连续满足的控制帧数，20 Hz 下约为 0.25 s
 
@@ -132,14 +143,14 @@ xy_brake_jerk: 0.20  # 定点制动速度参考的最大 jerk，单位 m/s^3
 xy_brake_enter_speed: 0.020
 xy_brake_exit_speed: 0.012
 yaw_max_rate_deg_s: 25.0
-yaw_position_gain: 1.00
+yaw_position_gain: 0.22 # 仅在 120 deg 及以上动作达到 25 deg/s；短角度动作提前收敛，避免反复刹转
 yaw_max_acceleration_deg_s2: 20.0
-yaw_max_jerk_deg_s3: 60.0
+yaw_max_jerk_deg_s3: 35.0 # 5 Hz 前视目标跨过 5 deg 重规划阈值后，减小角速度参考恢复时的力矩阶跃；不影响刹转 jerk
 yaw_brake_jerk_deg_s3: 15.0 # 8 Hz 下缩短刹转加速度建立时间，避免计划减速度长期低于实际停车需求
 
 # 航向刹停迟滞；高于 0.6 deg/s 才进入，低于 0.2 deg/s 才退出。
-yaw_brake_enter_rate_deg_s: 0.6
-yaw_brake_exit_rate_deg_s: 0.2
+yaw_brake_enter_rate_deg_s: 1.5 # data3 残余约 0.7 deg/s 不再触发重复刹转；主刹停速度仍远高于此阈值
+yaw_brake_exit_rate_deg_s: 0.3  # 保持进入/退出滞回，最终 HOVER 仍要求角速度不大于 0.3 deg/s
 
 # 速度反馈实测约 7 Hz；退出刹车前连续低速保持 0.40 s，防止低速采样抖动反复进出刹车。
 brake_release_hold_seconds: 0.40
@@ -147,7 +158,7 @@ goal_static_capture_seconds: 0.80
 
 # 目标仍然逐帧更新；仅超过以下阈值才重置速度/角速度参考和捕获计时。
 goal_replan_position_threshold: 0.10 # 位置目标变化的重规划阈值，单位 m
-goal_replan_yaw_threshold_deg: 5.0 # 目标航向变化的重规划阈值，单位 deg
+goal_replan_yaw_threshold_deg: 15.0 # 5 Hz 连续旋转实测相邻目标最大 10.11 deg 不重规划；大于 12 deg 的新任务目标仍完整重规划
 control_dt_min: 0.02
 control_dt_max: 0.20
 
