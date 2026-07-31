@@ -3,6 +3,8 @@
 # 2026.7.31
 #   由低速完整参数建立 high 档，目标为 X 约 0.20 m/s、Y 约 0.10 m/s、
 #   Yaw 约 20 deg/s；保留当前最大输出、有效减速度和刹车速度环参数。
+# 2026.7.31
+#   根据远距离任务制动力矩余量，提高 high 档三轴计划减速度。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -75,9 +77,9 @@ brake_acceleration_ty_positive: 0.016 # data1 正 TY 满输出等效约 0.016 m/
 brake_acceleration_ty_negative: 0.019 # data1 负 TY 满输出等效约 0.019 m/s^2；对应 Y 正向运动
 
 # 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
-brake_reference_acceleration_tx_positive: 0.024 # 高速停车包络；低于正 TX 实测有效减速度
-brake_reference_acceleration_tx_negative: 0.024 # 高速停车包络；低于负 TX 实测有效减速度
-brake_reference_acceleration_ty_positive: 0.012 # 允许 0.5 m 行程生成约 0.10 m/s 参考
+brake_reference_acceleration_tx_positive: 0.022 # 正 TX 制动峰值未碰限，提高计划减速度并保留力矩余量
+brake_reference_acceleration_tx_negative: 0.020 # 负 TX 制动已使用约 65% 限幅，保守提高避免过冲
+brake_reference_acceleration_ty_positive: 0.010 # 正 TY 制动已使用约 66% 限幅，保留耦合补偿余量
 brake_reference_acceleration_ty_negative: 0.012 # 两向统一计划减速度，方向差异仍由有效值保留
 angular_brake_acceleration_mz_positive: 0.074   # data1 正 MZ 满输出等效约 4.24 deg/s^2；对应负向 yaw 运动
 angular_brake_acceleration_mz_negative: 0.088   # data1 负 MZ 满输出等效约 5.04 deg/s^2；对应正向 yaw 运动
