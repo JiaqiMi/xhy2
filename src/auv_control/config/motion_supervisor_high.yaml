@@ -5,10 +5,12 @@
 #   Yaw 约 20 deg/s；保留当前最大输出、有效减速度和刹车速度环参数。
 # 2026.7.31
 #   根据远距离任务制动力矩余量，提高 high 档三轴计划减速度。
+# 2026.7.31
+#   根据手控满力矩跨零速标定，按近零速减速度中位数保留 10% 余量更新六方向有效减速度。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
-control_rate_hz: 20.0       # 统一三轴速度闭环频率；目标可保持 5 Hz 发布
+control_rate_hz: 8.0       # 统一三轴速度闭环频率；目标可保持 5 Hz 发布
 feedback_timeout: 0.5       # TF 或速度反馈最大允许间隔，单位 s，超时后进入 SAFE
 velocity_filter_alpha: 0.50 # 速度一阶低通新数据权重，范围 (0,1]，越大响应越快
 
@@ -72,18 +74,18 @@ brake_kp_yaw_negative: 14000.0      # data4 表明负 MZ 刹转过强；反向�
 # brake_min_mz: 100.0
 
 # 各轴独立停车距离模型；后缀表示实际刹车输出力或力矩的符号
-brake_acceleration_tx_positive: 0.04  # data7/data1 正 TX 满输出等效约 0.050/0.030 m/s^2，取跨批次保守值
-brake_acceleration_tx_negative: 0.03  # data7/data1 负 TX 满输出等效约 0.030/0.025 m/s^2，避免低估制动前馈
-brake_acceleration_ty_positive: 0.016 # data1 正 TY 满输出等效约 0.016 m/s^2；对应 Y 负向运动
-brake_acceleration_ty_negative: 0.019 # data1 负 TY 满输出等效约 0.019 m/s^2；对应 Y 正向运动
+brake_acceleration_tx_positive: 0.045 # +2000 跨零速实测中位数约 0.050 m/s^2，保留 10% 余量
+brake_acceleration_tx_negative: 0.101 # -3000 跨零速实测中位数约 0.112 m/s^2，保留 10% 余量
+brake_acceleration_ty_positive: 0.068 # +4000 跨零速实测中位数约 0.075 m/s^2，保留 10% 余量
+brake_acceleration_ty_negative: 0.039 # -6000 跨零速实测中位数约 0.043 m/s^2，保留 10% 余量
 
 # 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
 brake_reference_acceleration_tx_positive: 0.022 # 正 TX 制动峰值未碰限，提高计划减速度并保留力矩余量
 brake_reference_acceleration_tx_negative: 0.020 # 负 TX 制动已使用约 65% 限幅，保守提高避免过冲
 brake_reference_acceleration_ty_positive: 0.010 # 正 TY 制动已使用约 66% 限幅，保留耦合补偿余量
 brake_reference_acceleration_ty_negative: 0.012 # 两向统一计划减速度，方向差异仍由有效值保留
-angular_brake_acceleration_mz_positive: 0.074   # data1 正 MZ 满输出等效约 4.24 deg/s^2；对应负向 yaw 运动
-angular_brake_acceleration_mz_negative: 0.088   # data1 负 MZ 满输出等效约 5.04 deg/s^2；对应正向 yaw 运动
+angular_brake_acceleration_mz_positive: 0.242   # +3000 跨零速实测约 15.39 deg/s^2，保留 10% 后换算为 rad/s^2
+angular_brake_acceleration_mz_negative: 0.389   # -4500 跨零速实测约 24.78 deg/s^2，保留 10% 后换算为 rad/s^2
 angular_brake_reference_acceleration_mz_positive_deg_s2: 2.60 # 90 deg 行程允许约 20 deg/s 参考
 angular_brake_reference_acceleration_mz_negative_deg_s2: 2.60 # 仍低于负 MZ 实测有效减速度
 control_delay: 0.45                 # 反馈、计算、通信和执行的综合延迟估计，单位 s

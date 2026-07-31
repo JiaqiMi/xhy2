@@ -4,12 +4,12 @@
       每一步等待上位机 HOVER 稳定保持后再继续。
     -->
     <arg name="pure_depth_control" default="true" />
-    <arg name="target_z" default="-0.9" />
+    <arg name="target_z" default="-0.1" />
     <!-- 旧名称 repetitions 保留兼容；新调用使用 cycle_count。 -->
     <arg name="repetitions" default="2" />
     <arg name="cycle_count" default="$(arg repetitions)" />
     <!-- 旧名称 yaw_magnitudes_deg 保留兼容；新调用使用 target_angles_deg。 -->
-    <arg name="yaw_magnitudes_deg" default="[30.0, 60.0, 90.0]" />
+    <arg name="yaw_magnitudes_deg" default="[30.0, 60.0, 90.0, 120, 150]" />
     <arg name="target_angles_deg" default="$(arg yaw_magnitudes_deg)" />
     <arg name="action_timeout" default="120.0" />
     <arg name="hover_hold_seconds" default="2.0" />
