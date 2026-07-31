@@ -1,0 +1,24 @@
+<launch>
+    <!--
+      task1 视觉模型的独立预热进程组，由键盘 9 键启动。
+      task1.launch 复用本进程组时传入 start_detection_nodes:=false。
+    -->
+    <arg name="start_line_web" default="false" />
+    <arg name="start_shapes_web" default="false" />
+
+    <group>
+        <remap from="/vision/line/line_message"
+               to="/obj/line_message" />
+        <include file="$(find stereo_depth)/launch/test_line_detection_lineN.launch">
+            <arg name="start_web" value="$(arg start_line_web)" />
+        </include>
+    </group>
+
+    <group>
+        <remap from="/vision/shapes/target_message"
+               to="/obj/target_message" />
+        <include file="$(find stereo_depth)/launch/test_shapes_detection_speed.launch">
+            <arg name="start_web" value="$(arg start_shapes_web)" />
+        </include>
+    </group>
+</launch>

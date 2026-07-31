@@ -17,6 +17,8 @@
     使用 cbreak 模式读取单键，避免 raw 模式破坏终端日志换行。
 2026.7.28
     改为 select 非阻塞轮询，避免等待键盘输入时阻塞节点输出。
+2026.7.31
+    增加 9 键触发 task1 视觉模型预热。
 """
 
 import atexit
@@ -48,7 +50,7 @@ class KeyboardControlNode:
 
         rospy.loginfo(
             '键盘任务控制已启动：1=task1，2=task2，3=task3，'
-            'g=自动串联，0/l=停止当前任务。')
+            '9=task1视觉预热，g=自动串联，0/l=停止当前任务。')
 
     def get_key(self):
         """非阻塞读取一个按键；没有输入时返回 None。"""
@@ -97,6 +99,14 @@ class KeyboardControlNode:
         self.publisher.publish(message)
         rospy.loginfo('请求从 task1 开始自动串联任务。')
 
+    def start_task1_vision_prewarm(self):
+        """发布 task1 视觉模型预热指令。"""
+        message = Keyboard()
+        message.run = 0
+        message.mode = 9
+        self.publisher.publish(message)
+        rospy.loginfo('请求预热 task1 视觉模型。')
+
     def run(self):
         """持续轮询键盘输入，不阻塞 ROS 日志输出。"""
         try:
@@ -109,12 +119,15 @@ class KeyboardControlNode:
                     self.publish_task(int(key))
                 elif key == 'g':
                     self.start_automatic_tasks()
+                elif key == '9':
+                    self.start_task1_vision_prewarm()
                 elif key in '0l':
                     self.stop_task()
                 elif key == '\x03':
                     break
                 else:
-                    rospy.logwarn('无效按键 %r；可用按键：1、2、3、g、0、l。', key)
+                    rospy.logwarn(
+                        '无效按键 %r；可用按键：1、2、3、9、g、0、l。', key)
                 self.rate.sleep()
         finally:
             self.restore_terminal()
