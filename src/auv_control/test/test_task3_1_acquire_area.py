@@ -13,11 +13,9 @@ import logging
 import math
 import os
 import statistics
-import threading
-
 import rospy
 import tf
-from auv_control.msg import AUVData, MotionState, TargetDetection
+from auv_control.msg import AUVData, MotionState
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import Empty, String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
@@ -89,9 +87,6 @@ class Task3AcquireAreaTest(object):
     CONFIRM_DIRECTION = "定点确认箭头方向"
     ALIGN_HEADING = "细对准：航向和横移联合对准"
     FINE_FORWARD_ALIGN = "细对准：航向对齐后慢速前后居中"
-    POSE_AVERAGE_CONFIRM = "定点采集箭头平均位姿"
-    POSE_AVERAGE_MOVE = "按平均位姿移动"
-    POSE_AVERAGE_VERIFY = "到达后复核箭头平均位姿"
     MOVE_BASE_OVER_ARROW = "按固定目标将base_link移到箭头上方"
     FINAL_HOLD = "最终定点保持"
 
@@ -112,9 +107,6 @@ class Task3AcquireAreaTest(object):
         self.rate_hz = float(rospy.get_param("~rate", 5.0))
         self.arrow_topic = str(rospy.get_param(
             "~arrow_topic", "/vision/arrow/direction"
-        )).strip()
-        self.arrow_pose_topic = str(rospy.get_param(
-            "~arrow_pose_topic", "/vision/arrow/target_message"
         )).strip()
         self.motion_goal_topic = str(rospy.get_param(
             "~motion_goal_topic", "/cmd/motion/goal"
@@ -171,39 +163,6 @@ class Task3AcquireAreaTest(object):
         self.enable_final_visual_alignment = bool(rospy.get_param(
             "~enable_final_visual_alignment", True
         ))
-        self.pose_average_alignment_enabled = bool(rospy.get_param(
-            "~pose_average_alignment_enabled", False
-        ))
-        self.pose_average_sync_tolerance = float(rospy.get_param(
-            "~pose_average_sync_tolerance", 0.05
-        ))
-        self.pose_average_receive_tolerance = float(rospy.get_param(
-            "~pose_average_receive_tolerance", 0.80
-        ))
-        self.pose_average_position_tolerance_m = float(rospy.get_param(
-            "~pose_average_position_tolerance_m", 0.12
-        ))
-        self.pose_average_verify_position_tolerance_m = float(rospy.get_param(
-            "~pose_average_verify_position_tolerance_m", 0.08
-        ))
-        self.pose_average_max_move_m = float(rospy.get_param(
-            "~pose_average_max_move_m", 1.00
-        ))
-        self.pose_average_data_timeout_seconds = float(rospy.get_param(
-            "~pose_average_data_timeout_seconds", 15.0
-        ))
-        self.pose_average_arrival_position_tolerance_m = float(
-            rospy.get_param(
-                "~pose_average_arrival_position_tolerance_m", 0.03
-            )
-        )
-        self.pose_average_arrival_depth_tolerance_m = float(rospy.get_param(
-            "~pose_average_arrival_depth_tolerance_m", 0.03
-        ))
-        self.pose_average_arrival_yaw_tolerance_deg = float(rospy.get_param(
-            "~pose_average_arrival_yaw_tolerance_deg", 5.0
-        ))
-
         self.image_width = float(rospy.get_param("~image_width", 640.0))
         self.image_height = float(rospy.get_param("~image_height", 480.0))
         self.full_arrow_edge_margin_px = float(rospy.get_param(
@@ -292,6 +251,9 @@ class Task3AcquireAreaTest(object):
         self.search_second_forward_distance = float(rospy.get_param(
             "~search_second_forward_distance", 0.30
         ))
+        self.search_third_forward_distance = float(rospy.get_param(
+            "~search_third_forward_distance", 0.30
+        ))
         self.base_link_forward_offset = float(rospy.get_param(
             "~base_link_forward_offset", 0.35
         ))
@@ -305,11 +267,11 @@ class Task3AcquireAreaTest(object):
             "~max_wait_seconds", 300.0
         ))
         self.cancel_timeout = float(rospy.get_param(
-            "~cancel_timeout", 15.0
+            "/task3_protection/cancel_recovery_timeout", 30.0
         ))
 
         self.motion_state_timeout = float(rospy.get_param(
-            "~motion_state_timeout", 0.5
+            "/task3_protection/motion_feedback_timeout", 3.0
         ))
         self.motion_startup_timeout = float(rospy.get_param(
             "~motion_startup_timeout", 10.0
@@ -376,6 +338,7 @@ class Task3AcquireAreaTest(object):
         self.initial_hold_yaw = None
         self.search_waypoints = []
         self.search_waypoint_index = -1
+        self.search_recovery_resume_index = None
         self.first_position_detected = False
 
         self.model_frame_index = 0
@@ -394,16 +357,6 @@ class Task3AcquireAreaTest(object):
         self.aligned_frame_count = 0
         self.last_visual_goal_frame = 0
         self.last_visual_goal_time = None
-        self.pose_average_lock = threading.RLock()
-        self.pose_average_frame_window = []
-        self.pose_average_samples = {}
-        self.pose_average_directions = []
-        self.pose_average_poses = []
-        self.pose_average_correction_count = 0
-        self.pose_average_collection_started = None
-        self.pose_average_data_timed_out = False
-        self.last_arrow_pose_message_time = None
-
         self.initial_hover_stable_started = None
         self.final_hold_stable_started = None
         self.cancel_requested_at = None
@@ -413,14 +366,6 @@ class Task3AcquireAreaTest(object):
         self.arrow_sub = rospy.Subscriber(
             self.arrow_topic, String, self.arrow_callback, queue_size=20
         )
-        self.arrow_pose_sub = None
-        if self.pose_average_alignment_enabled:
-            self.arrow_pose_sub = rospy.Subscriber(
-                self.arrow_pose_topic,
-                TargetDetection,
-                self.arrow_pose_callback,
-                queue_size=20,
-            )
         self.motion_state_sub = rospy.Subscriber(
             self.motion_state_topic,
             MotionState,
@@ -447,8 +392,6 @@ class Task3AcquireAreaTest(object):
             self.status_topic,
         )):
             raise ValueError("任务话题参数不能为空")
-        if self.pose_average_alignment_enabled and not self.arrow_pose_topic:
-            raise ValueError("平均位姿对准开启时arrow_pose_topic不能为空")
         if not 0.0 <= self.min_confidence <= 1.0:
             raise ValueError("min_confidence 必须在0到1之间")
         if min(
@@ -505,6 +448,7 @@ class Task3AcquireAreaTest(object):
             self.search_initial_forward_distance,
             self.search_lateral_distance,
             self.search_second_forward_distance,
+            self.search_third_forward_distance,
             self.base_link_forward_offset,
             self.final_hold_seconds,
             self.final_hold_timeout,
@@ -523,15 +467,6 @@ class Task3AcquireAreaTest(object):
             self.ground_clearance_goal_update_threshold,
             self.log_interval,
             self.warning_log_interval,
-            self.pose_average_sync_tolerance,
-            self.pose_average_receive_tolerance,
-            self.pose_average_position_tolerance_m,
-            self.pose_average_verify_position_tolerance_m,
-            self.pose_average_max_move_m,
-            self.pose_average_data_timeout_seconds,
-            self.pose_average_arrival_position_tolerance_m,
-            self.pose_average_arrival_depth_tolerance_m,
-            self.pose_average_arrival_yaw_tolerance_deg,
         ) < 0.0:
             raise ValueError("距离、时间、增益和容差不能小于0")
         if min(
@@ -541,6 +476,7 @@ class Task3AcquireAreaTest(object):
             self.search_initial_forward_distance,
             self.search_lateral_distance,
             self.search_second_forward_distance,
+            self.search_third_forward_distance,
             self.base_link_forward_offset,
             self.final_hold_timeout,
             self.max_wait_seconds,
@@ -556,15 +492,6 @@ class Task3AcquireAreaTest(object):
             self.heading_lateral_tolerance_px,
             self.log_interval,
             self.warning_log_interval,
-            self.pose_average_sync_tolerance,
-            self.pose_average_receive_tolerance,
-            self.pose_average_position_tolerance_m,
-            self.pose_average_verify_position_tolerance_m,
-            self.pose_average_max_move_m,
-            self.pose_average_data_timeout_seconds,
-            self.pose_average_arrival_position_tolerance_m,
-            self.pose_average_arrival_depth_tolerance_m,
-            self.pose_average_arrival_yaw_tolerance_deg,
         ) <= 0.0:
             raise ValueError("关键距离、时间和超时参数必须大于0")
         if self.visual_min_step_m > self.visual_max_step_m:
@@ -619,57 +546,41 @@ class Task3AcquireAreaTest(object):
             self.motion_goal_topic,
             self.motion_state_topic,
         )
-        if self.pose_average_alignment_enabled:
-            rospy.loginfo(
-                (
-                    "%s：流程：固定点HOVER悬停%.1fs -> 固定路径搜索 -> "
-                    "发现箭头后刹停 -> 最近%d帧内位置和方向一致%d帧并取平均 -> "
-                    "一次性移动且途中忽略视觉 -> 当前目标HOVER -> "
-                    "清空窗口重新%d/%d帧复核 -> 必要时单次微调 -> "
-                    "base_link固定前移%.2fm -> 最终HOVER保持%.1fs"
-                ),
-                NODE_NAME,
-                self.initial_hover_seconds,
-                self.stable_detection_window_size,
-                self.stable_detection_count,
-                self.stable_detection_count,
-                self.stable_detection_window_size,
-                self.base_link_forward_offset,
-                self.final_hold_seconds,
-            )
-        else:
-            rospy.loginfo(
-                (
-                    "%s：流程：固定点HOVER悬停%.1fs -> 前%.2fm -> 左右各%.2fm -> "
-                    "再前%.2fm -> 左右各%.2fm搜索 -> "
-                    "最近%d帧内位置一致%d帧 -> 图像中心粗对准 -> "
-                    "定点方向最近%d帧内一致%d帧 -> "
-                    "运动中方向连续%d帧 -> 慢速航向和横移联合对齐%d帧 -> "
-                    "最后前移前判断=%s -> base_link按固定目标前移%.2fm -> "
-                    "最终HOVER保持%.1fs"
-                ),
-                NODE_NAME,
-                self.initial_hover_seconds,
-                self.search_initial_forward_distance,
-                self.search_lateral_distance,
-                self.search_second_forward_distance,
-                self.search_lateral_distance,
-                self.stable_detection_window_size,
-                self.stable_detection_count,
-                self.direction_confirm_window_size,
-                self.direction_confirm_required_count,
-                self.heading_stable_detection_count,
-                self.heading_aligned_detection_count,
-                (
-                    "视觉中心和方向连续{}帧且MotionState.HOVER".format(
-                        self.center_stable_detection_count
-                    )
-                    if self.enable_final_visual_alignment
-                    else "仅MotionState.HOVER和目标匹配"
-                ),
-                self.base_link_forward_offset,
-                self.final_hold_seconds,
-            )
+        rospy.loginfo(
+            (
+                "%s：流程：固定点HOVER悬停%.1fs -> 前%.2fm -> 左右各%.2fm -> "
+                "再前%.2fm -> 左右各%.2fm搜索 -> "
+                "再前%.2fm -> 左右各%.2fm搜索 -> "
+                "最近%d帧内位置一致%d帧 -> 图像中心粗对准 -> "
+                "定点方向最近%d帧内一致%d帧 -> "
+                "运动中方向连续%d帧 -> 慢速航向和横移联合对齐%d帧 -> "
+                "最后前移前判断=%s -> base_link按固定目标前移%.2fm -> "
+                "最终HOVER保持%.1fs"
+            ),
+            NODE_NAME,
+            self.initial_hover_seconds,
+            self.search_initial_forward_distance,
+            self.search_lateral_distance,
+            self.search_second_forward_distance,
+            self.search_lateral_distance,
+            self.search_third_forward_distance,
+            self.search_lateral_distance,
+            self.stable_detection_window_size,
+            self.stable_detection_count,
+            self.direction_confirm_window_size,
+            self.direction_confirm_required_count,
+            self.heading_stable_detection_count,
+            self.heading_aligned_detection_count,
+            (
+                "视觉中心和方向连续{}帧且MotionState.HOVER".format(
+                    self.center_stable_detection_count
+                )
+                if self.enable_final_visual_alignment
+                else "仅MotionState.HOVER和目标匹配"
+            ),
+            self.base_link_forward_offset,
+            self.final_hold_seconds,
+        )
         rospy.loginfo(
             (
                 "%s：识别：话题=%s，最低置信度=%.2f，稳定判定超时=%.2fs，"
@@ -735,31 +646,6 @@ class Task3AcquireAreaTest(object):
             self.visual_forward_sign,
             self.visual_lateral_sign,
             self.yaw_correction_sign,
-        )
-        rospy.loginfo(
-            (
-                "%s：平均位姿对准=%s；位置话题=%s；"
-                "源时间戳差<=%.2fs，回调到达时间差<=%.2fs，"
-                "3/10帧位置抖动<=%.3fm，"
-                "到达后水平残差<=%.3fm、方向残差<=%.1fdeg，"
-                "单次目标最大水平距离=%.2fm；"
-                "稳定数据超时=%.1fs，严格到达=(水平<=%.3fm，"
-                "深度<=%.3fm，航向<=%.1fdeg)。"
-                "关闭开关时完整保留旧视觉流程"
-            ),
-            NODE_NAME,
-            "开启" if self.pose_average_alignment_enabled else "关闭",
-            self.arrow_pose_topic,
-            self.pose_average_sync_tolerance,
-            self.pose_average_receive_tolerance,
-            self.pose_average_position_tolerance_m,
-            self.pose_average_verify_position_tolerance_m,
-            self.yaw_tolerance_deg,
-            self.pose_average_max_move_m,
-            self.pose_average_data_timeout_seconds,
-            self.pose_average_arrival_position_tolerance_m,
-            self.pose_average_arrival_depth_tolerance_m,
-            self.pose_average_arrival_yaw_tolerance_deg,
         )
         rospy.loginfo(
             (
@@ -884,8 +770,6 @@ class Task3AcquireAreaTest(object):
 
     def reject_arrow_frame(self, frame_index, reason):
         self.latest_detection = None
-        if self.pose_average_collecting():
-            self.record_pose_average_frame(frame_index)
         if self.state in (self.SEARCH_PATTERN, self.WAIT_FOR_ARROW):
             self.add_detection_sample(None, frame_index, reason)
         if self.state in (
@@ -936,380 +820,6 @@ class Task3AcquireAreaTest(object):
             min(edge_distances)
         )
 
-    def pose_average_collecting(self):
-        return (
-            self.pose_average_alignment_enabled
-            and getattr(self, "state", None) in (
-                self.POSE_AVERAGE_CONFIRM,
-                self.POSE_AVERAGE_VERIFY,
-            )
-        )
-
-    def reset_pose_average_window(self, reason):
-        with self.pose_average_lock:
-            previous_frames = len(self.pose_average_frame_window)
-            previous_samples = len(self.pose_average_samples)
-            self.pose_average_frame_window = []
-            self.pose_average_samples = {}
-            self.pose_average_directions = []
-            self.pose_average_poses = []
-        rospy.loginfo(
-            "%s：清空平均位姿窗口：原窗口%d帧、有效配对%d帧；原因=%s",
-            NODE_NAME,
-            previous_frames,
-            previous_samples,
-            reason,
-        )
-
-    def record_pose_average_frame(self, frame_index):
-        with self.pose_average_lock:
-            if (
-                self.pose_average_frame_window
-                and self.pose_average_frame_window[-1] == frame_index
-            ):
-                return
-            self.pose_average_frame_window.append(frame_index)
-            self.pose_average_frame_window = self.pose_average_frame_window[
-                -self.stable_detection_window_size:
-            ]
-            valid_ids = set(self.pose_average_frame_window)
-            self.pose_average_samples = {
-                key: value
-                for key, value in self.pose_average_samples.items()
-                if key in valid_ids
-            }
-            self.pose_average_directions = [
-                item
-                for item in self.pose_average_directions
-                if item["frame_index"] in valid_ids
-            ]
-
-    def add_pose_average_direction(self, detection):
-        with self.pose_average_lock:
-            self.record_pose_average_frame(detection["frame_index"])
-            self.pose_average_directions = [
-                item
-                for item in self.pose_average_directions
-                if item["frame_index"] != detection["frame_index"]
-            ]
-            self.pose_average_directions.append(detection)
-            self.pose_average_directions = self.pose_average_directions[
-                -2 * self.stable_detection_window_size:
-            ]
-            self.try_pair_pose_average_samples()
-
-    def arrow_pose_callback(self, message):
-        if not self.pose_average_collecting():
-            return
-        received_sec = rospy.Time.now().to_sec()
-        self.last_arrow_pose_message_time = rospy.Time.now()
-        class_name = str(message.class_name).strip().lower()
-        confidence = self.finite_number(message.conf)
-        position = message.pose.pose.position
-        values = (
-            self.finite_number(position.x),
-            self.finite_number(position.y),
-            self.finite_number(position.z),
-        )
-        frame_id = str(message.pose.header.frame_id).strip()
-        if (
-            class_name != "arrow"
-            or confidence is None
-            or confidence < self.min_confidence
-            or not frame_id
-            or any(value is None for value in values)
-            or math.sqrt(sum(value * value for value in values)) <= 1e-6
-        ):
-            rospy.loginfo_throttle(
-                self.log_interval,
-                (
-                    "%s：箭头三维位置帧无效：class=%s，conf=%s，"
-                    "frame=%s，position=%s"
-                ),
-                NODE_NAME,
-                class_name or "空",
-                (
-                    "无效"
-                    if confidence is None
-                    else "{:.3f}".format(confidence)
-                ),
-                frame_id or "空",
-                values,
-            )
-            return
-
-        stamp = message.pose.header.stamp
-        stamp_sec = (
-            rospy.Time.now().to_sec()
-            if stamp == rospy.Time()
-            else stamp.to_sec()
-        )
-        with self.pose_average_lock:
-            self.pose_average_poses.append({
-                "stamp_sec": stamp_sec,
-                "received_sec": received_sec,
-                "pose": message.pose,
-                "confidence": confidence,
-                "frame_id": frame_id,
-                "camera_position": values,
-            })
-            self.pose_average_poses = self.pose_average_poses[
-                -2 * self.stable_detection_window_size:
-            ]
-            self.try_pair_pose_average_samples()
-
-    def transform_arrow_pose_to_map(self, pose):
-        source = PoseStamped()
-        source.header.frame_id = pose.header.frame_id
-        source.header.stamp = pose.header.stamp
-        source.pose = pose.pose
-        try:
-            return self.tf_listener.transformPose("map", source)
-        except tf.Exception:
-            source.header.stamp = rospy.Time(0)
-            try:
-                return self.tf_listener.transformPose("map", source)
-            except tf.Exception as error:
-                rospy.logwarn_throttle(
-                    self.warning_log_interval,
-                    "%s：箭头三维位置无法转换到map：%s",
-                    NODE_NAME,
-                    str(error),
-                )
-                return None
-
-    def try_pair_pose_average_samples(self):
-        with self.pose_average_lock:
-            while self.pose_average_directions and self.pose_average_poses:
-                best = None
-                for direction_index, direction in enumerate(
-                    self.pose_average_directions
-                ):
-                    if direction["frame_index"] in self.pose_average_samples:
-                        continue
-                    for pose_index, pose in enumerate(self.pose_average_poses):
-                        source_delta = abs(
-                            direction["source_stamp_sec"] - pose["stamp_sec"]
-                        )
-                        receive_delta = abs(
-                            direction["received_sec"] - pose["received_sec"]
-                        )
-                        if source_delta <= self.pose_average_sync_tolerance:
-                            rank = (
-                                0,
-                                source_delta,
-                                receive_delta,
-                                direction_index,
-                                pose_index,
-                                "源时间戳",
-                            )
-                        elif (
-                            receive_delta
-                            <= self.pose_average_receive_tolerance
-                        ):
-                            rank = (
-                                1,
-                                receive_delta,
-                                source_delta,
-                                direction_index,
-                                pose_index,
-                                "回调到达时间",
-                            )
-                        else:
-                            continue
-                        if best is None or rank < best:
-                            best = rank
-                if best is None:
-                    return
-
-                _, _, _, direction_index, pose_index, pair_mode = best
-                direction = self.pose_average_directions.pop(direction_index)
-                pose = self.pose_average_poses.pop(pose_index)
-                source_delta = abs(
-                    direction["source_stamp_sec"] - pose["stamp_sec"]
-                )
-                receive_delta = abs(
-                    direction["received_sec"] - pose["received_sec"]
-                )
-                transformed = self.transform_arrow_pose_to_map(pose["pose"])
-                if transformed is None:
-                    continue
-
-                frame_index = direction["frame_index"]
-                if frame_index not in self.pose_average_frame_window:
-                    continue
-                self.pose_average_samples[frame_index] = {
-                    "frame_index": frame_index,
-                    "pair_mode": pair_mode,
-                    "source_stamp_delta": source_delta,
-                    "receive_delta": receive_delta,
-                    "angle_deg": direction["angle_deg"],
-                    "direction_confidence": direction["confidence"],
-                    "pose_confidence": pose["confidence"],
-                    "frame_id": pose["frame_id"],
-                    "camera_x": pose["camera_position"][0],
-                    "camera_y": pose["camera_position"][1],
-                    "camera_z": pose["camera_position"][2],
-                    "map_x": transformed.pose.position.x,
-                    "map_y": transformed.pose.position.y,
-                    "map_z": transformed.pose.position.z,
-                }
-                window_count, valid_count, best_group_count = (
-                    self.pose_average_window_progress()
-                )
-                rospy.loginfo(
-                    (
-                        "%s：[箭头帧#%d] 三维位置和方向配对有效："
-                        "方式=%s，源时间差=%.3fs，回调到达差=%.3fs，"
-                        "camera=(%+.3f,%+.3f,%+.3f)m，"
-                        "map=(%.3f,%.3f,%.3f)，angle=%.1fdeg；"
-                        "窗口=%d/%d帧，有效配对=%d帧，"
-                        "最佳候选组=%d/%d帧"
-                    ),
-                    NODE_NAME,
-                    frame_index,
-                    pair_mode,
-                    source_delta,
-                    receive_delta,
-                    pose["camera_position"][0],
-                    pose["camera_position"][1],
-                    pose["camera_position"][2],
-                    transformed.pose.position.x,
-                    transformed.pose.position.y,
-                    transformed.pose.position.z,
-                    direction["angle_deg"],
-                    window_count,
-                    self.stable_detection_window_size,
-                    valid_count,
-                    best_group_count,
-                    self.stable_detection_count,
-                )
-
-    def build_pose_average_candidate_groups(self, samples):
-        groups = []
-        for sample in samples:
-            matches = []
-            for index, group in enumerate(groups):
-                median_position = (
-                    statistics.median(item["camera_x"] for item in group),
-                    statistics.median(item["camera_y"] for item in group),
-                    statistics.median(item["camera_z"] for item in group),
-                )
-                position_distance = math.sqrt(
-                    (sample["camera_x"] - median_position[0]) ** 2
-                    + (sample["camera_y"] - median_position[1]) ** 2
-                    + (sample["camera_z"] - median_position[2]) ** 2
-                )
-                mean_angle = self.mean_angle_deg([
-                    item["angle_deg"] for item in group
-                ])
-                angle_distance = abs(normalize_angle_deg(
-                    sample["angle_deg"] - mean_angle
-                ))
-                if (
-                    position_distance
-                    <= self.pose_average_position_tolerance_m
-                    and angle_distance <= self.stable_angle_tolerance_deg
-                ):
-                    matches.append(
-                        (position_distance, angle_distance, index)
-                    )
-            if not matches:
-                groups.append([sample])
-                continue
-            _, _, best_index = min(matches)
-            groups[best_index].append(sample)
-        return groups
-
-    def pose_average_result(self):
-        with self.pose_average_lock:
-            samples = [
-                dict(self.pose_average_samples[frame_index])
-                for frame_index in list(self.pose_average_frame_window)
-                if frame_index in self.pose_average_samples
-            ]
-        groups = self.build_pose_average_candidate_groups(samples)
-        if not groups:
-            return None, 0
-        best_group = max(
-            groups,
-            key=lambda group: (
-                len(group),
-                max(item["frame_index"] for item in group),
-            ),
-        )
-        if len(best_group) < self.stable_detection_count:
-            return None, len(best_group)
-
-        mean_camera = (
-            sum(item["camera_x"] for item in best_group) / len(best_group),
-            sum(item["camera_y"] for item in best_group) / len(best_group),
-            sum(item["camera_z"] for item in best_group) / len(best_group),
-        )
-        mean_angle = self.mean_angle_deg([
-            item["angle_deg"] for item in best_group
-        ])
-        position_jitter = max(
-            math.sqrt(
-                (item["camera_x"] - mean_camera[0]) ** 2
-                + (item["camera_y"] - mean_camera[1]) ** 2
-                + (item["camera_z"] - mean_camera[2]) ** 2
-            )
-            for item in best_group
-        )
-        angle_jitter = max(
-            abs(normalize_angle_deg(item["angle_deg"] - mean_angle))
-            for item in best_group
-        )
-        if (
-            position_jitter > self.pose_average_position_tolerance_m
-            or angle_jitter > self.stable_angle_tolerance_deg
-        ):
-            return None, len(best_group)
-
-        return {
-            "frame_ids": [
-                item["frame_index"] for item in best_group
-            ],
-            "frame_id": best_group[-1]["frame_id"],
-            "camera_x": mean_camera[0],
-            "camera_y": mean_camera[1],
-            "camera_z": mean_camera[2],
-            "map_x": (
-                sum(item["map_x"] for item in best_group) / len(best_group)
-            ),
-            "map_y": (
-                sum(item["map_y"] for item in best_group) / len(best_group)
-            ),
-            "map_z": (
-                sum(item["map_z"] for item in best_group) / len(best_group)
-            ),
-            "angle_deg": mean_angle,
-            "position_jitter": position_jitter,
-            "angle_jitter": angle_jitter,
-            "confidence": sum(
-                min(
-                    item["direction_confidence"],
-                    item["pose_confidence"],
-                )
-                for item in best_group
-            ) / len(best_group),
-        }, len(best_group)
-
-    def pose_average_window_progress(self):
-        with self.pose_average_lock:
-            frame_count = len(self.pose_average_frame_window)
-            samples = [
-                dict(self.pose_average_samples[frame_index])
-                for frame_index in list(self.pose_average_frame_window)
-                if frame_index in self.pose_average_samples
-            ]
-        groups = self.build_pose_average_candidate_groups(samples)
-        return (
-            frame_count,
-            len(samples),
-            max((len(group) for group in groups), default=0),
-        )
 
     def arrow_callback(self, message):
         self.model_frame_index += 1
@@ -1475,17 +985,6 @@ class Task3AcquireAreaTest(object):
         elif self.state == self.FINE_FORWARD_ALIGN:
             self.add_direction_sample(detection, error_u, error_v)
             self.update_alignment_progress(detection, error_u, error_v)
-        elif self.pose_average_collecting():
-            if detection["angle_deg"] is None:
-                self.record_pose_average_frame(frame_index)
-                rospy.loginfo(
-                    "%s：[箭头帧#%d] 位置有效但方向无效，"
-                    "本帧计入10帧窗口但不加入平均位姿候选组",
-                    NODE_NAME,
-                    frame_index,
-                )
-            else:
-                self.add_pose_average_direction(detection)
 
     def add_detection_sample(self, detection, frame_index, invalid_reason=""):
         self.detection_samples.append({
@@ -2341,63 +1840,6 @@ class Task3AcquireAreaTest(object):
             and self.goal_matches_motion_state()
         )
 
-    def pose_average_motion_arrived(self):
-        """新平均位姿流程额外核对实际水平、深度和航向误差。"""
-        if not self.motion_arrived():
-            return False
-        message = self.latest_motion_state
-        if (
-            message is None
-            or not message.goal_active
-            or self.active_goal is None
-            or self.current_status is None
-        ):
-            return False
-        target_depth = -float(self.active_goal.pose.position.z)
-        depth_error = abs(
-            float(self.current_status["depth"]) - target_depth
-        )
-        return (
-            message.base_position_error
-            <= self.pose_average_arrival_position_tolerance_m
-            and depth_error
-            <= self.pose_average_arrival_depth_tolerance_m
-            and abs(math.degrees(message.yaw_error))
-            <= self.pose_average_arrival_yaw_tolerance_deg
-        )
-
-    def log_pose_average_arrival_gate(self, context):
-        message = self.latest_motion_state
-        if (
-            message is None
-            or self.active_goal is None
-            or self.current_status is None
-        ):
-            return
-        target_depth = -float(self.active_goal.pose.position.z)
-        depth_error = abs(
-            float(self.current_status["depth"]) - target_depth
-        )
-        rospy.loginfo_throttle(
-            self.log_interval,
-            (
-                "%s：%s：HOVER=%s，goal_active=%s，目标匹配=%s；"
-                "实际水平误差=%.3f/<=%.3fm，"
-                "深度误差=%.3f/<=%.3fm，"
-                "航向误差=%.2f/<=%.2fdeg"
-            ),
-            NODE_NAME,
-            context,
-            "通过" if self.motion_hover_fresh() else "未通过",
-            "通过" if message.goal_active else "未通过",
-            "通过" if self.goal_matches_motion_state() else "未通过",
-            message.base_position_error,
-            self.pose_average_arrival_position_tolerance_m,
-            depth_error,
-            self.pose_average_arrival_depth_tolerance_m,
-            abs(math.degrees(message.yaw_error)),
-            self.pose_average_arrival_yaw_tolerance_deg,
-        )
 
     def handle_motion_health(self):
         elapsed = (rospy.Time.now() - self.task_started).to_sec()
@@ -2828,6 +2270,9 @@ class Task3AcquireAreaTest(object):
         second_forward = (
             first_forward + self.search_second_forward_distance
         )
+        third_forward = (
+            second_forward + self.search_third_forward_distance
+        )
         lateral = self.search_lateral_distance
         offsets = (
             (first_forward, 0.0, "前进{:.2f}m".format(first_forward)),
@@ -2839,6 +2284,12 @@ class Task3AcquireAreaTest(object):
             )),
             (second_forward, -lateral, "第二层左移{:.2f}m".format(lateral)),
             (second_forward, lateral, "第二层右移{:.2f}m".format(lateral)),
+            (second_forward, 0.0, "第二层回到中线"),
+            (third_forward, 0.0, "沿中线再前进{:.2f}m".format(
+                self.search_third_forward_distance
+            )),
+            (third_forward, -lateral, "第三层左移{:.2f}m".format(lateral)),
+            (third_forward, lateral, "第三层右移{:.2f}m".format(lateral)),
         )
         cos_yaw = math.cos(self.initial_hold_yaw)
         sin_yaw = math.sin(self.initial_hold_yaw)
@@ -2888,6 +2339,55 @@ class Task3AcquireAreaTest(object):
             math.degrees(self.initial_hold_yaw),
         )
 
+    def begin_search_recovery(self, reason):
+        """定点复核无进展时回到当前层中轴，再恢复被中断的搜索点。"""
+        if not (
+            0 <= self.search_waypoint_index < len(self.search_waypoints)
+        ):
+            self.finish_task(False, "无法确定二级恢复对应的搜索步骤")
+            return
+
+        interrupted_index = self.search_waypoint_index
+        interrupted = self.search_waypoints[interrupted_index]
+        forward = interrupted["forward"]
+        cos_yaw = math.cos(self.initial_hold_yaw)
+        sin_yaw = math.sin(self.initial_hold_yaw)
+        center_x = self.initial_hold_x + cos_yaw * forward
+        center_y = self.initial_hold_y + sin_yaw * forward
+
+        self.search_recovery_resume_index = interrupted_index
+        self.reset_first_lock()
+        self.reset_direction_lock()
+        self.reset_center_progress("二级恢复返回当前层中轴")
+        self.reset_heading_alignment_progress("二级恢复返回当前层中轴")
+        self.reset_alignment_progress("二级恢复返回当前层中轴")
+        self.first_position_detected = False
+        self.latest_detection = None
+        self.last_valid_detection_time = None
+        self.last_full_direction_detection_time = None
+        self.last_visual_goal_frame = 0
+        self.last_visual_goal_time = None
+        self.set_active_goal(
+            center_x,
+            center_y,
+            self.target_z,
+            self.initial_hold_yaw,
+            (
+                "二级恢复：返回搜索步骤{}/{}所在层的中轴，"
+                "到达后恢复{}"
+            ).format(
+                interrupted_index + 1,
+                len(self.search_waypoints),
+                interrupted["label"],
+            ),
+        )
+        self.set_state(
+            self.SEARCH_PATTERN,
+            "{}；识别回调保持启用，返回中轴途中出现有效数据仍会刹停复核".format(
+                reason
+            ),
+        )
+
     def control_search_pattern(self):
         if self.first_position_detected:
             self.begin_cancel(
@@ -2896,6 +2396,43 @@ class Task3AcquireAreaTest(object):
                 "随后按最近{}帧候选组重新确认".format(
                     self.stable_detection_window_size
                 ),
+            )
+            return
+        if self.search_recovery_resume_index is not None:
+            if not self.motion_arrived():
+                rospy.loginfo_throttle(
+                    self.log_interval,
+                    (
+                        "%s：二级恢复返回当前层中轴进行中："
+                        "待恢复搜索点=%d/%d，motion=%s，实际位置误差=%.3fm；"
+                        "箭头识别持续运行"
+                    ),
+                    NODE_NAME,
+                    self.search_recovery_resume_index + 1,
+                    len(self.search_waypoints),
+                    self.current_motion_state_name(),
+                    self.latest_motion_state.base_position_error,
+                )
+                return
+
+            resume_index = self.search_recovery_resume_index
+            self.search_recovery_resume_index = None
+            self.reset_first_lock()
+            self.reset_direction_lock()
+            self.first_position_detected = False
+            self.latest_detection = None
+            self.last_valid_detection_time = None
+            self.last_full_direction_detection_time = None
+            self.activate_search_waypoint(resume_index)
+            rospy.logwarn(
+                (
+                    "%s：二级恢复已到达当前层中轴；"
+                    "恢复搜索步骤%d/%d：%s，识别继续运行"
+                ),
+                NODE_NAME,
+                resume_index + 1,
+                len(self.search_waypoints),
+                self.search_waypoints[resume_index]["label"],
             )
             return
         if self.motion_arrived():
@@ -2980,15 +2517,7 @@ class Task3AcquireAreaTest(object):
         self.last_visual_goal_frame = 0
         self.last_visual_goal_time = None
         if next_state == self.WAIT_FOR_ARROW:
-            if self.pose_average_alignment_enabled:
-                self.pose_average_correction_count = 0
-                self.pose_average_collection_started = None
-                self.reset_pose_average_window(
-                    "搜索刹停完成，只采集停稳后的新位置和方向帧"
-                )
-                next_state = self.POSE_AVERAGE_CONFIRM
-            else:
-                self.reset_first_lock()
+            self.reset_first_lock()
         elif next_state == self.COARSE_LATERAL_ALIGN:
             self.reset_center_progress("进入保持航向的图像中心粗对准")
         elif next_state == self.CONFIRM_DIRECTION:
@@ -3020,6 +2549,7 @@ class Task3AcquireAreaTest(object):
         window_count, valid_count, best_group_count = (
             self.detection_window_progress()
         )
+        state_elapsed = (rospy.Time.now() - self.state_started).to_sec()
         rospy.loginfo_throttle(
             self.log_interval,
             (
@@ -3035,314 +2565,32 @@ class Task3AcquireAreaTest(object):
             "未收到" if model_age is None else "{:.2f}s".format(model_age),
             self.current_motion_state_name(),
         )
-
-    def pose_average_goal_from_result(self, result, context):
-        current = self.get_current_pose(context)
-        if current is None:
-            return None
-        current_yaw = yaw_from_quaternion(current.pose.orientation)
-        correction_deg = self.yaw_correction_sign * normalize_angle_deg(
-            self.camera_forward_angle_deg - result["angle_deg"]
+        full_window_without_lock = (
+            window_count >= self.stable_detection_window_size
+            and best_group_count < self.stable_detection_count
         )
-        target_yaw = normalize_angle_rad(
-            current_yaw + math.radians(correction_deg)
-        )
-        try:
-            camera_offset, _ = self.tf_listener.lookupTransform(
-                "base_link",
-                result["frame_id"],
-                rospy.Time(0),
+        model_not_updating = (
+            state_elapsed >= self.detection_timeout
+            and (
+                model_age is None
+                or model_age > self.detection_timeout
             )
-        except tf.Exception as error:
-            rospy.logwarn_throttle(
-                self.warning_log_interval,
-                "%s：无法读取base_link到%s的相机偏置：%s",
-                NODE_NAME,
-                result["frame_id"],
-                str(error),
-            )
-            return None
-
-        cos_yaw = math.cos(target_yaw)
-        sin_yaw = math.sin(target_yaw)
-        camera_map_x = (
-            cos_yaw * camera_offset[0]
-            - sin_yaw * camera_offset[1]
         )
-        camera_map_y = (
-            sin_yaw * camera_offset[0]
-            + cos_yaw * camera_offset[1]
-        )
-        goal_x = result["map_x"] - camera_map_x
-        goal_y = result["map_y"] - camera_map_y
-        move_distance = math.hypot(
-            goal_x - current.pose.position.x,
-            goal_y - current.pose.position.y,
-        )
-        if move_distance > self.pose_average_max_move_m:
-            rospy.logwarn(
+        if full_window_without_lock or model_not_updating:
+            self.begin_search_recovery(
                 (
-                    "%s：平均位姿目标水平距离%.3fm超过保护上限%.3fm，"
-                    "本组帧%s不执行，继续重新采样"
-                ),
-                NODE_NAME,
-                move_distance,
-                self.pose_average_max_move_m,
-                result["frame_ids"],
+                    "定点复核已收满{}帧但最佳候选组仅{}/{}帧"
+                ).format(
+                    self.stable_detection_window_size,
+                    best_group_count,
+                    self.stable_detection_count,
+                )
+                if full_window_without_lock
+                else "定点复核期间模型超过{:.2f}s未更新".format(
+                    self.detection_timeout
+                )
             )
-            return None
 
-        return {
-            "x": goal_x,
-            "y": goal_y,
-            "yaw": target_yaw,
-            "move_distance": move_distance,
-            "yaw_correction_deg": correction_deg,
-            "current_x": current.pose.position.x,
-            "current_y": current.pose.position.y,
-            "current_yaw": current_yaw,
-            "camera_offset_x": camera_offset[0],
-            "camera_offset_y": camera_offset[1],
-        }
-
-    def log_pose_average_waiting(self, label):
-        window_count, valid_count, best_group_count = (
-            self.pose_average_window_progress()
-        )
-        rospy.loginfo_throttle(
-            self.log_interval,
-            (
-                "%s：%s：窗口=%d/%d帧，有效位置+方向配对=%d帧，"
-                "最佳候选组=%d/%d帧；位置话题=%s"
-            ),
-            NODE_NAME,
-            label,
-            window_count,
-            self.stable_detection_window_size,
-            valid_count,
-            best_group_count,
-            self.stable_detection_count,
-            self.arrow_pose_topic,
-        )
-
-    def start_pose_average_collection(self, reason):
-        with self.pose_average_lock:
-            self.reset_pose_average_window(reason)
-            self.pose_average_collection_started = rospy.Time.now()
-            self.last_arrow_pose_message_time = None
-        rospy.loginfo(
-            "%s：开始平均位姿数据计时：%.1fs内需要完成%d/%d帧稳定配对",
-            NODE_NAME,
-            self.pose_average_data_timeout_seconds,
-            self.stable_detection_count,
-            self.stable_detection_window_size,
-        )
-
-    def pose_average_data_timeout_expired(self, context):
-        if self.pose_average_collection_started is None:
-            return False
-        elapsed = (
-            rospy.Time.now() - self.pose_average_collection_started
-        ).to_sec()
-        if elapsed < self.pose_average_data_timeout_seconds:
-            return False
-
-        window_count, valid_count, best_group_count = (
-            self.pose_average_window_progress()
-        )
-        with self.pose_average_lock:
-            waiting_directions = len(self.pose_average_directions)
-            waiting_poses = len(self.pose_average_poses)
-        pose_age = None
-        if self.last_arrow_pose_message_time is not None:
-            pose_age = (
-                rospy.Time.now() - self.last_arrow_pose_message_time
-            ).to_sec()
-        self.pose_average_data_timed_out = True
-        self.finish_task(
-            False,
-            (
-                "{}在{:.1f}s内没有取得稳定平均位姿："
-                "窗口={}/{}帧，有效配对={}帧，最佳候选组={}/{}帧，"
-                "待配方向={}，待配三维位置={}，三维位置消息年龄={}；"
-                "直接结束当前子任务"
-            ).format(
-                context,
-                elapsed,
-                window_count,
-                self.stable_detection_window_size,
-                valid_count,
-                best_group_count,
-                self.stable_detection_count,
-                waiting_directions,
-                waiting_poses,
-                (
-                    "从未收到"
-                    if pose_age is None
-                    else "{:.2f}s".format(pose_age)
-                ),
-            ),
-        )
-        return True
-
-    def publish_pose_average_goal(self, result, goal, reason):
-        self.pose_average_collection_started = None
-        self.set_active_goal(
-            goal["x"],
-            goal["y"],
-            self.target_z,
-            goal["yaw"],
-            reason,
-        )
-        rospy.loginfo(
-            (
-                "%s：平均位姿目标已锁定：命中帧=%s，平均置信度=%.3f，"
-                "camera平均位置=(%+.3f,%+.3f,%+.3f)m，"
-                "位置抖动=%.3f/%.3fm，平均角度=%.1fdeg，"
-                "角度抖动=%.1f/%.1fdeg；"
-                "相机偏置=(前%+.3f,右%+.3f)m，"
-                "map目标=(%.3f,%.3f,%.3f,yaw=%.2fdeg)，"
-                "水平移动=%.3fm。移动期间忽略视觉目标变化"
-            ),
-            NODE_NAME,
-            result["frame_ids"],
-            result["confidence"],
-            result["camera_x"],
-            result["camera_y"],
-            result["camera_z"],
-            result["position_jitter"],
-            self.pose_average_position_tolerance_m,
-            result["angle_deg"],
-            result["angle_jitter"],
-            self.stable_angle_tolerance_deg,
-            goal["camera_offset_x"],
-            goal["camera_offset_y"],
-            goal["x"],
-            goal["y"],
-            self.target_z,
-            math.degrees(goal["yaw"]),
-            goal["move_distance"],
-        )
-        self.set_state(
-            self.POSE_AVERAGE_MOVE,
-            reason + "；只等待当前目标对应的MotionState.HOVER",
-        )
-
-    def control_pose_average_confirm(self):
-        if not self.pose_average_motion_arrived():
-            self.log_pose_average_arrival_gate(
-                "首次平均位姿采样前等待严格到达"
-            )
-            return
-        if self.pose_average_collection_started is None:
-            self.start_pose_average_collection(
-                "固定悬停目标严格到达，只保留停稳后的新鲜帧"
-            )
-            return
-        result, _ = self.pose_average_result()
-        if result is None:
-            if self.pose_average_data_timeout_expired(
-                "首次平均位姿采集"
-            ):
-                return
-            self.log_pose_average_waiting("停稳后采集首次平均位姿")
-            return
-        goal = self.pose_average_goal_from_result(
-            result, "根据首次平均位姿生成固定目标"
-        )
-        if goal is None:
-            self.reset_pose_average_window(
-                "平均位姿无法生成安全运动目标"
-            )
-            return
-        self.publish_pose_average_goal(
-            result,
-            goal,
-            "3/10帧位置和方向一致，按平均位姿一次性移动",
-        )
-
-    def control_pose_average_move(self):
-        if not self.pose_average_motion_arrived():
-            self.log_pose_average_arrival_gate(
-                "平均位姿目标移动中；视觉不更新当前目标"
-            )
-            return
-        self.start_pose_average_collection(
-            "平均位姿目标已进入HOVER，重新采集新鲜复核帧"
-        )
-        self.set_state(
-            self.POSE_AVERAGE_VERIFY,
-            "当前平均位姿目标已到达，开始3/10帧位置和方向复核",
-        )
-
-    def control_pose_average_verify(self):
-        result, _ = self.pose_average_result()
-        if result is None:
-            if self.pose_average_data_timeout_expired(
-                "到达后的平均位姿复核"
-            ):
-                return
-            self.log_pose_average_waiting("到达HOVER后的平均位姿复核")
-            return
-        goal = self.pose_average_goal_from_result(
-            result, "根据复核平均位姿计算残差"
-        )
-        if goal is None:
-            self.reset_pose_average_window(
-                "复核平均位姿无法生成安全运动目标"
-            )
-            return
-
-        current = self.get_current_pose("核对平均位姿复核误差")
-        if current is None:
-            return
-        position_error = math.hypot(
-            goal["x"] - current.pose.position.x,
-            goal["y"] - current.pose.position.y,
-        )
-        current_yaw = yaw_from_quaternion(current.pose.orientation)
-        yaw_error_deg = abs(math.degrees(normalize_angle_rad(
-            goal["yaw"] - current_yaw
-        )))
-        rospy.loginfo(
-            (
-                "%s：平均位姿复核完成：命中帧=%s，"
-                "水平残差=%.3f/%.3fm，方向残差=%.2f/%.2fdeg，"
-                "位置抖动=%.3fm，角度抖动=%.2fdeg"
-            ),
-            NODE_NAME,
-            result["frame_ids"],
-            position_error,
-            self.pose_average_verify_position_tolerance_m,
-            yaw_error_deg,
-            self.yaw_tolerance_deg,
-            result["position_jitter"],
-            result["angle_jitter"],
-        )
-        if (
-            position_error
-            <= self.pose_average_verify_position_tolerance_m
-            and yaw_error_deg <= self.yaw_tolerance_deg
-        ):
-            rospy.loginfo(
-                (
-                    "%s：平均位姿3/10帧复核通过，不要求箭头位于图像中心；"
-                    "开始执行base_link固定前移%.3fm"
-                ),
-                NODE_NAME,
-                self.base_link_forward_offset,
-            )
-            self.start_base_over_arrow_offset()
-            return
-
-        self.pose_average_correction_count += 1
-        self.publish_pose_average_goal(
-            result,
-            goal,
-            "平均位姿复核未通过，执行第{}次单次微调".format(
-                self.pose_average_correction_count
-            ),
-        )
 
     def control_coarse_lateral_align(self):
         if not self.detection_available_within(
@@ -3796,12 +3044,6 @@ class Task3AcquireAreaTest(object):
             self.control_cancel_wait()
         elif self.state == self.WAIT_FOR_ARROW:
             self.control_wait_for_arrow()
-        elif self.state == self.POSE_AVERAGE_CONFIRM:
-            self.control_pose_average_confirm()
-        elif self.state == self.POSE_AVERAGE_MOVE:
-            self.control_pose_average_move()
-        elif self.state == self.POSE_AVERAGE_VERIFY:
-            self.control_pose_average_verify()
         elif self.state == self.COARSE_LATERAL_ALIGN:
             self.control_coarse_lateral_align()
         elif self.state == self.CONFIRM_DIRECTION:

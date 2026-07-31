@@ -52,7 +52,7 @@ Task 3 当前使用的话题约定：
 底层运动输出：仅由motion_supervisor发布/cmd/pose/ned
 ```
 
-子任务2和子任务3暂时保持各自现有控制实现，本次修改不涉及它们。
+本文同时记录子任务2的ArUco/灯光流程和子任务3的搜索、投放及离场流程。
 
 ## 子任务 1：箭头识别、细对准和定点
 
@@ -65,19 +65,20 @@ Task 3 当前使用的话题约定：
 ```text
 等待TF、/status/auv和/motion/state
 → 只读取一次启动位置，固定点HOVER稳定保持10秒
-→ 保持当前航向，前进0.5m
-→ 未发现时依次到第一层左0.2m、右0.2m并回中
-→ 再前进0.3m，依次到第二层左0.2m、右0.2m
+→ 保持当前航向，前进0.70m
+→ 未发现时依次到第一层左0.30m、右0.30m并回中
+→ 再前进0.40m，依次到第二层左0.30m、右0.30m并回中
+→ 再前进0.30m，依次到第三层左0.30m、右0.30m
 → 搜索途中任意一帧箭头位置有效，立即发布cancel退出搜索
-→ 刹停后累计箭头位置连续3帧有效，暂不要求方向
+→ 刹停后在最近10个模型帧内确认同一位置候选组达到3帧，暂不要求方向
 → 等待主动刹停及mode4接管
-→ 保持启动航向，只依据图像u误差逐个发布左右横移目标
-→ bbox完整留在画面内、左右位置稳定5帧且方向稳定3帧后再次cancel
-→ 定点重新确认完整箭头方向3帧
+→ 保持启动航向，根据图像u/v误差进行图像中心粗对准
+→ 图像中心稳定2帧后再次cancel
+→ 定点在最近10帧内确认完整箭头方向候选组达到3帧
 → 细对准第一段持续读取最新位置和方向，只慢速横移和转向，禁止前后移动
-→ 航向和左右位置稳定3帧且真实停稳后，开放慢速前后居中
-→ 完整箭头中心和方向稳定5帧且真实停稳
-→ base_link沿当前前方移动0.35m，途中继续按实时u误差和方向慢速修正
+→ 航向和左右位置稳定2帧且真实停稳
+→ enable_final_visual_alignment=false时不再执行最终视觉前后居中
+→ base_link沿当前前方执行一次性固定前移0.50m，途中视觉只记录、不改目标
 → 实际到达后HOVER保持10秒并结束
 ```
 
@@ -88,15 +89,15 @@ Task 3 当前使用的话题约定：
 最终map航向 = 当前map航向 + 相对航向修正
 ```
 
-粗对准阶段锁定发现箭头时的航向，只把图像 `u` 误差转换为左右横移小步；图像 `v` 误差只打印，不产生前后目标。只有左右位置和完整箭头方向都稳定后才进入细对准。细对准第一段继续实时读取每一帧完整箭头的位置和方向，每次最多横移 `0.03m`、转向 `3°`，并强制前后步长为0。航向和左右位置稳定后，第二段才把 `v` 误差转换为慢速前后小步，同时继续修正左右和yaw。
+粗对准阶段锁定发现箭头时的航向，根据图像 `u/v` 误差生成受限的左右和前后小步。图像中心稳定后先定点复核完整箭头方向，再进入实时航向与横移联合细对准。当前 `enable_final_visual_alignment=false`，航向和左右位置稳定后不再执行最终视觉前后居中，只等待最新视觉目标真实到达。
 
 搜索和粗对准的每个小步在生成时只计算一次 `map` 绝对目标，并等待上一目标满足实际到达门槛。细对准需要持续看见箭头，因此不等待每个小步都完全HOVER，而是按 `fine_goal_min_interval` 节流，并从最新TF位姿生成受限的小目标；所有目标仍由 `motion_supervisor` 执行。初始悬停点只在启动时读取一次；机器人漂移时仍追踪原悬停点，绝不把漂移后的当前位置重新锁存为新悬停点。
 
-方向确认只累计“完整箭头”帧，并检查连续角度抖动。代码不再用第一次得到的角度一次性发布完整转向目标，而是每次根据最新方向生成受限航向小步。中心和方向最终稳定后，`base_link` 按标定值沿当前前方移动 `0.35m`；前移过程中摄像头仍必须持续看到完整箭头，任务会使用实时 `u` 误差和方向慢速修正最终目标，`v` 误差只记录，不再抵消标定前移量。
+方向确认只累计“完整箭头”帧，并检查角度候选组和运动期间连续方向帧。代码不使用第一次得到的角度一次性发布完整转向目标，而是每次根据最新方向生成受限航向小步。对准完成后，`base_link` 按标定值沿当前前方固定移动 `0.50m`；该目标只计算一次，前移期间视觉继续解析和记录，但不再修改目标或触发视觉回退。
 
 任务不会把 `MotionState.HOVER` 单独视为准确到达，还会检查 `base_position_error`、航向误差、水平速度、航向角速度和深度误差。高度低于 `0.40m` 时只向上修正目标深度。
 
-所有搜索点都相对初始固定悬停点和初始航向一次性计算：前 `0.5m` 后，以该中线点为中心搜索左、右各 `0.2m` 并回中；再沿中线前进 `0.3m`，重复左、右各 `0.2m`。路径任意阶段收到一帧有效位置都会立刻退出搜索，不会继续走剩余点。
+所有搜索点都相对初始固定悬停点和初始航向一次性计算：第一层累计前进 `0.70m`，第二层累计 `1.10m`，第三层累计 `1.40m`；每层搜索左、右各 `0.30m`，前两层结束后回到中轴。路径任意阶段收到一帧有效位置都会立刻退出搜索，不会继续走剩余点。
 
 失败、视觉丢失需要刹停或任务退出时，程序停止发布旧目标并发送 `/cmd/motion/cancel`。反馈超时、`SAFE`、全部搜索点仍未找到箭头或累计超过 `300s` 都会失败退出。
 
@@ -105,7 +106,7 @@ Task 3 当前使用的话题约定：
 1. 订阅 `/motion/state`、`/status/auv`、`/arrow/direction`，读取 `map -> base_link` TF。
 2. 只读取一次启动位姿并持续发布同一绝对目标；漂移时不更新目标点，等待机器人回到固定点并由模式4接管。
 3. `HOVER` 和任务侧实际误差都通过后，连续保持 `initial_hover_seconds`。
-4. 相对固定启动点生成7个搜索点：前0.5、第一层左、第一层右、第一层回中、再前0.3、第二层左、第二层右。
+4. 相对固定启动点生成11个搜索点：三层中轴前进点、每层左/右点，以及第一层和第二层回中点。
 5. 每到一个点都等待真实到达门槛通过再进入下一点；每个箭头模型帧打印置信度、中心、位置是否有效以及方向是否提供。
 6. 搜索中任意一帧位置有效就停止发布搜索目标并发送取消；刹停后重新累计位置连续3帧有效。
 7. 位置3帧有效后锁定当前航向，只根据图像 `u` 误差生成左右横移目标；粗对准阶段前后偏置固定为0。
@@ -113,7 +114,7 @@ Task 3 当前使用的话题约定：
 9. 定点重新确认完整箭头方向3帧后进入细对准第一段；该段只允许慢速左右横移和航向小步，前后步长恒为0。
 10. 航向和左右位置连续3帧通过且最新目标真实到达后进入第二段，开放慢速前后、左右和yaw实时修正。
 11. 细对准任一阶段完整箭头或方向丢失超过阈值都会取消、刹停并重新识别。
-12. 中心和方向稳定5帧且真实到达后生成前方 `0.35m` 的目标；前移期间继续实时修正左右和yaw，并要求视觉跟踪稳定5帧。
+12. 航向和左右位置稳定且真实到达后生成前方 `0.50m` 的一次性目标；前移期间视觉只记录，不再修改固定目标。
 13. 最终目标到达后连续定点10秒，发布 `/finished`；成功或失败退出前都先发送取消。
 
 ### 可调参数
@@ -140,32 +141,33 @@ Task 3 当前使用的话题约定：
 | `motion_goal_topic` | `/cmd/motion/goal` | 绝对目标发布话题 |
 | `motion_cancel_topic` | `/cmd/motion/cancel` | 主动刹停取消话题 |
 | `motion_state_topic` | `/motion/state` | 运动状态反馈话题 |
-| `motion_state_timeout` | `0.5` | 运动状态新鲜度限制，单位 `s` |
-| `motion_startup_timeout` | `10.0` | 启动等待运动状态反馈上限 |
-| `cancel_timeout` | `15.0` | 取消后等待刹停和HOVER的上限 |
+| `/task3_protection/motion_feedback_timeout` | `3.0` | 三个子任务共用的运动状态新鲜度限制，单位 `s` |
+| `motion_startup_timeout` | `20.0` | 启动等待运动状态反馈上限 |
+| `/task3_protection/cancel_recovery_timeout` | `30.0` | 三个子任务共用的取消后刹停恢复上限 |
 | `status_topic` | `/status/auv` | 位姿、模式和速度反馈话题 |
-| `status_timeout` | `0.5` | `/status/auv` 新鲜度限制，单位 `s` |
+| `status_timeout` | `1.0` | `/status/auv` 新鲜度限制，单位 `s` |
 | `initial_hover_seconds` | `10.0` | 搜索前连续定点时间 |
-| `search_initial_forward_distance` | `0.50` | 第一层搜索中线距启动点的前向距离 |
-| `search_lateral_distance` | `0.20` | 每一层左、右搜索点距中线的距离 |
-| `search_second_forward_distance` | `0.30` | 第一层结束后沿中线继续前进的距离 |
+| `search_initial_forward_distance` | `0.70` | 第一层搜索中线距启动点的前向距离 |
+| `search_lateral_distance` | `0.30` | 每一层左、右搜索点距中线的距离 |
+| `search_second_forward_distance` | `0.40` | 第一层结束后沿中线继续前进的距离 |
+| `search_third_forward_distance` | `0.30` | 第二层结束后沿中线继续前进的距离 |
 | `max_wait_seconds` | `300.0` | 搜索和对准累计超时 |
 | `visual_lateral_gain_m` | `0.20` | 粗对准左右目标距离增益 |
-| `visual_min_step_m` | `0.01` | 粗对准非零横移小步最小值 |
-| `visual_max_step_m` | `0.08` | 粗对准单次横移小步最大值 |
+| `visual_min_step_m` | `0.05` | 粗对准非零横移小步最小值 |
+| `visual_max_step_m` | `0.50` | 粗对准单次横移小步最大值 |
 | `visual_goal_min_interval` | `1.0` | 粗对准两个目标之间的最短时间 |
-| `fine_forward_gain_m` | `0.10` | 航向稳定后，v误差到前后慢速目标的增益 |
-| `fine_lateral_gain_m` | `0.10` | 细对准和最终前移阶段的左右慢速增益 |
-| `fine_visual_min_step_m` | `0.005` | 细对准非零平移小步最小值 |
-| `fine_visual_max_step_m` | `0.03` | 细对准单次平移小步最大值，建议先保持较小 |
-| `fine_yaw_max_step_deg` | `3.0` | 每次实时方向更新允许的最大航向小步 |
-| `fine_goal_min_interval` | `0.5` | 两个细对准实时目标之间的最短时间 |
+| `fine_forward_gain_m` | `0.20` | 航向稳定后，v误差到前后慢速目标的增益 |
+| `fine_lateral_gain_m` | `0.20` | 细对准阶段的左右慢速增益 |
+| `fine_visual_min_step_m` | `0.05` | 细对准非零平移小步最小值 |
+| `fine_visual_max_step_m` | `0.50` | 细对准单次平移小步最大值 |
+| `fine_yaw_max_step_deg` | `10.0` | 每次实时方向更新允许的最大航向小步 |
+| `fine_goal_min_interval` | `2.0` | 两个细对准实时目标之间的最短时间 |
 | `visual_forward_sign/visual_lateral_sign` | `1/1` | 现场移动方向相反时改对应符号 |
-| `center_tolerance_u_px/center_tolerance_v_px` | `35/35` | 图像中心允许误差 |
+| `center_tolerance_u_px/center_tolerance_v_px` | `50/50` | 图像中心允许误差 |
 | `camera_forward_angle_deg` | `90.0` | 图像中机器人前方对应角度 |
 | `yaw_correction_sign` | `1.0` | 航向修正方向；转反时改为-1 |
 | `yaw_tolerance_deg` | `10.0` | 视觉箭头方向最终允许误差 |
-| `base_link_forward_offset` | `0.35` | 从图像中心位置到base_link位于箭头上方的前移标定值 |
+| `base_link_forward_offset` | `0.50` | 从图像中心位置到base_link位于箭头上方的前移标定值 |
 | `arrival_position_tolerance` | `0.05` | 任务阶段真实水平到达门槛 |
 | `arrival_yaw_tolerance_deg` | `5.0` | 任务阶段真实航向到达门槛 |
 | `arrival_max_horizontal_speed` | `0.02` | 到达时最大水平速度，单位 `m/s` |
@@ -446,8 +448,9 @@ ArUco ID=1 确认成功，对应颜色=yellow，开始亮灯
 6. 稳定识别方框后发布取消，等待主动刹停。
 7. 根据中心误差生成位置小步，方框连续5帧居中后锁定最终点。
 8. 核对 HOVER、目标匹配、实际误差、速度、mode、深度和航向。
-9. 发布 `ActuatorControl.mode=2`，开灯和夹爪并定点3秒。
-10. 关闭夹爪和灯，发布 `/finished`，取消运动目标并退出。
+9. 沿当前航向固定前进 `pre_drop_forward_distance`，到达 `HOVER` 后再开灯和夹爪。
+10. 投放完成后原地左转，再返回 `map (0,0)` 并等待 `HOVER`。
+11. 向 `map z=0` 持续发布上浮目标 `post_drop_ascent_seconds`，随后发布 `/finished`、取消运动并退出。
 
 ### 可调参数
 
@@ -476,8 +479,9 @@ supervisor接口和到达判定：
 | `motion_goal_topic` | `/cmd/motion/goal` | map绝对目标 |
 | `motion_cancel_topic` | `/cmd/motion/cancel` | 主动刹停 |
 | `motion_state_topic` | `/motion/state` | 运动状态反馈 |
-| `motion_state_timeout` | `0.5` | 反馈最大年龄，s |
-| `motion_startup_timeout/cancel_timeout` | `10.0/15.0` | 首份反馈/取消等待超时，s |
+| `/task3_protection/motion_feedback_timeout` | `3.0` | 三个子任务共用的反馈最大年龄，s |
+| `motion_startup_timeout` | `20.0` | 首份反馈等待超时，s |
+| `/task3_protection/cancel_recovery_timeout` | `30.0` | 三个子任务共用的取消恢复超时，s |
 | `goal_match_position_tolerance` | `0.03` | 反馈目标与任务目标水平差，m |
 | `goal_match_depth_tolerance` | `0.03` | 反馈目标与任务目标深度差，m |
 | `goal_match_yaw_tolerance_deg` | `2.0` | 反馈目标与任务目标航向差 |
@@ -492,11 +496,12 @@ supervisor接口和到达判定：
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `auto_initial_hover_seconds` | `10.0` | 固定启动点稳定后的悬停时间 |
-| `auto_search_first_forward_distance` | `0.30` | 第一段前进距离，m |
-| `auto_search_second_forward_distance` | `0.20` | 第二段前进距离，m |
-| `auto_search_third_forward_distance` | `0.10` | 第三段前进距离，m |
-| `auto_search_lateral_distance` | `0.20` | 每次左右横移距离，m |
+| `auto_initial_hover_seconds` | `3.0` | 固定启动点稳定后的悬停时间 |
+| `auto_search_first_forward_distance` | `0.70` | 第一段前进距离，m |
+| `auto_search_second_forward_distance` | `0.30` | 第二段前进距离，m |
+| `auto_search_third_forward_distance` | `0.20` | 第三段前进距离，m |
+| `auto_search_left_distance` | `0.50` | 从当前搜索点向左横移距离，m |
+| `auto_search_right_distance` | `1.0` | 从左侧搜索点跨到右侧搜索点的横移距离，m |
 | `auto_visual_forward_gain_m` | `0.10` | 垂直误差到前后步长的增益 |
 | `auto_visual_lateral_gain_m` | `0.10` | 水平误差到左右步长的增益 |
 | `auto_visual_min_step_m/max_step_m` | `0.005/0.03` | 最小/最大单帧位置步长 |
@@ -515,7 +520,12 @@ supervisor接口和到达判定：
 | `auto_action_max_yaw_rate` | `0.05` | 动作前最大航向角速度，rad/s |
 | `auto_action_max_depth_error` | `0.08` | 相对启动深度最大误差，m |
 | `auto_action_max_yaw_error_deg` | `5.0` | 相对启动航向最大误差 |
-| `hold_seconds/open_seconds/close_seconds` | `1.0/3.0/0.0` | 人工确认/开灯夹爪/关闭确认时间 |
+| `pre_drop_forward_distance` | `0.10` | 开灯和开爪前沿当前航向固定前进距离，m |
+| `pre_drop_forward_timeout` | `90.0` | 投放前固定前进目标的到达超时，s |
+| `hold_seconds/open_seconds/close_seconds` | `1.0/5.0/0.0` | 人工确认/开灯夹爪/关闭确认时间 |
+| `post_drop_turn_angle_deg` | `90.0` | 投放完成后的左转角度 |
+| `post_drop_step_timeout` | `90.0` | 左转和返回map原点各自的到达超时，s |
+| `post_drop_ascent_seconds` | `5.0` | 到达原点后向map z=0持续上浮时间，s |
 | `actuator_mode` | `2` | 仅执行器模式 |
 | `clamp_open/clamp_closed` | `0/255` | 夹爪开/关值 |
 
@@ -587,7 +597,7 @@ rostopic info /cmd/pose/ned
 
 ### 4. 子任务 1 操作
 
-人工先把机器人放在箭头后方约0.5米并停止手动控制。子任务1 launch 默认同时启动箭头模型、相机和Web；节点启动后先固定点悬停10秒，再执行“前0.5米、左右各0.2米、再前0.3米、左右各0.2米”的搜索路径：
+人工先把机器人放在箭头后方并停止手动控制。子任务1 launch 默认同时启动箭头模型、相机和Web；节点启动后先固定点悬停10秒，再执行三层搜索：累计前进0.70米、1.10米、1.40米，每层左右各0.30米：
 
 ```bash
 roslaunch auv_control task3_subtask1_acquire_area.launch
@@ -602,7 +612,7 @@ roslaunch stereo_depth test_arrow_pose_detection.launch \
 roslaunch auv_control task3_subtask1_acquire_area.launch start_arrow_model:=false
 ```
 
-第一次运动测试建议先减小 `search_initial_forward_distance`、`search_lateral_distance` 和 `search_second_forward_distance`，并观察 `/motion/state` 的 `base_position_error`、速度、航向误差和状态切换。粗对准过快时减小 `visual_lateral_gain_m` 或 `visual_max_step_m`；细对准过快时减小 `fine_forward_gain_m`、`fine_lateral_gain_m`、`fine_visual_max_step_m` 或 `fine_yaw_max_step_deg`，也可以增大 `fine_goal_min_interval`。前后或左右方向相反时修改对应视觉方向符号，转向相反时修改 `yaw_correction_sign`。运动速度、推力、阻尼和刹车参数统一在 `motion_supervisor` 中调节。
+第一次运动测试建议先减小 `search_initial_forward_distance`、`search_lateral_distance`、`search_second_forward_distance` 和 `search_third_forward_distance`，并观察 `/motion/state` 的 `base_position_error`、速度、航向误差和状态切换。粗对准过快时减小 `visual_forward_gain_m`、`visual_lateral_gain_m` 或 `visual_max_step_m`；细对准过快时减小 `fine_lateral_gain_m`、`fine_visual_max_step_m` 或 `fine_yaw_max_step_deg`，也可以增大 `fine_goal_min_interval`。前后或左右方向相反时修改对应视觉方向符号，转向相反时修改 `yaw_correction_sign`。运动速度、推力、阻尼和刹车参数统一在 `motion_supervisor` 中调节。
 
 ### 5. 子任务 2 操作
 
@@ -722,7 +732,7 @@ rostopic echo /arrow/direction
 
 1. 子任务2需要可用的 `map -> base_link` TF，并在启动后持续发布 `/cmd/pose/ned` 的 `mode=4` 定点指令；启动前应停止人工运动控制，避免多个节点争抢控制话题。
 2. 子任务3的 `manual` 模式只验证识别和执行器链路，不依赖 TF 或状态反馈，也不会发布运动指令；`auto` 模式需要 TF、`/status/auv` 和 `/motion/state`，只发布 supervisor 目标与取消请求。
-3. 子任务1先直行搜索；位置识别稳定后只做左右横移粗对准。完整箭头方向稳定后先慢速横移和转向，航向稳定后才允许前后移动；最终前移期间仍实时跟踪完整箭头的位置和方向，并按 `base_link_forward_offset` 的现场标定值使 `base_link` 位于箭头正上方。
+3. 子任务1先直行搜索；位置识别稳定后只做左右横移粗对准。完整箭头方向稳定后先慢速横移和转向，航向稳定后才允许前后移动；最终按 `base_link_forward_offset` 生成一次固定前移目标，后续视觉只记录、不再改目标。
 4. 子任务 3 的 `target_color` 后续应该来自子任务 2 的 ArUco 编号结果。当前为了调试稳定，先手动通过 launch 参数固定颜色。
 5. 子任务3 launch 默认包含并启动 `test_rectangles_detection.launch`；仅当模型已在外部启动时设置 `start_rectangle_model=false`。
 6. 使用 `manual` 模式时，应先完成人工移动并停止手动控制；使用 `auto` 模式时，由节点执行悬停、搜索和细对准。

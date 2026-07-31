@@ -74,7 +74,6 @@ DEFAULT_HOLD_BASE_FRAME = "base_link"
 DEFAULT_INITIAL_HOVER_SECONDS = 10.0
 DEFAULT_INITIAL_HOVER_TIMEOUT = 30.0
 DEFAULT_HOLD_POSE_TIMEOUT = 5.0
-DEFAULT_MOTION_STATE_TIMEOUT = 0.5
 
 DEFAULT_TURN_ENABLED = True
 DEFAULT_TURN_DIRECTION = "right"
@@ -165,7 +164,7 @@ class Task3GetTaskTest:
             "~hold_pose_timeout", DEFAULT_HOLD_POSE_TIMEOUT
         ))
         self.motion_state_timeout = float(rospy.get_param(
-            "~motion_state_timeout", DEFAULT_MOTION_STATE_TIMEOUT
+            "/task3_protection/motion_feedback_timeout", 3.0
         ))
         self.fixed_depth_m = float(rospy.get_param(
             "/task3_target_depth_m", 0.60

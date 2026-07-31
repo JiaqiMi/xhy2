@@ -100,9 +100,7 @@ DEFAULT_MOTION_GOAL_TOPIC = "/cmd/motion/goal"
 DEFAULT_MOTION_CANCEL_TOPIC = "/cmd/motion/cancel"
 DEFAULT_MOTION_STATE_TOPIC = "/motion/state"
 DEFAULT_STATUS_TOPIC = "/status/auv"
-DEFAULT_MOTION_STATE_TIMEOUT = 0.5
 DEFAULT_MOTION_STARTUP_TIMEOUT = 10.0
-DEFAULT_CANCEL_TIMEOUT = 15.0
 DEFAULT_STATUS_TIMEOUT = 0.5
 DEFAULT_STATUS_LINEAR_VELOCITY_SCALE = 1.0
 DEFAULT_GOAL_MATCH_POSITION_TOLERANCE = 0.03
@@ -153,10 +151,15 @@ DEFAULT_HOLD_SECONDS = 1.0
 DEFAULT_OPEN_SECONDS = 3.0
 DEFAULT_RETURN_RIGHT_SECONDS = 1.0
 DEFAULT_CLOSE_SECONDS = 0.0
+DEFAULT_PRE_DROP_FORWARD_DISTANCE = 0.10
+DEFAULT_PRE_DROP_FORWARD_TIMEOUT = 90.0
 DEFAULT_POST_DROP_MOTION_ENABLED = True
 DEFAULT_POST_DROP_TURN_ANGLE_DEG = 90.0
-DEFAULT_POST_DROP_FORWARD_DISTANCE = 0.50
 DEFAULT_POST_DROP_STEP_TIMEOUT = 90.0
+DEFAULT_POST_DROP_ASCENT_SECONDS = 5.0
+POST_DROP_ORIGIN_X = 0.0
+POST_DROP_ORIGIN_Y = 0.0
+POST_DROP_SURFACE_Z = 0.0
 
 # 执行器参数。
 DEFAULT_ACTUATOR_TOPIC = "/cmd/actuator"
@@ -186,9 +189,11 @@ class Task3InspectAndDropTest:
     RETURN_GRIPPER_RIGHT = 5
     CLOSE_CLAMP = 6
     POST_DROP_TURN = 7
-    POST_DROP_FORWARD = 8
+    POST_DROP_RETURN_ORIGIN = 8
     AUTO_DIRECT_MOVE = 9
     AUTO_DIRECT_VERIFY = 10
+    PRE_DROP_FORWARD = 11
+    POST_DROP_ASCEND = 12
 
     STATE_NAMES = {
         WAIT_FOR_TARGET: "等待目标颜色方框",
@@ -199,9 +204,11 @@ class Task3InspectAndDropTest:
         RETURN_GRIPPER_RIGHT: "打开状态回到右侧",
         CLOSE_CLAMP: "关闭夹爪",
         POST_DROP_TURN: "投放后左转",
-        POST_DROP_FORWARD: "投放后向前离场",
+        POST_DROP_RETURN_ORIGIN: "投放后返回map原点",
         AUTO_DIRECT_MOVE: "残缺方框一次移动",
         AUTO_DIRECT_VERIFY: "残缺方框宽松复核",
+        PRE_DROP_FORWARD: "投放前固定前进",
+        POST_DROP_ASCEND: "原点持续上浮",
     }
 
     SEARCH_STEP_NAMES = {
@@ -311,6 +318,14 @@ class Task3InspectAndDropTest:
         self.close_seconds = float(
             rospy.get_param("~close_seconds", DEFAULT_CLOSE_SECONDS)
         )
+        self.pre_drop_forward_distance = float(rospy.get_param(
+            "~pre_drop_forward_distance",
+            DEFAULT_PRE_DROP_FORWARD_DISTANCE,
+        ))
+        self.pre_drop_forward_timeout = float(rospy.get_param(
+            "~pre_drop_forward_timeout",
+            DEFAULT_PRE_DROP_FORWARD_TIMEOUT,
+        ))
         self.post_drop_motion_enabled = bool(rospy.get_param(
             "~post_drop_motion_enabled",
             DEFAULT_POST_DROP_MOTION_ENABLED,
@@ -319,13 +334,13 @@ class Task3InspectAndDropTest:
             "~post_drop_turn_angle_deg",
             DEFAULT_POST_DROP_TURN_ANGLE_DEG,
         ))
-        self.post_drop_forward_distance = float(rospy.get_param(
-            "~post_drop_forward_distance",
-            DEFAULT_POST_DROP_FORWARD_DISTANCE,
-        ))
         self.post_drop_step_timeout = float(rospy.get_param(
             "~post_drop_step_timeout",
             DEFAULT_POST_DROP_STEP_TIMEOUT,
+        ))
+        self.post_drop_ascent_seconds = float(rospy.get_param(
+            "~post_drop_ascent_seconds",
+            DEFAULT_POST_DROP_ASCENT_SECONDS,
         ))
 
         self.motion_goal_topic = str(rospy.get_param(
@@ -341,13 +356,13 @@ class Task3InspectAndDropTest:
             rospy.get_param("~status_topic", DEFAULT_STATUS_TOPIC)
         ).strip()
         self.motion_state_timeout = float(rospy.get_param(
-            "~motion_state_timeout", DEFAULT_MOTION_STATE_TIMEOUT
+            "/task3_protection/motion_feedback_timeout", 3.0
         ))
         self.motion_startup_timeout = float(rospy.get_param(
             "~motion_startup_timeout", DEFAULT_MOTION_STARTUP_TIMEOUT
         ))
         self.cancel_timeout = float(rospy.get_param(
-            "~cancel_timeout", DEFAULT_CANCEL_TIMEOUT
+            "/task3_protection/cancel_recovery_timeout", 30.0
         ))
         self.status_timeout = float(rospy.get_param(
             "~status_timeout", DEFAULT_STATUS_TIMEOUT
@@ -647,6 +662,8 @@ class Task3InspectAndDropTest:
         self.status_hold_depth = None
         self.status_hold_yaw_deg = None
         self.auto_action_hold_position = None
+        self.pending_drop_reason = ""
+        self.drop_action_started = False
         self.post_drop_target_yaw = None
         self.last_actuator_command = None
         self.latest_actuator_status = None
@@ -758,11 +775,13 @@ class Task3InspectAndDropTest:
             )
             rospy.loginfo(
                 (
-                    "%s：自动动作时序：右侧闭合 -> 中间闭合%.1fs -> "
+                    "%s：自动动作时序：投放前前进%.2fm -> "
+                    "右侧闭合 -> 中间闭合%.1fs -> "
                     "中间打开%.1fs -> 打开状态回右侧%.1fs -> "
                     "右侧闭合%.1fs"
                 ),
                 NODE_NAME,
+                self.pre_drop_forward_distance,
                 self.hold_seconds,
                 self.open_seconds,
                 self.return_right_seconds,
@@ -771,13 +790,14 @@ class Task3InspectAndDropTest:
             rospy.loginfo(
                 (
                     "%s：投放后离场：启用=%s，左转=%.1fdeg，"
-                    "随后前进=%.2fm，每一步到达超时=%.1fs"
+                    "随后返回map原点(0,0)，每一步到达超时=%.1fs；"
+                    "到原点后向z=0上浮%.1fs并结束"
                 ),
                 NODE_NAME,
                 "是" if self.post_drop_motion_enabled else "否",
                 self.post_drop_turn_angle_deg,
-                self.post_drop_forward_distance,
                 self.post_drop_step_timeout,
+                self.post_drop_ascent_seconds,
             )
             rospy.loginfo(
                 (
@@ -1214,20 +1234,39 @@ class Task3InspectAndDropTest:
 
         if not self.auto_enabled:
             return
+        if (
+            not math.isfinite(self.pre_drop_forward_distance)
+            or self.pre_drop_forward_distance <= 0.0
+        ):
+            raise ValueError("pre_drop_forward_distance 必须是大于0的有限数")
+        if (
+            not math.isfinite(self.pre_drop_forward_timeout)
+            or self.pre_drop_forward_timeout <= 0.0
+        ):
+            raise ValueError("pre_drop_forward_timeout 必须是大于0的有限数")
         if self.post_drop_motion_enabled:
             if (
-                self.post_drop_turn_angle_deg <= 0.0
+                not math.isfinite(self.post_drop_turn_angle_deg)
+                or self.post_drop_turn_angle_deg <= 0.0
                 or self.post_drop_turn_angle_deg >= 180.0
             ):
                 raise ValueError(
                     "post_drop_turn_angle_deg 必须在0到180度之间"
                 )
-            if self.post_drop_forward_distance <= 0.0:
+            if (
+                not math.isfinite(self.post_drop_step_timeout)
+                or self.post_drop_step_timeout <= 0.0
+            ):
                 raise ValueError(
-                    "post_drop_forward_distance 必须大于0"
+                    "post_drop_step_timeout 必须是大于0的有限数"
                 )
-            if self.post_drop_step_timeout <= 0.0:
-                raise ValueError("post_drop_step_timeout 必须大于0")
+            if (
+                not math.isfinite(self.post_drop_ascent_seconds)
+                or self.post_drop_ascent_seconds <= 0.0
+            ):
+                raise ValueError(
+                    "post_drop_ascent_seconds 必须是大于0的有限数"
+                )
         if self.auto_search_stable_detection_count < 1:
             raise ValueError(
                 "auto_search_stable_detection_count 必须大于等于 1"
@@ -1428,6 +1467,64 @@ class Task3InspectAndDropTest:
         )
         return self.active_goal
 
+    def start_pre_drop_forward(self, reason):
+        if self.active_goal is None or self.auto_hold_yaw is None:
+            return False
+        source_goal = copy.deepcopy(self.active_goal)
+        self.pending_drop_reason = str(reason)
+        self.auto_action_hold_position = None
+        self.set_body_offset_goal(
+            source_goal,
+            self.pre_drop_forward_distance,
+            0.0,
+            "开灯和开爪前沿当前航向前进%.2fm"
+            % self.pre_drop_forward_distance,
+        )
+        rospy.loginfo(
+            (
+                "%s：[投放前前进] 识别和对准已通过，先沿当前航向"
+                "前进%.2fm，目标=(%.3f,%.3f,%.3f)"
+            ),
+            NODE_NAME,
+            self.pre_drop_forward_distance,
+            self.active_goal.pose.position.x,
+            self.active_goal.pose.position.y,
+            self.active_goal.pose.position.z,
+        )
+        self.set_state(
+            self.PRE_DROP_FORWARD,
+            "投放动作前固定前进目标已发布",
+        )
+        return True
+
+    def handle_pre_drop_forward(self):
+        self.publish_actuator(self.clamp_closed, "off")
+        if self.motion_step_timed_out(
+            "投放前固定前进",
+            self.pre_drop_forward_timeout,
+        ):
+            return
+        if self.motion_arrived():
+            if not self.capture_action_hold_position():
+                self.finish_task(False, "投放前前进到达，但无法锁定动作定点")
+                return
+            reason = self.pending_drop_reason
+            self.pending_drop_reason = ""
+            self.begin_drop_actuator_action(
+                "%s；投放前已前进%.2fm并进入HOVER"
+                % (reason, self.pre_drop_forward_distance)
+            )
+            return
+        rospy.loginfo_throttle(
+            self.log_interval,
+            "%s：[投放前前进] 进行中 %.1f/%.1fs，motion=%s",
+            NODE_NAME,
+            self.state_elapsed(),
+            self.pre_drop_forward_timeout,
+            self.current_motion_state_name(),
+        )
+        self.log_arrival_gate("投放前固定前进到达判定")
+
     def start_post_drop_turn(self):
         source_goal = self.active_goal
         if source_goal is None:
@@ -1466,53 +1563,79 @@ class Task3InspectAndDropTest:
         )
         return True
 
-    def start_post_drop_forward(self):
-        if self.active_goal is None or self.post_drop_target_yaw is None:
+    def start_post_drop_return_origin(self):
+        if self.post_drop_target_yaw is None:
             return False
-        turn_goal = copy.deepcopy(self.active_goal)
         self.auto_hold_yaw = self.post_drop_target_yaw
-        self.set_body_offset_goal(
-            turn_goal,
-            self.post_drop_forward_distance,
-            0.0,
-            "投放后左转完成，沿新航向前进%.2fm"
-            % self.post_drop_forward_distance,
+        self.set_active_goal(
+            POST_DROP_ORIGIN_X,
+            POST_DROP_ORIGIN_Y,
+            self.auto_hold_z,
+            self.post_drop_target_yaw,
+            "投放后左转完成，返回map原点(0,0)",
         )
         rospy.loginfo(
             (
                 "%s：[投放后离场] 左转已由HOVER确认，"
-                "开始沿新航向前进%.2fm，目标=(%.3f,%.3f,%.3f)"
+                "开始返回map原点，目标=(%.3f,%.3f,%.3f)"
             ),
             NODE_NAME,
-            self.post_drop_forward_distance,
             self.active_goal.pose.position.x,
             self.active_goal.pose.position.y,
             self.active_goal.pose.position.z,
         )
         self.set_state(
-            self.POST_DROP_FORWARD,
-            "左转目标已到达，开始沿新航向前进",
+            self.POST_DROP_RETURN_ORIGIN,
+            "左转目标已到达，开始返回map原点",
         )
         return True
 
-    def post_drop_step_timed_out(self, step_name):
+    def start_post_drop_ascent(self):
+        if self.post_drop_target_yaw is None:
+            return False
+        self.set_active_goal(
+            POST_DROP_ORIGIN_X,
+            POST_DROP_ORIGIN_Y,
+            POST_DROP_SURFACE_Z,
+            self.post_drop_target_yaw,
+            "到达map原点后向z=0持续上浮",
+        )
+        rospy.loginfo(
+            (
+                "%s：[投放后离场] map原点已由HOVER确认，开始向"
+                "z=%.2f发布上浮目标并持续%.1fs"
+            ),
+            NODE_NAME,
+            POST_DROP_SURFACE_Z,
+            self.post_drop_ascent_seconds,
+        )
+        self.set_state(
+            self.POST_DROP_ASCEND,
+            "已到达map原点，开始持续上浮",
+        )
+        return True
+
+    def motion_step_timed_out(self, step_name, timeout):
         elapsed = self.state_elapsed()
-        if elapsed < self.post_drop_step_timeout:
+        if elapsed < timeout:
             return False
         self.finish_task(
             False,
             "%s超过%.1fs仍未到达HOVER"
-            % (step_name, self.post_drop_step_timeout),
+            % (step_name, timeout),
         )
         return True
 
     def handle_post_drop_turn(self):
         self.publish_actuator(self.clamp_closed, "off")
-        if self.post_drop_step_timed_out("投放后左转"):
+        if self.motion_step_timed_out(
+            "投放后左转",
+            self.post_drop_step_timeout,
+        ):
             return
         if self.motion_arrived():
-            if not self.start_post_drop_forward():
-                self.finish_task(False, "无法生成投放后前进目标")
+            if not self.start_post_drop_return_origin():
+                self.finish_task(False, "无法生成投放后返回map原点目标")
             return
         rospy.loginfo_throttle(
             self.log_interval,
@@ -1524,29 +1647,51 @@ class Task3InspectAndDropTest:
         )
         self.log_arrival_gate("投放后左转到达判定")
 
-    def handle_post_drop_forward(self):
+    def handle_post_drop_return_origin(self):
         self.publish_actuator(self.clamp_closed, "off")
-        if self.post_drop_step_timed_out("投放后前进"):
+        if self.motion_step_timed_out(
+            "投放后返回map原点",
+            self.post_drop_step_timeout,
+        ):
             return
         if self.motion_arrived():
-            self.finish_task(
-                True,
-                "识别和投放完成，左转%.1f度并前进%.2fm离场"
-                % (
-                    self.post_drop_turn_angle_deg,
-                    self.post_drop_forward_distance,
-                ),
-            )
+            if not self.start_post_drop_ascent():
+                self.finish_task(False, "无法生成map原点上浮目标")
             return
         rospy.loginfo_throttle(
             self.log_interval,
-            "%s：[投放后离场] 前进进行中 %.1f/%.1fs，motion=%s",
+            "%s：[投放后离场] 返回map原点进行中 %.1f/%.1fs，motion=%s",
             NODE_NAME,
             self.state_elapsed(),
             self.post_drop_step_timeout,
             self.current_motion_state_name(),
         )
-        self.log_arrival_gate("投放后前进到达判定")
+        self.log_arrival_gate("投放后返回map原点到达判定")
+
+    def handle_post_drop_ascent(self):
+        self.publish_actuator(self.clamp_closed, "off")
+        elapsed = self.state_elapsed()
+        if elapsed >= self.post_drop_ascent_seconds:
+            self.finish_task(
+                True,
+                (
+                    "识别和投放完成，左转%.1f度、返回map原点(0,0)，"
+                    "向z=0持续上浮%.1fs后结束"
+                )
+                % (
+                    self.post_drop_turn_angle_deg,
+                    self.post_drop_ascent_seconds,
+                ),
+            )
+            return
+        rospy.loginfo_throttle(
+            self.log_interval,
+            "%s：[投放后离场] 原点上浮进行中 %.1f/%.1fs，目标z=%.2f",
+            NODE_NAME,
+            elapsed,
+            self.post_drop_ascent_seconds,
+            POST_DROP_SURFACE_Z,
+        )
 
     def initialize_auto_pose(self):
         if not self.auto_enabled:
@@ -2141,7 +2286,8 @@ class Task3InspectAndDropTest:
         self.reset_auto_search_step()
         if self.auto_search_index >= len(self.auto_search_plan):
             rospy.logwarn(
-                "%s：预设搜索路径已经执行完毕，仍未稳定识别方框，保持最后定点等待",
+                "%s：本轮预设搜索路径已经执行完毕，仍未稳定识别方框；"
+                "下一控制周期结束本轮搜索并交由总任务恢复",
                 NODE_NAME,
             )
 
@@ -2182,12 +2328,12 @@ class Task3InspectAndDropTest:
         if not self.wait_for_motion_cancel("搜索阶段等待主动刹停"):
             return
         if self.auto_search_index >= len(self.auto_search_plan):
-            rospy.logwarn_throttle(
-                self.warning_log_interval,
-                "%s：搜索路径已完成，保持最后定点等待 %s 方框，任务总超时 %.1fs",
-                NODE_NAME,
-                self.target_color,
-                self.max_wait_seconds,
+            self.finish_task(
+                False,
+                "预设搜索路径已经执行完毕，仍未识别到{}方框；"
+                "不在末点空等，交由总任务恢复并重试".format(
+                    self.target_color
+                ),
             )
             return
 
@@ -4078,6 +4224,14 @@ class Task3InspectAndDropTest:
         )
 
     def start_drop_action(self, reason):
+        if self.auto_enabled:
+            if not self.start_pre_drop_forward(reason):
+                self.finish_task(False, "无法生成投放前固定前进目标")
+            return
+        self.begin_drop_actuator_action(reason)
+
+    def begin_drop_actuator_action(self, reason):
+        self.drop_action_started = True
         if self.heading_servo_enabled:
             self.publish_actuator(
                 self.clamp_closed,
@@ -4534,6 +4688,9 @@ class Task3InspectAndDropTest:
                 self.publish_actuator(self.clamp_closed, "off")
                 self.handle_partial_box_direct_verify()
 
+            elif self.state == self.PRE_DROP_FORWARD:
+                self.handle_pre_drop_forward()
+
             elif self.state == self.HOLD_BEFORE_ACTION:
                 if self.auto_enabled:
                     self.publish_action_position_hold("动作前最终定点保持")
@@ -4693,8 +4850,11 @@ class Task3InspectAndDropTest:
             elif self.state == self.POST_DROP_TURN:
                 self.handle_post_drop_turn()
 
-            elif self.state == self.POST_DROP_FORWARD:
-                self.handle_post_drop_forward()
+            elif self.state == self.POST_DROP_RETURN_ORIGIN:
+                self.handle_post_drop_return_origin()
+
+            elif self.state == self.POST_DROP_ASCEND:
+                self.handle_post_drop_ascent()
 
             if self.auto_enabled and not self.finished:
                 self.publish_active_goal()
