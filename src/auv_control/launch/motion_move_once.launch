@@ -1,68 +1,75 @@
 <launch>
- <!--
-      NED/map 坐标系下的绝对目标深度，单位 m。
-      按当前系统的 z 符号约定输入，默认水下 0.6 m 为 -0.6。
-      此参数只传给 motion_goal_test；motion_supervisor 始终采用收到的 goal.z。
+    <!--
+      map 坐标系下的绝对目标 z，单位 m。
+      按当前系统的 z 符号约定输入，例如水下 0.9 m 为 -0.9。
     -->
     <arg name="target_z" default="-0.9" />
 
     <!--
-      水平偏置所使用的坐标系，只支持 base_link 或 map。
-      base_link：使用测试节点启动时的初始艇体坐标系；
-      map：使用固定 NED/map 坐标系，不随初始航向旋转。
+      目标输入模式：relative 为原有相对移动；absolute 为 map 下绝对目标。
+      relative 模式使用 offset_frame、offset_x、offset_y、yaw_offset_deg；
+      absolute 模式使用 target_x、target_y、target_yaw_deg。
+    -->
+    <arg name="target_mode" default="relative" />
+
+    <!--
+      相对目标水平偏置坐标系，只支持 base_link 或 map。
+      base_link：正 x 向前、正 y 向右；map：正 x 向北、正 y 向东。
     -->
     <arg name="offset_frame" default="base_link" />
 
-    <!--
-      相对目标 x 偏置，单位 m，可输入正负值。
-      offset_frame=base_link：正值向前，负值向后；
-      offset_frame=map：正值向北，负值向南。
-    -->
+    <!-- relative 模式下的 x、y 偏置，单位 m。 -->
     <arg name="offset_x" default="0" />
-
-    <!--
-      相对目标 y 偏置，单位 m，可输入正负值。
-      offset_frame=base_link：正值向右，负值向左；
-      offset_frame=map：正值向东，负值向西。
-    -->
     <arg name="offset_y" default="1" />
 
-    <!--
-      相对于初始航向的偏差，单位 deg，可输入正负值。
-      目标航向会归一化到 [-180°, 180°)。
-    -->
+    <!-- relative 模式下相对初始航向的偏差，单位 deg。 -->
     <arg name="yaw_offset_deg" default="0.0" />
 
+    <!-- absolute 模式下 map 坐标系的绝对 x、y 位置，单位 m。 -->
+    <arg name="target_x" default="0.0" />
+    <arg name="target_y" default="1.0" />
+
+    <!-- absolute 模式下 map 坐标系的绝对航向，单位 deg。 -->
+    <arg name="target_yaw_deg" default="0.0" />
+
     <!--
-      测试节点启动后、锁定初始 TF 前的等待时间，单位 s。
-      用于等待 TF、地图原点和状态反馈完成初始化。
+      测试节点启动后、生成或发送目标前的等待时间，单位 s。
     -->
     <arg name="goal_publish_delay" default="1.0" />
 
     <!--
-      等待 map -> base_link TF 的最长时间，单位 s。
-      超时后测试节点不发布目标并直接退出。
+      relative 模式等待 map -> base_link TF 的最长时间，单位 s。
     -->
-    <arg name="goal_tf_timeout" default="5.0" />
+    <arg name="hover_duration" default="3.0" />
+
+    <!-- 两种模式进入 HOVER 后的保持时长，单位 s；完成后节点退出。 -->
+    <arg name="hover_duration" default="3.0" />
 
     <!--
-      可选的单次相对目标发布节点。
-      节点读取初始 map -> base_link，计算 map 下的绝对目标后锁存发布。
+      单次目标发布节点。
+      relative 模式保持原有相对目标计算；absolute 模式发布 map 绝对目标。
+      两种模式均单帧发布，确认进入 HOVER 后保持 3 秒并退出。
     -->
     <node pkg="auv_control" type="motion_goal_test.py" name="motion_goal_test" output="screen">
-        <!-- 偏置坐标系：base_link 或 map。 -->
+        <!-- relative 或 absolute。 -->
+        <param name="target_mode" value="$(arg target_mode)" />
+        <!-- 单次移动完成后退出；其他使用该节点的 launch 默认保持常驻。 -->
+        <param name="exit_after_hover" value="true" />
+        <!-- relative 模式参数。 -->
         <param name="offset_frame" value="$(arg offset_frame)" />
-        <!-- 水平 x 偏置，单位 m。 -->
         <param name="offset_x" value="$(arg offset_x)" />
-        <!-- 水平 y 偏置，单位 m。 -->
         <param name="offset_y" value="$(arg offset_y)" />
-        <!-- 初始航向基础上的角度偏差，单位 deg。 -->
         <param name="yaw_offset_deg" value="$(arg yaw_offset_deg)" />
-        <!-- NED/map 坐标系下的绝对目标深度，单位 m。 -->
+        <!-- 两种模式共用的目标深度，单位 m。 -->
         <param name="target_z" value="$(arg target_z)" />
-        <!-- 锁定初始位姿前的等待时间，单位 s。 -->
+        <!-- absolute 模式参数。 -->
+        <param name="target_x" value="$(arg target_x)" />
+        <param name="target_y" value="$(arg target_y)" />
+        <param name="target_yaw_deg" value="$(arg target_yaw_deg)" />
+        <!-- 目标发布前等待时间与 relative 模式 TF 超时。 -->
         <param name="publish_delay" value="$(arg goal_publish_delay)" />
-        <!-- TF 等待超时时间，单位 s。 -->
         <param name="tf_timeout" value="$(arg goal_tf_timeout)" />
+        <!-- HOVER 保持时长，单位 s。 -->
+        <param name="hover_duration" value="$(arg hover_duration)" />
     </node>
 </launch>

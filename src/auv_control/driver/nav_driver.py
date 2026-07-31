@@ -19,6 +19,8 @@
     调整至 driver 目录，归入硬件驱动层
 2026.7.24
     解析数据和原始报文分别按 nav_data、nav_raw 子目录保存。
+2026.7.31
+    保存文件达到 50 MiB 后自动分卷，文件名追加下划线编号。
 """
 
 import json
@@ -57,16 +59,22 @@ class NavDriver:
         self.save_dir = os.path.expanduser(rospy.get_param('~save_dir', '~/.ros/auv_logs'))
         self.save_subdir = 'nav_data'
         self.save_file_name = rospy.get_param('~save_file', '')
+        self.max_file_size = max(1, int(rospy.get_param('~max_file_size', 50 * 1024 * 1024)))
         self.flush_every = max(1, int(rospy.get_param('~flush_every', 1)))
         self.write_count = 0
         self.save_file = None
+        self.save_base_name = ''
+        self.file_index = 0
         self.raw_saving_enable = rospy.get_param('~save_raw_data', False)
         self.raw_save_dir = os.path.expanduser(rospy.get_param('~raw_save_dir', '~/.ros/auv_logs'))
         self.raw_save_subdir = 'nav_raw'
         self.raw_save_file_name = rospy.get_param('~raw_save_file', '')
+        self.raw_max_file_size = max(1, int(rospy.get_param('~raw_max_file_size', 50 * 1024 * 1024)))
         self.raw_flush_every = max(1, int(rospy.get_param('~raw_flush_every', 1)))
         self.raw_write_count = 0
         self.raw_save_file = None
+        self.raw_save_base_name = ''
+        self.raw_file_index = 0
 
         if self.save_data:
             self.open_save_file()
@@ -79,22 +87,68 @@ class NavDriver:
     def open_save_file(self):
         if not self.save_file_name:
             self.save_file_name = datetime.now().strftime('nav_data_%Y%m%d_%H%M%S.jsonl')
+        self.save_base_name = self.save_file_name
+        self.file_index = 0
 
         save_dir = os.path.join(self.save_dir, self.save_subdir)
         os.makedirs(save_dir, exist_ok=True)
-        path = os.path.join(save_dir, self.save_file_name)
+        self._open_data_file(save_dir, self.save_base_name)
+
+    def _open_data_file(self, save_dir, file_name):
+        """打开指定的导航解析数据分卷文件"""
+        path = os.path.join(save_dir, file_name)
         self.save_file = open(path, 'a', encoding='utf-8')
         rospy.loginfo(f"nav driver: 数据将保存到 {path}")
+
+    def _rotate_data_file_if_needed(self, record_size):
+        """在写入前检查解析数据文件大小，超过上限时切换分卷"""
+        if self.save_file is None:
+            return
+
+        current_size = self.save_file.tell()
+        if current_size == 0 or current_size + record_size <= self.max_file_size:
+            return
+
+        self.save_file.flush()
+        self.save_file.close()
+        self.file_index += 1
+        file_stem, extension = os.path.splitext(self.save_base_name)
+        file_name = f'{file_stem}_{self.file_index}{extension}'
+        save_dir = os.path.join(self.save_dir, self.save_subdir)
+        self._open_data_file(save_dir, file_name)
 
     def open_raw_save_file(self):
         if not self.raw_save_file_name:
             self.raw_save_file_name = datetime.now().strftime('nav_raw_%Y%m%d_%H%M%S.jsonl')
+        self.raw_save_base_name = self.raw_save_file_name
+        self.raw_file_index = 0
 
         save_dir = os.path.join(self.raw_save_dir, self.raw_save_subdir)
         os.makedirs(save_dir, exist_ok=True)
-        path = os.path.join(save_dir, self.raw_save_file_name)
+        self._open_raw_file(save_dir, self.raw_save_base_name)
+
+    def _open_raw_file(self, save_dir, file_name):
+        """打开指定的导航原始报文分卷文件"""
+        path = os.path.join(save_dir, file_name)
         self.raw_save_file = open(path, 'a', encoding='utf-8')
         rospy.loginfo(f"nav driver: 原始报文将保存到 {path}")
+
+    def _rotate_raw_file_if_needed(self, record_size):
+        """在写入前检查原始报文文件大小，超过上限时切换分卷"""
+        if self.raw_save_file is None:
+            return
+
+        current_size = self.raw_save_file.tell()
+        if current_size == 0 or current_size + record_size <= self.raw_max_file_size:
+            return
+
+        self.raw_save_file.flush()
+        self.raw_save_file.close()
+        self.raw_file_index += 1
+        file_stem, extension = os.path.splitext(self.raw_save_base_name)
+        file_name = f'{file_stem}_{self.raw_file_index}{extension}'
+        save_dir = os.path.join(self.raw_save_dir, self.raw_save_subdir)
+        self._open_raw_file(save_dir, file_name)
 
     def connect(self):
         while not rospy.is_shutdown():
@@ -339,7 +393,9 @@ class NavDriver:
         }
 
         try:
-            self.save_file.write(json.dumps(event, ensure_ascii=False) + '\n')
+            event_line = json.dumps(event, ensure_ascii=False) + '\n'
+            self._rotate_data_file_if_needed(len(event_line.encode('utf-8')))
+            self.save_file.write(event_line)
             self.write_count += 1
             if self.write_count % self.flush_every == 0:
                 self.save_file.flush()
@@ -361,7 +417,9 @@ class NavDriver:
         }
 
         try:
-            self.raw_save_file.write(json.dumps(event, ensure_ascii=False) + '\n')
+            event_line = json.dumps(event, ensure_ascii=False) + '\n'
+            self._rotate_raw_file_if_needed(len(event_line.encode('utf-8')))
+            self.raw_save_file.write(event_line)
             self.raw_write_count += 1
             if self.raw_write_count % self.raw_flush_every == 0:
                 self.raw_save_file.flush()

@@ -25,7 +25,7 @@
         <group>
             <remap from="/vision/shapes/target_message"
                    to="/obj/target_message" />
-            <include file="$(find stereo_depth)/launch/test_shapes_detection.launch">
+            <include file="$(find stereo_depth)/launch/test_shapes_detection_speed.launch">
                 <arg name="start_web" value="false" />
             </include>
         </group>
@@ -38,6 +38,7 @@
           required="$(arg auto_shutdown_detection_nodes)">
         <env name="ROS_PYTHON_LOG_CONFIG_FILE"
              value="$(find auv_control)/config/task1_v3_python_logging.conf" />
+        <param name="config_file" value="$(arg task1_config_file)" />
         <rosparam command="load" file="$(arg task1_config_file)" />
     </node>
 </launch>

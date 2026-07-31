@@ -25,7 +25,7 @@
         true：使用 model_line_260726.pt
         false：使用 line0709.pt
     -->
-    <arg name="model_flag" default="false" />
+    <arg name="model_flag" default="true" />
 
     <arg name="new_model_path"
          default="/home/xhy/catkin_ws/models/model_arrow_260726.pt" />

@@ -8,6 +8,7 @@
       /cmd/motion/cancel (std_msgs/Empty)
       /status/vel (geometry_msgs/TwistStamped)
       /status/auv (AUVData.msg)
+      /status/power (SensorStatus.msg)
       /tf
 发布：/cmd/pose/ned (PoseNEDcmd.msg)
       /motion/state (MotionState.msg)
@@ -51,11 +52,16 @@
     加载纯定深 HOVER 退出滞回参数，支持误差持续超限后恢复统一跟踪。
 2026.7.25
     mode=2 与 mode=4 共用 HOVER 进入和退出参数，移除旧接管故障阈值加载。
+2026.7.29
+    记录 Yaw 制动持续远离目标的异常退出请求、等待时间和触发结果。
+2026.7.31
+    CSV 增加两路推进电源电压、电流、功率及反馈新鲜度，并按 50 MiB 自动分卷。
 """
 
 from __future__ import division
 
 import csv
+import io
 import json
 import math
 import os
@@ -64,7 +70,7 @@ from datetime import datetime
 
 import rospy
 import tf
-from auv_control.msg import AUVData, MotionState, PoseNEDcmd
+from auv_control.msg import AUVData, MotionState, PoseNEDcmd, SensorStatus
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from std_msgs.msg import Empty, String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
@@ -100,6 +106,17 @@ class MotionSupervisorNode(object):
         'pose_age_s',
         'velocity_age_s',
         'mode_feedback_age_s',
+        'power_feedback_age_s',
+        'power_feedback_fresh',
+        'power_checksum_ok',
+        'power1_valid',
+        'power1_voltage_v',
+        'power1_current_a',
+        'power1_power_w',
+        'power2_valid',
+        'power2_voltage_v',
+        'power2_current_a',
+        'power2_power_w',
         'reported_mode',
         'command_mode',
         'startup_complete',
@@ -179,6 +196,9 @@ class MotionSupervisorNode(object):
         'yaw_brake_entry',
         'yaw_brake_entered',
         'yaw_brake_released',
+        'yaw_brake_escape_requested',
+        'yaw_brake_escape_wait_s',
+        'yaw_brake_escape_triggered',
         'yaw_brake_entry_count',
         'yaw_brake_exit_count',
         'yaw_brake_release_wait_s',
@@ -236,6 +256,8 @@ class MotionSupervisorNode(object):
         self.last_velocity_stamp = None
         self.reported_mode = None
         self.last_status_stamp = None
+        self.last_power_status = None
+        self.last_power_status_stamp = None
         self.goal_sequence = 0
         self.base_goal = None
         self.last_goal_stamp = None
@@ -250,11 +272,23 @@ class MotionSupervisorNode(object):
                 '~log_directory',
                 '~/.ros/auv_logs/motion_supervisor'))))
         self.log_flush_every = int(rospy.get_param('~log_flush_every', 20))
+        self.log_max_file_size_bytes = int(
+            float(rospy.get_param('~log_max_file_size_mb', 50.0))
+            * 1024 * 1024)
+        self.power_feedback_timeout = float(
+            rospy.get_param('~power_feedback_timeout', 1.0))
         if self.log_flush_every <= 0:
             raise ValueError('log_flush_every 必须大于 0')
+        if self.log_max_file_size_bytes <= 0:
+            raise ValueError('log_max_file_size_mb 必须大于 0')
+        if self.power_feedback_timeout <= 0.0:
+            raise ValueError('power_feedback_timeout 必须大于 0')
         self.log_file = None
         self.log_writer = None
         self.log_path = ''
+        self.log_base_path = ''
+        self.log_file_index = 0
+        self.log_file_size_bytes = 0
         self.parameter_snapshot_path = ''
         self.log_rows_since_flush = 0
         self.log_started_at = rospy.Time.now()
@@ -276,6 +310,9 @@ class MotionSupervisorNode(object):
             '/status/vel', TwistStamped, self.velocity_callback, queue_size=10)
         rospy.Subscriber(
             '/status/auv', AUVData, self.status_callback, queue_size=10)
+        rospy.Subscriber(
+            '/status/power', SensorStatus, self.power_status_callback,
+            queue_size=10)
 
         rospy.loginfo(
             'motion_supervisor: 已启动，控制频率 %.1f Hz；'
@@ -300,22 +337,62 @@ class MotionSupervisorNode(object):
                 os.makedirs(self.log_directory)
             filename = 'motion_supervisor_{0}.csv'.format(
                 datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
-            self.log_path = os.path.join(self.log_directory, filename)
-            self.log_file = open(
-                self.log_path, 'w', encoding='utf-8', newline='')
-            self.log_writer = csv.DictWriter(
-                self.log_file,
-                fieldnames=self.LOG_FIELDS,
-                extrasaction='ignore',
-            )
-            self.log_writer.writeheader()
-            self.log_file.flush()
+            self.log_base_path = os.path.join(self.log_directory, filename)
+            self.log_file_index = 0
+            self._open_data_log_part(self.log_base_path)
         except (OSError, IOError) as error:
             self.log_file = None
             self.log_writer = None
             rospy.logerr(
                 'motion_supervisor: 无法创建 CSV 数据日志，将继续控制: %s',
                 error)
+
+    def _open_data_log_part(self, path):
+        """打开一个 CSV 分卷并写入完整表头。"""
+        self.log_path = path
+        self.log_file = open(
+            self.log_path, 'w', encoding='utf-8', newline='')
+        self.log_writer = csv.DictWriter(
+            self.log_file,
+            fieldnames=self.LOG_FIELDS,
+            extrasaction='ignore',
+        )
+        self.log_writer.writeheader()
+        self.log_file.flush()
+        self.log_file_size_bytes = os.path.getsize(self.log_path)
+
+    def _serialize_csv_row(self, row):
+        """把一行序列化为与日志文件相同格式的 CSV 文本。"""
+        buffer_stream = io.StringIO(newline='')
+        writer = csv.DictWriter(
+            buffer_stream,
+            fieldnames=self.LOG_FIELDS,
+            extrasaction='ignore',
+        )
+        writer.writerow(row)
+        return buffer_stream.getvalue()
+
+    def _rotate_data_log_if_needed(self, record_size):
+        """当前行会使文件超过上限时，先切换到下划线编号分卷。"""
+        if (
+                self.log_file is None
+                or self.log_file_size_bytes + record_size
+                <= self.log_max_file_size_bytes):
+            return
+
+        self.log_file.flush()
+        self.log_file.close()
+        self.log_file = None
+        self.log_writer = None
+        self.log_file_index += 1
+        file_stem, extension = os.path.splitext(self.log_base_path)
+        next_path = '{0}_{1}{2}'.format(
+            file_stem, self.log_file_index, extension)
+        self._open_data_log_part(next_path)
+        self.log_rows_since_flush = 0
+        rospy.loginfo(
+            'motion_supervisor: CSV 达到分卷上限，继续记录到 %s',
+            self.log_path)
 
     def _write_parameter_snapshot(self):
         """保存本次运行实际读取的 ROS 参数，保证 CSV 可被独立复现。"""
@@ -332,7 +409,9 @@ class MotionSupervisorNode(object):
                 'saved_at_local': datetime.now().isoformat(),
                 'control_rate_hz': self.control_rate_hz,
                 'feedback_timeout_s': self.feedback_timeout,
+                'power_feedback_timeout_s': self.power_feedback_timeout,
                 'velocity_filter_alpha': self.velocity_filter_alpha,
+                'log_max_file_size_bytes': self.log_max_file_size_bytes,
                 'base_to_imu_m': self.base_to_imu,
                 'ros_parameters': self.loaded_core_parameters,
                 'core_parameters_internal': self.core.parameters,
@@ -354,12 +433,13 @@ class MotionSupervisorNode(object):
             try:
                 self.log_file.flush()
                 self.log_file.close()
-            except (OSError, IOError) as error:
+            except (OSError, IOError, ValueError) as error:
                 rospy.logerr(
                     'motion_supervisor: 关闭 CSV 数据日志失败: %s', error)
             finally:
                 self.log_file = None
                 self.log_writer = None
+                self.log_file_size_bytes = 0
 
     @staticmethod
     def _parameter(name, default):
@@ -532,6 +612,34 @@ class MotionSupervisorNode(object):
             self.reported_mode = int(message.control_mode)
             self.last_status_stamp = rospy.Time.now()
 
+    def power_status_callback(self, message):
+        """锁存 sensor_status_node 发布的两路推进电源状态。"""
+        values = (
+            message.power1_voltage,
+            message.power1_current,
+            message.power1_power,
+            message.power2_voltage,
+            message.power2_current,
+            message.power2_power,
+        )
+        if not all(math.isfinite(value) for value in values):
+            rospy.logwarn_throttle(
+                1.0, 'motion_supervisor: 忽略包含非有限值的电源反馈')
+            return
+        with self.state_lock:
+            self.last_power_status = {
+                'checksum_ok': bool(message.checksum_ok),
+                'power1_valid': bool(message.power1_valid),
+                'power1_voltage': float(message.power1_voltage),
+                'power1_current': float(message.power1_current),
+                'power1_power': float(message.power1_power),
+                'power2_valid': bool(message.power2_valid),
+                'power2_voltage': float(message.power2_voltage),
+                'power2_current': float(message.power2_current),
+                'power2_power': float(message.power2_power),
+            }
+            self.last_power_status_stamp = rospy.Time.now()
+
     def _update_pose(self, now):
         try:
             # Time(0) 读取最新可用变换；这里不能阻塞等待，否则 TF 异常时
@@ -616,6 +724,14 @@ class MotionSupervisorNode(object):
         raw_velocity = self.raw_velocity or ('', '', '')
         raw_imu_velocity = self.raw_imu_velocity or ('', '', '')
         filtered_velocity = self.filtered_velocity or ('', '', '')
+        power_status = self.last_power_status or {}
+        power_feedback_age = self._age_seconds(
+            now, self.last_power_status_stamp)
+        power_feedback_fresh = (
+            power_feedback_age != ''
+            and power_feedback_age <= self.power_feedback_timeout
+            and power_status.get('checksum_ok', False)
+        )
         row = {
             'ros_time': '{0:.9f}'.format(now.to_sec()),
             'elapsed_s': '{0:.3f}'.format(
@@ -629,6 +745,23 @@ class MotionSupervisorNode(object):
                 now, self.last_velocity_stamp),
             'mode_feedback_age_s': self._age_seconds(
                 now, self.last_status_stamp),
+            'power_feedback_age_s': power_feedback_age,
+            'power_feedback_fresh': int(power_feedback_fresh),
+            'power_checksum_ok': (
+                '' if not power_status
+                else int(power_status['checksum_ok'])),
+            'power1_valid': (
+                '' if not power_status
+                else int(power_status['power1_valid'])),
+            'power1_voltage_v': power_status.get('power1_voltage', ''),
+            'power1_current_a': power_status.get('power1_current', ''),
+            'power1_power_w': power_status.get('power1_power', ''),
+            'power2_valid': (
+                '' if not power_status
+                else int(power_status['power2_valid'])),
+            'power2_voltage_v': power_status.get('power2_voltage', ''),
+            'power2_current_a': power_status.get('power2_current', ''),
+            'power2_power_w': power_status.get('power2_power', ''),
             'reported_mode': (
                 '' if self.reported_mode is None else self.reported_mode),
             'command_mode': output.mode,
@@ -757,6 +890,12 @@ class MotionSupervisorNode(object):
                 diagnostics.get('yaw_brake_entered', False))),
             'yaw_brake_released': int(bool(
                 diagnostics.get('yaw_brake_released', False))),
+            'yaw_brake_escape_requested': int(bool(
+                diagnostics.get('yaw_brake_escape_requested', False))),
+            'yaw_brake_escape_wait_s': diagnostics.get(
+                'yaw_brake_escape_wait_s', ''),
+            'yaw_brake_escape_triggered': int(bool(
+                diagnostics.get('yaw_brake_escape_triggered', False))),
             'yaw_brake_entry_count': diagnostics.get(
                 'yaw_brake_entry_count', ''),
             'yaw_brake_exit_count': diagnostics.get(
@@ -787,7 +926,11 @@ class MotionSupervisorNode(object):
             'raw_mz': diagnostics.get('raw_mz', ''),
         })
         try:
-            self.log_writer.writerow(row)
+            record = self._serialize_csv_row(row)
+            record_size = len(record.encode('utf-8'))
+            self._rotate_data_log_if_needed(record_size)
+            self.log_file.write(record)
+            self.log_file_size_bytes += record_size
             self.log_rows_since_flush += 1
             if self.log_rows_since_flush >= self.log_flush_every:
                 self.log_file.flush()

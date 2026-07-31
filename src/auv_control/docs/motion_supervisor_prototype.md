@@ -121,7 +121,8 @@ rostopic pub -1 /cmd/motion/cancel std_msgs/Empty '{}'
 ## 历史数据参考
 
 以下各节保留试验演进记录；其中未带 `positive/negative` 后缀的旧参数名
-已经停用，当前运行值以 `config/motion_supervisor.yaml` 为准。
+已经停用，当前运行值以 launch 选择的 `config/motion_supervisor_low.yaml`
+或 `config/motion_supervisor_high.yaml` 为准。
 
 对 `C:\Users\sixuh\Documents\B_matlab_ws\AUV\research\data\segments_0616` 中约 8.3 Hz 的历史数据进行离线统计，结果如下：
 

@@ -3,9 +3,15 @@
 """
 名称：state_web_node.py
 功能：订阅 AUV 图像、位姿、速度和控制状态，并提供只读 Web 仪表盘
+作者：xhy
+监听：AUV 状态、TF、三路相机图像及视觉检测结果
+发布：HTTP 状态接口与三路 MJPEG 相机流
 记录：
 2026.7.17
     新增三路原始图像、NED 位置、航向图、人工地平图和运行状态监控。
+2026.7.30
+    按检测图像分辨率缩放视觉坐标，修正鱼眼 ArUco 框位置。
+    在最终视频尺寸上绘制标注，并增大字体、字宽和标签间距。
 """
 
 import copy
@@ -40,6 +46,7 @@ from state_web_core import (
     OriginRevision,
     has_vision_detections,
     health_state,
+    map_pixel_to_frame,
     normalize_heading,
     quaternion_to_euler_deg,
     sanitize_json,
@@ -316,6 +323,18 @@ class CameraStream:
             )
             return
 
+        height, width = frame.shape[:2]
+        if self.max_width > 0 and width > self.max_width:
+            scale = self.max_width / float(width)
+            width = self.max_width
+            height = max(1, int(round(height * scale)))
+            frame = cv2.resize(
+                frame,
+                (width, height),
+                interpolation=cv2.INTER_AREA,
+            )
+
+        # 在最终输出尺寸上绘制，防止文字随原始视频一起缩小。
         if self.overlay_callback is not None:
             try:
                 frame = self.overlay_callback(
@@ -330,17 +349,6 @@ class CameraStream:
                     self.name,
                     str(exc),
                 )
-
-        height, width = frame.shape[:2]
-        if self.max_width > 0 and width > self.max_width:
-            scale = self.max_width / float(width)
-            width = self.max_width
-            height = max(1, int(round(height * scale)))
-            frame = cv2.resize(
-                frame,
-                (width, height),
-                interpolation=cv2.INTER_AREA,
-            )
 
         ok, encoded = cv2.imencode(
             ".jpg",
@@ -674,23 +682,14 @@ class StateWebNode:
         return result
 
     @staticmethod
-    def _pixel(point, width, height):
-        """将 JSON 像素点裁剪到图像范围内。"""
-        try:
-            if isinstance(point, dict):
-                u = point.get("u", point.get("x"))
-                v = point.get("v", point.get("y"))
-            elif isinstance(point, (list, tuple)) and len(point) >= 2:
-                u, v = point[0], point[1]
-            else:
-                return None
-            u = int(round(float(u)))
-            v = int(round(float(v)))
-        except (TypeError, ValueError):
-            return None
-        return (
-            max(0, min(width - 1, u)),
-            max(0, min(height - 1, v)),
+    def _pixel(point, width, height, source_width=None, source_height=None):
+        """将检测图像中的 JSON 像素点映射到当前相机帧。"""
+        return map_pixel_to_frame(
+            point,
+            width,
+            height,
+            source_width,
+            source_height,
         )
 
     @staticmethod
@@ -721,29 +720,33 @@ class StateWebNode:
 
     @staticmethod
     def _draw_label(frame, text, anchor, color, slot):
-        """绘制带半透明底板的英文紧凑标签。"""
+        """在最终视频尺寸上绘制带半透明底板的大号标签。"""
         if not text:
             return
         height, width = frame.shape[:2]
-        x = max(2, min(width - 2, int(anchor[0])))
-        y = max(18, min(height - 4, int(anchor[1]) + slot * 19))
         font = cv2.FONT_HERSHEY_SIMPLEX
-        scale = 0.48
-        thickness = 1
+        scale = 0.9
+        thickness = 2
         (text_width, text_height), baseline = cv2.getTextSize(
             text, font, scale, thickness
         )
-        left = max(0, min(width - text_width - 8, x))
-        top = max(0, y - text_height - baseline - 6)
-        right = min(width - 1, left + text_width + 8)
-        bottom = min(height - 1, y + 3)
+        line_step = text_height + baseline + 10
+        x = max(4, min(width - 4, int(anchor[0])))
+        y = max(
+            text_height + baseline + 8,
+            min(height - 5, int(anchor[1]) + slot * line_step),
+        )
+        left = max(0, min(width - text_width - 12, x))
+        top = max(0, y - text_height - baseline - 8)
+        right = min(width - 1, left + text_width + 12)
+        bottom = min(height - 1, y + 4)
         overlay = frame.copy()
         cv2.rectangle(overlay, (left, top), (right, bottom), (8, 16, 24), -1)
         cv2.addWeighted(overlay, 0.66, frame, 0.34, 0, frame)
         cv2.putText(
             frame,
             text,
-            (left + 4, bottom - baseline - 2),
+            (left + 6, bottom - baseline - 3),
             font,
             scale,
             color,
@@ -758,22 +761,30 @@ class StateWebNode:
         payload = packets["detection"]
         pose_text = self._position_text(packets.get("pose"))
         height, width = frame.shape[:2]
+        source_width = payload.get("image_width")
+        source_height = payload.get("image_height")
         for index, item in enumerate(payload.get("detections", [])):
             if not isinstance(item, dict):
                 continue
             anchor = None
             corners = [
-                self._pixel(point, width, height)
+                self._pixel(
+                    point, width, height, source_width, source_height
+                )
                 for point in item.get("corners", [])
             ]
             corners = [point for point in corners if point is not None]
             keypoints = [
-                self._pixel(point, width, height)
+                self._pixel(
+                    point, width, height, source_width, source_height
+                )
                 for point in item.get("keypoints", [])
             ]
             keypoints = [point for point in keypoints if point is not None]
             polygon = [
-                self._pixel(point, width, height)
+                self._pixel(
+                    point, width, height, source_width, source_height
+                )
                 for point in item.get("polygon", [])
             ]
             polygon = [point for point in polygon if point is not None]
@@ -812,12 +823,32 @@ class StateWebNode:
             else:
                 bbox = item.get("bbox") or {}
                 try:
-                    x1 = max(0, min(width - 1, int(round(float(bbox["x1"])))))
-                    y1 = max(0, min(height - 1, int(round(float(bbox["y1"])))))
-                    x2 = max(0, min(width - 1, int(round(float(bbox["x2"])))))
-                    y2 = max(0, min(height - 1, int(round(float(bbox["y2"])))))
+                    top_left = self._pixel(
+                        {"u": bbox["x1"], "v": bbox["y1"]},
+                        width,
+                        height,
+                        source_width,
+                        source_height,
+                    )
+                    bottom_right = self._pixel(
+                        {"u": bbox["x2"], "v": bbox["y2"]},
+                        width,
+                        height,
+                        source_width,
+                        source_height,
+                    )
+                    if top_left is None or bottom_right is None:
+                        raise ValueError("invalid bbox")
+                    x1, y1 = top_left
+                    x2, y2 = bottom_right
                 except (KeyError, TypeError, ValueError):
-                    center = self._pixel(item.get("center"), width, height)
+                    center = self._pixel(
+                        item.get("center"),
+                        width,
+                        height,
+                        source_width,
+                        source_height,
+                    )
                     if center is None:
                         continue
                     cv2.circle(frame, center, 6, color, 2, cv2.LINE_AA)
@@ -839,19 +870,53 @@ class StateWebNode:
         config = self.vision_sources["arrow"]
         color = config["color"]
         height, width = frame.shape[:2]
+        source_width = payload.get("image_width")
+        source_height = payload.get("image_height")
         bbox = payload.get("bbox") or {}
-        anchor = self._pixel(payload.get("center"), width, height)
+        anchor = self._pixel(
+            payload.get("center"),
+            width,
+            height,
+            source_width,
+            source_height,
+        )
         try:
-            x1 = max(0, min(width - 1, int(round(float(bbox["x1"])))))
-            y1 = max(0, min(height - 1, int(round(float(bbox["y1"])))))
-            x2 = max(0, min(width - 1, int(round(float(bbox["x2"])))))
-            y2 = max(0, min(height - 1, int(round(float(bbox["y2"])))))
+            top_left = self._pixel(
+                {"u": bbox["x1"], "v": bbox["y1"]},
+                width,
+                height,
+                source_width,
+                source_height,
+            )
+            bottom_right = self._pixel(
+                {"u": bbox["x2"], "v": bbox["y2"]},
+                width,
+                height,
+                source_width,
+                source_height,
+            )
+            if top_left is None or bottom_right is None:
+                raise ValueError("invalid bbox")
+            x1, y1 = top_left
+            x2, y2 = bottom_right
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
             anchor = (x1, y1)
         except (KeyError, TypeError, ValueError):
             pass
-        tail = self._pixel(payload.get("tail"), width, height)
-        tip = self._pixel(payload.get("tip"), width, height)
+        tail = self._pixel(
+            payload.get("tail"),
+            width,
+            height,
+            source_width,
+            source_height,
+        )
+        tip = self._pixel(
+            payload.get("tip"),
+            width,
+            height,
+            source_width,
+            source_height,
+        )
         if tail is not None and tip is not None:
             cv2.arrowedLine(frame, tail, tip, color, 3, cv2.LINE_AA, tipLength=0.22)
             cv2.circle(frame, tail, 4, color, -1, cv2.LINE_AA)

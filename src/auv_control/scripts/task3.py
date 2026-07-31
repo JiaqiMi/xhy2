@@ -632,6 +632,18 @@ class Task3Final:
                 self.box_point_recheck_timeout,
             )
             for key, target in self.timeout_skip_targets.items():
+                if key == "task3_start":
+                    rospy.logwarn(
+                        (
+                            "%s：容错目标[%s] 启动时锁存当前map x/y，"
+                            "固定深度=%.3fm，yaw=%.1fdeg"
+                        ),
+                        NODE_NAME,
+                        self.TIMEOUT_SKIP_TARGET_LABELS[key],
+                        self.fixed_depth_m,
+                        target["yaw_deg"],
+                    )
+                    continue
                 rospy.logwarn(
                     (
                         "%s：容错目标[%s] map/NED="
@@ -654,7 +666,7 @@ class Task3Final:
             )
 
     def load_timeout_skip_targets(self):
-        """仅在容错开启时解析人工测量的map绝对目标。"""
+        """仅在容错开启时解析入口航向和人工测量的map绝对目标。"""
         if not self.timeout_skip_enabled:
             return {}
         raw_targets = rospy.get_param(
@@ -1230,6 +1242,10 @@ class Task3Final:
 
     def make_timeout_skip_goal(self, target_key):
         """把人工测量点转换为motion_supervisor绝对目标。"""
+        if target_key == "task3_start":
+            raise ValueError(
+                "task3_start只配置初始航向，必须通过启动位姿锁存生成目标"
+            )
         target = self.timeout_skip_targets[target_key]
         yaw = math.radians(target["yaw_deg"])
         half_yaw = yaw * 0.5

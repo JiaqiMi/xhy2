@@ -10,7 +10,7 @@
         true：使用 model_red_circle_260726.pt
         false：使用 red_circle0713.pt
     -->
-    <arg name="model_flag" default="false" />
+    <arg name="model_flag" default="true" />
 
     <arg name="new_model_path"
          default="/home/xhy/catkin_ws/models/model_red_circle_260726.pt" />

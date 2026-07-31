@@ -2,15 +2,17 @@
 名称：reset_world_origin.launch
 功能：启动红色圆形感知链路并执行一次性世界坐标系原点重置
 作者：buyegaid
-订阅：/obj/target_message、/world_origin_reset_result
+订阅：/vision/red_circle/target_message、/status/auv、/world_origin_reset_result
 发布：/world_origin_reset_candidate
 记录：
 2026.7.13
     新增独立原点重置启动文件；重置节点结束时停止本启动文件中的感知链路。
+2026.7.31
+    红圆深度改用 DVL 高度和相机 TF 高度计算，视觉深度仅记录对比。
 -->
 <launch>
     <!-- 需先单独启动 begin.launch，使 /world_origin 和 map 到 camera 的 TF 可用。 -->
-    <include file="$(find stereo_depth)/launch/test_red_circle_detection.launch" >
+    <include file="$(find stereo_depth)/launch/test_red_circle_detection_speed.launch" >
         <arg name="start_camera" value="false" />
         <arg name="start_splitter" value="false" />
         <arg name="start_web" default="false" />
@@ -19,10 +21,15 @@
     <!-- 节点结束时 required 会停止本 launch 中的感知链路。 -->
     <node pkg="auv_control" type="world_origin_reset.py" name="world_origin_reset" output="screen" required="true">
         <param name="target_topic" value="/vision/red_circle/target_message" />
+        <param name="status_topic" value="/status/auv" />
         <param name="target_class" value="red_circle" />
         <param name="source_frame" value="camera" />
+        <param name="base_frame" value="base_link" />
         <param name="reference_frame" value="map" />
         <param name="min_confidence" value="0.2" />
+        <param name="status_timeout_sec" value="0.5" />
+        <param name="require_dvl_altitude_valid" value="true" />
+        <param name="dvl_altitude_valid_bit" value="6" />
         <param name="sample_count" value="10" />
         <param name="min_inliers" value="8" />
         <param name="max_spread" value="0.20" />

@@ -7,7 +7,8 @@
 # 1. 本文件负责识别阈值、帧数、距离、时间、控制增益、到达容差和执行器数值。
 # 2. 启动哪些相机、模型、Web节点以及话题重映射仍由launch负责。
 # 3. motion_supervisor内部推力、速度、阻尼和HOVER判定参数仍在
-#    config/motion_supervisor.yaml中调整，本文件只配置任务侧目标与核对门槛。
+#    config/motion_supervisor_low.yaml或motion_supervisor_high.yaml中调整，
+#    本文件只配置任务侧目标与核对门槛。
 
 # 任务3统一固定深度，单位m，填写水面以下的正深度。
 # 当前map坐标约定为水下Z为负，因此0.60m会作为map z=-0.60下发。

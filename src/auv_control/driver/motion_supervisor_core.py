@@ -64,6 +64,8 @@
     正常跟踪与主动刹车统一使用同一组方向性最大输出和力矩变化步长参数。
 2026.7.29
     收到取消指令时锁存当前目标深度，刹停终点仅使用实时水平位置和航向。
+2026.7.29
+    Yaw 制动增加持续远离目标的异常退出，并禁止远离目标时重新锁存制动。
 """
 
 from __future__ import division
@@ -403,6 +405,7 @@ class MotionSupervisorCore(object):
         self.yaw_brake_reversal_detected = False
         self.xy_brake_release_started_at = None
         self.yaw_brake_release_started_at = None
+        self.yaw_brake_escape_started_at = None
         self.xy_brake_entry_count = 0
         self.xy_brake_exit_count = 0
         self.yaw_brake_entry_count = 0
@@ -744,6 +747,7 @@ class MotionSupervisorCore(object):
         self.yaw_brake_reversal_detected = False
         self.xy_brake_release_started_at = None
         self.yaw_brake_release_started_at = None
+        self.yaw_brake_escape_started_at = None
         self.xy_brake_entry_count = 0
         self.xy_brake_exit_count = 0
         self.yaw_brake_entry_count = 0
@@ -1312,12 +1316,55 @@ class MotionSupervisorCore(object):
             self.parameters['control_delay'],
             yaw_margin,
         )
+        yaw_control_tolerance = (
+            self.parameters['yaw_control_tolerance']
+            if self.parameters['pure_depth_control']
+            else self.parameters['yaw_tolerance'])
+        yaw_moving_toward_goal = yaw_error * map_yaw_rate > 0.0
         yaw_brake_entry = (
             abs(map_yaw_rate) >= self.parameters['yaw_brake_enter_rate']
-            and abs(yaw_error) <= yaw_stop_angle)
+            and abs(yaw_error) <= yaw_stop_angle
+            and (
+                yaw_moving_toward_goal
+                or abs(yaw_error) <= yaw_control_tolerance
+            ))
         yaw_brake_entered = False
         yaw_brake_released = False
-        if yaw_brake_entry:
+        yaw_brake_escape_requested = (
+            self.yaw_brake_latched
+            and abs(yaw_error) > self.parameters['hover_exit_yaw_error']
+            and abs(map_yaw_rate) > self.parameters['yaw_brake_exit_rate']
+            and not yaw_moving_toward_goal
+        )
+        if yaw_brake_escape_requested:
+            if self.yaw_brake_escape_started_at is None:
+                self.yaw_brake_escape_started_at = vehicle.now
+        else:
+            self.yaw_brake_escape_started_at = None
+        yaw_brake_escape_wait_s = (
+            0.0
+            if self.yaw_brake_escape_started_at is None
+            else max(0.0, vehicle.now - self.yaw_brake_escape_started_at)
+        )
+        yaw_brake_escape_triggered = (
+            yaw_brake_escape_requested
+            and yaw_brake_escape_wait_s
+            >= self.parameters['hover_exit_hold_seconds']
+        )
+        if yaw_brake_escape_triggered:
+            # 制动期间若误差已越过 HOVER 退出阈值且仍持续远离目标，
+            # 说明仅靠零角速度阻尼无法停住。此时恢复位置跟踪，由正常
+            # 航向速度环产生回正力矩，避免一直等待低速退出而锁死。
+            self.yaw_brake_latched = False
+            self.yaw_brake_direction = 0.0
+            self.yaw_brake_reversal_detected = False
+            self.yaw_brake_release_started_at = None
+            self.yaw_brake_escape_started_at = None
+            self.last_yaw_rate_reference = 0.0
+            self.last_yaw_acceleration = 0.0
+            yaw_brake_released = True
+            self.yaw_brake_exit_count += 1
+        elif yaw_brake_entry:
             if not self.yaw_brake_latched:
                 yaw_brake_entered = True
                 self.yaw_brake_entry_count += 1
@@ -1328,16 +1375,13 @@ class MotionSupervisorCore(object):
                 self.yaw_brake_reversal_detected = False
             self.yaw_brake_latched = True
             self.yaw_brake_release_started_at = None
+            self.yaw_brake_escape_started_at = None
         elif self.yaw_brake_latched:
             yaw_stopped = (
                 abs(map_yaw_rate)
                 <= self.parameters['yaw_brake_exit_rate'])
             # 已满足航向捕获误差时维持零角速度参考直至接管；若仍未到位，
             # 则等待连续低速确认后才恢复跟踪，防止 7 Hz 左右反馈反复触发。
-            yaw_control_tolerance = (
-                self.parameters['yaw_control_tolerance']
-                if self.parameters['pure_depth_control']
-                else self.parameters['yaw_tolerance'])
             if yaw_stopped and abs(yaw_error) <= yaw_control_tolerance:
                 self.yaw_brake_release_started_at = None
             elif yaw_stopped:
@@ -1349,6 +1393,7 @@ class MotionSupervisorCore(object):
                     self.yaw_brake_direction = 0.0
                     self.yaw_brake_reversal_detected = False
                     self.yaw_brake_release_started_at = None
+                    self.yaw_brake_escape_started_at = None
                     yaw_brake_released = True
                     self.yaw_brake_exit_count += 1
             else:
@@ -1372,10 +1417,6 @@ class MotionSupervisorCore(object):
         )
         # 内部航向容差内不再产生新的角速度目标，容差外的速度随剩余
         # 误差连续减小；旧 mode=4 模式仍使用 yaw_tolerance。
-        yaw_control_tolerance = (
-            self.parameters['yaw_control_tolerance']
-            if self.parameters['pure_depth_control']
-            else self.parameters['yaw_tolerance'])
         yaw_capture_error = max(
             abs(yaw_error) - yaw_control_tolerance, 0.0)
         yaw_close_rate = self.parameters['yaw_position_gain'] * min(
@@ -1493,6 +1534,9 @@ class MotionSupervisorCore(object):
                 'yaw_brake_entry': yaw_brake_entry,
                 'yaw_brake_entered': yaw_brake_entered,
                 'yaw_brake_released': yaw_brake_released,
+                'yaw_brake_escape_requested': yaw_brake_escape_requested,
+                'yaw_brake_escape_wait_s': yaw_brake_escape_wait_s,
+                'yaw_brake_escape_triggered': yaw_brake_escape_triggered,
                 'yaw_brake_entry_count': self.yaw_brake_entry_count,
                 'yaw_brake_exit_count': self.yaw_brake_exit_count,
                 'yaw_brake_release_wait_s': (

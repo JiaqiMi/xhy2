@@ -2,7 +2,8 @@
 #
 # 加载方式：必须通过 task2.launch 在 <node name="task2"> 内加载；全部键会进入
 # 节点私有命名空间 /task2/<键名>。因此本文件与 task1.yaml、task3.yaml、
-# motion_supervisor.yaml 中的同名键互不覆盖。不要在根命名空间直接执行
+# motion_supervisor_low.yaml或motion_supervisor_high.yaml中的同名键互不覆盖。
+# 不要在根命名空间直接执行
 # rosparam load，否则会与其他节点的公共参数发生冲突。
 #
 # 坐标约定：所有位置均在 map 坐标系下，单位为 m；航向角单位为 deg；时长单位为 s。
@@ -30,20 +31,20 @@ finished_topic: /finished
 # 采水、定深送水、下潜返航时使用的 map z；默认 -1.0。
 task_depth: -0.6
 # 送水点在 map 坐标系中的绝对 [x, y]；长度必须为 2。
-delivery_xy: [2.0, 1.00]
+delivery_xy: [2.0, 0.00]
 # 到达送水点、浮出和下潜阶段保持的 map 航向角，单位 deg。
 delivery_yaw_deg: 200.0
 # 送水点浮出水面时使用的 map z；默认 0.0。
-surface_depth: -1.0
+surface_depth: -0.7
 # 返回起始 XY 后保持的最终 map 航向角，单位 deg。
-final_yaw_deg: 200.0
+final_yaw_deg: 225
 
 # ============================== 采水时序 ==============================
 
 # 推杆前进速度，范围 0~254；数值必须与下位机执行器协议一致。
 pushrod_speed: 250
 # 推杆确认前进后连续采水的时长；执行器反馈异常会暂停并重新计时。
-pushrod_duration: 8.0
+pushrod_duration: 10.0
 # 推杆在送水点下潜并由控制器确认 HOVER 后的反向回收时长；速度固定复用 pushrod_speed，
 # 执行器或运动反馈异常会先安全停止，恢复后重新计时。
 pushrod_retract_duration: 10.0
