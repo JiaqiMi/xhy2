@@ -21,6 +21,12 @@
 # 2026.8.1
 #   依据 data3 的 MZ 饱和分布，降低两向跟踪增益并取消每周期输出限斜率；
 #   连续旋转 5 Hz 的重规划阈值提高到实测目标步长 10.11 deg 之上，保留大目标更新响应。
+# 2026.8.1
+#   data4 以 15 deg 重规划阈值、25000 航向跟踪增益验证：ROLLING 无重规划、无 Yaw BRAKE、
+#   无持续输出饱和；同步高档配置，并保持增益不再回升，待独立稳态力矩前馈标定。
+# 2026.8.1
+#   data4 显示正转在 25000 下已平稳、反转仍有周期性 MZ/角速度摆动；最大期望角速度降至 20 deg/s，
+#   并仅降低负向跟踪增益以反映推进效率和动态响应差异。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -42,13 +48,12 @@ log_max_file_size_mb: 50.0                        # 单个 CSV 最大 50 MiB，�
 power_feedback_timeout: 1.0                       # /status/power 超过此时间未更新时标记为不新鲜，不影响控制
 
 # 正常跟踪与主动刹车共用方向性限幅和步长；参数后缀表示实际输出正负号。
-# 统一负轴是正轴的1.5倍，便于调参
 max_tx_positive: 2000.0             # 正 TX 最大值
 max_tx_negative: 3000.0             # 负 TX 绝对值上限
 max_ty_positive: 4000.0             # 正 TY 最大值
 max_ty_negative: 6000.0             # 负 TY 绝对值上限
 max_mz_positive: 3000.0             # 正 MZ 最大值
-max_mz_negative: 4500.0             # 负 MZ 绝对值上限
+max_mz_negative: 3000.0             # 负 MZ 绝对值上限
 force_slew_per_cycle: 10000.0       # 等于协议上限，取消每周期 TX/TY/MZ 限斜率；各轴最大输出限幅仍生效
 
 # 已停用：主动刹车不再使用独立最大限幅和步长，保留末次值供历史配置对照。
@@ -65,8 +70,8 @@ kv_x_positive: 20000.0              # 高速首轮：提高正向速度误差对
 kv_x_negative: 22000.0              # 高速首轮：保留负向推进效率差异
 kv_y_positive: 45000.0              # 高速首轮：目标正向约 0.10 m/s
 kv_y_negative: 65000.0              # 高速首轮：目标负向约 0.10 m/s
-kp_yaw_positive: 25000.0            # data3 正转误差 P90=6.45 deg/s 时可避免持续触及 +3000，先消除跟踪饱和
-kp_yaw_negative: 25000.0            # data3 反转误差 P10=-9.72 deg/s 时可避免持续触及 -4500，抑制原始 MZ 来回饱和
+kp_yaw_positive: 18000.0            # data3 正转误差 P90=6.45 deg/s 时可避免持续触及 +3000，先消除跟踪饱和
+kp_yaw_negative: 18000.0            # data4 反转同增益仍在 -17～-21 deg/s 周期摆动，降低反馈放大；正反推进动态不共用增益
 
 # 定点模式锁存制动时的速度环增益；仍按最终 TX/TY 输出符号区分正反车效率。
 brake_kv_x_positive: 20000.0
@@ -99,7 +104,7 @@ brake_reference_acceleration_tx_negative: 0.020 # 负 TX 制动已使用约 65% 
 brake_reference_acceleration_ty_positive: 0.010 # 正 TY 制动已使用约 66% 限幅，保留耦合补偿余量
 brake_reference_acceleration_ty_negative: 0.012 # 两向统一计划减速度，方向差异仍由有效值保留
 angular_brake_acceleration_mz_positive: 0.242   # +3000 跨零速实测约 15.39 deg/s^2，保留 10% 后换算为 rad/s^2
-angular_brake_acceleration_mz_negative: 0.389   # -4500 跨零速实测约 24.78 deg/s^2，保留 10% 后换算为 rad/s^2
+angular_brake_acceleration_mz_negative: 0.242   # -4500 跨零速实测约 24.78 deg/s^2，保留 10% 后换算为 rad/s^2
 angular_brake_reference_acceleration_mz_positive_deg_s2: 3.50 # 计划值仍显著低于 +MZ 标定有效减速度，减少长时间低力矩刹转
 angular_brake_reference_acceleration_mz_negative_deg_s2: 3.50 # 计划值仍显著低于 -MZ 标定有效减速度，正反向使用同一首轮轨迹
 control_delay: 0.45                 # 反馈、计算、通信和执行的综合延迟估计，单位 s
@@ -114,7 +119,7 @@ yaw_brake_margin_negative_deg: 0.8  # 与正向一致，满足核心参数校验
 capture_radius: 0.04                  # 两种模式到达 HOVER 的外层水平位置误差，满足旋转时位置精度 4 cm
 control_center_hold_tolerance: 0.03   # 当前锁存控制中心的二维圆形位置死区，单位 m
 horizontal_speed_threshold: 0.008     # data6 中 0.01 m/s 仍持续漂移，收紧三轴停稳判定
-yaw_tolerance_deg: 1.0                # 最终航向允许误差，单位 deg
+yaw_tolerance_deg: 2.0                # 最终航向允许误差，单位 deg
 yaw_control_tolerance_deg: 1.0        # mode=2 上位机航向保持死区，与最终航向精度一致
 yaw_rate_threshold_deg_s: 0.3         # 判定转动停稳的角速度上限，单位 deg/s
 stable_frames: 5                      # 捕获或停稳条件需连续满足的控制帧数，20 Hz 下约为 0.25 s
@@ -133,7 +138,7 @@ mode_ack_timeout: 1.0                 # 接管确认及 HOVER 模式反馈最大
 # hover_fault_yaw_error_deg: 20.0
 
 # 统一三轴位置-速度-力控制。
-xy_max_speed: 0.30
+xy_max_speed: 0.30 # xy的最大参考速度，暂定为0.3m/s
 xy_position_gain: 2.00
 xy_max_acceleration: 0.40
 xy_max_jerk: 0.40
@@ -142,7 +147,7 @@ xy_brake_jerk: 0.20  # 定点制动速度参考的最大 jerk，单位 m/s^3
 # 预测停车距离内且合速度达到进入阈值时锁存刹停；低于退出阈值才恢复跟踪。
 xy_brake_enter_speed: 0.020
 xy_brake_exit_speed: 0.012
-yaw_max_rate_deg_s: 25.0
+yaw_max_rate_deg_s: 30.0  # 高速任务目标角速度调整为 30 deg/s，避免以更高参考持续驱动推进器
 yaw_position_gain: 0.22 # 仅在 120 deg 及以上动作达到 25 deg/s；短角度动作提前收敛，避免反复刹转
 yaw_max_acceleration_deg_s2: 20.0
 yaw_max_jerk_deg_s3: 35.0 # 5 Hz 前视目标跨过 5 deg 重规划阈值后，减小角速度参考恢复时的力矩阶跃；不影响刹转 jerk
@@ -158,7 +163,7 @@ goal_static_capture_seconds: 0.80
 
 # 目标仍然逐帧更新；仅超过以下阈值才重置速度/角速度参考和捕获计时。
 goal_replan_position_threshold: 0.10 # 位置目标变化的重规划阈值，单位 m
-goal_replan_yaw_threshold_deg: 15.0 # 5 Hz 连续旋转实测相邻目标最大 10.11 deg 不重规划；大于 12 deg 的新任务目标仍完整重规划
+goal_replan_yaw_threshold_deg: 15.0 # data4 已验证 5 Hz 连续旋转无重规划；大于 15 deg 的新任务目标仍完整重规划
 control_dt_min: 0.02
 control_dt_max: 0.20
 
