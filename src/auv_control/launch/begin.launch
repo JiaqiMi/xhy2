@@ -7,6 +7,8 @@
         为 actuator 节点增加共通的数据保存开关和目录参数。
       2026.7.31
         统一 sensor、actuator、debug、nav 节点的数据保存输入参数。
+      2026.7.31
+        启用旧版 5062 状态端口的 DVL 高度桥接，并转发给 debug_driver_v2。
     -->
     <!-- begin.launch — 启动下位机驱动和tf -->
     <!-- 用法: roslaunch auv_control begin.launch -->
@@ -20,7 +22,7 @@
 
     <!-- 包含任务参数 -->
     <!-- <include file="$(find auv_control)/launch/param.launch"/> -->
-    <arg name="save_data" default="true" />
+    <arg name="save_data" default="false" />
     <arg name="save_dir" default="$(env HOME)/.ros/auv_logs" />
     <arg name="save_max_file_size" default="52428800" />
     <arg name="save_flush_every" default="1" />
@@ -36,6 +38,7 @@
 
     <!-- debug_driver_v2 向下位机发送完整控制帧的频率，单位 Hz。 -->
     <arg name="debug_send_rate_hz" default="20.0" />
+    <arg name="dvl_altitude_timeout_sec" default="0.5" />
     
     <!-- web 参数 -->    
     <arg name="state_web_host" default="0.0.0.0" />
@@ -73,6 +76,13 @@
     </node>
 
     <!-- 调试驱动 V2 (TCP 5063, 支持定深/定深定向/定点三种模式) -->
+    <!-- 旧版状态端口 (TCP 5062)，仅提供 DVL 高度给调试驱动。 -->
+    <node pkg="auv_control" type="main_driver.py" name="dvl_altitude_bridge" output="screen">
+        <param name="legacy_ip" value="$(arg vehicle_ip)" />
+        <param name="legacy_port" type="int" value="5062" />
+        <param name="dvl_altitude_topic" value="/dvl/altitude" />
+    </node>
+
     <node pkg="auv_control" type="debug_driver_v2.py" name="debug_driver_v2" output="screen">
         <param name="debug_ip" value="$(arg vehicle_ip)"/>
         <param name="debug_port" value="5063"/>
@@ -81,6 +91,8 @@
         <param name="raw_max_file_size" type="int" value="$(arg save_max_file_size)" />
         <param name="raw_flush_every" type="int" value="$(arg save_flush_every)" />
         <param name="send_rate_hz" type="double" value="$(arg debug_send_rate_hz)" />
+        <param name="dvl_altitude_topic" value="/dvl/altitude" />
+        <param name="dvl_altitude_timeout_sec" type="double" value="$(arg dvl_altitude_timeout_sec)" />
     </node>
 
     <!-- 导航驱动：仅保存并发布原始 HEX 报文，不保存解析后的 nav_data 文件 -->

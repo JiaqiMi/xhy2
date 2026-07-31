@@ -157,9 +157,9 @@ DEFAULT_POST_DROP_MOTION_ENABLED = True
 DEFAULT_POST_DROP_TURN_ANGLE_DEG = 90.0
 DEFAULT_POST_DROP_STEP_TIMEOUT = 90.0
 DEFAULT_POST_DROP_ASCENT_SECONDS = 5.0
+DEFAULT_POST_DROP_ASCENT_TARGET_Z = -1.3
 POST_DROP_ORIGIN_X = 0.0
 POST_DROP_ORIGIN_Y = 0.0
-POST_DROP_SURFACE_Z = 0.0
 
 # 执行器参数。
 DEFAULT_ACTUATOR_TOPIC = "/cmd/actuator"
@@ -341,6 +341,10 @@ class Task3InspectAndDropTest:
         self.post_drop_ascent_seconds = float(rospy.get_param(
             "~post_drop_ascent_seconds",
             DEFAULT_POST_DROP_ASCENT_SECONDS,
+        ))
+        self.post_drop_ascent_target_z = float(rospy.get_param(
+            "~post_drop_ascent_target_z",
+            DEFAULT_POST_DROP_ASCENT_TARGET_Z,
         ))
 
         self.motion_goal_topic = str(rospy.get_param(
@@ -791,12 +795,13 @@ class Task3InspectAndDropTest:
                 (
                     "%s：投放后离场：启用=%s，左转=%.1fdeg，"
                     "随后返回map原点(0,0)，每一步到达超时=%.1fs；"
-                    "到原点后向z=0上浮%.1fs并结束"
+                    "到原点后向NED z=%.2f上浮、持续%.1fs并结束"
                 ),
                 NODE_NAME,
                 "是" if self.post_drop_motion_enabled else "否",
                 self.post_drop_turn_angle_deg,
                 self.post_drop_step_timeout,
+                self.post_drop_ascent_target_z,
                 self.post_drop_ascent_seconds,
             )
             rospy.loginfo(
@@ -1046,7 +1051,25 @@ class Task3InspectAndDropTest:
             "sequence": self.actuator_status_sequence,
             "heading_servo": int(message.heading_servo),
             "clamp_servo": int(message.clamp_servo),
+            "red_light": int(message.red_light),
+            "yellow_light": int(message.yellow_light),
+            "green_light": int(message.green_light),
         }
+        if self.drop_action_started:
+            rospy.loginfo_throttle(
+                self.log_interval,
+                (
+                    "%s：[执行器硬件状态] 阶段=%s，夹爪=%d，"
+                    "颜色灯=(红%d,黄%d,绿%d)，反馈帧#%d"
+                ),
+                NODE_NAME,
+                self.STATE_NAMES.get(self.state, "未知状态"),
+                message.clamp_servo,
+                message.red_light,
+                message.yellow_light,
+                message.green_light,
+                self.actuator_status_sequence,
+            )
 
         safe_match = self.actuator_values_match(
             message.heading_servo,
@@ -1266,6 +1289,14 @@ class Task3InspectAndDropTest:
             ):
                 raise ValueError(
                     "post_drop_ascent_seconds 必须是大于0的有限数"
+                )
+            if (
+                not math.isfinite(self.post_drop_ascent_target_z)
+                or self.post_drop_ascent_target_z >= self.fixed_map_z
+            ):
+                raise ValueError(
+                    "post_drop_ascent_target_z 必须是有限数，且必须小于"
+                    "任务运行深度对应的map/NED z"
                 )
         if self.auto_search_stable_detection_count < 1:
             raise ValueError(
@@ -1591,22 +1622,25 @@ class Task3InspectAndDropTest:
         return True
 
     def start_post_drop_ascent(self):
-        if self.post_drop_target_yaw is None:
+        if self.post_drop_target_yaw is None or self.auto_hold_z is None:
             return False
         self.set_active_goal(
             POST_DROP_ORIGIN_X,
             POST_DROP_ORIGIN_Y,
-            POST_DROP_SURFACE_Z,
+            self.post_drop_ascent_target_z,
             self.post_drop_target_yaw,
-            "到达map原点后向z=0持续上浮",
+            "到达map原点后向NED z=%.2f上浮"
+            % self.post_drop_ascent_target_z,
         )
         rospy.loginfo(
             (
-                "%s：[投放后离场] map原点已由HOVER确认，开始向"
-                "z=%.2f发布上浮目标并持续%.1fs"
+                "%s：[投放后离场] map原点已由HOVER确认，"
+                "NED z向下为正，从z=%.2f向目标z=%.2f上浮，"
+                "持续发布%.1fs"
             ),
             NODE_NAME,
-            POST_DROP_SURFACE_Z,
+            self.auto_hold_z,
+            self.post_drop_ascent_target_z,
             self.post_drop_ascent_seconds,
         )
         self.set_state(
@@ -1676,10 +1710,11 @@ class Task3InspectAndDropTest:
                 True,
                 (
                     "识别和投放完成，左转%.1f度、返回map原点(0,0)，"
-                    "向z=0持续上浮%.1fs后结束"
+                    "向NED z=%.2f上浮、持续%.1fs后结束"
                 )
                 % (
                     self.post_drop_turn_angle_deg,
+                    self.post_drop_ascent_target_z,
                     self.post_drop_ascent_seconds,
                 ),
             )
@@ -1690,7 +1725,7 @@ class Task3InspectAndDropTest:
             NODE_NAME,
             elapsed,
             self.post_drop_ascent_seconds,
-            POST_DROP_SURFACE_Z,
+            self.active_goal.pose.position.z,
         )
 
     def initialize_auto_pose(self):
@@ -4321,9 +4356,13 @@ class Task3InspectAndDropTest:
         expected_clamp,
         hold_seconds,
         stage_name,
+        expected_color="off",
     ):
         now = rospy.Time.now()
         status = self.latest_actuator_status
+        expected_lights = self.COLOR_LIGHTS.get(
+            expected_color, self.COLOR_LIGHTS["off"]
+        )
         status_is_fresh = (
             status is not None
             and self.last_actuator_status_time is not None
@@ -4354,12 +4393,19 @@ class Task3InspectAndDropTest:
             > self.actuator_feedback_last_checked_sequence
         ):
             self.actuator_feedback_last_checked_sequence = status["sequence"]
-            matched = self.actuator_values_match(
+            actuator_matched = self.actuator_values_match(
                 status["heading_servo"],
                 status["clamp_servo"],
                 expected_heading,
                 expected_clamp,
             )
+            actual_lights = (
+                status["red_light"],
+                status["yellow_light"],
+                status["green_light"],
+            )
+            lights_matched = actual_lights == expected_lights
+            matched = actuator_matched and lights_matched
             if matched:
                 self.actuator_feedback_match_count = min(
                     self.actuator_feedback_match_count + 1,
@@ -4371,7 +4417,8 @@ class Task3InspectAndDropTest:
 
             if self.heading_servo_enabled:
                 feedback_detail = (
-                    "航向=%d/%d，夹爪=%d/%d，误差=(%d,%d)"
+                    "航向=%d/%d，夹爪=%d/%d，误差=(%d,%d)，"
+                    "颜色灯=(红%d/%d,黄%d/%d,绿%d/%d)"
                     % (
                         status["heading_servo"],
                         expected_heading,
@@ -4379,15 +4426,28 @@ class Task3InspectAndDropTest:
                         expected_clamp,
                         abs(status["heading_servo"] - expected_heading),
                         abs(status["clamp_servo"] - expected_clamp),
+                        actual_lights[0],
+                        expected_lights[0],
+                        actual_lights[1],
+                        expected_lights[1],
+                        actual_lights[2],
+                        expected_lights[2],
                     )
                 )
             else:
                 feedback_detail = (
-                    "夹爪=%d/%d，误差=%d，方向舵机不参与判断"
+                    "夹爪=%d/%d，误差=%d，方向舵机不参与判断，"
+                    "颜色灯=(红%d/%d,黄%d/%d,绿%d/%d)"
                     % (
                         status["clamp_servo"],
                         expected_clamp,
                         abs(status["clamp_servo"] - expected_clamp),
+                        actual_lights[0],
+                        expected_lights[0],
+                        actual_lights[1],
+                        expected_lights[1],
+                        actual_lights[2],
+                        expected_lights[2],
                     )
                 )
             rospy.loginfo(
@@ -4411,8 +4471,8 @@ class Task3InspectAndDropTest:
                 self.actuator_feedback_confirmed_at = now
                 rospy.loginfo(
                     (
-                        "%s：[执行器反馈][%s] 已确认到位，"
-                        "从现在开始保持%.1fs"
+                        "%s：[执行器反馈][%s] 夹爪和颜色灯均已确认到位，"
+                        "从现在开始共同保持%.1fs"
                     ),
                     NODE_NAME,
                     stage_name,
@@ -4425,9 +4485,21 @@ class Task3InspectAndDropTest:
             ).to_sec()
             rospy.loginfo_throttle(
                 self.log_interval,
-                "%s：[执行器反馈][%s] 已到位，保持 %.1f/%.1fs",
+                (
+                    "%s：[执行器状态][%s] 夹爪=%d/%d，"
+                    "颜色灯=(红%d/%d,黄%d/%d,绿%d/%d)，"
+                    "共同保持 %.1f/%.1fs"
+                ),
                 NODE_NAME,
                 stage_name,
+                status["clamp_servo"],
+                expected_clamp,
+                status["red_light"],
+                expected_lights[0],
+                status["yellow_light"],
+                expected_lights[1],
+                status["green_light"],
+                expected_lights[2],
                 min(held_seconds, hold_seconds),
                 hold_seconds,
             )
@@ -4437,18 +4509,25 @@ class Task3InspectAndDropTest:
             if status is None:
                 actual = "无"
             elif self.heading_servo_enabled:
-                actual = "航向%d,夹爪%d" % (
+                actual = "航向%d,夹爪%d,灯=(%d,%d,%d)" % (
                     status["heading_servo"],
                     status["clamp_servo"],
+                    status["red_light"],
+                    status["yellow_light"],
+                    status["green_light"],
                 )
             else:
-                actual = "夹爪%d，方向舵机不参与判断" % (
+                actual = "夹爪%d,灯=(%d,%d,%d)，方向舵机不参与判断" % (
                     status["clamp_servo"],
+                    status["red_light"],
+                    status["yellow_light"],
+                    status["green_light"],
                 )
             target = (
-                "航向%d,夹爪%d" % (expected_heading, expected_clamp)
+                "航向%d,夹爪%d,灯=%s"
+                % (expected_heading, expected_clamp, expected_lights)
                 if self.heading_servo_enabled
-                else "夹爪%d" % expected_clamp
+                else "夹爪%d,灯=%s" % (expected_clamp, expected_lights)
             )
             self.finish_task(
                 False,
@@ -4704,6 +4783,7 @@ class Task3InspectAndDropTest:
                     self.clamp_closed,
                     self.hold_seconds,
                     "回中并保持闭合",
+                    self.target_color,
                 ):
                     rospy.loginfo(
                         (
@@ -4740,14 +4820,16 @@ class Task3InspectAndDropTest:
                         if self.heading_servo_enabled
                         else "夹爪打开"
                     ),
+                    self.target_color,
                 ):
                     if not self.heading_servo_enabled:
                         rospy.loginfo(
                             (
-                                "%s：方向舵机控制关闭；夹爪已打开并保持%.1fs，"
-                                "跳过回右侧并开始关闭夹爪"
+                                "%s：方向舵机控制关闭；夹爪已打开且%s灯"
+                                "持续亮%.1fs，跳过回右侧并开始关闭夹爪"
                             ),
                             NODE_NAME,
+                            self.target_color,
                             self.open_seconds,
                         )
                         self.publish_actuator(

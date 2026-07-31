@@ -26,6 +26,8 @@
     原始调试报文按 debug_v2_raw 子目录保存，避免与其他节点数据混存。
 2026.7.31
     原始报文文件达到 50 MiB 后自动分卷，文件名追加下划线编号。
+2026.7.31
+    订阅旧版状态端口转发的 /dvl/altitude，优先填充上行状态的 DVL 高度字段。
 """
 
 import json
@@ -41,6 +43,7 @@ import time
 from auv_control.msg import AUVData, PoseLLAcmd
 from functools import reduce
 from geometry_msgs.msg import TwistStamped
+from std_msgs.msg import Float32
 from debug_protocol import (
     DebugFrameBuffer,
     LowPassFilter,
@@ -140,8 +143,19 @@ class DebugDriverV2:
         self.server_address = (ip, port)
         self.tcp_sock = None
         self.latest_debug_data = None
+        self.dvl_altitude_topic = rospy.get_param(
+            '~dvl_altitude_topic', '/dvl/altitude'
+        )
+        self.dvl_altitude_timeout_sec = float(
+            rospy.get_param('~dvl_altitude_timeout_sec', 0.5)
+        )
+        if self.dvl_altitude_timeout_sec <= 0.0:
+            raise ValueError('dvl_altitude_timeout_sec 必须大于 0')
+        self.latest_dvl_altitude = None
+        self.latest_dvl_altitude_received_at = None
 
         self.lock = threading.Lock()
+        self.dvl_altitude_lock = threading.RLock()
         self.socket_lock = threading.RLock()
         self.connect_lock = threading.Lock()
         self.target = ControlTarget()
@@ -158,11 +172,48 @@ class DebugDriverV2:
 
         # 接收由 auv_tf_handler 转换后的 LLA 整包控制指令。
         rospy.Subscriber('/cmd/pose/lla', PoseLLAcmd, self.control_cmd_callback)
+        rospy.Subscriber(
+            self.dvl_altitude_topic, Float32, self.dvl_altitude_callback,
+            queue_size=10,
+        )
         self.data_pub = rospy.Publisher('/status/auv', AUVData, queue_size=10)
         self.velocity_pub = rospy.Publisher('/status/vel', TwistStamped, queue_size=10)
         rospy.loginfo(
-            "debug_driver_v2: 已启动，监听 /cmd/pose/lla，下发频率 %.1f Hz",
-            self.send_rate_hz)
+            "debug_driver_v2: 已启动，监听 /cmd/pose/lla 和 %s，下发频率 %.1f Hz",
+            self.dvl_altitude_topic, self.send_rate_hz)
+
+    def dvl_altitude_callback(self, msg):
+        """缓存旧版状态端口转发的最新有限 DVL 高度。"""
+        altitude = float(msg.data)
+        if not math.isfinite(altitude):
+            rospy.logwarn_throttle(
+                2.0, 'debug_driver_v2: 忽略非有限的 DVL 高度'
+            )
+            return
+        with self.dvl_altitude_lock:
+            self.latest_dvl_altitude = altitude
+            self.latest_dvl_altitude_received_at = rospy.Time.now()
+
+    def get_current_dvl_altitude(self):
+        """返回未超时的 DVL 高度；数据缺失或超时则返回空值。"""
+        with self.dvl_altitude_lock:
+            altitude = self.latest_dvl_altitude
+            received_at = self.latest_dvl_altitude_received_at
+
+        if altitude is None or received_at is None:
+            rospy.logwarn_throttle(
+                2.0, 'debug_driver_v2: 尚未收到旧版状态端口的 DVL 高度'
+            )
+            return None
+        age = (rospy.Time.now() - received_at).to_sec()
+        if age > self.dvl_altitude_timeout_sec:
+            rospy.logwarn_throttle(
+                2.0,
+                'debug_driver_v2: DVL 高度已超时 %.3fs（限制 %.3fs）',
+                age, self.dvl_altitude_timeout_sec,
+            )
+            return None
+        return altitude
 
     def open_raw_save_file(self):
         """打开原始报文保存文件"""
@@ -297,7 +348,10 @@ class DebugDriverV2:
         msg.pose.latitude = parsed.navigation_coords[1]
         msg.pose.longitude = parsed.navigation_coords[0]
         msg.pose.depth = parsed.depth_filtered
-        msg.pose.altitude = parsed.altitude
+        dvl_altitude = self.get_current_dvl_altitude()
+        msg.pose.altitude = (
+            parsed.altitude if dvl_altitude is None else dvl_altitude
+        )
         msg.pose.roll = parsed.euler_angles[0]
         msg.pose.pitch = parsed.euler_angles[1]
         msg.pose.yaw = parsed.euler_angles[2]

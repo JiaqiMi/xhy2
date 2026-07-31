@@ -6,7 +6,7 @@
 
 流程：
     1. 记录节点启动时的当前位置、高度和航向，定点等待相机和识别模块；
-    2. 未识别红线时，依次定点左转、右转、回正，再向前移动后重复；
+    2. 未识别红线时，先定点向前移动，再依次左转、右转、回正后重复；
     3. 在短时间窗内选择置信度最高的第一条红线并锁定；
     4. conf >= 0.70 时 positions 中坐标有限的点全部进入拟合，后续高置信帧确认后立即冻结曲线段；
     5. LOS 以 base_link 投影选择曲线前方目标，实际向 motion_supervisor
@@ -2504,10 +2504,11 @@ class Task1LineFollow:
                     and hover_ready
                 ):
                     rospy.loginfo(
-                        "%s: 启动定点完成，进入红线识别和左右转搜索阶段",
+                        "%s: 启动定点完成，先向前搜索一个步长，"
+                        "再进入左右转搜索阶段",
                         NODE_NAME,
                     )
-                    self.set_search_state(self.SEARCH_LEFT)
+                    self.set_search_state(self.SEARCH_FORWARD)
             elif self.state in self.SEARCH_STATES:
                 self.run_search()
             elif self.state == self.WAIT_FIXED_LINE:

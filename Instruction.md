@@ -5,6 +5,7 @@
 #### 编译
 catkin_make_isolated \
 --cmake-args \
+--pkg auv_control \
 -DCMAKE_BUILD_TYPE=Release \
 -DPYTHON_EXECUTABLE=/home/xhy/xhy_env/bin/python3.8
 

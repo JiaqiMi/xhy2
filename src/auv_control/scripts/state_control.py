@@ -23,6 +23,8 @@
     使用 PTY 启动内层 launch，确保日志逐行刷新。
 2026.7.30
     在 task2 预热 task3 视觉节点，并保持至 task3 结束。
+2026.7.31
+    增加视觉预热开关；关闭时由 task3 自身启动视觉模型。
 """
 
 import errno
@@ -115,10 +117,14 @@ class StateControl:
             rospy.logerr('%s task3 视觉预热配置为空。', NODE_NAME)
             return None
         return {
+            'enabled': bool(config.get('enabled', True)),
             'name': str(config.get('name', 'task3_vision')),
             'launch': launch,
             'launch_args': [str(argument) for argument in
                             config.get('launch_args', [])],
+            'task3_reuse_launch_args': [str(argument) for argument in
+                                        config.get(
+                                            'task3_reuse_launch_args', [])],
             'active_modes': active_modes,
         }
 
@@ -150,7 +156,11 @@ class StateControl:
         """停止旧任务后，以 roslaunch 启动指定任务。"""
         self.terminate_current_task('切换任务')
         self.ensure_vision_prewarm(task['mode'])
-        command = ['roslaunch', 'auv_control', task['launch']] + task['launch_args']
+        launch_args = list(task['launch_args'])
+        if (task['mode'] == 3 and self.vision_prewarm is not None and
+                self.vision_prewarm['enabled']):
+            launch_args += self.vision_prewarm['task3_reuse_launch_args']
+        command = ['roslaunch', 'auv_control', task['launch']] + launch_args
         try:
             master_fd, slave_fd = pty.openpty()
             try:
@@ -233,6 +243,9 @@ class StateControl:
     def ensure_vision_prewarm(self, task_mode):
         """按任务阶段启动或保留 task3 视觉预热进程。"""
         if self.vision_prewarm is None:
+            return
+        if not self.vision_prewarm['enabled']:
+            self.terminate_vision_prewarm('视觉预热已关闭')
             return
         if task_mode not in self.vision_prewarm['active_modes']:
             self.terminate_vision_prewarm('切换到非视觉预热任务')

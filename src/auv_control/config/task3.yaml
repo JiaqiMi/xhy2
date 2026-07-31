@@ -7,30 +7,16 @@
 # 1. 本文件负责识别阈值、帧数、距离、时间、控制增益、到达容差和执行器数值。
 # 2. 启动哪些相机、模型、Web节点以及话题重映射仍由launch负责。
 # 3. motion_supervisor内部推力、速度、阻尼和HOVER判定参数仍在
-#    config/motion_supervisor_low.yaml或motion_supervisor_high.yaml中调整，
-#    本文件只配置任务侧目标与核对门槛。
+#    config/motion_supervisor.yaml中调整，本文件只配置任务侧目标与核对门槛。
 
 # 任务3统一固定深度，单位m，填写水面以下的正深度。
 # 当前map坐标约定为水下Z为负，因此0.60m会作为map z=-0.60下发。
 # 完整任务、三个独立子任务及旧联调入口都读取这一处参数。
 task3_target_depth_m: 0.6
 
-
 # 完整任务3启动时锁存机器人当前map N/E，并调整到该map绝对航向。
 # 该参数始终生效，与子任务超时跳点容错开关无关，单位deg。
-task3_initial_yaw_deg: 0.0
-
-# 任务3三级超时保护共用参数。
-# 第一级：运动反馈超过该时间未更新，当前子任务结束并进入恢复。
-# 第二级：总调度发布cancel后最多等待该时间完成刹停，再重试当前阶段一次。
-# 第三级：重试仍失败时直接跳过当前阶段，继续后续流程。
-task3_protection:
-  motion_feedback_timeout: 3.0
-  cancel_recovery_timeout: 30.0
-
-# 完整任务3启动时锁存机器人当前map N/E，并调整到该map绝对航向。
-# 该参数始终生效，与子任务超时跳点容错开关无关，单位deg。
-task3_initial_yaw_deg: 0.0
+task3_initial_yaw_deg: 215.0
 
 # 任务3三级超时保护共用参数。
 # 第一级：运动反馈超过该时间未更新，当前子任务结束并进入恢复。
@@ -98,10 +84,10 @@ test_task3_1_acquire_area:
 
   # 独立运行子任务1时的启动悬停和搜索路径。
   initial_hover_seconds: 10.0
-  search_initial_forward_distance: 0.70
-  search_lateral_distance: 0.30
-  search_second_forward_distance: 0.40
-  search_third_forward_distance: 0.30
+  search_initial_forward_distance: 1.2
+  search_lateral_distance: 0.5
+  search_second_forward_distance: 0.60
+  search_third_forward_distance: 0.6
   # 每次箭头子任务从启动悬停、三层搜索到粗细对准的总超时。
   # 第一次和第二次箭头都使用该值。timeout_skip_enabled=true时，
   # 达到该总时间不再重复整轮搜索，直接前往下一子任务的人工N/E点。
@@ -203,10 +189,10 @@ test_task3_2_get_task:
   recognition_window_size: 10
   required_match_count: 3
   recognition_timeout: 60.0
-    # 超过30秒仍未满足3/10帧时，不再继续等待ID，直接按固定颜色执行。
+  # 实时识别超过15秒仍未满足3/10帧时，优先使用任务开始以来
+  # 已记录的三帧一致ArUco历史ID；没有历史ID才按人工颜色继续执行。
   # recognition_fallback_color只能填写yellow、green或red。
-  # 子任务2识别超时；到时直接使用下面的固定颜色并继续亮灯、转向。
-  recognition_fallback_seconds: 30.0
+  recognition_fallback_seconds: 15.0
   recognition_fallback_color: "red"
   mock_aruco_ids: [1, -1, 1, 2, -1, -1, 1]
   mock_frame_interval: 0.2
@@ -371,7 +357,9 @@ test_task3_3_inspect_and_drop:
   post_drop_turn_angle_deg: 90.0
   # 左转和返回map原点(0,0)分别使用该到达超时。
   post_drop_step_timeout: 90.0
-  # 到达map原点后持续发布z=0.0上浮目标的时间，到时结束全部流程。
+  # 到达map原点后，以当前固定深度对应的map z为基准向上增加该距离。
+  post_drop_ascent_distance_m: -1.3
+  # 上浮目标持续发布时间，到时结束全部流程。
   post_drop_ascent_seconds: 5.0
 
   # 执行器协议数值
@@ -407,9 +395,9 @@ task3_final:
   # 终端中同类WARNING重复出现的最短间隔；ERROR不做频率限制。
   console_warning_repeat_interval: 3.0
 
-  # 启动固定点进入HOVER的最长时间。
+  # 等待三个模型全部持续发布且启动固定目标进入HOVER的最长时间。
   model_ready_timeout: 90.0
-  # 每个子任务启动前，检查对应模型新增帧的要求。
+  # 启动统一检查和每个子任务开始前复查所需的模型帧数。
   model_required_frames: 3
   model_output_timeout: 2.0
   model_recovery_timeout: 10.0
@@ -432,6 +420,7 @@ task3_final:
   # 超过该时间仍失败则跳过投放，直接返回map/NED原点并上浮。
   box_point_recheck_timeout: 30.0
 
+
   # 所有点都是执行reset_world_origin.launch成功后，map坐标系中的绝对目标。
   # N（北向）、E（东向）单位m；yaw_deg单位deg；
   # 深度统一使用文件顶部task3_target_depth_m。
@@ -439,35 +428,35 @@ task3_final:
   timeout_skip_targets:
     # 第一次箭头正常完成或超时后，都移动到子任务2的ArUco识别点。
     subtask2:
-      N: "待测"
-      E: "待测"
-      yaw_deg: "待测"
+      N: "-5.19"
+      E: "-6.58"
+      yaw_deg: "212"
     # 子任务2完成固定颜色兜底/正常识别及90度转向后，移动到第二个箭头起始点。
     # ArUco识别超时由子任务2内部处理，不在总调度层跳过。
     # yaw_deg填写完成该90度转向后，第二个箭头阶段期望保持的map绝对航向。
     second_arrow:
-      N: "待测"
-      E: "待测"
-      yaw_deg: "待测"
+      N: "-5.78"
+      E: "-6.3"
+      yaw_deg: "113"
     # 第二次箭头正常完成或超时后，都移动到子任务3彩色方框任务的起始点。
     subtask3:
-      N: "待测"
-      E: "待测"
-      yaw_deg: "待测"
+      N: "-6.57"
+      E: "-4.93"
+      yaw_deg: "113"
     # 子任务3首次识别超时后，根据ArUco得到的目标颜色选择其中一个点。
     # 三个点应设置在机器人能够从下视相机看到对应颜色方框的位置。
     box_red:
-      N: "待测"
-      E: "待测"
-      yaw_deg: "待测"
+      N: "-7.4"
+      E: "-5.1"
+      yaw_deg: "113"
     box_yellow:
-      N: "待测"
-      E: "待测"
-      yaw_deg: "待测"
+      N: "-6.57"
+      E: "-4.93"
+      yaw_deg: "113"
     box_green:
-      N: "待测"
-      E: "待测"
-      yaw_deg: "待测"
+      N: "-6.2"
+      E: "-6.4"
+      yaw_deg: "113"
   # 整合模式已经在启动定点和阶段交接中统一悬停，因此关闭子任务内部
   # 重复的启动与结束等待。独立运行子任务时仍使用各子任务自己的参数。
   subtask1_initial_hover_seconds: 0.0
