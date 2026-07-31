@@ -13,6 +13,8 @@
     新增红色圆形稳定观测、TF 转换、原点重置请求与确认超时保护。
 2026.7.31
     红圆深度改用 DVL 高度与 base_link 到相机的 TF 高度计算，视觉深度仅记录对比。
+2026.7.31
+    DVL 高度有效性改为与 map_initer 一致，要求 sensor_valid 的第 0、1 位同时有效。
 """
 
 import math
@@ -52,9 +54,6 @@ class WorldOriginResetNode:
         self.status_timeout = float(rospy.get_param("~status_timeout_sec", 0.5))
         self.require_dvl_altitude_valid = bool(
             rospy.get_param("~require_dvl_altitude_valid", True)
-        )
-        self.dvl_altitude_valid_bit = int(
-            rospy.get_param("~dvl_altitude_valid_bit", 6)
         )
         self.tf_ready_timeout = float(rospy.get_param("~tf_ready_timeout_sec", 30.0))
         # 限时
@@ -109,10 +108,12 @@ class WorldOriginResetNode:
             rospy.logwarn_throttle(2.0, "world_origin_reset: 忽略非有限 DVL 高度")
             return
 
-        dvl_altitude_mask = 1 << self.dvl_altitude_valid_bit
+        # 与 map_initer 保持一致：第 0、1 位分别表示惯导数据有效。
+        required_sensor_valid = (1 << 0) | (1 << 1)
         if (
                 self.require_dvl_altitude_valid
-                and not (int(msg.sensor.sensor_valid) & dvl_altitude_mask)):
+                and (int(msg.sensor.sensor_valid) & required_sensor_valid)
+                != required_sensor_valid):
             with self.status_lock:
                 self.latest_dvl_altitude = None
                 self.latest_status_stamp = None
