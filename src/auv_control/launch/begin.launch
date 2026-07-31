@@ -22,7 +22,7 @@
 
     <!-- 包含任务参数 -->
     <!-- <include file="$(find auv_control)/launch/param.launch"/> -->
-    <arg name="save_data" default="true" />
+    <arg name="save_data" default="false" />
     <arg name="save_dir" default="$(env HOME)/.ros/auv_logs" />
     <arg name="save_max_file_size" default="52428800" />
     <arg name="save_flush_every" default="1" />

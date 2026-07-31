@@ -8,7 +8,8 @@
 识别采用最近10个模型消息组成的滑动窗口。任一合法 ArUco ID 在窗口内
 出现3次即立即确认，不要求连续，也不需要等待窗口填满。例如第1、3、7帧
 是同一个ID时，第7帧到达后立即成功。成功后点亮对应颜色灯3秒，再按配置
-原地左转或右转；超过配置的兜底时间仍未确认ID时，按固定颜色继续执行。
+原地左转或右转；超过配置的兜底时间仍未确认ID时，优先使用整合任务记录
+的三帧一致历史ID，没有历史ID时再按人工配置颜色继续执行。
 """
 
 from datetime import datetime
@@ -74,7 +75,6 @@ DEFAULT_HOLD_BASE_FRAME = "base_link"
 DEFAULT_INITIAL_HOVER_SECONDS = 10.0
 DEFAULT_INITIAL_HOVER_TIMEOUT = 30.0
 DEFAULT_HOLD_POSE_TIMEOUT = 5.0
-DEFAULT_MOTION_STATE_TIMEOUT = 0.5
 
 DEFAULT_TURN_ENABLED = True
 DEFAULT_TURN_DIRECTION = "right"
@@ -97,8 +97,9 @@ DEFAULT_MIN_CONFIDENCE = 0.5
 DEFAULT_RECOGNITION_WINDOW_SIZE = 10
 DEFAULT_REQUIRED_MATCH_COUNT = 3
 DEFAULT_RECOGNITION_TIMEOUT = 60.0
-DEFAULT_RECOGNITION_FALLBACK_SECONDS = 30.0
+DEFAULT_RECOGNITION_FALLBACK_SECONDS = 15.0
 DEFAULT_RECOGNITION_FALLBACK_COLOR = "red"
+DEFAULT_HISTORY_MARKER_ID = -1
 DEFAULT_MOCK_FRAME_INTERVAL = 0.2
 # 模拟第1、3、7帧为同一个ID，-1表示空帧。
 DEFAULT_MOCK_ARUCO_IDS = [1, -1, 1, 2, -1, -1, 1]
@@ -165,7 +166,7 @@ class Task3GetTaskTest:
             "~hold_pose_timeout", DEFAULT_HOLD_POSE_TIMEOUT
         ))
         self.motion_state_timeout = float(rospy.get_param(
-            "~motion_state_timeout", DEFAULT_MOTION_STATE_TIMEOUT
+            "/task3_protection/motion_feedback_timeout", 3.0
         ))
         self.fixed_depth_m = float(rospy.get_param(
             "/task3_target_depth_m", 0.60
@@ -246,6 +247,15 @@ class Task3GetTaskTest:
             "~recognition_fallback_color",
             DEFAULT_RECOGNITION_FALLBACK_COLOR,
         )).strip().lower()
+        self.history_marker_id = int(rospy.get_param(
+            "~history_marker_id",
+            DEFAULT_HISTORY_MARKER_ID,
+        ))
+        if self.history_marker_id == DEFAULT_HISTORY_MARKER_ID:
+            self.history_marker_id = None
+        self.history_marker_color = self.color_for_marker(
+            self.history_marker_id
+        )
         self.mock_frame_interval = float(rospy.get_param(
             "~mock_frame_interval", DEFAULT_MOCK_FRAME_INTERVAL
         ))
@@ -293,6 +303,7 @@ class Task3GetTaskTest:
         self.mock_index = 0
         self.confirmed_marker_id = None
         self.confirmed_color = None
+        self.used_history_fallback = False
         self.used_recognition_fallback = False
         self.recognition_lock = threading.Lock()
         self.recognition_window = deque(maxlen=self.recognition_window_size)
@@ -392,6 +403,11 @@ class Task3GetTaskTest:
             raise ValueError(
                 "recognition_fallback_color 必须是 yellow、green 或 red"
             )
+        if (
+            self.history_marker_id is not None
+            and self.history_marker_id not in self.COLOR_BY_MARKER
+        ):
+            raise ValueError("history_marker_id必须是-1或1到6")
         if self.mock_frame_interval <= 0.0:
             raise ValueError("mock_frame_interval 必须大于 0")
         if min(self.light_seconds, self.gap_seconds) < 0.0:
@@ -409,7 +425,8 @@ class Task3GetTaskTest:
             (
                 "%s：流程=motion_supervisor定点悬停%.1fs -> "
                 "最近%d帧内同ID达到%d帧 -> 亮灯%.1fs -> %s%.1f度；"
-                "识别%.1fs未成功则固定使用%s，识别最长%.1fs"
+                "识别%.1fs未成功则优先使用历史ID=%s，"
+                "无历史时使用人工颜色%s，识别最长%.1fs"
             ),
             NODE_NAME,
             self.initial_hover_seconds,
@@ -419,6 +436,11 @@ class Task3GetTaskTest:
             "右转" if self.turn_direction == "right" else "左转",
             self.turn_angle_deg,
             self.recognition_fallback_seconds,
+            (
+                str(self.history_marker_id)
+                if self.history_marker_id is not None
+                else "无"
+            ),
             self.recognition_fallback_color,
             self.recognition_timeout,
         )
@@ -1001,6 +1023,7 @@ class Task3GetTaskTest:
             self.confirmed_marker_id = None
             self.recognition_frame_index = 0
         self.confirmed_color = None
+        self.used_history_fallback = False
         self.used_recognition_fallback = False
         self.mock_index = 0
 
@@ -1040,18 +1063,24 @@ class Task3GetTaskTest:
         rospy.loginfo(
             (
                 "%s：正式开始识别，最长%.1fs；窗口大小=%d，"
-                "同一ID命中%d帧立即成功；%.1fs未成功则使用固定颜色%s"
+                "同一ID命中%d帧立即成功；%.1fs未成功则优先使用"
+                "历史ID=%s，无历史时使用人工颜色%s"
             ),
             NODE_NAME,
             self.recognition_timeout,
             self.recognition_window_size,
             self.required_match_count,
             self.recognition_fallback_seconds,
+            (
+                str(self.history_marker_id)
+                if self.history_marker_id is not None
+                else "无"
+            ),
             self.recognition_fallback_color,
         )
 
         while not rospy.is_shutdown():
-            self.publish_position_hold("ArUco识别与固定颜色兜底阶段")
+            self.publish_position_hold("ArUco识别与历史/人工颜色兜底阶段")
             now = rospy.Time.now()
 
             if self.input_mode == "mock" and now >= next_mock_time:
@@ -1067,17 +1096,33 @@ class Task3GetTaskTest:
             elapsed = (now - start_time).to_sec()
             if elapsed >= self.recognition_fallback_seconds:
                 self.accept_detections = False
+                if self.history_marker_id is not None:
+                    with self.recognition_lock:
+                        self.confirmed_marker_id = self.history_marker_id
+                    self.confirmed_color = self.history_marker_color
+                    self.used_history_fallback = True
+                    rospy.logwarn(
+                        (
+                            "%s：ArUco实时识别已等待%.1fs仍未确认；"
+                            "使用子任务2启动前的三帧一致历史结果："
+                            "ID=%d，颜色=%s"
+                        ),
+                        NODE_NAME,
+                        elapsed,
+                        self.confirmed_marker_id,
+                        self.confirmed_color,
+                    )
+                    return self.confirmed_marker_id
+
                 self.confirmed_color = self.recognition_fallback_color
                 self.used_recognition_fallback = True
                 rospy.logwarn(
                     (
-                        "%s：ArUco识别已等待%.1fs，仍未满足最近%d帧内同ID达到%d帧；"
-                        "启用固定颜色兜底=%s，继续执行亮灯和转向"
+                        "%s：ArUco实时识别已等待%.1fs仍未确认，且没有"
+                        "三帧一致历史ID；使用人工设置颜色=%s继续执行"
                     ),
                     NODE_NAME,
                     elapsed,
-                    self.recognition_window_size,
-                    self.required_match_count,
                     self.confirmed_color,
                 )
                 return None
@@ -1227,7 +1272,17 @@ class Task3GetTaskTest:
             return
 
         color = self.confirmed_color
-        if self.used_recognition_fallback:
+        if self.used_history_fallback:
+            rospy.logwarn(
+                (
+                    "%s：实时识别超时，按历史ArUco ID=%d对应颜色%s"
+                    "开始亮灯"
+                ),
+                NODE_NAME,
+                marker_id,
+                color,
+            )
+        elif self.used_recognition_fallback:
             rospy.logwarn(
                 "%s：未确认有效ArUco ID，按固定颜色参数%s开始亮灯",
                 NODE_NAME,
@@ -1295,13 +1350,17 @@ class Task3GetTaskTest:
         else:
             rospy.logwarn("%s：turn_enabled=false，本次识别亮灯后不执行转向", NODE_NAME)
 
-        marker_text = (
-            "未确认（等待{:.1f}s后使用固定颜色）".format(
+        if self.used_history_fallback:
+            marker_text = "{}（实时等待{:.1f}s后使用历史结果）".format(
+                marker_id,
                 self.recognition_fallback_seconds
             )
-            if self.used_recognition_fallback
-            else str(marker_id)
-        )
+        elif self.used_recognition_fallback:
+            marker_text = "未确认（等待{:.1f}s后使用人工颜色）".format(
+                self.recognition_fallback_seconds
+            )
+        else:
+            marker_text = str(marker_id)
         detail = "ArUco ID={}，颜色={}，亮灯{:.1f}s，转向={}".format(
             marker_text,
             color,

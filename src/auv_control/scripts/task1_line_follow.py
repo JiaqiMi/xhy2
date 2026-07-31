@@ -6,14 +6,15 @@
 
 流程：
     1. 记录节点启动时的当前位置、高度和航向，定点等待相机和识别模块；
-    2. 未识别红线时，依次定点左转、右转、回正，再向前移动后重复；
+    2. 未识别红线时，先定点向前移动，再依次左转、右转、回正后重复；
     3. 在短时间窗内选择置信度最高的第一条红线并锁定；
     4. conf >= 0.70 时 positions 中坐标有限的点全部进入拟合，后续高置信帧确认后立即冻结曲线段；
     5. LOS 以 base_link 投影选择曲线前方目标，实际向 motion_supervisor
        下发 base_link 与 LOS 目标之间的中点；新目标直接覆盖旧目标；
-    6. 已知曲线没有新目标时保持最后中点；控制端给出一次 HOVER 后固定 XY，
-       只执行一轮左转、右转、返回航向搜索；
-    7. 搜索到向前增长的新固定曲线就恢复巡线；完整一轮没有增长则结束任务。
+    6. 已知曲线没有新目标时保持最后中点；控制端给出一次 HOVER 后，
+       若进度和待固定尾段满足终点条件则直接结束，否则固定 XY 搜索一轮；
+    7. 搜索到向前增长的新固定曲线就恢复巡线；达到最小进度且完整一轮
+       没有增长则丢弃未固定尾段并结束任务。
 
 起终点定义：
     以首次锁线时的 base_link 位置为固定参考点。所有已接受点中，距参考点
@@ -313,7 +314,7 @@ class Task1LineFollow:
             "~line_message_max_age_seconds", 0.5
         )))
         self.startup_hold_seconds = max(0.0, float(rospy.get_param(
-            "~startup_hold_seconds", 10.0
+            "~startup_hold_seconds", 3.0
         )))
 
         # 红线首帧选择和置信度硬下限。
@@ -360,6 +361,11 @@ class Task1LineFollow:
         ))
         self.endpoint_growth_tolerance = float(rospy.get_param(
             "~endpoint_growth_tolerance", 0.08
+        ))
+        self.endpoint_pending_extension_tolerance = max(0.0, float(
+            rospy.get_param(
+                "~endpoint_pending_extension_tolerance", 0.20
+            )
         ))
 
         # LOS 使用 base_link 选择前视点；向监督器下发当前位置到前视点的中点。
@@ -454,6 +460,7 @@ class Task1LineFollow:
         self.search_base_yaw = None
         self.startup_hold_started = None
         self.last_camera_time = None
+        self.last_line_message_time = None
         self.latest_motion_state = None
         self.last_motion_goal = None
         self.motion_goal_changed_at = rospy.Time(0)
@@ -617,6 +624,14 @@ class Task1LineFollow:
             <= self.camera_message_timeout
         )
 
+    def startup_readiness(self):
+        """返回启动所需输入是否已经开始提供数据。"""
+        return {
+            "camera": self.camera_ready(),
+            "line": self.last_line_message_time is not None,
+            "motion": self.motion_state_fresh(),
+        }
+
     def get_frame_pose(self, frame):
         try:
             self.tf_listener.waitForTransform(
@@ -677,9 +692,7 @@ class Task1LineFollow:
         self.start_pose.pose.orientation = Quaternion(*quaternion_from_euler(
             0.0, 0.0, self.search_base_yaw
         ))
-        self.startup_hold_started = (
-            None if self.use_reference_yaw else rospy.Time.now()
-        )
+        self.startup_hold_started = None
         rospy.loginfo(
             "%s: 当前位姿=(%.2f, %.2f, %.2f)，启动深度=%.2f m（%s），"
             "启动航向=%.1f deg（%s）",
@@ -694,7 +707,8 @@ class Task1LineFollow:
         )
         if self.use_reference_yaw:
             rospy.loginfo(
-                "%s: 启动阶段先原地旋转到参考航向；收到 HOVER 后再开始定点计时",
+                "%s: 启动阶段先原地旋转到参考航向；收到 HOVER 且输入"
+                "数据均就绪后开始定点缓冲",
                 NODE_NAME,
             )
         return True
@@ -1492,6 +1506,8 @@ class Task1LineFollow:
         )
 
     def line_callback(self, message):
+        # 无效识别消息同样证明红线识别节点已经启动。
+        self.last_line_message_time = rospy.Time.now()
         if self.state == self.WAIT_CAMERA or not self.camera_ready():
             return
         if self.hold_z is None and not self.initialize_start_pose():
@@ -1710,7 +1726,7 @@ class Task1LineFollow:
                 self.extension_search_active
                 and self.state == self.SEARCH_RETURN
             ):
-                if self.endpoint_finish_ready():
+                if self.endpoint_progress_ready():
                     self.write_data_record(
                         "endpoint_search_complete",
                         result="no_extension",
@@ -1722,10 +1738,16 @@ class Task1LineFollow:
                         ),
                         fixed_curve_version=self.line_version,
                         tracking_curve_version=self.tracking_curve_version,
+                        pending_extension=round(
+                            self.endpoint_pending_extension(), 6
+                        ),
+                        discarded_pending_extension=True,
                     )
                     rospy.loginfo(
-                        "%s: 终点固定位置搜索一轮完成，未发现新增长红线，结束任务",
+                        "%s: 终点固定位置搜索一轮完成，未发现新的固定红线；"
+                        "丢弃待固定尾段 %.2f m，结束任务",
                         NODE_NAME,
+                        self.endpoint_pending_extension(),
                     )
                     self.set_state(self.FINISH)
                 else:
@@ -2005,21 +2027,24 @@ class Task1LineFollow:
             >= self.endpoint_required_progress()
         )
 
-    def endpoint_finish_ready(self):
-        if self.endpoint_hold_started is None:
-            return False
+    def endpoint_pending_extension(self):
         fixed_length = (
             self.line_committed_curve_s[-1]
             if self.line_committed_curve_s else 0.0
         )
-        pending_extension = max(
+        return max(
             0.0,
             (self.line_curve_s[-1] if self.line_curve_s else 0.0)
             - fixed_length,
         )
+
+    def endpoint_finish_ready(self):
+        if self.endpoint_hold_started is None:
+            return False
         return (
             self.endpoint_progress_ready()
-            and pending_extension < self.curve_freeze_min_advance
+            and self.endpoint_pending_extension()
+            < self.endpoint_pending_extension_tolerance
         )
 
     def run_hold_end(self):
@@ -2074,6 +2099,29 @@ class Task1LineFollow:
             self.curve_freeze_required_frames,
         )
         if stable:
+            if self.endpoint_finish_ready():
+                self.write_data_record(
+                    "endpoint_finish_direct",
+                    completed_path=round(self.completed_path_length, 6),
+                    required_progress=round(
+                        self.endpoint_required_progress(), 6
+                    ),
+                    pending_extension=round(pending_extension, 6),
+                    pending_extension_tolerance=round(
+                        self.endpoint_pending_extension_tolerance, 6
+                    ),
+                    fixed_curve_version=self.line_version,
+                    tracking_curve_version=self.tracking_curve_version,
+                )
+                rospy.loginfo(
+                    "%s: 最后中点收到 HOVER，终点进度已满足且待固定尾段"
+                    " %.2f < %.2f m，直接结束任务",
+                    NODE_NAME,
+                    pending_extension,
+                    self.endpoint_pending_extension_tolerance,
+                )
+                self.set_state(self.FINISH)
+                return
             self.search_base_yaw = yaw_from_quaternion(
                 self.hold_target.pose.orientation
             )
@@ -2090,12 +2138,16 @@ class Task1LineFollow:
                     self.endpoint_required_progress(), 6
                 ),
                 fixed_curve_length=round(fixed_length, 6),
+                pending_extension=round(pending_extension, 6),
+                pending_extension_tolerance=round(
+                    self.endpoint_pending_extension_tolerance, 6
+                ),
                 fixed_curve_version=self.line_version,
                 tracking_curve_version=self.tracking_curve_version,
             )
             rospy.loginfo(
-                "%s: 最后中点收到 HOVER；固定当前位置，只执行一轮"
-                "左转、右转、返回航向搜索",
+                "%s: 最后中点收到 HOVER，但终点条件尚未满足；"
+                "固定当前位置执行一轮左转、右转、返回航向搜索",
                 NODE_NAME,
             )
             self.set_search_state(self.SEARCH_LEFT)
@@ -2391,14 +2443,33 @@ class Task1LineFollow:
                 )
                 current = self.get_current_pose()
                 hover_ready = self.hover_confirmed()
-                if self.startup_hold_started is None and hover_ready:
+                readiness = self.startup_readiness()
+                inputs_ready = all(readiness.values())
+                if (
+                    self.startup_hold_started is None
+                    and hover_ready
+                    and inputs_ready
+                ):
                     self.startup_hold_started = rospy.Time.now()
                     rospy.loginfo(
-                        "%s: 已到达参考航向 %.1f deg；开始启动定点 %.1f s，"
-                        "并等待识别节点",
+                        "%s: 参考航向、运动节点及识别数据均已就绪；"
+                        "开始启动定点缓冲 %.1f s",
                         NODE_NAME,
-                        math.degrees(self.search_base_yaw),
                         self.startup_hold_seconds,
+                    )
+                    self.write_data_record(
+                        "startup_inputs_ready",
+                        readiness=copy.deepcopy(readiness),
+                        hold_seconds=self.startup_hold_seconds,
+                    )
+                elif (
+                    self.startup_hold_started is not None
+                    and (not hover_ready or not inputs_ready)
+                ):
+                    self.startup_hold_started = None
+                    rospy.loginfo(
+                        "%s: 启动缓冲期间输入或 HOVER 失效，重新等待全部就绪",
+                        NODE_NAME,
                     )
                 hold_elapsed = (
                     (rospy.Time.now() - self.startup_hold_started).to_sec()
@@ -2406,7 +2477,7 @@ class Task1LineFollow:
                 )
                 rospy.loginfo_throttle(
                     2.0,
-                    "%s: 启动阶段=%s；摄像头节点=%s；"
+                    "%s: 启动阶段=%s；输入状态=%s；"
                     "当前位姿=(%.2f, %.2f, %.2f)；启动定点=%.1f/%.1f s",
                     NODE_NAME,
                     (
@@ -2414,7 +2485,13 @@ class Task1LineFollow:
                         if self.startup_hold_started is not None
                         else "旋转到参考航向"
                     ),
-                    "已开启" if self.camera_ready() else "未开启",
+                    ", ".join(
+                        "%s=%s" % (
+                            name,
+                            "就绪" if ready else "等待",
+                        )
+                        for name, ready in sorted(readiness.items())
+                    ),
                     current.pose.position.x if current else float("nan"),
                     current.pose.position.y if current else float("nan"),
                     current.pose.position.z if current else float("nan"),
@@ -2422,15 +2499,16 @@ class Task1LineFollow:
                     self.startup_hold_seconds,
                 )
                 if (
-                    self.camera_ready()
+                    inputs_ready
                     and hold_elapsed >= self.startup_hold_seconds
                     and hover_ready
                 ):
                     rospy.loginfo(
-                        "%s: 启动定点完成，进入红线识别和左右转搜索阶段",
+                        "%s: 启动定点完成，先向前搜索一个步长，"
+                        "再进入左右转搜索阶段",
                         NODE_NAME,
                     )
-                    self.set_search_state(self.SEARCH_LEFT)
+                    self.set_search_state(self.SEARCH_FORWARD)
             elif self.state in self.SEARCH_STATES:
                 self.run_search()
             elif self.state == self.WAIT_FIXED_LINE:

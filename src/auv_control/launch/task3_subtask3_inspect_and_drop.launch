@@ -1,7 +1,7 @@
 <launch>
     <!--
       任务3子任务3：彩色方框搜索、细对准、开灯和夹爪动作，
-      投放完成后由motion_supervisor执行左转和前进离场。
+      投放完成后由motion_supervisor执行左转、返回map原点和持续上浮。
 
       所有模式、识别、搜索、对准、动作门槛和执行器数值统一在
       config/task3.yaml的test_task3_3_inspect_and_drop段修改。
