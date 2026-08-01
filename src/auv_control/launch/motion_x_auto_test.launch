@@ -9,7 +9,7 @@
     <arg name="repetitions" default="2" />
     <arg name="cycle_count" default="$(arg repetitions)" />
     <!-- 旧名称 translation_magnitudes 保留兼容；新调用使用 target_distances。 -->
-    <arg name="translation_magnitudes" default="[0.5, 1.0, 1.5, 2.0]" />
+    <arg name="translation_magnitudes" default="[3.0, 5.0]" />
     <arg name="target_distances" default="$(arg translation_magnitudes)" />
     <arg name="action_timeout" default="120.0" />
     <arg name="hover_hold_seconds" default="2.0" />
