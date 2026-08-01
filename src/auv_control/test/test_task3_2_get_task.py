@@ -7,8 +7,9 @@
 
 识别采用最近10个模型消息组成的滑动窗口。任一合法 ArUco ID 在窗口内
 出现3次即立即确认，不要求连续，也不需要等待窗口填满。例如第1、3、7帧
-是同一个ID时，第7帧到达后立即成功。成功后点亮对应颜色灯3秒，再按配置
-原地左转或右转；超过配置的兜底时间仍未确认ID时，按固定颜色继续执行。
+是同一个ID时，第7帧到达后立即成功。成功后等待对应颜色灯反馈到位并保持
+3秒，再按配置原地左转或右转；超过配置的兜底时间仍未确认ID时，优先使用
+整合任务记录的三帧一致历史ID，没有历史ID时再按人工配置颜色继续执行。
 """
 
 from datetime import datetime
@@ -96,8 +97,9 @@ DEFAULT_MIN_CONFIDENCE = 0.5
 DEFAULT_RECOGNITION_WINDOW_SIZE = 10
 DEFAULT_REQUIRED_MATCH_COUNT = 3
 DEFAULT_RECOGNITION_TIMEOUT = 60.0
-DEFAULT_RECOGNITION_FALLBACK_SECONDS = 30.0
+DEFAULT_RECOGNITION_FALLBACK_SECONDS = 15.0
 DEFAULT_RECOGNITION_FALLBACK_COLOR = "red"
+DEFAULT_HISTORY_MARKER_ID = -1
 DEFAULT_MOCK_FRAME_INTERVAL = 0.2
 # 模拟第1、3、7帧为同一个ID，-1表示空帧。
 DEFAULT_MOCK_ARUCO_IDS = [1, -1, 1, 2, -1, -1, 1]
@@ -105,11 +107,13 @@ DEFAULT_MOCK_ARUCO_IDS = [1, -1, 1, 2, -1, -1, 1]
 DEFAULT_LIGHT_SECONDS = 3.0
 DEFAULT_GAP_SECONDS = 0.5
 DEFAULT_ACTUATOR_TOPIC = "/cmd/actuator"
+DEFAULT_ACTUATOR_STATUS_TOPIC = "/status/actuator"
+DEFAULT_ACTUATOR_STATUS_TIMEOUT = 1.0
+DEFAULT_ACTUATOR_FEEDBACK_CONFIRM_FRAMES = 2
+DEFAULT_ACTUATOR_STAGE_TIMEOUT = 15.0
 DEFAULT_ACTUATOR_MODE = 2
 DEFAULT_LIGHT1 = 0
 DEFAULT_LIGHT2 = 0
-DEFAULT_HEADING_SERVO = 0x80
-DEFAULT_CLAMP_SERVO = 0xFF
 DEFAULT_DRIVE_CMD = 0
 DEFAULT_DRIVE_SPEED = 0
 
@@ -245,6 +249,15 @@ class Task3GetTaskTest:
             "~recognition_fallback_color",
             DEFAULT_RECOGNITION_FALLBACK_COLOR,
         )).strip().lower()
+        self.history_marker_id = int(rospy.get_param(
+            "~history_marker_id",
+            DEFAULT_HISTORY_MARKER_ID,
+        ))
+        if self.history_marker_id == DEFAULT_HISTORY_MARKER_ID:
+            self.history_marker_id = None
+        self.history_marker_color = self.color_for_marker(
+            self.history_marker_id
+        )
         self.mock_frame_interval = float(rospy.get_param(
             "~mock_frame_interval", DEFAULT_MOCK_FRAME_INTERVAL
         ))
@@ -261,17 +274,24 @@ class Task3GetTaskTest:
         self.actuator_topic = str(
             rospy.get_param("~actuator_topic", DEFAULT_ACTUATOR_TOPIC)
         ).strip()
+        self.actuator_status_topic = str(rospy.get_param(
+            "~actuator_status_topic", DEFAULT_ACTUATOR_STATUS_TOPIC
+        )).strip()
+        self.actuator_status_timeout = float(rospy.get_param(
+            "~actuator_status_timeout", DEFAULT_ACTUATOR_STATUS_TIMEOUT
+        ))
+        self.actuator_feedback_confirm_frames = int(rospy.get_param(
+            "~actuator_feedback_confirm_frames",
+            DEFAULT_ACTUATOR_FEEDBACK_CONFIRM_FRAMES,
+        ))
+        self.actuator_stage_timeout = float(rospy.get_param(
+            "~actuator_stage_timeout", DEFAULT_ACTUATOR_STAGE_TIMEOUT
+        ))
         self.actuator_mode = int(
             rospy.get_param("~actuator_mode", DEFAULT_ACTUATOR_MODE)
         )
         self.light1 = int(rospy.get_param("~light1", DEFAULT_LIGHT1))
         self.light2 = int(rospy.get_param("~light2", DEFAULT_LIGHT2))
-        self.heading_servo = int(
-            rospy.get_param("~heading_servo", DEFAULT_HEADING_SERVO)
-        )
-        self.clamp_servo = int(
-            rospy.get_param("~clamp_servo", DEFAULT_CLAMP_SERVO)
-        )
         self.drive_cmd = int(
             rospy.get_param("~drive_cmd", DEFAULT_DRIVE_CMD)
         )
@@ -292,9 +312,15 @@ class Task3GetTaskTest:
         self.mock_index = 0
         self.confirmed_marker_id = None
         self.confirmed_color = None
+        self.used_history_fallback = False
         self.used_recognition_fallback = False
         self.recognition_lock = threading.Lock()
         self.recognition_window = deque(maxlen=self.recognition_window_size)
+        self.actuator_status_lock = threading.Lock()
+        self.latest_actuator_status = None
+        self.latest_actuator_status_wall_time = None
+        self.actuator_status_sequence = 0
+        self.last_light_failure_reason = ""
         self.outputs_closed = False
 
         self.motion_goal_pub = rospy.Publisher(
@@ -315,6 +341,12 @@ class Task3GetTaskTest:
             self.motion_state_topic,
             MotionState,
             self.motion_state_callback,
+            queue_size=20,
+        )
+        self.actuator_status_sub = rospy.Subscriber(
+            self.actuator_status_topic,
+            ActuatorControl,
+            self.actuator_status_callback,
             queue_size=20,
         )
 
@@ -391,16 +423,26 @@ class Task3GetTaskTest:
             raise ValueError(
                 "recognition_fallback_color 必须是 yellow、green 或 red"
             )
+        if (
+            self.history_marker_id is not None
+            and self.history_marker_id not in self.COLOR_BY_MARKER
+        ):
+            raise ValueError("history_marker_id必须是-1或1到6")
         if self.mock_frame_interval <= 0.0:
             raise ValueError("mock_frame_interval 必须大于 0")
         if min(self.light_seconds, self.gap_seconds) < 0.0:
             raise ValueError("灯光持续时间不能小于 0")
-        if self.actuator_mode not in (0, 1, 2):
-            raise ValueError("actuator_mode 必须是 0、1 或 2")
+        if not self.actuator_topic or not self.actuator_status_topic:
+            raise ValueError("执行器指令和反馈话题不能为空")
+        if self.actuator_status_timeout <= 0.0:
+            raise ValueError("actuator_status_timeout 必须大于0")
+        if self.actuator_feedback_confirm_frames <= 0:
+            raise ValueError("actuator_feedback_confirm_frames 必须大于0")
+        if self.actuator_stage_timeout <= 0.0:
+            raise ValueError("actuator_stage_timeout 必须大于0")
         if self.actuator_mode != 2:
-            rospy.logwarn(
-                "%s：三色指示灯属于执行器，actuator_mode 应设置为 2",
-                NODE_NAME,
+            raise ValueError(
+                "三色指示灯属于执行器，actuator_mode 必须设置为2"
             )
 
     def log_startup_config(self):
@@ -408,7 +450,8 @@ class Task3GetTaskTest:
             (
                 "%s：流程=motion_supervisor定点悬停%.1fs -> "
                 "最近%d帧内同ID达到%d帧 -> 亮灯%.1fs -> %s%.1f度；"
-                "识别%.1fs未成功则固定使用%s，识别最长%.1fs"
+                "识别%.1fs未成功则优先使用历史ID=%s，"
+                "无历史时使用人工颜色%s，识别最长%.1fs"
             ),
             NODE_NAME,
             self.initial_hover_seconds,
@@ -418,6 +461,11 @@ class Task3GetTaskTest:
             "右转" if self.turn_direction == "right" else "左转",
             self.turn_angle_deg,
             self.recognition_fallback_seconds,
+            (
+                str(self.history_marker_id)
+                if self.history_marker_id is not None
+                else "无"
+            ),
             self.recognition_fallback_color,
             self.recognition_timeout,
         )
@@ -460,10 +508,18 @@ class Task3GetTaskTest:
             self.arrival_max_yaw_rate,
         )
         rospy.loginfo(
-            "%s：执行器话题=%s，actuator_mode=%d，最低置信度=%.2f",
+            (
+                "%s：执行器指令=%s，反馈=%s，actuator_mode=%d，"
+                "反馈超时=%.1fs，连续%d帧确认，阶段超时=%.1fs；"
+                "灯光指令保持当前硬件方向舵机和夹爪位置；最低置信度=%.2f"
+            ),
             NODE_NAME,
             self.actuator_topic,
+            self.actuator_status_topic,
             self.actuator_mode,
+            self.actuator_status_timeout,
+            self.actuator_feedback_confirm_frames,
+            self.actuator_stage_timeout,
             self.min_confidence,
         )
 
@@ -544,6 +600,28 @@ class Task3GetTaskTest:
             message.mz,
             message.reason or "无",
         )
+
+    def actuator_status_callback(self, message):
+        with self.actuator_status_lock:
+            self.actuator_status_sequence += 1
+            self.latest_actuator_status = {
+                "sequence": self.actuator_status_sequence,
+                "heading_servo": int(message.heading_servo),
+                "clamp_servo": int(message.clamp_servo),
+                "red_light": int(message.red_light),
+                "yellow_light": int(message.yellow_light),
+                "green_light": int(message.green_light),
+            }
+            self.latest_actuator_status_wall_time = time.monotonic()
+
+    def actuator_status_snapshot(self):
+        with self.actuator_status_lock:
+            status = (
+                None
+                if self.latest_actuator_status is None
+                else dict(self.latest_actuator_status)
+            )
+            return status, self.latest_actuator_status_wall_time
 
     def capture_hold_pose(self):
         deadline = rospy.Time.now() + rospy.Duration(self.hold_pose_timeout)
@@ -1000,6 +1078,7 @@ class Task3GetTaskTest:
             self.confirmed_marker_id = None
             self.recognition_frame_index = 0
         self.confirmed_color = None
+        self.used_history_fallback = False
         self.used_recognition_fallback = False
         self.mock_index = 0
 
@@ -1039,18 +1118,24 @@ class Task3GetTaskTest:
         rospy.loginfo(
             (
                 "%s：正式开始识别，最长%.1fs；窗口大小=%d，"
-                "同一ID命中%d帧立即成功；%.1fs未成功则使用固定颜色%s"
+                "同一ID命中%d帧立即成功；%.1fs未成功则优先使用"
+                "历史ID=%s，无历史时使用人工颜色%s"
             ),
             NODE_NAME,
             self.recognition_timeout,
             self.recognition_window_size,
             self.required_match_count,
             self.recognition_fallback_seconds,
+            (
+                str(self.history_marker_id)
+                if self.history_marker_id is not None
+                else "无"
+            ),
             self.recognition_fallback_color,
         )
 
         while not rospy.is_shutdown():
-            self.publish_position_hold("ArUco识别与固定颜色兜底阶段")
+            self.publish_position_hold("ArUco识别与历史/人工颜色兜底阶段")
             now = rospy.Time.now()
 
             if self.input_mode == "mock" and now >= next_mock_time:
@@ -1066,17 +1151,33 @@ class Task3GetTaskTest:
             elapsed = (now - start_time).to_sec()
             if elapsed >= self.recognition_fallback_seconds:
                 self.accept_detections = False
+                if self.history_marker_id is not None:
+                    with self.recognition_lock:
+                        self.confirmed_marker_id = self.history_marker_id
+                    self.confirmed_color = self.history_marker_color
+                    self.used_history_fallback = True
+                    rospy.logwarn(
+                        (
+                            "%s：ArUco实时识别已等待%.1fs仍未确认；"
+                            "使用子任务2启动前的三帧一致历史结果："
+                            "ID=%d，颜色=%s"
+                        ),
+                        NODE_NAME,
+                        elapsed,
+                        self.confirmed_marker_id,
+                        self.confirmed_color,
+                    )
+                    return self.confirmed_marker_id
+
                 self.confirmed_color = self.recognition_fallback_color
                 self.used_recognition_fallback = True
                 rospy.logwarn(
                     (
-                        "%s：ArUco识别已等待%.1fs，仍未满足最近%d帧内同ID达到%d帧；"
-                        "启用固定颜色兜底=%s，继续执行亮灯和转向"
+                        "%s：ArUco实时识别已等待%.1fs仍未确认，且没有"
+                        "三帧一致历史ID；使用人工设置颜色=%s继续执行"
                     ),
                     NODE_NAME,
                     elapsed,
-                    self.recognition_window_size,
-                    self.required_match_count,
                     self.confirmed_color,
                 )
                 return None
@@ -1099,6 +1200,19 @@ class Task3GetTaskTest:
 
     def publish_lights(self, color):
         red, yellow, green = self.ACTUATOR_LIGHTS[color]
+        status, _ = self.actuator_status_snapshot()
+        if status is None:
+            rospy.logwarn_throttle(
+                1.0,
+                (
+                    "%s：尚未收到%s反馈；为避免改变方向舵机和夹爪位置，"
+                    "本次灯光指令暂不发送"
+                ),
+                NODE_NAME,
+                self.actuator_status_topic,
+            )
+            return False
+
         message = ActuatorControl()
         if not hasattr(message, "mode"):
             rospy.logerr_throttle(
@@ -1111,8 +1225,8 @@ class Task3GetTaskTest:
         message.mode = self.actuator_mode
         message.light1 = self.light1
         message.light2 = self.light2
-        message.heading_servo = self.heading_servo
-        message.clamp_servo = self.clamp_servo
+        message.heading_servo = status["heading_servo"]
+        message.clamp_servo = status["clamp_servo"]
         message.drive_cmd = self.drive_cmd
         message.drive_speed = self.drive_speed
         message.red_light = red
@@ -1122,34 +1236,120 @@ class Task3GetTaskTest:
         return True
 
     def hold_color(self, color, seconds):
-        red, yellow, green = self.ACTUATOR_LIGHTS[color]
-        start_time = rospy.Time.now()
+        expected_lights = self.ACTUATOR_LIGHTS[color]
+        started_at = time.monotonic()
+        status, _ = self.actuator_status_snapshot()
+        baseline_sequence = 0 if status is None else status["sequence"]
+        last_checked_sequence = baseline_sequence
+        match_count = 0
+        confirmed_at = None
+        self.last_light_failure_reason = ""
         rospy.loginfo(
-            "%s：开始灯光阶段：颜色=%s，持续%.1fs",
+            (
+                "%s：开始灯光阶段：颜色=%s；等待%s连续%d帧反馈到位后，"
+                "再保持%.1fs"
+            ),
             NODE_NAME,
             color,
+            self.actuator_status_topic,
+            self.actuator_feedback_confirm_frames,
             seconds,
         )
         while not rospy.is_shutdown():
-            elapsed = (rospy.Time.now() - start_time).to_sec()
-            if elapsed >= seconds:
-                return True
+            now = time.monotonic()
             self.publish_position_hold("灯光阶段继续保持识别固定点")
             self.publish_lights(color)
+
+            status, status_time = self.actuator_status_snapshot()
+            fresh = (
+                status is not None
+                and status_time is not None
+                and now - status_time <= self.actuator_status_timeout
+            )
+            if not fresh:
+                match_count = 0
+                confirmed_at = None
+            elif (
+                status["sequence"] > baseline_sequence
+                and status["sequence"] > last_checked_sequence
+            ):
+                last_checked_sequence = status["sequence"]
+                actual_lights = (
+                    status["red_light"],
+                    status["yellow_light"],
+                    status["green_light"],
+                )
+                matched = actual_lights == expected_lights
+                if matched:
+                    match_count = min(
+                        match_count + 1,
+                        self.actuator_feedback_confirm_frames,
+                    )
+                else:
+                    match_count = 0
+                    confirmed_at = None
+                if (
+                    match_count >= self.actuator_feedback_confirm_frames
+                    and confirmed_at is None
+                ):
+                    confirmed_at = now
+                    rospy.loginfo(
+                        (
+                            "%s：[灯光反馈][%s] 颜色灯已确认到位，"
+                            "从现在开始保持%.1fs"
+                        ),
+                        NODE_NAME,
+                        color,
+                        seconds,
+                    )
+
+            actual_text = (
+                "无反馈"
+                if status is None
+                else "灯=(%d,%d,%d),舵机=%d,夹爪=%d" % (
+                    status["red_light"],
+                    status["yellow_light"],
+                    status["green_light"],
+                    status["heading_servo"],
+                    status["clamp_servo"],
+                )
+            )
+            held_seconds = (
+                0.0 if confirmed_at is None else now - confirmed_at
+            )
             rospy.loginfo_throttle(
                 1.0,
                 (
-                    "%s：灯光执行中：颜色=%s，三色指示=(红%d,黄%d,绿%d)，"
-                    "剩余%.1fs"
+                    "%s：[灯光反馈][%s] 新鲜=%s，实际=%s，目标灯=%s，"
+                    "连续=%d/%d，保持=%.1f/%.1fs"
                 ),
                 NODE_NAME,
                 color,
-                red,
-                yellow,
-                green,
-                max(0.0, seconds - elapsed),
+                "是" if fresh else "否",
+                actual_text,
+                expected_lights,
+                match_count,
+                self.actuator_feedback_confirm_frames,
+                min(held_seconds, seconds),
+                seconds,
             )
+            if confirmed_at is not None and held_seconds >= seconds:
+                return True
+
+            if now - started_at >= self.actuator_stage_timeout:
+                self.last_light_failure_reason = (
+                    "灯光阶段[%s]反馈到位超时%.1fs，实际=%s，目标灯=%s"
+                    % (
+                        color,
+                        self.actuator_stage_timeout,
+                        actual_text,
+                        expected_lights,
+                    )
+                )
+                rospy.logerr("%s：%s", NODE_NAME, self.last_light_failure_reason)
+                return False
             self.rate.sleep()
+        self.last_light_failure_reason = "ROS关闭，灯光阶段被中止"
         return False
 
     def finalize_task(self, success, detail):
@@ -1166,7 +1366,7 @@ class Task3GetTaskTest:
         ))
         self.outputs_closed = True
         rospy.loginfo(
-            "%s：任务%s：%s；灯光已关闭，节点即将退出",
+            "%s：任务%s：%s；已发送熄灯指令，节点即将退出",
             NODE_NAME,
             "成功" if success else "失败",
             detail,
@@ -1199,7 +1399,8 @@ class Task3GetTaskTest:
 
         rospy.loginfo(
             (
-                "%s：先使用motion_supervisor锁定启动点并稳定悬停%.1fs，"
+                "%s：[子任务2阶段] 当前阶段=识别前定点悬停；"
+                "前置条件=启动点进入HOVER并稳定%.1fs；"
                 "期间模型消息不入识别窗口"
             ),
             NODE_NAME,
@@ -1214,6 +1415,17 @@ class Task3GetTaskTest:
             rospy.signal_shutdown(reason)
             return
 
+        rospy.loginfo(
+            (
+                "%s：[子任务2阶段] 当前阶段=ArUco实时识别；"
+                "前置条件=最近%d帧内同一ID至少%d帧；"
+                "等待%.1fs无结果后使用历史ID/颜色，再无历史则使用人工颜色"
+            ),
+            NODE_NAME,
+            self.recognition_window_size,
+            self.required_match_count,
+            self.recognition_fallback_seconds,
+        )
         marker_id = self.wait_for_recognition()
         if marker_id is None and not self.used_recognition_fallback:
             reason = "识别时间超过{:.1f}s，未满足最近{}帧内同ID达到{}帧".format(
@@ -1226,7 +1438,17 @@ class Task3GetTaskTest:
             return
 
         color = self.confirmed_color
-        if self.used_recognition_fallback:
+        if self.used_history_fallback:
+            rospy.logwarn(
+                (
+                    "%s：实时识别超时，按历史ArUco ID=%d对应颜色%s"
+                    "开始亮灯"
+                ),
+                NODE_NAME,
+                marker_id,
+                color,
+            )
+        elif self.used_recognition_fallback:
             rospy.logwarn(
                 "%s：未确认有效ArUco ID，按固定颜色参数%s开始亮灯",
                 NODE_NAME,
@@ -1234,18 +1456,21 @@ class Task3GetTaskTest:
             )
         else:
             rospy.loginfo(
-                "%s：ArUco ID=%d 确认成功，对应颜色=%s，开始亮灯",
+                (
+                    "%s：[子任务2阶段] 当前阶段=ArUco识别完成；"
+                    "ID=%d，颜色=%s；下一阶段=亮灯反馈确认"
+                ),
                 NODE_NAME,
                 marker_id,
                 color,
             )
         if not self.hold_color(color, self.light_seconds):
-            reason = "亮灯阶段被中止"
+            reason = self.last_light_failure_reason or "亮灯阶段被中止"
             self.finalize_task(False, reason)
             rospy.signal_shutdown(reason)
             return
         if not self.hold_color("off", self.gap_seconds):
-            reason = "灭灯间隔阶段被中止"
+            reason = self.last_light_failure_reason or "灭灯间隔阶段被中止"
             self.finalize_task(False, reason)
             rospy.signal_shutdown(reason)
             return
@@ -1261,7 +1486,10 @@ class Task3GetTaskTest:
             direction_text = (
                 "右转" if self.turn_direction == "right" else "左转")
             rospy.loginfo(
-                "%s：灯光阶段完成，开始原地%s%.1f度",
+                (
+                    "%s：[子任务2阶段] 当前阶段=原地转向；"
+                    "前置条件=灯光和灭灯阶段完成；目标=%s%.1f度"
+                ),
                 NODE_NAME,
                 direction_text,
                 self.turn_angle_deg,
@@ -1287,20 +1515,27 @@ class Task3GetTaskTest:
             turn_text = "{}{:.1f}度".format(
                 direction_text, self.turn_angle_deg)
             rospy.loginfo(
-                "%s：转向成功：%s，位置和深度保持不变",
+                (
+                    "%s：[子任务2阶段] 当前阶段=转向完成；"
+                    "结果=%s，位置和深度保持不变"
+                ),
                 NODE_NAME,
                 turn_text,
             )
         else:
             rospy.logwarn("%s：turn_enabled=false，本次识别亮灯后不执行转向", NODE_NAME)
 
-        marker_text = (
-            "未确认（等待{:.1f}s后使用固定颜色）".format(
+        if self.used_history_fallback:
+            marker_text = "{}（实时等待{:.1f}s后使用历史结果）".format(
+                marker_id,
                 self.recognition_fallback_seconds
             )
-            if self.used_recognition_fallback
-            else str(marker_id)
-        )
+        elif self.used_recognition_fallback:
+            marker_text = "未确认（等待{:.1f}s后使用人工颜色）".format(
+                self.recognition_fallback_seconds
+            )
+        else:
+            marker_text = str(marker_id)
         detail = "ArUco ID={}，颜色={}，亮灯{:.1f}s，转向={}".format(
             marker_text,
             color,

@@ -1885,10 +1885,13 @@ class Task3AcquireAreaTest(object):
         self.state = state
         self.state_started = now
         rospy.loginfo(
-            "%s：任务阶段%s -> %s，上一阶段%.1fs，累计%.1fs，原因=%s",
+            (
+                "%s：[子任务1阶段] 当前阶段=%s；上一阶段=%s，"
+                "上一阶段持续%.1fs，子任务累计%.1fs，进入原因=%s"
+            ),
             NODE_NAME,
-            previous,
             state,
+            previous,
             previous_elapsed,
             task_elapsed,
             reason,
