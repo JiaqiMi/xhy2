@@ -26,6 +26,8 @@
     <arg name="record_delay" default="3.0" />
     <arg name="record_rate" default="5.0" />
 
+    <!-- 主程序已启动USB相机时保持false；仅单独使用本launch时可设为true。 -->
+    <arg name="start_camera" default="false" />
     <arg name="video_device" default="/dev/video0" />
     <arg name="pixel_format" default="mjpeg" />
     <arg name="image_width" default="1280" />
@@ -42,9 +44,17 @@
     <group if="$(eval arg('mode') == 'record')">
         <param name="/use_sim_time" value="false" />
 
+        <!--
+            start_camera=false：
+            不打开/dev/video0，使用主程序已经发布的/usb_cam/image_raw。
+
+            start_camera=true：
+            本launch自己启动USB相机。
+        -->
         <node name="usb_cam"
               pkg="usb_cam"
               type="usb_cam_node"
+              if="$(arg start_camera)"
               output="screen">
             <param name="video_device" value="$(arg video_device)" />
             <param name="pixel_format" value="$(arg pixel_format)" />
@@ -52,6 +62,7 @@
             <param name="image_height" value="$(arg image_height)" />
         </node>
 
+        <!-- 对主程序发布的USB图像进行限频 -->
         <node pkg="topic_tools"
               type="throttle"
               name="stereo_record_throttle"
@@ -61,6 +72,7 @@
                     $(arg record_rate)
                     /record/stereo_raw" />
 
+        <!-- 将限频后的原始图像转换成JPEG压缩图像 -->
         <node pkg="image_transport"
               type="republish"
               name="stereo_image_compressor"
@@ -72,7 +84,7 @@
 
         <!--
             输出示例：
-            stereo_input0722_20260726_173015.bag
+            stereo_input_20260801_143544_0.bag
 
             使用反引号执行date，避免与roslaunch的$(...)语法冲突。
         -->
@@ -101,6 +113,7 @@
     <group if="$(eval arg('mode') == 'play')">
         <param name="/use_sim_time" value="true" />
 
+        <!-- 将bag中的JPEG图像解压回原始图像话题 -->
         <node pkg="image_transport"
               type="republish"
               name="stereo_image_decompressor"

@@ -27,6 +27,9 @@
 # 2026.8.1
 #   data4 显示正转在 25000 下已平稳、反转仍有周期性 MZ/角速度摆动；最大期望角速度降至 20 deg/s，
 #   并仅降低负向跟踪增益以反映推进效率和动态响应差异。
+# 2026.8.1
+#   根据 260801 data8 的 X 轴 ±3000 手控跨零速试验，正、负 TX 限幅固定为 3000；
+#   更新两向有效制动减速度、计划减速度和停车余量，Y 轴及 X 轴跟踪增益保持不变。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -48,8 +51,8 @@ log_max_file_size_mb: 50.0                        # 单个 CSV 最大 50 MiB，�
 power_feedback_timeout: 1.0                       # /status/power 超过此时间未更新时标记为不新鲜，不影响控制
 
 # 正常跟踪与主动刹车共用方向性限幅和步长；参数后缀表示实际输出正负号。
-max_tx_positive: 3000.0             # 正 TX 最大值
-max_tx_negative: 3000.0             # 负 TX 绝对值上限
+max_tx_positive: 3000.0             # data8 手控稳态 +0.423 m/s，正 TX 限幅固定为 3000
+max_tx_negative: 3000.0             # data8 手控稳态 -0.355 m/s，负 TX 限幅固定为 3000
 max_ty_positive: 4000.0             # 正 TY 最大值
 max_ty_negative: 6000.0             # 负 TY 绝对值上限
 max_mz_positive: 3000.0             # 正 MZ 最大值
@@ -93,14 +96,14 @@ brake_kp_yaw_negative: 14000.0      # data4 表明负 MZ 刹转过强；反向�
 # brake_min_mz: 100.0
 
 # 各轴独立停车距离模型；后缀表示实际刹车输出力或力矩的符号
-brake_acceleration_tx_positive: 0.045 # +2000 跨零速实测中位数约 0.050 m/s^2，保留 10% 余量
-brake_acceleration_tx_negative: 0.101 # -3000 跨零速实测中位数约 0.112 m/s^2，保留 10% 余量
+brake_acceleration_tx_positive: 0.070 # data8 +3000 刹负向速度实测最低 0.077 m/s^2，保留 10% 余量
+brake_acceleration_tx_negative: 0.115 # data8 -3000 刹正向速度实测最低 0.127 m/s^2，保留 10% 余量
 brake_acceleration_ty_positive: 0.068 # +4000 跨零速实测中位数约 0.075 m/s^2，保留 10% 余量
 brake_acceleration_ty_negative: 0.039 # -6000 跨零速实测中位数约 0.043 m/s^2，保留 10% 余量
 
 # 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
-brake_reference_acceleration_tx_positive: 0.022 # 正 TX 制动峰值未碰限，提高计划减速度并保留力矩余量
-brake_reference_acceleration_tx_negative: 0.020 # 负 TX 制动已使用约 65% 限幅，保守提高避免过冲
+brake_reference_acceleration_tx_positive: 0.030 # data8 正 TX 有效减速度下的首轮计划值，保留制动余量
+brake_reference_acceleration_tx_negative: 0.040 # data8 负 TX 有效减速度下的首轮计划值，保留制动余量
 brake_reference_acceleration_ty_positive: 0.010 # 正 TY 制动已使用约 66% 限幅，保留耦合补偿余量
 brake_reference_acceleration_ty_negative: 0.012 # 两向统一计划减速度，方向差异仍由有效值保留
 angular_brake_acceleration_mz_positive: 0.242   # +3000 跨零速实测约 15.39 deg/s^2，保留 10% 后换算为 rad/s^2
@@ -108,8 +111,8 @@ angular_brake_acceleration_mz_negative: 0.242   #TODO 参数快照值；待 -350
 angular_brake_reference_acceleration_mz_positive_deg_s2: 3.50 # 计划值仍显著低于 +MZ 标定有效减速度，减少长时间低力矩刹转
 angular_brake_reference_acceleration_mz_negative_deg_s2: 3.50 # 计划值仍显著低于 -MZ 标定有效减速度，正反向使用同一首轮轨迹
 control_delay: 0.45                 # 反馈、计算、通信和执行的综合延迟估计，单位 s
-brake_margin_tx_positive: 0.03      # data7 原 0.18 m 导致距目标约 0.12 m 已停低速并重复制动
-brake_margin_tx_negative: 0.03      # 与内部位置死区一致，并保留实测减速度偏差的防超调余量
+brake_margin_tx_positive: 0.17      # X 回退使用正 TX 制动，按 data7 最大超调加 data8 制动延迟余量设置
+brake_margin_tx_negative: 0.20      # X 正向使用负 TX 制动，按 data7 最大超调加 data8 制动延迟余量设置
 brake_margin_ty_positive: 0.03      # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
 brake_margin_ty_negative: 0.03      # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
 yaw_brake_margin_positive_deg: 0.8  # 航向捕获标准收紧为 1 deg；由低位置增益提前降速，余量须小于捕获容差

@@ -407,9 +407,26 @@ class Task3Final:
         self.task3_params = load_task_params(
             "/test_task3_3_inspect_and_drop"
         )
+        self.post_drop_turn_angle_deg = float(
+            self.task3_params.get("post_drop_turn_angle_deg", 90.0)
+        )
+        self.post_drop_step_timeout = float(
+            self.task3_params.get("post_drop_step_timeout", 90.0)
+        )
         self.post_drop_ascent_target_z = float(
             self.task3_params.get("post_drop_ascent_target_z", -1.3)
         )
+        if (
+            not math.isfinite(self.post_drop_turn_angle_deg)
+            or self.post_drop_turn_angle_deg <= 0.0
+            or self.post_drop_turn_angle_deg >= 180.0
+        ):
+            raise ValueError("post_drop_turn_angle_deg必须在0到180度之间")
+        if (
+            not math.isfinite(self.post_drop_step_timeout)
+            or self.post_drop_step_timeout <= 0.0
+        ):
+            raise ValueError("post_drop_step_timeout必须是大于0的有限数")
         if (
             not math.isfinite(self.post_drop_ascent_target_z)
             or self.post_drop_ascent_target_z >= self.fixed_map_z
@@ -500,10 +517,6 @@ class Task3Final:
             "/task3_final/timeout_skip_arrival_stable_seconds",
             2.0,
         ))
-        self.box_point_recheck_timeout = float(rospy.get_param(
-            "/task3_final/box_point_recheck_timeout",
-            30.0,
-        ))
         self.timeout_skip_targets = self.load_timeout_skip_targets()
 
         if self.model_required_frames <= 0:
@@ -518,7 +531,6 @@ class Task3Final:
         if min(
             self.timeout_skip_move_timeout,
             self.timeout_skip_arrival_stable_seconds,
-            self.box_point_recheck_timeout,
         ) <= 0.0:
             raise ValueError("超时跳点相关时间参数必须大于0")
 
@@ -719,13 +731,13 @@ class Task3Final:
                 (
                     "%s：时间超时跳点容错已开启；不使用目标视野范围推断。"
                     "子任务1=%.1fs，子任务2识别=%.1fs，"
-                    "子任务3首次=%.1fs，颜色点原地复核=%.1fs"
+                    "子任务3识别和对准=%.1fs；"
+                    "子任务3超时后直接返回map原点并上浮结束"
                 ),
                 NODE_NAME,
                 float(self.task1_params["max_wait_seconds"]),
                 float(self.task2_params["recognition_fallback_seconds"]),
                 float(self.task3_params["max_wait_seconds"]),
-                self.box_point_recheck_timeout,
             )
             for key, target in self.timeout_skip_targets.items():
                 rospy.logwarn(
@@ -1528,7 +1540,7 @@ class Task3Final:
         return None
 
     def return_origin_and_ascend(self, context):
-        """第三级收尾：返回N/E原点；失败也按配置距离安全上浮。"""
+        """第三级收尾：原地左转、返回N/E原点并安全上浮。"""
         current_goal = self.capture_current_map_goal(
             self.fixed_map_z,
             "{}生成返航目标".format(context),
@@ -1536,29 +1548,78 @@ class Task3Final:
         if current_goal is None:
             return None, "无法获得返航起始位姿，不能安全生成上浮目标"
 
-        yaw = self.yaw_from_pose(current_goal.pose)
+        start_yaw = self.yaw_from_pose(current_goal.pose)
+        turn_yaw = self.angle_difference(
+            start_yaw,
+            math.radians(self.post_drop_turn_angle_deg),
+        )
+        turn_goal = self.make_map_goal(
+            current_goal.pose.position.x,
+            current_goal.pose.position.y,
+            self.fixed_map_z,
+            turn_yaw,
+        )
+        rospy.logwarn(
+            (
+                "%s：%s开始原地左转%.1f度："
+                "保持位置=(%.3f,%.3f,%.3f)，航向=%.1fdeg -> %.1fdeg"
+            ),
+            NODE_NAME,
+            context,
+            self.post_drop_turn_angle_deg,
+            turn_goal.pose.position.x,
+            turn_goal.pose.position.y,
+            turn_goal.pose.position.z,
+            math.degrees(start_yaw),
+            math.degrees(turn_yaw),
+        )
+        turned = self.wait_for_motion_goal(
+            turn_goal,
+            self.post_drop_step_timeout,
+            self.handoff_stable_seconds,
+            "{}原地左转{:.1f}度".format(
+                context,
+                self.post_drop_turn_angle_deg,
+            ),
+        )
+        yaw = turn_yaw
+        if not turned:
+            self.wait_for_motion_recovery(
+                "{}左转超时后的安全停稳".format(context)
+            )
+            recovered_goal = self.capture_current_map_goal(
+                self.fixed_map_z,
+                "{}左转超时后锁存当前航向".format(context),
+            )
+            if recovered_goal is not None:
+                yaw = self.yaw_from_pose(recovered_goal.pose)
+
         origin_goal = self.make_map_goal(
             0.0,
             0.0,
             self.fixed_map_z,
             yaw,
         )
-        step_timeout = float(
-            self.task3_params.get("post_drop_step_timeout", 90.0)
-        )
         returned = self.wait_for_motion_goal(
             origin_goal,
-            step_timeout,
+            self.post_drop_step_timeout,
             self.handoff_stable_seconds,
             "{}返回map/NED原点".format(context),
         )
+        safe_ascent_goal = current_goal
         if not returned:
             self.wait_for_motion_recovery(
                 "{}返航超时后的安全停稳".format(context)
             )
+            recovered_return_goal = self.capture_current_map_goal(
+                self.fixed_map_z,
+                "{}返航超时后锁存当前上浮点".format(context),
+            )
+            if recovered_return_goal is not None:
+                safe_ascent_goal = recovered_return_goal
 
         ascent_base_pose = (
-            origin_goal.pose if returned else current_goal.pose
+            origin_goal.pose if returned else safe_ascent_goal.pose
         )
         ascent_goal = self.make_map_goal(
             ascent_base_pose.position.x,
@@ -1595,15 +1656,22 @@ class Task3Final:
 
         if rospy.is_shutdown():
             return False, "ROS关闭，上浮保持被中止"
+        turn_detail = (
+            "已原地左转%.1f度" % self.post_drop_turn_angle_deg
+            if turned
+            else "原地左转%.1f度超时，按安全停稳航向继续"
+            % self.post_drop_turn_angle_deg
+        )
+        return_detail = (
+            "已返回map原点并向z=%.2f上浮、持续%.1fs"
+            % (self.post_drop_ascent_target_z, ascent_seconds)
+            if returned
+            else "返回原点超时，已在安全锁存点向z=%.2f上浮、持续%.1fs"
+            % (self.post_drop_ascent_target_z, ascent_seconds)
+        )
         return (
             returned,
-            (
-                "已返回map原点并向z=%.2f上浮、持续%.1fs"
-                % (self.post_drop_ascent_target_z, ascent_seconds)
-                if returned
-                else "返回原点超时，已在安全锁存点向z=%.2f上浮、持续%.1fs"
-                % (self.post_drop_ascent_target_z, ascent_seconds)
-            ),
+            "{}；{}".format(turn_detail, return_detail),
         )
 
     def wait_for_motion_goal(
@@ -1903,12 +1971,8 @@ class Task3Final:
         )
         return success, detail, color
 
-    def run_subtask3(self, target_color, stationary_recheck=False):
-        label = (
-            "彩色方框点原地复核"
-            if stationary_recheck
-            else "彩色方框投放子任务"
-        )
+    def run_subtask3(self, target_color):
+        label = "彩色方框投放子任务"
         self.log_flow_stage(
             "4/4",
             label,
@@ -1938,10 +2002,6 @@ class Task3Final:
         )
 
         self.task3_params["target_color"] = str(target_color)
-        if stationary_recheck:
-            self.task3_params["max_wait_seconds"] = (
-                self.box_point_recheck_timeout
-            )
         if str(self.task3_params.get("operation_mode", "")).lower() != "auto":
             return (
                 False,
@@ -1962,26 +2022,13 @@ class Task3Final:
             label,
             target_color,
             float(self.task3_params["max_wait_seconds"]),
-            "统一方框点原地识别" if stationary_recheck else "正常自动搜索",
+            "正常自动搜索",
         )
         task = None
         timed_out = False
         drop_action_started = False
         try:
             task = self.EmbeddedTask3()
-            if stationary_recheck:
-                task.auto_search_plan = [("hover", 0.0)]
-                task.auto_search_index = 0
-                task.reset_auto_search_step()
-                task.reset_stability()
-                rospy.logwarn(
-                    (
-                        "%s：[%s] 已关闭前进和左右搜索；仅在当前人工点"
-                        "保持HOVER并重新识别，识别成功后复用原细对准和投放流程"
-                    ),
-                    NODE_NAME,
-                    label,
-                    )
             task.run()
             drop_action_started = bool(task.drop_action_started)
             if task.embedded_success is None:
@@ -2082,13 +2129,18 @@ class Task3Final:
             )
         if rospy.is_shutdown():
             return self.fail("第一次箭头阶段期间ROS关闭")
+        first_arrow_handoff_target = (
+            "aruco"
+            if self.timeout_skip_enabled and timed_out
+            else None
+        )
         if not self.prepare_next_stage(
-            "aruco",
+            first_arrow_handoff_target,
             "第一次箭头到ArUco子任务交接",
         ):
             movement_timeouts.append(
                 "ArUco识别点"
-                if self.timeout_skip_enabled
+                if first_arrow_handoff_target is not None
                 else "第一次箭头到ArUco交接"
             )
             rospy.logwarn(
@@ -2154,13 +2206,18 @@ class Task3Final:
             )
         if rospy.is_shutdown():
             return self.fail("第二次箭头阶段期间ROS关闭")
+        second_arrow_handoff_target = (
+            "box"
+            if self.timeout_skip_enabled and timed_out
+            else None
+        )
         if not self.prepare_next_stage(
-            "box",
+            second_arrow_handoff_target,
             "第二次箭头到彩色方框子任务交接",
         ):
             movement_timeouts.append(
                 "彩色方框点"
-                if self.timeout_skip_enabled
+                if second_arrow_handoff_target is not None
                 else "第二次箭头到彩色方框交接"
             )
             rospy.logwarn(
@@ -2181,30 +2238,19 @@ class Task3Final:
                 detail,
                 "是" if drop_action_started else "否",
             )
-            if not drop_action_started and not rospy.is_shutdown():
+            if timed_out and not drop_action_started:
+                rospy.logwarn(
+                    (
+                        "%s：方框点的彩色方框识别和对准达到总超时；"
+                        "停止识别且不再重试，"
+                        "原地左转%.1f度后返回map/NED原点并上浮结束任务3"
+                    ),
+                    NODE_NAME,
+                    self.post_drop_turn_angle_deg,
+                )
+            elif not drop_action_started and not rospy.is_shutdown():
                 first_detail = detail
                 if self.wait_for_motion_recovery("彩色方框投放重试前"):
-                    stationary_recheck = False
-                    if (
-                        self.timeout_skip_enabled
-                        and timed_out
-                        and "box" in self.timeout_skip_targets
-                    ):
-                        stationary_recheck = True
-                        if not self.move_to_stage_target(
-                            "box",
-                            "彩色方框首次识别超时",
-                        ):
-                            movement_timeouts.append(
-                                "彩色方框点"
-                            )
-                            rospy.logwarn(
-                                (
-                                    "%s：移动到统一彩色方框点超时，"
-                                    "仍在当前位置执行唯一一次原地复核"
-                                ),
-                                NODE_NAME,
-                            )
                     rospy.logwarn(
                         "%s：彩色方框投放开始唯一一次重试",
                         NODE_NAME,
@@ -2215,8 +2261,7 @@ class Task3Final:
                         timed_out,
                         retry_drop_started,
                     ) = self.run_subtask3(
-                        target_color,
-                        stationary_recheck=stationary_recheck,
+                        target_color
                     )
                     drop_action_started = (
                         drop_action_started or retry_drop_started
@@ -2240,11 +2285,15 @@ class Task3Final:
                 )
 
             if not success:
-                skipped_stages.append(
-                    "{}方框投放后异常收尾".format(target_color)
-                    if drop_action_started
-                    else "{}方框投放".format(target_color)
-                )
+                if timed_out and not drop_action_started:
+                    skipped_stage = "{}方框识别超时".format(target_color)
+                elif drop_action_started:
+                    skipped_stage = "{}方框投放后异常收尾".format(
+                        target_color
+                    )
+                else:
+                    skipped_stage = "{}方框投放".format(target_color)
+                skipped_stages.append(skipped_stage)
                 rospy.logwarn(
                     (
                         "%s：第三级保护结束%s方框当前阶段：%s；"
