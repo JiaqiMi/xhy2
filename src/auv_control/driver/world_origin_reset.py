@@ -13,6 +13,12 @@
     新增红色圆形稳定观测、TF 转换、原点重置请求与确认超时保护。
 2026.7.31
     红圆深度改用 DVL 高度与 base_link 到相机的 TF 高度计算，视觉深度仅记录对比。
+2026.7.31
+    DVL 高度有效性改为与 map_initer 一致，要求 sensor_valid 的第 0、1 位同时有效。
+2026.7.31
+    候选点深度直接采用 DVL 推导的相机到底距离，不再采用未可靠初始化的 map z。
+2026.7.31
+    修正池底原点深度：以当前 AUV 绝对深度加 DVL 高度计算，确保 NED 的 D=0 位于池底。
 """
 
 import math
@@ -53,9 +59,6 @@ class WorldOriginResetNode:
         self.require_dvl_altitude_valid = bool(
             rospy.get_param("~require_dvl_altitude_valid", True)
         )
-        self.dvl_altitude_valid_bit = int(
-            rospy.get_param("~dvl_altitude_valid_bit", 6)
-        )
         self.tf_ready_timeout = float(rospy.get_param("~tf_ready_timeout_sec", 30.0))
         # 限时
         self.observation_timeout = float(rospy.get_param("~observation_timeout_sec", 180.0))
@@ -74,6 +77,7 @@ class WorldOriginResetNode:
         self.candidate_sent = False
         self.status_lock = threading.RLock()
         self.latest_dvl_altitude = None
+        self.latest_auv_depth = None
         self.latest_status_stamp = None
         self.latest_status_received_at = None
 
@@ -99,22 +103,29 @@ class WorldOriginResetNode:
         )
 
     def status_callback(self, msg):
-        """缓存最新有效 DVL 高度，供同一时段的红圆观测使用。"""
+        """缓存同一状态帧的 DVL 高度和 AUV 绝对深度。"""
         altitude = float(msg.pose.altitude)
-        if not math.isfinite(altitude):
+        auv_depth = float(msg.pose.depth)
+        if not math.isfinite(altitude) or not math.isfinite(auv_depth):
             with self.status_lock:
                 self.latest_dvl_altitude = None
+                self.latest_auv_depth = None
                 self.latest_status_stamp = None
                 self.latest_status_received_at = None
-            rospy.logwarn_throttle(2.0, "world_origin_reset: 忽略非有限 DVL 高度")
+            rospy.logwarn_throttle(
+                2.0, "world_origin_reset: 忽略非有限的 DVL 高度或 AUV 深度"
+            )
             return
 
-        dvl_altitude_mask = 1 << self.dvl_altitude_valid_bit
+        # 与 map_initer 保持一致：第 0、1 位分别表示惯导数据有效。
+        required_sensor_valid = (1 << 0) | (1 << 1)
         if (
                 self.require_dvl_altitude_valid
-                and not (int(msg.sensor.sensor_valid) & dvl_altitude_mask)):
+                and (int(msg.sensor.sensor_valid) & required_sensor_valid)
+                != required_sensor_valid):
             with self.status_lock:
                 self.latest_dvl_altitude = None
+                self.latest_auv_depth = None
                 self.latest_status_stamp = None
                 self.latest_status_received_at = None
             rospy.logwarn_throttle(
@@ -126,18 +137,22 @@ class WorldOriginResetNode:
 
         with self.status_lock:
             self.latest_dvl_altitude = altitude
+            self.latest_auv_depth = auv_depth
             self.latest_status_stamp = msg.header.stamp
             self.latest_status_received_at = rospy.Time.now()
 
-    def get_current_dvl_altitude(self):
-        """返回未超时的最新 DVL 高度及其状态帧时间戳。"""
+    def get_current_dvl_measurement(self):
+        """返回未超时的 DVL 高度、AUV 绝对深度及状态帧时间戳。"""
         with self.status_lock:
             altitude = self.latest_dvl_altitude
+            auv_depth = self.latest_auv_depth
             stamp = self.latest_status_stamp
             received_at = self.latest_status_received_at
 
-        if altitude is None or received_at is None:
-            rospy.logwarn_throttle(2.0, "world_origin_reset: 尚未收到有效 DVL 高度")
+        if altitude is None or auv_depth is None or received_at is None:
+            rospy.logwarn_throttle(
+                2.0, "world_origin_reset: 尚未收到有效的 DVL 高度和 AUV 深度"
+            )
             return None
 
         reference_time = stamp if stamp is not None and not stamp.is_zero() else received_at
@@ -150,10 +165,10 @@ class WorldOriginResetNode:
                 self.status_timeout,
             )
             return None
-        return altitude, reference_time, max(age, 0.0)
+        return altitude, auv_depth, reference_time, max(age, 0.0)
 
     def target_callback(self, msg):
-        """验证观测、转换到 map，并在稳定后发布唯一候选点。"""
+        """验证观测；使用 map 平面坐标和相机到底深度发布唯一候选点。"""
 
         # 如果已经发送过候选点，则不再处理新的观测。
         if self.candidate_sent:
@@ -189,10 +204,10 @@ class WorldOriginResetNode:
             rospy.logwarn_throttle(2.0, "world_origin_reset: 忽略无效的相机平面坐标")
             return
 
-        dvl_data = self.get_current_dvl_altitude()
+        dvl_data = self.get_current_dvl_measurement()
         if dvl_data is None:
             return
-        dvl_altitude, _status_stamp, dvl_age = dvl_data
+        dvl_altitude, auv_depth, _status_stamp, dvl_age = dvl_data
 
         try:
             self.tf_listener.waitForTransform(
@@ -232,6 +247,11 @@ class WorldOriginResetNode:
             )
             return
 
+        # DVL 高度相对于 base_link；DVL 与 IMU 杆臂 z 为 0，因此当前
+        # AUV 绝对深度加 DVL 高度就是池底的绝对深度。以此为 map 原点后，
+        # 池底平面在 NED 中恒为 D=0。
+        pool_bottom_depth = auv_depth + dvl_altitude
+
         point = PointStamped()
         point.header = msg.pose.header
         point.point.x, point.point.y, point.point.z = camera_xy[0], camera_xy[1], dvl_camera_z
@@ -243,30 +263,18 @@ class WorldOriginResetNode:
             )
             return
 
-        visual_map_z = None
-        if math.isfinite(visual_camera_z):
-            visual_point = PointStamped()
-            visual_point.header = msg.pose.header
-            visual_point.point.x = camera_xy[0]
-            visual_point.point.y = camera_xy[1]
-            visual_point.point.z = visual_camera_z
-            try:
-                visual_map_z = self.tf_listener.transformPoint(
-                    self.reference_frame, visual_point
-                ).point.z
-            except tf.Exception:
-                pass
-
         rospy.loginfo(
-            "world_origin_reset: 深度对比 DVL高度=%.3fm, 相机TF z=%.3fm, "
-            "采用相机z=%.3fm, 采用map z=%.3fm, 视觉相机z=%s, 视觉TF map z=%s, "
+            "world_origin_reset: 深度对比 AUV深度=%.3fm, DVL高度=%.3fm, "
+            "相机TF z=%.3fm, 相机到底=%.3fm, 采用池底绝对深度=%.3fm, "
+            "TF map z(仅对比)=%.3fm, 视觉相机z=%s, "
             "DVL帧龄=%.3fs",
+            auv_depth,
             dvl_altitude,
             base_to_camera_translation[2],
             dvl_camera_z,
+            pool_bottom_depth,
             map_point.point.z,
             "%.3f" % visual_camera_z if math.isfinite(visual_camera_z) else "无效",
-            "%.3f" % visual_map_z if visual_map_z is not None else "无效",
             dvl_age,
         )
 
@@ -275,13 +283,18 @@ class WorldOriginResetNode:
             self.sampling_started_at = rospy.Time.now()
             rospy.loginfo("world_origin_reset: TF 已就绪，开始收集稳定观测")
 
-        # 添加到候选
+        # 平面坐标使用 map 变换结果；z 使用池底的绝对深度建立 NED 原点。
+        candidate_point = (
+            map_point.point.x,
+            map_point.point.y,
+            pool_bottom_depth,
+        )
         candidate = self.estimator.add(
-            (map_point.point.x, map_point.point.y, map_point.point.z)
+            candidate_point
         )
         rospy.loginfo(
             "world_origin_reset: 加入有效点 %s",
-            (map_point.point.x, map_point.point.y, map_point.point.z),
+            candidate_point,
         )
         if candidate is None:
             return

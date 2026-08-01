@@ -9,6 +9,8 @@
     新增独立原点重置启动文件；重置节点结束时停止本启动文件中的感知链路。
 2026.7.31
     红圆深度改用 DVL 高度和相机 TF 高度计算，视觉深度仅记录对比。
+2026.7.31
+    删除已废弃的 DVL 第 6 位有效性参数，使用 map_initer 一致的惯导有效性判定。
 -->
 <launch>
     <!-- 需先单独启动 begin.launch，使 /world_origin 和 map 到 camera 的 TF 可用。 -->
@@ -29,7 +31,6 @@
         <param name="min_confidence" value="0.2" />
         <param name="status_timeout_sec" value="0.5" />
         <param name="require_dvl_altitude_valid" value="true" />
-        <param name="dvl_altitude_valid_bit" value="6" />
         <param name="sample_count" value="10" />
         <param name="min_inliers" value="8" />
         <param name="max_spread" value="0.20" />

@@ -7,7 +7,7 @@ Task1 比赛完整任务：连续巡线，并按巡线前向进度处理黄色�
     1. 复用 task1_line_follow.py 完成红线搜索、拟合、LOS 巡线和终点判断；
     2. 巡线期间同时接收黄色/黑色识别，最多保存最近 N 条有效帧；
     3. 任意 K 条有效帧在同一位置聚类后立即把标志投影到红线弧长进度；
-    4. 黑色按 base_link、黄色按 camera 前向进度触发；黄色用 camera
+    4. 黑色按 base_link、黄色按 hand 前向进度触发；黄色用 hand
        水平投影对准图形，灯光后按绝对深度下潜，再回到任务保持深度；
     5. 动作完成后继续向前巡线，绝不反向寻找已经错过的标志；
     6. 红线任务正常到达终点后结束，并打印实际/要求动作次数。
@@ -131,8 +131,15 @@ class Task1(Task1LineFollow):
         self.target_topic = rospy.get_param(
             "~target_topic", "/obj/target_message"
         )
+        self.line_detection_ready_topic = rospy.get_param(
+            "~line_detection_ready_topic", "/vision/line/detections"
+        )
+        self.shape_detection_ready_topic = rospy.get_param(
+            "~shape_detection_ready_topic", "/vision/shapes/detections"
+        )
         self.config_file = str(rospy.get_param("~config_file", ""))
-        self.last_target_message_time = None
+        self.last_line_detection_time = None
+        self.last_shape_detection_time = None
         self.actuator_topic = rospy.get_param(
             "~actuator_topic", "/cmd/actuator"
         )
@@ -211,6 +218,9 @@ class Task1(Task1LineFollow):
         self.yellow_contact_enabled = bool(rospy.get_param(
             "~yellow_contact_enabled", False
         ))
+        self.yellow_alignment_frame = str(rospy.get_param(
+            "~yellow_alignment_frame", "hand"
+        )).strip().lstrip("/") or "hand"
         self.yellow_contact_depth = float(rospy.get_param(
             "~yellow_contact_depth", -0.8
         ))
@@ -258,11 +268,23 @@ class Task1(Task1LineFollow):
             self.marker_callback,
             queue_size=10,
         )
+        rospy.Subscriber(
+            self.line_detection_ready_topic,
+            rospy.AnyMsg,
+            self.line_detection_ready_callback,
+            queue_size=1,
+        )
+        rospy.Subscriber(
+            self.shape_detection_ready_topic,
+            rospy.AnyMsg,
+            self.shape_detection_ready_callback,
+            queue_size=1,
+        )
         rospy.on_shutdown(self.shutdown_actuators)
         rospy.loginfo(
             "%s: 完整任务启动；黄色要求=%d，黑色要求=%d，"
             "有效识别=%d/%d，样本最长保存=%.1f s；"
-            "黄色接触=%s，绝对目标深度=%.2f m",
+            "黄色接触=%s，对准坐标系=%s，绝对目标深度=%.2f m",
             NODE_NAME,
             self.required_counts["yellow"],
             self.required_counts["black"],
@@ -270,11 +292,20 @@ class Task1(Task1LineFollow):
             marker_window_size,
             marker_sample_timeout,
             "开启" if self.yellow_contact_enabled else "关闭",
+            self.yellow_alignment_frame,
             self.yellow_contact_depth,
+        )
+        rospy.loginfo(
+            "%s: 启动就绪只检查任意消息；line=%s，shape=%s",
+            NODE_NAME,
+            self.line_detection_ready_topic,
+            self.shape_detection_ready_topic,
         )
         self.write_data_record(
             "task1_configuration",
             target_topic=self.target_topic,
+            line_detection_ready_topic=self.line_detection_ready_topic,
+            shape_detection_ready_topic=self.shape_detection_ready_topic,
             actuator_topic=self.actuator_topic,
             yellow_classes=sorted(self.yellow_classes),
             black_classes=sorted(self.black_classes),
@@ -299,6 +330,7 @@ class Task1(Task1LineFollow):
             yellow_light_count=self.yellow_light_count,
             black_light_count=self.black_light_count,
             yellow_contact_enabled=self.yellow_contact_enabled,
+            yellow_alignment_frame=self.yellow_alignment_frame,
             yellow_contact_depth=self.yellow_contact_depth,
             yellow_contact_depth_tolerance=(
                 self.yellow_contact_depth_tolerance
@@ -324,9 +356,29 @@ class Task1(Task1LineFollow):
             self.publish_lights(0, 0)
 
     def startup_readiness(self):
-        readiness = super().startup_readiness()
-        readiness["target"] = self.last_target_message_time is not None
-        return readiness
+        return {
+            "line_detections": self.last_line_detection_time is not None,
+            "shape_detections": self.last_shape_detection_time is not None,
+            "motion": self.motion_state_fresh(),
+        }
+
+    def line_detection_ready_callback(self, _message):
+        if self.last_line_detection_time is None:
+            self.write_data_record(
+                "detection_node_ready",
+                detection="line",
+                topic=self.line_detection_ready_topic,
+            )
+        self.last_line_detection_time = rospy.Time.now()
+
+    def shape_detection_ready_callback(self, _message):
+        if self.last_shape_detection_time is None:
+            self.write_data_record(
+                "detection_node_ready",
+                detection="shape",
+                topic=self.shape_detection_ready_topic,
+            )
+        self.last_shape_detection_time = rospy.Time.now()
 
     def marker_kind(self, message):
         if message.class_name in self.yellow_classes:
@@ -574,6 +626,14 @@ class Task1(Task1LineFollow):
     def record_task1_cycle(self):
         current = self.get_current_pose()
         camera = self.get_camera_pose()
+        yellow_alignment_pose = (
+            self.get_frame_pose(self.yellow_alignment_frame)
+            if (
+                self.active_marker is not None
+                and self.active_marker["kind"] == "yellow"
+            )
+            else None
+        )
         with self.curve_lock:
             line_data = {
                 "locked": self.line_locked,
@@ -644,6 +704,10 @@ class Task1(Task1LineFollow):
             reference_depth=self.reference_depth,
             active_depth=self.hold_z,
             yellow_contact_enabled=self.yellow_contact_enabled,
+            yellow_alignment_frame=self.yellow_alignment_frame,
+            yellow_alignment_pose=self.pose_record(
+                yellow_alignment_pose
+            ),
             yellow_contact_depth=self.yellow_contact_depth,
             yellow_contact_depth_tolerance=(
                 self.yellow_contact_depth_tolerance
@@ -691,8 +755,6 @@ class Task1(Task1LineFollow):
         )
 
     def marker_callback(self, message):
-        # 无效识别消息同样证明图形识别节点已经启动。
-        self.last_target_message_time = rospy.Time.now()
         if not self.line_locked:
             self.record_marker_frame(
                 message, "ignored", "line_not_locked"
@@ -841,11 +903,7 @@ class Task1(Task1LineFollow):
                 path_s is not None
                 and trigger_progress is not None
                 and path_s
-                < trigger_progress - (
-                    0.0
-                    if kind == "yellow"
-                    else self.marker_progress_tolerance
-                )
+                < trigger_progress - self.marker_progress_tolerance
             ):
                 ignored_record = {
                     "kind": kind,
@@ -884,8 +942,8 @@ class Task1(Task1LineFollow):
                 completed_path=round(self.completed_path_length, 6),
                 trigger_progress=round(trigger_progress, 6),
                 trigger_frame=(
-                    self.line_tracking_frame if kind == "yellow"
-                    else "base_link"
+                    self.yellow_alignment_frame
+                    if kind == "yellow" else "base_link"
                 ),
             )
             return "progress_already_passed", ignored_record
@@ -913,16 +971,16 @@ class Task1(Task1LineFollow):
         )
 
     def marker_trigger_progress(self, kind):
-        """黄色按 camera、其他标志按 base_link 巡线进度触发。"""
+        """黄色按 hand、其他标志按 base_link 巡线进度触发。"""
         if kind != "yellow":
             return self.completed_path_length
         if not self.tracking_curve_ready():
             return None
-        camera = self.get_camera_pose()
-        if camera is None:
+        alignment_pose = self.get_frame_pose(self.yellow_alignment_frame)
+        if alignment_pose is None:
             return None
         projection = self.project_to_curve(
-            camera.pose.position,
+            alignment_pose.pose.position,
             self.tracking_curve_points,
             self.tracking_curve_s,
         )
@@ -985,11 +1043,7 @@ class Task1(Task1LineFollow):
                     retained.append(marker)
                     continue
                 if marker["path_s"] < (
-                    trigger_progress - (
-                        0.0
-                        if kind == "yellow"
-                        else self.marker_progress_tolerance
-                    )
+                    trigger_progress - self.marker_progress_tolerance
                 ):
                     rospy.loginfo(
                         "%s: 忽略已越过的%s标志 id=%d；"
@@ -1000,7 +1054,7 @@ class Task1(Task1LineFollow):
                         marker["path_s"],
                         trigger_progress,
                         (
-                            self.line_tracking_frame
+                            self.yellow_alignment_frame
                             if kind == "yellow" else "base_link"
                         ),
                     )
@@ -1013,7 +1067,7 @@ class Task1(Task1LineFollow):
                         ),
                         trigger_progress=round(trigger_progress, 6),
                         trigger_frame=(
-                            self.line_tracking_frame
+                            self.yellow_alignment_frame
                             if kind == "yellow" else "base_link"
                         ),
                     )
@@ -1032,13 +1086,15 @@ class Task1(Task1LineFollow):
 
     def start_marker_action(self, marker, current):
         current_yaw = yaw_from_quaternion(current.pose.orientation)
-        camera = None
+        alignment_pose = None
         trigger_progress = self.completed_path_length
         hold_x = current.pose.position.x
         hold_y = current.pose.position.y
         if marker["kind"] == "yellow":
-            camera = self.get_camera_pose()
-            if camera is None:
+            alignment_pose = self.get_frame_pose(
+                self.yellow_alignment_frame
+            )
+            if alignment_pose is None:
                 self.publish_motion_goal(self.make_pose(
                     hold_x, hold_y, current_yaw
                 ))
@@ -1046,27 +1102,28 @@ class Task1(Task1LineFollow):
                     self.pending_markers.append(marker)
                 rospy.logwarn_throttle(
                     2.0,
-                    "%s: 黄色标志已到触发进度，但 camera 位姿不可用；"
+                    "%s: 黄色标志已到触发进度，但 %s 位姿不可用；"
                     "保持当前位置并等待重试",
                     NODE_NAME,
+                    self.yellow_alignment_frame,
                 )
                 return False
             hold_x += (
                 marker["pose"].pose.position.x
-                - camera.pose.position.x
+                - alignment_pose.pose.position.x
             )
             hold_y += (
                 marker["pose"].pose.position.y
-                - camera.pose.position.y
+                - alignment_pose.pose.position.y
             )
-            camera_projection = self.project_to_curve(
-                camera.pose.position,
+            alignment_projection = self.project_to_curve(
+                alignment_pose.pose.position,
                 self.tracking_curve_points,
                 self.tracking_curve_s,
             )
             trigger_progress = (
-                camera_projection["path_s"]
-                if camera_projection is not None else None
+                alignment_projection["path_s"]
+                if alignment_projection is not None else None
             )
 
         self.active_marker = marker
@@ -1104,7 +1161,7 @@ class Task1(Task1LineFollow):
                 else self.completed_path_length
             ),
             (
-                self.line_tracking_frame
+                self.yellow_alignment_frame
                 if marker["kind"] == "yellow" else "base_link"
             ),
         )
@@ -1115,7 +1172,7 @@ class Task1(Task1LineFollow):
             hold_goal=self.pose_record(self.marker_action_hold_goal),
             dive_goal=self.pose_record(self.marker_action_dive_goal),
             trigger_frame=(
-                self.line_tracking_frame
+                self.yellow_alignment_frame
                 if marker["kind"] == "yellow" else "base_link"
             ),
             trigger_progress=(
@@ -1123,7 +1180,9 @@ class Task1(Task1LineFollow):
                 if trigger_progress is not None else None
             ),
             base_at_trigger=self.pose_record(current),
-            camera_at_trigger=self.pose_record(camera),
+            alignment_frame_pose_at_trigger=self.pose_record(
+                alignment_pose
+            ),
             resume_state=self.marker_resume_state,
         )
         return True

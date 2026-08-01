@@ -3,7 +3,7 @@
       map 坐标系下的绝对目标 z，单位 m。
       按当前系统的 z 符号约定输入，例如水下 0.9 m 为 -0.9。
     -->
-    <arg name="target_z" default="-0.9" />
+    <arg name="target_z" default="-0.1" />
 
     <!--
       目标输入模式：relative 为原有相对移动；absolute 为 map 下绝对目标。
@@ -20,14 +20,14 @@
 
     <!-- relative 模式下的 x、y 偏置，单位 m。 -->
     <arg name="offset_x" default="0" />
-    <arg name="offset_y" default="1" />
+    <arg name="offset_y" default="0" />
 
     <!-- relative 模式下相对初始航向的偏差，单位 deg。 -->
     <arg name="yaw_offset_deg" default="0.0" />
 
     <!-- absolute 模式下 map 坐标系的绝对 x、y 位置，单位 m。 -->
     <arg name="target_x" default="0.0" />
-    <arg name="target_y" default="1.0" />
+    <arg name="target_y" default="0.0" />
 
     <!-- absolute 模式下 map 坐标系的绝对航向，单位 deg。 -->
     <arg name="target_yaw_deg" default="0.0" />
@@ -43,8 +43,8 @@
     <arg name="hover_duration" default="3.0" />
 
     <!-- 两种模式进入 HOVER 后的保持时长，单位 s；完成后节点退出。 -->
-    <arg name="hover_duration" default="3.0" />
-
+    <!-- <arg name="hover_duration" default="3.0" /> -->
+    <arg name="goal_tf_timeout" default="1.0" />
     <!--
       单次目标发布节点。
       relative 模式保持原有相对目标计算；absolute 模式发布 map 绝对目标。
