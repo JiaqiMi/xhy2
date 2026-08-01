@@ -9,23 +9,17 @@ models/
 packages/
 src/cv_bridge/
 src/geometry2/
-
 # 忽略所有 __pycache__ 文件夹
 __pycache__/
-
 # 忽略 Mac 的系统文件
 .DS_Store
-
 # 忽略 Jupyter notebook 的检查点
 .ipynb_checkpoints/
-
 # 忽略某个具体文件
 secret_config.py
 CLAUDE.md
 AGENTS.md
-
 # 忽略特定文件夹
-packages/
 build_isolated/
 devel_isolated/
 # 忽略训练数据
@@ -34,11 +28,8 @@ datasets/video/
 datasets/xhy0718-holes/
 datasets/xhy0718-shapes/
 datasets/xhy0718-balls/
-
 # 忽略模型
 train_models/
-models/
-
 # 仅保留在本地的纯 Python 单元测试（不依赖 ROS）
 /src/auv_control/test/test_debug_protocol.py
 /src/auv_control/test/test_lever_arm.py
@@ -51,10 +42,23 @@ models/
 /src/auv_control/test/test_motion_supervisor_force_limits.py
 /src/auv_control/test/test_motion_supervisor_cancel_depth.py
 /src/auv_control/test/test_motion_supervisor_yaw_brake_exit.py
-
 *.jpg
 *.mkv
 *.json
 *.zip
 *.pt
-
+# ROS 2 colcon workspace
+/build/
+/install/
+/log/
+# ROS 1 legacy build output
+/devel/
+.catkin_tools/
+# Python
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+# Runtime
+*.bag
+*.db3
+*.mcap
