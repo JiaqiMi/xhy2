@@ -115,6 +115,9 @@
           name="task3"
           output="screen"
           required="true">
+        <!-- 传给task3.py，用于在每个日志旁保存本次实际加载的参数快照。 -->
+        <param name="task3_config_file" type="string"
+               value="$(arg task3_config_file)" />
         <param name="arrow_topic" type="string"
                value="$(arg arrow_topic)" />
         <param name="aruco_topic" type="string"

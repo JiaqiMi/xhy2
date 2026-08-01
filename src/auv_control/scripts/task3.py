@@ -33,8 +33,17 @@ from std_msgs.msg import Empty, String
 NODE_NAME = "task3_final"
 _MISSING = object()
 KEY_LOG_MARKER = "[关键]"
+FLOW_LOG_MARKER = "[任务进度]"
+PREREQUISITE_LOG_MARKER = "[前置条件]"
+HANDOFF_LOG_MARKER = "[阶段交接]"
 CONSOLE_EVENT_PHRASES = (
     KEY_LOG_MARKER,
+    FLOW_LOG_MARKER,
+    PREREQUISITE_LOG_MARKER,
+    HANDOFF_LOG_MARKER,
+    "[子任务1阶段]",
+    "[子任务2阶段]",
+    "[子任务3阶段]",
     "三个模型均已就绪",
     "前模型复查通过",
     "任务阶段",
@@ -44,9 +53,6 @@ CONSOLE_EVENT_PHRASES = (
     "箭头位置候选组确认通过",
     "逐帧候选组确认通过",
     "稳定识别成功",
-    "残缺方框安全点已确认",
-    "残缺方框一次移动目标已发布",
-    "直接投放复核通过",
     "开始灯光阶段",
     "灯光阶段完成",
     "已确认到位",
@@ -66,6 +72,11 @@ CONSOLE_PROGRESS_PHRASES = (
     "到达判定",
     "到位=",
     "进行中",
+    "持续上浮",
+    "[灯光反馈]",
+    "[执行器反馈]",
+    "[执行器状态]",
+    "[执行器硬件状态]",
 )
 
 
@@ -141,6 +152,52 @@ def install_console_log_filter(
     return filtered_count
 
 
+def save_parameter_snapshot(log_path):
+    """把本次launch实际加载的统一配置保存到对应日志旁边。"""
+    config_path = str(rospy.get_param("~task3_config_file", "")).strip()
+    if not config_path:
+        try:
+            package_path = rospkg.RosPack().get_path("auv_control")
+        except rospkg.ResourceNotFound as error:
+            rospy.logwarn(
+                "%s：无法定位参数快照源配置：%s",
+                NODE_NAME,
+                str(error),
+            )
+            return None
+        config_path = os.path.join(package_path, "config", "task3.yaml")
+
+    config_path = os.path.abspath(os.path.expanduser(config_path))
+    snapshot_path = os.path.splitext(log_path)[0] + ".yaml"
+    try:
+        with open(config_path, "r", encoding="utf-8") as source_file:
+            config_text = source_file.read()
+        with open(snapshot_path, "w", encoding="utf-8", newline="\n") as output_file:
+            output_file.write("# 任务3本次运行参数快照；请与同名.log一起保存。\n")
+            output_file.write(
+                "# snapshot_created_at: {}\n".format(
+                    datetime.now().isoformat(timespec="microseconds")
+                )
+            )
+            output_file.write(
+                "# corresponding_log: {}\n".format(os.path.basename(log_path))
+            )
+            output_file.write("# source_config: {}\n\n".format(config_path))
+            output_file.write(config_text)
+            if config_text and not config_text.endswith("\n"):
+                output_file.write("\n")
+    except (IOError, OSError, UnicodeError) as error:
+        rospy.logwarn(
+            "%s：参数快照保存失败，源=%s，目标=%s：%s",
+            NODE_NAME,
+            config_path,
+            snapshot_path,
+            str(error),
+        )
+        return None
+    return snapshot_path
+
+
 def configure_file_logging():
     """详细日志写单文件，终端按配置只显示关键事件。"""
     log_directory = os.path.abspath(os.path.expanduser(str(
@@ -167,7 +224,7 @@ def configure_file_logging():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         log_path = os.path.join(
             log_directory,
-            "task3_final_{}.log".format(timestamp),
+            "task3_{}.log".format(timestamp),
         )
         handler = logging.FileHandler(
             log_path,
@@ -189,6 +246,7 @@ def configure_file_logging():
         )
         return None
 
+    parameter_snapshot_path = save_parameter_snapshot(log_path)
     filtered_count = 0
     if console_key_only:
         filtered_count = install_console_log_filter(
@@ -199,12 +257,14 @@ def configure_file_logging():
     rospy.loginfo(
         (
             "%s：%s 整合任务详细日志已启用：%s；"
+            "本次参数快照=%s；"
             "终端关键日志过滤=%s，进度日志间隔=%.2fs，"
             "终端处理器=%d"
         ),
         NODE_NAME,
         KEY_LOG_MARKER,
         log_path,
+        parameter_snapshot_path or "保存失败，请检查上方WARNING",
         "开启" if console_key_only else "关闭",
         progress_interval,
         filtered_count,
@@ -317,12 +377,8 @@ class Task3Final:
         "rectangle": String,
     }
     TIMEOUT_SKIP_TARGET_LABELS = {
-        "subtask2": "子任务2 ArUco识别点",
-        "second_arrow": "第二个箭头起始点",
-        "subtask3": "子任务3彩色方框起始点",
-        "box_red": "红色方框人工复核点",
-        "box_yellow": "黄色方框人工复核点",
-        "box_green": "绿色方框人工复核点",
+        "aruco": "ArUco识别点",
+        "box": "彩色方框点",
     }
 
     def __init__(self):
@@ -1070,12 +1126,13 @@ class Task3Final:
             if all(ready.values()) and hold_ready:
                 rospy.loginfo(
                     (
-                        "%s：%s 三个模型均已就绪且启动目标进入HOVER："
+                        "%s：%s %s 三个模型均已就绪且启动目标进入HOVER："
                         "箭头%d帧，ArUco%d帧，方框%d帧；"
                         "开始第一次箭头子任务"
                     ),
                     NODE_NAME,
                     KEY_LOG_MARKER,
+                    PREREQUISITE_LOG_MARKER,
                     counts["arrow"],
                     counts["aruco"],
                     counts["rectangle"],
@@ -1108,12 +1165,13 @@ class Task3Final:
             rospy.loginfo_throttle(
                 2.0,
                 (
-                    "%s：等待三个模型和启动目标，已等待%.1f/%.1fs："
+                    "%s：%s 等待三个模型和启动目标，已等待%.1f/%.1fs："
                     "箭头=%d/%d帧(%s)，ArUco=%d/%d帧(%s)，"
                     "方框=%d/%d帧(%s)；启动目标=%s；"
                     "持续发布深度和初始航向目标"
                 ),
                 NODE_NAME,
+                PREREQUISITE_LOG_MARKER,
                 elapsed,
                 self.model_ready_timeout,
                 counts["arrow"],
@@ -1148,8 +1206,9 @@ class Task3Final:
                 and age <= self.model_output_timeout
             ):
                 rospy.loginfo(
-                    "%s：%s前模型复查通过：%s新增%d/%d帧",
+                    "%s：%s %s前模型复查通过：%s新增%d/%d帧",
                     NODE_NAME,
+                    PREREQUISITE_LOG_MARKER,
                     context,
                     role,
                     new_count,
@@ -1174,8 +1233,9 @@ class Task3Final:
                 return False
             rospy.loginfo_throttle(
                 1.0,
-                "%s：%s前等待%s模型新帧%d/%d",
+                "%s：%s %s前等待%s模型新帧%d/%d",
                 NODE_NAME,
+                PREREQUISITE_LOG_MARKER,
                 context,
                 role,
                 new_count,
@@ -1199,6 +1259,16 @@ class Task3Final:
             MotionState.FINAL_BRAKE,
             MotionState.SAFE,
         }
+        rospy.loginfo(
+            (
+                "%s：%s 当前任务=%s，当前阶段=cancel后安全停稳；"
+                "前置条件=MotionState反馈新鲜，且HOVER或刹车低速稳定%.1fs"
+            ),
+            NODE_NAME,
+            HANDOFF_LOG_MARKER,
+            context,
+            self.handoff_stable_seconds,
+        )
         self.cancel_pub.publish(Empty())
 
         while not rospy.is_shutdown():
@@ -1265,8 +1335,9 @@ class Task3Final:
 
             rospy.loginfo_throttle(
                 1.0,
-                "%s：%s第二级cancel恢复 %.1f/%.1fs",
+                "%s：%s %s第二级cancel恢复 %.1f/%.1fs",
                 NODE_NAME,
+                HANDOFF_LOG_MARKER,
                 context,
                 elapsed,
                 self.cancel_recovery_timeout,
@@ -1619,7 +1690,21 @@ class Task3Final:
 
     def prepare_next_stage(self, target_key, context):
         """阶段交接失败只记录，不再终止整个任务。"""
-        if self.timeout_skip_enabled:
+        move_to_configured_target = (
+            self.timeout_skip_enabled and target_key is not None
+        )
+        self.log_flow_stage(
+            "交接",
+            context,
+            "子任务阶段交接",
+            (
+                "移动到配置的下一阶段人工点并等待稳定HOVER"
+                if move_to_configured_target
+                else "cancel后等待HOVER或刹车低速稳定"
+            ),
+            "进入下一个子任务；交接超时也会记录后继续",
+        )
+        if move_to_configured_target:
             if self.move_to_stage_target(target_key, context):
                 return True
             self.wait_for_motion_recovery(
@@ -1650,14 +1735,52 @@ class Task3Final:
             except Exception:
                 pass
 
+    @staticmethod
+    def log_flow_stage(flow_step, task_name, stage, prerequisite, next_action):
+        """输出一行不会被关键日志过滤器隐藏的总流程定位信息。"""
+        rospy.loginfo(
+            (
+                "%s：%s 总流程=%s，当前任务=%s，当前阶段=%s；"
+                "前置条件=%s；通过后=%s"
+            ),
+            NODE_NAME,
+            FLOW_LOG_MARKER,
+            flow_step,
+            task_name,
+            stage,
+            prerequisite,
+            next_action,
+        )
+
     def run_subtask1(self, run_index):
         label = "第{}次箭头子任务".format(run_index)
+        flow_step = "1/4" if run_index == 1 else "3/4"
+        self.log_flow_stage(
+            flow_step,
+            label,
+            "启动前模型复查",
+            "箭头模型新增至少{}帧，且最新消息年龄不超过{:.1f}s".format(
+                self.model_required_frames,
+                self.model_output_timeout,
+            ),
+            "进入箭头搜索、粗对准和细对准",
+        )
         if not self.wait_for_new_model_frames("arrow", label):
             return (
                 False,
                 "{}启动前箭头模型等待超时".format(label),
                 True,
             )
+
+        self.log_flow_stage(
+            flow_step,
+            label,
+            "搜索与对准执行",
+            "箭头识别持续有效，运动状态和位姿反馈满足各阶段门槛",
+            "base_link按固定目标前移{:.2f}m并定点保持".format(
+                float(self.task1_params.get("base_link_forward_offset", 0.35))
+            ),
+        )
 
         rospy.loginfo(
             (
@@ -1695,6 +1818,16 @@ class Task3Final:
 
     def run_subtask2(self):
         label = "ArUco子任务"
+        self.log_flow_stage(
+            "2/4",
+            label,
+            "启动前模型复查",
+            "ArUco模型新增至少{}帧，且最新消息年龄不超过{:.1f}s".format(
+                self.model_required_frames,
+                self.model_output_timeout,
+            ),
+            "进入定点悬停、ID确认、亮灯和原地转向",
+        )
         if not self.wait_for_new_model_frames("aruco", label):
             return False, "{}启动前模型等待超时".format(label), None
 
@@ -1721,6 +1854,14 @@ class Task3Final:
                 history_marker_id,
                 history_color,
             )
+
+        self.log_flow_stage(
+            "2/4",
+            label,
+            "识别、灯光与转向执行",
+            "实时识别优先；超时后依次使用三帧一致历史结果和人工颜色",
+            "等待灯光反馈到位并保持，再灭灯并执行配置的原地转向",
+        )
 
         rospy.loginfo(
             "%s：%s [%s开始] 直接进入子函数，不启动子任务launch",
@@ -1764,9 +1905,19 @@ class Task3Final:
 
     def run_subtask3(self, target_color, stationary_recheck=False):
         label = (
-            "彩色方框人工点原地复核"
+            "彩色方框点原地复核"
             if stationary_recheck
             else "彩色方框投放子任务"
+        )
+        self.log_flow_stage(
+            "4/4",
+            label,
+            "启动前模型复查",
+            "方框模型新增至少{}帧，且最新消息年龄不超过{:.1f}s".format(
+                self.model_required_frames,
+                self.model_output_timeout,
+            ),
+            "搜索并对准目标颜色{}方框".format(target_color),
         )
         if not self.wait_for_new_model_frames("rectangle", label):
             return (
@@ -1775,6 +1926,16 @@ class Task3Final:
                 True,
                 False,
             )
+
+        self.log_flow_stage(
+            "4/4",
+            label,
+            "方框搜索、对准与投放执行",
+            "目标颜色={}，识别和运动反馈满足当前状态门槛".format(
+                target_color
+            ),
+            "投放前前移、灯光夹爪动作、返回N/E原点并持续上浮",
+        )
 
         self.task3_params["target_color"] = str(target_color)
         if stationary_recheck:
@@ -1801,7 +1962,7 @@ class Task3Final:
             label,
             target_color,
             float(self.task3_params["max_wait_seconds"]),
-            "人工颜色点原地识别" if stationary_recheck else "正常自动搜索",
+            "统一方框点原地识别" if stationary_recheck else "正常自动搜索",
         )
         task = None
         timed_out = False
@@ -1876,6 +2037,21 @@ class Task3Final:
     def run(self):
         skipped_stages = []
         movement_timeouts = []
+        self.log_flow_stage(
+            "准备/4",
+            "整合任务启动",
+            "三个模型与启动定点就绪检查",
+            (
+                "箭头/ArUco/方框各至少{}帧且消息年龄不超过{:.1f}s；"
+                "深度目标z={:.2f}、航向目标{:.1f}度进入HOVER"
+            ).format(
+                self.model_required_frames,
+                self.model_output_timeout,
+                self.fixed_map_z,
+                self.initial_yaw_deg,
+            ),
+            "开始第1/4阶段：第一次箭头",
+        )
         rospy.loginfo(
             (
                 "%s：%s 完整任务3开始，等待三个模型全部就绪；"
@@ -1907,7 +2083,7 @@ class Task3Final:
         if rospy.is_shutdown():
             return self.fail("第一次箭头阶段期间ROS关闭")
         if not self.prepare_next_stage(
-            "subtask2",
+            "aruco",
             "第一次箭头到ArUco子任务交接",
         ):
             movement_timeouts.append(
@@ -1953,13 +2129,11 @@ class Task3Final:
                 target_color,
             )
         if not self.prepare_next_stage(
-            "second_arrow",
+            None,
             "ArUco子任务到第二个箭头交接",
         ):
             movement_timeouts.append(
-                "第二个箭头起始点"
-                if self.timeout_skip_enabled
-                else "ArUco到第二个箭头交接"
+                "ArUco到第二个箭头交接"
             )
             rospy.logwarn(
                 "%s：ArUco到第二个箭头交接恢复超时，仍继续第二次箭头",
@@ -1981,11 +2155,11 @@ class Task3Final:
         if rospy.is_shutdown():
             return self.fail("第二次箭头阶段期间ROS关闭")
         if not self.prepare_next_stage(
-            "subtask3",
+            "box",
             "第二次箭头到彩色方框子任务交接",
         ):
             movement_timeouts.append(
-                "彩色方框起始点"
+                "彩色方框点"
                 if self.timeout_skip_enabled
                 else "第二次箭头到彩色方框交接"
             )
@@ -2011,29 +2185,25 @@ class Task3Final:
                 first_detail = detail
                 if self.wait_for_motion_recovery("彩色方框投放重试前"):
                     stationary_recheck = False
-                    box_target_key = "box_{}".format(
-                        str(target_color).lower()
-                    )
                     if (
                         self.timeout_skip_enabled
                         and timed_out
-                        and box_target_key in self.timeout_skip_targets
+                        and "box" in self.timeout_skip_targets
                     ):
                         stationary_recheck = True
                         if not self.move_to_stage_target(
-                            box_target_key,
+                            "box",
                             "彩色方框首次识别超时",
                         ):
                             movement_timeouts.append(
-                                "{}方框人工点".format(target_color)
+                                "彩色方框点"
                             )
                             rospy.logwarn(
                                 (
-                                    "%s：移动到%s方框人工点超时，"
+                                    "%s：移动到统一彩色方框点超时，"
                                     "仍在当前位置执行唯一一次原地复核"
                                 ),
                                 NODE_NAME,
-                                target_color,
                             )
                     rospy.logwarn(
                         "%s：彩色方框投放开始唯一一次重试",
