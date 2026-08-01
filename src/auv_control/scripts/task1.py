@@ -903,11 +903,7 @@ class Task1(Task1LineFollow):
                 path_s is not None
                 and trigger_progress is not None
                 and path_s
-                < trigger_progress - (
-                    0.0
-                    if kind == "yellow"
-                    else self.marker_progress_tolerance
-                )
+                < trigger_progress - self.marker_progress_tolerance
             ):
                 ignored_record = {
                     "kind": kind,
@@ -1047,11 +1043,7 @@ class Task1(Task1LineFollow):
                     retained.append(marker)
                     continue
                 if marker["path_s"] < (
-                    trigger_progress - (
-                        0.0
-                        if kind == "yellow"
-                        else self.marker_progress_tolerance
-                    )
+                    trigger_progress - self.marker_progress_tolerance
                 ):
                     rospy.loginfo(
                         "%s: 忽略已越过的%s标志 id=%d；"

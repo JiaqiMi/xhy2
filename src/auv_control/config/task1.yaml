@@ -64,7 +64,7 @@ los_target_update_min_distance: 0.08
 
 # 终点：默认使用未知长度模式。
 # 到达最后中点后固定 XY，只搜索一轮“左、右、返回”；无新增长则结束。
-endpoint_min_completed_path_length: 2.0
+endpoint_min_completed_path_length: 5.0
 endpoint_stable_frames: 8
 endpoint_stable_position_tolerance: 0.12
 endpoint_evidence_robot_distance: 0.8
@@ -84,6 +84,7 @@ marker_sample_timeout: 10.0
 marker_cluster_distance: 0.25
 marker_duplicate_distance: 0.60
 marker_line_max_distance: 0.50
+# 黄色（hand）和黑色（base_link）的投影最多允许超前标志点的距离
 marker_progress_tolerance: 0.15
 
 # 每类动作要求次数；到终点时不足也正常结束
@@ -92,7 +93,7 @@ black_required_count: 2
 
 # 灯光动作
 light_seconds: 3.0
-gap_seconds: 1
+gap_seconds: 2
 yellow_light_count: 1
 black_light_count: 2
 
@@ -101,14 +102,14 @@ black_light_count: 2
 # 回到 Task1 保持深度后仍等待控制端 HOVER。
 yellow_contact_enabled: true
 yellow_alignment_frame: hand
-yellow_contact_depth: -0.3
+yellow_contact_depth: -0.4
 yellow_contact_depth_tolerance: 0.05
 yellow_dive_timeout: 10.0
 
 # 黑色动作：动态超前 90 度，累计一圈后等待最后目标的一次 HOVER
 black_rotation_angle_deg: 360.0
 black_rotation_direction: 1.0
-black_rotation_step_deg: 90.0
+black_rotation_step_deg: 150.0
 
 # 外设默认值
 light1: 0

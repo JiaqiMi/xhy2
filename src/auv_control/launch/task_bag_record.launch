@@ -1,0 +1,60 @@
+<launch>
+    <!--
+      独立任务 rosbag 录制：需要录制时单独启动，Ctrl+C 后正常结束。
+      原始图像话题不写入Bag；左目、右目和鱼眼录制专用图像默认限制为1Hz并压缩为JPEG。
+      任务控制、状态、TF和视觉识别结果仍按原频率记录。
+    -->
+
+    <arg name="bag_dir" default="$(env HOME)/.ros/auv_logs/bags" />
+    <arg name="bag_name" default="full_mission" />
+    <arg name="image_rate_hz" default="1.0" />
+    <arg name="split_size_mb" default="4096" />
+
+    <!-- 只生成录包专用副本，不修改或重映射正常程序使用的原始图像话题。 -->
+    <node pkg="topic_tools" type="throttle"
+          name="bag_left_image_throttle" output="screen"
+          args="messages /left/image_raw $(arg image_rate_hz) /bag_record/left_raw" />
+    <node pkg="topic_tools" type="throttle"
+          name="bag_right_image_throttle" output="screen"
+          args="messages /right/image_raw $(arg image_rate_hz) /bag_record/right_raw" />
+    <node pkg="topic_tools" type="throttle"
+          name="bag_fisheye_image_throttle" output="screen"
+          args="messages /fisheye_camera/image_raw $(arg image_rate_hz) /bag_record/fisheye_raw" />
+
+    <!-- 将三路1Hz原始图像转换为JPEG，降低bag写盘量。 -->
+    <node pkg="image_transport" type="republish"
+          name="bag_left_image_compressor" output="screen"
+          args="raw in:=/bag_record/left_raw compressed out:=/bag_record/left" />
+    <node pkg="image_transport" type="republish"
+          name="bag_right_image_compressor" output="screen"
+          args="raw in:=/bag_record/right_raw compressed out:=/bag_record/right" />
+    <node pkg="image_transport" type="republish"
+          name="bag_fisheye_image_compressor" output="screen"
+          args="raw in:=/bag_record/fisheye_raw compressed out:=/bag_record/fisheye" />
+
+    <!--
+      记录器保存其他全部话题，并跳过相机原始话题、USB压缩图和录制中间原图。
+      显式加入三路JPEG话题，确保限频压缩图像从第一帧开始记录。
+    -->
+    <node pkg="rosbag" type="record"
+          name="task_bag_recorder"
+          output="screen"
+          required="true"
+          launch-prefix="bash -c '
+              mkdir -p &quot;$(arg bag_dir)&quot;;
+              TS=`date +%Y%m%d_%H%M%S`;
+              BAG_PREFIX=&quot;$(arg bag_dir)/$(arg bag_name)_${TS}&quot;;
+              echo &quot;[rosbag] 输出前缀: ${BAG_PREFIX}&quot;;
+              exec $0
+                  -a
+                  --exclude &quot;^/(usb_cam|left|right|fisheye_camera)/(image_raw.*|camera_info)$|^/bag_record/(left|right|fisheye)_raw$&quot;
+                  --lz4
+                  --split
+                  --size=$(arg split_size_mb)
+                  -O &quot;${BAG_PREFIX}&quot;
+                  /bag_record/left/compressed
+                  /bag_record/right/compressed
+                  /bag_record/fisheye/compressed
+                  $@
+          '" />
+</launch>
