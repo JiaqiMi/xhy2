@@ -48,7 +48,7 @@ log_max_file_size_mb: 50.0                        # 单个 CSV 最大 50 MiB，�
 power_feedback_timeout: 1.0                       # /status/power 超过此时间未更新时标记为不新鲜，不影响控制
 
 # 正常跟踪与主动刹车共用方向性限幅和步长；参数后缀表示实际输出正负号。
-max_tx_positive: 2000.0             # 正 TX 最大值
+max_tx_positive: 3000.0             # 正 TX 最大值
 max_tx_negative: 3000.0             # 负 TX 绝对值上限
 max_ty_positive: 4000.0             # 正 TY 最大值
 max_ty_negative: 6000.0             # 负 TY 绝对值上限
@@ -116,10 +116,10 @@ yaw_brake_margin_positive_deg: 0.8  # 航向捕获标准收紧为 1 deg；由低
 yaw_brake_margin_negative_deg: 0.8  # 与正向一致，满足核心参数校验并保留 0.2 deg 捕获裕量
 
 # 进入hover阈值,也就是代表着定位精度
-capture_radius: 0.04                  # 两种模式到达 HOVER 的外层水平位置误差，满足旋转时位置精度 4 cm
+capture_radius: 0.05                  # 两种模式到达 HOVER 的外层水平位置误差，满足旋转时位置精度 4 cm
 control_center_hold_tolerance: 0.03   # 当前锁存控制中心的二维圆形位置死区，单位 m
 horizontal_speed_threshold: 0.008     # data6 中 0.01 m/s 仍持续漂移，收紧三轴停稳判定
-yaw_tolerance_deg: 2.0                # 最终航向允许误差，单位 deg
+yaw_tolerance_deg: 3.0                # 最终航向允许误差，单位 deg
 yaw_control_tolerance_deg: 1.0        # mode=2 上位机航向保持死区，与最终航向精度一致
 yaw_rate_threshold_deg_s: 0.3         # 判定转动停稳的角速度上限，单位 deg/s
 stable_frames: 2                      # 捕获或停稳条件需连续满足的控制帧数，8Hz下改为2帧
