@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""任务3子任务1、2、3完整联调协调节点。"""
+"""
+名称：test_task3_1_2_3_sequence.py
+功能：任务3子任务1、2、3完整联调协调
+作者：BroXu
+监听：/motion/state、视觉检测和子任务诊断
+发布：/cmd/motion/cancel、联调诊断
+记录：
+2026.8.2
+    增加 THRUSTER_RECOVERY 状态名称，恢复期间继续等待子任务控制器。
+"""
 
 import copy
 import json
@@ -56,6 +65,7 @@ class Task3Subtask123Sequence:
         7: "CAPTURE",
         8: "HOVER",
         9: "SAFE",
+        10: "THRUSTER_RECOVERY",
     }
 
     def __init__(self):

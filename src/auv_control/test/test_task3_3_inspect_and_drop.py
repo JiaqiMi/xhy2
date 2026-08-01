@@ -1,9 +1,16 @@
 #! /home/xhy/xhy_env/bin/python
 # -*- coding: utf-8 -*-
 """
-任务 3 子任务 3：识别指定颜色方框并执行投放动作。
+名称：test_task3_3_inspect_and_drop.py
+功能：识别指定颜色方框并执行投放动作
+作者：BroXu
+监听：视觉识别、/motion/state、/status/auv、/tf
+发布：/cmd/motion/goal、/cmd/motion/cancel、执行器和任务诊断
+记录：
+2026.8.2
+    将 THRUSTER_RECOVERY 视为有效等待状态，避免自动恢复期间误判任务失败。
 
-节点支持两种操作模式：
+说明：节点支持两种操作模式：
   1. manual：人工控制机器人到方框上方，本节点只识别并执行灯光、夹爪动作；
   2. auto：向 motion_supervisor 发布绝对位置目标，自动搜索并根据方框中心像素对齐。
 
@@ -233,6 +240,7 @@ class Task3InspectAndDropTest:
         MotionState.CAPTURE: "CAPTURE",
         MotionState.HOVER: "HOVER",
         MotionState.SAFE: "SAFE",
+        MotionState.THRUSTER_RECOVERY: "THRUSTER_RECOVERY",
     }
 
     COLOR_LIGHTS = {

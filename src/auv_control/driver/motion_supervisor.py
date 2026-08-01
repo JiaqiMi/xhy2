@@ -56,6 +56,8 @@
     记录 Yaw 制动持续远离目标的异常退出请求、等待时间和触发结果。
 2026.7.31
     CSV 增加两路推进电源电压、电流、功率及反馈新鲜度，并按 50 MiB 自动分卷。
+2026.8.2
+    接入 TY/MZ 协议级侧推异常检测与自动恢复，记录功率基线、判据和恢复全过程。
 """
 
 from __future__ import division
@@ -213,6 +215,36 @@ class MotionSupervisorNode(object):
         'hover_exit_requested',
         'hover_exit_wait_s',
         'hover_exit_triggered',
+        'ty_effort',
+        'mz_effort',
+        'combined_effort',
+        'power2_idle_baseline_w',
+        'power2_increment_w',
+        'thruster_power_feedback_usable',
+        'thruster_fault_power_low',
+        'thruster_fault_lateral_stalled',
+        'thruster_fault_yaw_stalled',
+        'thruster_fault_requested',
+        'thruster_fault_wait_s',
+        'thruster_fault_triggered',
+        'thruster_fault_ty',
+        'thruster_fault_mz',
+        'thruster_reverse_ty',
+        'thruster_reverse_mz',
+        'thruster_reverse_actual_ty',
+        'thruster_reverse_actual_mz',
+        'thruster_recovery_phase',
+        'thruster_recovery_count',
+        'thruster_recovery_power_baseline_w',
+        'thruster_recovery_power_increment_w',
+        'thruster_recovery_power_response',
+        'thruster_recovery_lateral_response',
+        'thruster_recovery_yaw_response',
+        'thruster_recovery_motion_response',
+        'thruster_recovery_response_wait_s',
+        'thruster_recovery_preliminary_success',
+        'thruster_recovery_final_confirmed',
+        'thruster_recheck_active',
         'raw_tx',
         'raw_ty',
         'raw_mz',
@@ -489,6 +521,10 @@ class MotionSupervisorNode(object):
             'yaw_brake_enter_rate': 'yaw_brake_enter_rate_deg_s',
             'yaw_brake_exit_rate': 'yaw_brake_exit_rate_deg_s',
             'goal_replan_yaw_threshold': 'goal_replan_yaw_threshold_deg',
+            'thruster_fault_yaw_rate_max': (
+                'thruster_fault_yaw_rate_max_deg_s'),
+            'thruster_recovery_yaw_rate_min': (
+                'thruster_recovery_yaw_rate_min_deg_s'),
         }
         for name, default in DEFAULT_PARAMETERS.items():
             if name in degree_parameters:
@@ -497,7 +533,7 @@ class MotionSupervisorNode(object):
                     degree_parameters[name], default_degrees)
                 self.loaded_core_parameters[degree_parameters[name]] = loaded
                 parameters[name] = math.radians(float(loaded))
-            elif name == 'pure_depth_control':
+            elif name in ('pure_depth_control', 'thruster_recovery_enabled'):
                 loaded = self._parameter(name, default)
                 self.loaded_core_parameters[name] = bool(loaded)
                 parameters[name] = bool(loaded)
@@ -685,6 +721,13 @@ class MotionSupervisorNode(object):
     def _build_vehicle_state(self, now, feedback_fresh):
         """按当前锁存虚拟中心构造纯算法核心使用的状态。"""
         velocity = self.filtered_velocity or (0.0, 0.0, 0.0)
+        power_status = self.last_power_status or {}
+        power_age = self._age_seconds(now, self.last_power_status_stamp)
+        power_feedback_fresh = (
+            power_age != ''
+            and power_age <= self.power_feedback_timeout
+            and power_status.get('checksum_ok', False)
+        )
         return VehicleState(
             now.to_sec(),
             self.last_pose[0],
@@ -700,6 +743,10 @@ class MotionSupervisorNode(object):
                 None
                 if self.last_status_stamp is None
                 else self.last_status_stamp.to_sec()),
+            startup_complete=self.startup_complete,
+            power_feedback_fresh=power_feedback_fresh,
+            power2_valid=power_status.get('power2_valid', False),
+            power2_power=power_status.get('power2_power'),
         )
 
     @staticmethod
@@ -921,6 +968,61 @@ class MotionSupervisorNode(object):
                 'hover_exit_wait_s', ''),
             'hover_exit_triggered': int(bool(
                 diagnostics.get('hover_exit_triggered', False))),
+            'ty_effort': diagnostics.get('ty_effort', ''),
+            'mz_effort': diagnostics.get('mz_effort', ''),
+            'combined_effort': diagnostics.get('combined_effort', ''),
+            'power2_idle_baseline_w': diagnostics.get(
+                'power2_idle_baseline_w', ''),
+            'power2_increment_w': diagnostics.get(
+                'power2_increment_w', ''),
+            'thruster_power_feedback_usable': int(bool(
+                diagnostics.get('thruster_power_feedback_usable', False))),
+            'thruster_fault_power_low': int(bool(
+                diagnostics.get('thruster_fault_power_low', False))),
+            'thruster_fault_lateral_stalled': int(bool(
+                diagnostics.get('thruster_fault_lateral_stalled', False))),
+            'thruster_fault_yaw_stalled': int(bool(
+                diagnostics.get('thruster_fault_yaw_stalled', False))),
+            'thruster_fault_requested': int(bool(
+                diagnostics.get('thruster_fault_requested', False))),
+            'thruster_fault_wait_s': diagnostics.get(
+                'thruster_fault_wait_s', ''),
+            'thruster_fault_triggered': int(bool(
+                diagnostics.get('thruster_fault_triggered', False))),
+            'thruster_fault_ty': diagnostics.get('thruster_fault_ty', ''),
+            'thruster_fault_mz': diagnostics.get('thruster_fault_mz', ''),
+            'thruster_reverse_ty': diagnostics.get('thruster_reverse_ty', ''),
+            'thruster_reverse_mz': diagnostics.get('thruster_reverse_mz', ''),
+            'thruster_reverse_actual_ty': diagnostics.get(
+                'thruster_reverse_actual_ty', ''),
+            'thruster_reverse_actual_mz': diagnostics.get(
+                'thruster_reverse_actual_mz', ''),
+            'thruster_recovery_phase': diagnostics.get(
+                'thruster_recovery_phase', ''),
+            'thruster_recovery_count': diagnostics.get(
+                'thruster_recovery_count', ''),
+            'thruster_recovery_power_baseline_w': diagnostics.get(
+                'thruster_recovery_power_baseline_w', ''),
+            'thruster_recovery_power_increment_w': diagnostics.get(
+                'thruster_recovery_power_increment_w', ''),
+            'thruster_recovery_power_response': int(bool(
+                diagnostics.get('thruster_recovery_power_response', False))),
+            'thruster_recovery_lateral_response': int(bool(
+                diagnostics.get('thruster_recovery_lateral_response', False))),
+            'thruster_recovery_yaw_response': int(bool(
+                diagnostics.get('thruster_recovery_yaw_response', False))),
+            'thruster_recovery_motion_response': int(bool(
+                diagnostics.get('thruster_recovery_motion_response', False))),
+            'thruster_recovery_response_wait_s': diagnostics.get(
+                'thruster_recovery_response_wait_s', ''),
+            'thruster_recovery_preliminary_success': int(bool(
+                diagnostics.get(
+                    'thruster_recovery_preliminary_success', False))),
+            'thruster_recovery_final_confirmed': int(bool(
+                diagnostics.get(
+                    'thruster_recovery_final_confirmed', False))),
+            'thruster_recheck_active': int(bool(
+                diagnostics.get('thruster_recheck_active', False))),
             'raw_tx': diagnostics.get('raw_tx', ''),
             'raw_ty': diagnostics.get('raw_ty', ''),
             'raw_mz': diagnostics.get('raw_mz', ''),
