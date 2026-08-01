@@ -98,23 +98,23 @@ brake_kp_yaw_negative: 14000.0      # data4 表明负 MZ 刹转过强；反向�
 # brake_min_mz: 100.0
 
 # 各轴独立停车距离模型；后缀表示实际刹车输出力或力矩的符号
-brake_acceleration_tx_positive: 0.070 # data8 +3000 刹负向速度实测最低 0.077 m/s^2，保留 10% 余量
-brake_acceleration_tx_negative: 0.115 # data8 -3000 刹正向速度实测最低 0.127 m/s^2，保留 10% 余量
-brake_acceleration_ty_positive: 0.068 # +4000 跨零速实测中位数约 0.075 m/s^2，保留 10% 余量
-brake_acceleration_ty_negative: 0.039 # -6000 跨零速实测中位数约 0.043 m/s^2，保留 10% 余量
+brake_acceleration_tx_positive: 0.13 # data8 +3000 刹负向速度实测最低 0.077 m/s^2，
+brake_acceleration_tx_negative: 0.14 # data8 -3000 刹正向速度实测最低 0.127 m/s^2，
+brake_acceleration_ty_positive: 0.075 # +4000 跨零速实测中位数约 0.075 m/s^2，
+brake_acceleration_ty_negative: 0.043 # -6000 跨零速实测中位数约 0.043 m/s^2，
 
 # 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
-brake_reference_acceleration_tx_positive: 0.030 # data8 正 TX 有效减速度下的首轮计划值，保留制动余量
-brake_reference_acceleration_tx_negative: 0.040 # data8 负 TX 有效减速度下的首轮计划值，保留制动余量
-brake_reference_acceleration_ty_positive: 0.010 # 正 TY 制动已使用约 66% 限幅，保留耦合补偿余量
-brake_reference_acceleration_ty_negative: 0.012 # 两向统一计划减速度，方向差异仍由有效值保留
+brake_reference_acceleration_tx_positive: 0.09 # data8 正 TX 有效减速度下的首轮计划值，保留制动余量
+brake_reference_acceleration_tx_negative: 0.10 # data8 负 TX 有效减速度下的首轮计划值，保留制动余量
+brake_reference_acceleration_ty_positive: 0.06 # 正 TY 制动已使用约 66% 限幅，保留耦合补偿余量
+brake_reference_acceleration_ty_negative: 0.03 # 两向统一计划减速度，方向差异仍由有效值保留
 angular_brake_acceleration_mz_positive: 0.242   # +3000 跨零速实测约 15.39 deg/s^2，保留 10% 后换算为 rad/s^2
-angular_brake_acceleration_mz_negative: 0.242   #TODO 参数快照值；待 -3500 下独立反向刹停标定后再更新有效减速度模型
+angular_brake_acceleration_mz_negative: 0.262   #TODO 参数快照值；待 -3500 下独立反向刹停标定后再更新有效减速度模型
 angular_brake_reference_acceleration_mz_positive_deg_s2: 3.50 # 计划值仍显著低于 +MZ 标定有效减速度，减少长时间低力矩刹转
 angular_brake_reference_acceleration_mz_negative_deg_s2: 3.50 # 计划值仍显著低于 -MZ 标定有效减速度，正反向使用同一首轮轨迹
-control_delay: 0.45                 # 反馈、计算、通信和执行的综合延迟估计，单位 s
-brake_margin_tx_positive: 0.17      # X 回退使用正 TX 制动，按 data7 最大超调加 data8 制动延迟余量设置
-brake_margin_tx_negative: 0.20      # X 正向使用负 TX 制动，按 data7 最大超调加 data8 制动延迟余量设置
+control_delay: 0.2                 # 反馈、计算、通信和执行的综合延迟估计，单位 s
+brake_margin_tx_positive: 0.1      # X 回退使用正 TX 制动，按 data7 最大超调加 data8 制动延迟余量设置
+brake_margin_tx_negative: 0.12      # X 正向使用负 TX 制动，按 data7 最大超调加 data8 制动延迟余量设置
 brake_margin_ty_positive: 0.03      # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
 brake_margin_ty_negative: 0.03      # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
 yaw_brake_margin_positive_deg: 0.8  # 航向捕获标准收紧为 1 deg；由低位置增益提前降速，余量须小于捕获容差
@@ -122,9 +122,9 @@ yaw_brake_margin_negative_deg: 0.8  # 与正向一致，满足核心参数校验
 
 # 进入hover阈值,也就是代表着定位精度
 capture_radius: 0.05                  # 两种模式到达 HOVER 的外层水平位置误差，满足旋转时位置精度 4 cm
+yaw_tolerance_deg: 3.0                # 最终航向允许误差，单位 deg
 control_center_hold_tolerance: 0.03   # 当前锁存控制中心的二维圆形位置死区，单位 m
 horizontal_speed_threshold: 0.008     # data6 中 0.01 m/s 仍持续漂移，收紧三轴停稳判定
-yaw_tolerance_deg: 3.0                # 最终航向允许误差，单位 deg
 yaw_control_tolerance_deg: 1.0        # mode=2 上位机航向保持死区，与最终航向精度一致
 yaw_rate_threshold_deg_s: 0.3         # 判定转动停稳的角速度上限，单位 deg/s
 stable_frames: 2                      # 捕获或停稳条件需连续满足的控制帧数，8Hz下改为2帧
@@ -135,19 +135,12 @@ hover_exit_yaw_error_deg: 8.0         # HOVER 航向退出及 Yaw 制动持续�
 hover_exit_hold_seconds: 0.50         # HOVER 或 Yaw 制动误差连续超限达到此时间才恢复跟踪
 mode_ack_timeout: 1.0                 # 接管确认及 HOVER 模式反馈最大允许间隔，单位 s
 
-# 已停用：mode=4 不再使用独立接管保持和异常回退阈值。
-# capture_exit_radius: 0.25
-# hover_fault_position_error: 0.40
-# hover_fault_speed: 0.15
-# hover_fault_yaw_rate_deg_s: 5.0
-# hover_fault_yaw_error_deg: 20.0
-
 # 统一三轴位置-速度-力控制。
-xy_max_speed: 0.30 # xy的最大参考速度，暂定为0.3m/s
+xy_max_speed: 0.4 # xy的最大参考速度，暂定为0.3m/s
 xy_position_gain: 2.00
 xy_max_acceleration: 0.40
 xy_max_jerk: 0.40
-xy_brake_jerk: 0.20  # 定点制动速度参考的最大 jerk，单位 m/s^3
+xy_brake_jerk: 0.20  #TODO 定点制动速度参考的最大 jerk，单位 m/s^3，搞懂这个参数的意义
 
 # 预测停车距离内且合速度达到进入阈值时锁存刹停；低于退出阈值才恢复跟踪。
 xy_brake_enter_speed: 0.020
