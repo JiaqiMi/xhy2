@@ -11,6 +11,11 @@
     增加通过拖拽对角点绘制、重画和清除水池范围的控件。
 2026.8.2
     在左目和鱼眼相机标题旁增加视觉检测帧率。
+2026.8.3
+    增加视觉绘图开关、历史清除按钮及鱼眼识别历史容器。
+    增加 base_link 轨迹图例和独立清除轨迹按钮。
+    增加视觉位置与置信度标注的独立显示开关。
+    将轨迹、视觉和地图工具按功能分组并统一组内控件宽度。
 -->
 <html lang="zh-CN">
 
@@ -79,6 +84,13 @@
                             <span id="camera-fisheye-vision-fps" class="vision-fps">
                                 视觉 FPS --
                             </span>
+                            <span id="aruco-history" class="aruco-history" aria-label="最近十次有效 ArUco 识别">
+                                <span class="aruco-history-empty">暂无有效识别</span>
+                            </span>
+                            <span id="aruco-expected-color" class="aruco-expected-color pending" title="尚未确认期望亮灯颜色">
+                                <span class="aruco-color-dot"></span>
+                                <span class="aruco-color-text">待确认</span>
+                            </span>
                         </h2>
                         <span class="subtitle">Fisheye raw image</span>
                     </div>
@@ -100,29 +112,67 @@
                         <span class="subtitle">XY 地图可指定向上航向，Z/Down 向下</span>
                     </div>
                     <div class="map-controls">
-                        <span class="map-legend actual">实际 TF：base_link → camera</span>
-                        <span class="map-legend target">目标 cmdned：base_link</span>
-                        <label class="map-heading-control" for="map-up-heading">
-                            <span>向上航向</span>
-                            <input id="map-up-heading" type="number" min="0" max="359" step="1" inputmode="decimal"
-                                aria-label="地图向上航向">
-                            <span>°</span>
-                        </label>
-                        <button id="apply-map-heading" type="button" title="应用地图向上航向">
-                            应用
-                        </button>
-                        <button id="north-up-map" type="button" title="恢复 0° 北向上">
-                            北向上
-                        </button>
-                        <button id="draw-pool-boundary" type="button" title="在地图上拖拽水池的两个对角点">
-                            绘制水池
-                        </button>
-                        <button id="clear-pool-boundary" type="button" title="清除已保存的水池范围">
-                            清除水池
-                        </button>
-                        <button id="reset-map" type="button" title="重置 2D 位置图和深度图">
-                            回到原点
-                        </button>
+                        <div class="map-control-group trajectory-control-group">
+                            <span class="map-control-group-title">轨迹与目标</span>
+                            <div class="map-control-group-items">
+                                <span class="map-legend actual" title="实际 TF：base_link → camera">
+                                    实际 base_link → camera
+                                </span>
+                                <span class="map-legend trajectory" title="base_link 轨迹：1 Hz，最近 60 秒">
+                                    轨迹 1 Hz / 60 s
+                                </span>
+                                <span class="map-legend target" title="最新目标为深紫色，上一帧目标为浅紫色">
+                                    目标 最新 / 上一帧
+                                </span>
+                                <button id="clear-base-trajectory" type="button" title="只清除 base_link 轨迹">
+                                    清除轨迹
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="map-control-group visual-control-group">
+                            <span class="map-control-group-title">视觉</span>
+                            <div class="map-control-group-items">
+                                <label class="visual-history-toggle" for="show-visual-history">
+                                    <input id="show-visual-history" type="checkbox" checked>
+                                    <span>显示视觉绘图</span>
+                                </label>
+                                <label class="visual-history-toggle" for="show-visual-labels">
+                                    <input id="show-visual-labels" type="checkbox" checked>
+                                    <span>显示位置标注</span>
+                                </label>
+                                <button id="clear-visual-history" type="button" title="清除地图视觉绘图、鱼眼历史和期望颜色">
+                                    清除视觉历史
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="map-control-group map-operation-group">
+                            <span class="map-control-group-title">地图</span>
+                            <div class="map-control-group-items">
+                                <label class="map-heading-control" for="map-up-heading">
+                                    <span>向上航向</span>
+                                    <input id="map-up-heading" type="number" min="0" max="359" step="1"
+                                        inputmode="decimal" aria-label="地图向上航向">
+                                    <span>°</span>
+                                </label>
+                                <button id="apply-map-heading" type="button" title="应用地图向上航向">
+                                    应用
+                                </button>
+                                <button id="north-up-map" type="button" title="恢复 0° 北向上">
+                                    北向上
+                                </button>
+                                <button id="draw-pool-boundary" type="button" title="在地图上拖拽水池的两个对角点">
+                                    绘制水池
+                                </button>
+                                <button id="clear-pool-boundary" type="button" title="清除已保存的水池范围">
+                                    清除水池
+                                </button>
+                                <button id="reset-map" type="button" title="重置 2D 位置图和深度图">
+                                    回到原点
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
