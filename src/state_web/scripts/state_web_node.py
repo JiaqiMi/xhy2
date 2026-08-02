@@ -12,11 +12,19 @@
 2026.7.30
     按检测图像分辨率缩放视觉坐标，修正鱼眼 ArUco 框位置。
     在最终视频尺寸上绘制标注，并增大字体、字宽和标签间距。
+2026.8.2
+    统计各视觉结果话题的独立帧率并加入状态接口。
+    缓存最后一次有效视觉结果，标注失效后延迟一秒消失。
+2026.8.3
+    新增视觉目标 map 历史、时间戳 TF 重试、ArUco 历史和清除接口。
+    新增 base_link 一分钟轨迹、轨迹清除接口和最近两帧目标位姿。
+    三路实时 TF 统一使用 Time(0) 获取，公共时间查询失败不再影响位姿。
 """
 
 import copy
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -43,16 +51,22 @@ from state_web_core import (
     ACTUATOR_MODE_NAMES,
     CONTROL_MODE_NAMES,
     MOTION_STATE_NAMES,
+    NavigationHistoryState,
     OriginRevision,
+    VisionHistoryState,
+    extract_vision_pose_points,
     has_vision_detections,
     health_state,
     map_pixel_to_frame,
     normalize_heading,
     quaternion_to_euler_deg,
+    safe_float,
     sanitize_json,
     select_attitude,
     shortest_heading_error,
+    transform_visual_geometry,
     update_fps,
+    vision_map_category,
     vision_packet_status,
 )
 
@@ -186,6 +200,7 @@ VISION_SOURCE_DEFAULTS = {
         "topics": {
             "detection": "/vision/arrow/detections",
             "arrow": "/vision/arrow/direction",
+            "pose": "/vision/arrow/pose",
         },
     },
     "aruco": {
@@ -203,30 +218,70 @@ VISION_SOURCE_DEFAULTS = {
 class VisionOverlayStore:
     """缓存各视觉任务结果，并按相机帧筛选可绘制数据。"""
 
-    def __init__(self, sources, timeout, frame_tolerance):
+    def __init__(self, sources, timeout, frame_tolerance, hold_time):
         self.sources = copy.deepcopy(sources)
         self.timeout = float(timeout)
         self.frame_tolerance = float(frame_tolerance)
+        self.hold_time = max(0.001, float(hold_time))
         self.lock = threading.RLock()
         self.values = {
             source: {kind: None for kind in config["topics"]}
             for source, config in self.sources.items()
         }
+        self.drawable_values = {
+            source: {kind: None for kind in config["topics"]}
+            for source, config in self.sources.items()
+        }
+
+    @staticmethod
+    def _is_drawable(source, kind, payload):
+        """判断消息能否更新最后一次有效标注缓存。"""
+        if kind == "detection":
+            return has_vision_detections(payload)
+        return bool(
+            isinstance(payload, dict) and payload.get("valid") is True
+        )
 
     def store(self, source, kind, payload, received_at):
         """保存一类视觉 JSON 的最近一次有效格式消息。"""
         if source not in self.values or kind not in self.values[source]:
             return
         with self.lock:
-            self.values[source][kind] = {
+            previous = self.values[source][kind]
+            fps = update_fps(
+                previous.get("fps", 0.0) if previous else 0.0,
+                previous.get("received_at") if previous else None,
+                received_at,
+            )
+            packet = {
                 "payload": copy.deepcopy(payload),
                 "received_at": float(received_at),
+                "fps": fps,
+                "drawn_once": False,
             }
+            self.values[source][kind] = packet
+            if self._is_drawable(source, kind, payload):
+                self.drawable_values[source][kind] = copy.deepcopy(packet)
+
+    def latest(self, source, kind):
+        """返回指定视觉通道的最新原始数据包副本。"""
+        with self.lock:
+            source_values = self.values.get(source, {})
+            return copy.deepcopy(source_values.get(kind))
+
+    def _mark_drawn(self, source, kind, received_at):
+        """标记结果已通过严格帧同步检查，可进入短暂保留阶段。"""
+        with self.lock:
+            packet = self.drawable_values[source][kind]
+            if (
+                    packet is not None
+                    and packet.get("received_at") == received_at):
+                packet["drawn_once"] = True
 
     def packets_for_frame(self, camera, frame_stamp, now):
         """返回与当前相机帧同相机、同时间窗口的有效任务结果。"""
         with self.lock:
-            values = copy.deepcopy(self.values)
+            values = copy.deepcopy(self.drawable_values)
 
         active = {}
         for source, config in self.sources.items():
@@ -235,15 +290,30 @@ class VisionOverlayStore:
             packets = values.get(source, {})
             selected = {}
             for kind, packet in packets.items():
-                status = vision_packet_status(
+                strict_status = vision_packet_status(
                     packet,
                     now,
                     self.timeout,
                     frame_stamp,
                     self.frame_tolerance,
                 )
-                if not status["online"]:
-                    continue
+                if strict_status["online"]:
+                    self._mark_drawn(
+                        source,
+                        kind,
+                        packet.get("received_at"),
+                    )
+                else:
+                    held_status = vision_packet_status(
+                        packet,
+                        now,
+                        self.hold_time,
+                    )
+                    if (
+                            not packet
+                            or not packet.get("drawn_once")
+                            or not held_status["online"]):
+                        continue
                 payload = packet.get("payload") if packet else None
                 if not isinstance(payload, dict):
                     continue
@@ -268,6 +338,9 @@ class VisionOverlayStore:
             channels = {}
             for kind, packet in values[source].items():
                 status = vision_packet_status(packet, now, self.timeout)
+                status["fps"] = (
+                    packet.get("fps", 0.0) if packet else 0.0
+                )
                 message = packet.get("payload") if packet else None
                 if kind == "detection":
                     status["valid"] = has_vision_detections(message)
@@ -281,6 +354,7 @@ class VisionOverlayStore:
                 "label": config["label"],
                 "topics": copy.deepcopy(config["topics"]),
                 "channels": channels,
+                "fps": channels.get("detection", {}).get("fps", 0.0),
             }
         return payload
 
@@ -431,6 +505,27 @@ class StateWebNode:
         self.vision_frame_tolerance = float(
             rospy.get_param("~vision_frame_tolerance", 0.5)
         )
+        self.vision_overlay_hold = float(
+            rospy.get_param("~vision_overlay_hold", 1.0)
+        )
+        self.vision_map_history_limit = int(
+            rospy.get_param("~vision_map_history_limit", 20)
+        )
+        self.aruco_history_window = int(
+            rospy.get_param("~aruco_history_window", 10)
+        )
+        self.aruco_required_count = int(
+            rospy.get_param("~aruco_required_count", 3)
+        )
+        self.aruco_min_confidence = float(
+            rospy.get_param("~aruco_min_confidence", 0.5)
+        )
+        self.trajectory_sample_hz = float(
+            rospy.get_param("~trajectory_sample_hz", 1.0)
+        )
+        self.trajectory_duration_sec = float(
+            rospy.get_param("~trajectory_duration_sec", 60.0)
+        )
 
         self.topics = {
             "left": rospy.get_param(
@@ -491,6 +586,21 @@ class StateWebNode:
             self.vision_sources,
             self.vision_timeout,
             self.vision_frame_tolerance,
+            self.vision_overlay_hold,
+        )
+        self.vision_history = VisionHistoryState(
+            map_limit=self.vision_map_history_limit,
+            aruco_window=self.aruco_history_window,
+            aruco_required_count=self.aruco_required_count,
+            aruco_min_confidence=self.aruco_min_confidence,
+        )
+        self.vision_history_operation_lock = threading.RLock()
+        self.vision_pending_lock = threading.RLock()
+        self.vision_pending = {}
+        self.navigation_history = NavigationHistoryState(
+            trajectory_hz=self.trajectory_sample_hz,
+            trajectory_duration_sec=self.trajectory_duration_sec,
+            target_limit=2,
         )
         self.origin_revision = OriginRevision()
         # 使用哨兵值，确保时间戳为 0 的首组 TF 也能被记录。
@@ -646,7 +756,165 @@ class StateWebNode:
                 kind,
             )
             return
-        self.vision_store.store(source, kind, payload, time.time())
+        received_at = time.time()
+        self.vision_store.store(source, kind, payload, received_at)
+        with self.vision_history_operation_lock:
+            if source == "aruco" and kind == "detection":
+                self.vision_history.append_aruco_payload(payload, received_at)
+            if source in (
+                    "line", "red_circle", "shapes", "rectangle", "arrow"):
+                self._queue_visual_map_input(source, kind, received_at)
+
+    def _queue_visual_map_input(self, source, kind, received_at):
+        """把有效三维视觉结果放入等待时间戳 TF 的短期队列。"""
+        if source != "arrow" and kind != "pose":
+            return
+        if source == "arrow" and kind not in ("pose", "arrow"):
+            return
+
+        pose_packet = self.vision_store.latest(source, "pose")
+        pose_payload = pose_packet.get("payload") if pose_packet else None
+        if not isinstance(pose_payload, dict):
+            return
+        stamp = safe_float(pose_payload.get("stamp"))
+        confidence = safe_float(pose_payload.get("confidence"))
+        frame_id = str(pose_payload.get("frame_id") or "").strip().lstrip("/")
+        points = extract_vision_pose_points(source, pose_payload)
+        category = vision_map_category(
+            source,
+            pose_payload.get("class_name"),
+        )
+        if (
+                stamp is None
+                or stamp <= 0.0
+                or confidence is None
+                or not 0.0 <= confidence <= 1.0
+                or not frame_id
+                or category is None
+                or (source == "line" and len(points) < 2)
+                or (source != "line" and len(points) != 1)):
+            return
+
+        direction = None
+        if source == "arrow":
+            arrow_packet = self.vision_store.latest("arrow", "arrow")
+            arrow_payload = arrow_packet.get("payload") if arrow_packet else None
+            if not isinstance(arrow_payload, dict):
+                return
+            arrow_stamp = safe_float(arrow_payload.get("stamp"))
+            vector = arrow_payload.get("direction_2d")
+            if (
+                    arrow_payload.get("valid") is not True
+                    or arrow_stamp is None
+                    or abs(arrow_stamp - stamp) > self.vision_frame_tolerance
+                    or not isinstance(vector, dict)):
+                return
+            direction_x = safe_float(vector.get("x"))
+            direction_y = safe_float(vector.get("y"))
+            direction_confidence = safe_float(
+                arrow_payload.get(
+                    "direction_confidence",
+                    arrow_payload.get("confidence"),
+                )
+            )
+            if (
+                    direction_x is None
+                    or direction_y is None
+                    or direction_confidence is None
+                    or not 0.0 <= direction_confidence <= 1.0
+                    or math.hypot(direction_x, direction_y) <= 1e-9):
+                return
+            direction = {"x": direction_x, "y": direction_y, "z": 0.0}
+            confidence = min(confidence, direction_confidence)
+
+        dedupe_key = "{}:{:.9f}".format(source, stamp)
+        event = {
+            "source": source,
+            "category": category,
+            "stamp": stamp,
+            "frame_id": frame_id,
+            "confidence": confidence,
+            "points": points,
+            "direction": direction,
+            "received_at": float(received_at),
+            "expires_at": float(received_at) + max(0.05, self.tf_timeout),
+            "dedupe_key": dedupe_key,
+        }
+        with self.vision_pending_lock:
+            if dedupe_key not in self.vision_pending:
+                self.vision_pending[dedupe_key] = event
+
+    def _transform_visual_event(self, event):
+        """使用检测时刻 TF 把相机点和箭头方向转换到 map/NED。"""
+        stamp = rospy.Time.from_sec(float(event["stamp"]))
+        translation, quaternion = self.tf_listener.lookupTransform(
+            self.world_frame,
+            event["frame_id"],
+            stamp,
+        )
+        map_points, map_direction = transform_visual_geometry(
+            event["points"],
+            event.get("direction"),
+            translation,
+            quaternion,
+        )
+
+        record = {
+            "stamp": float(event["stamp"]),
+            "received_at": float(event["received_at"]),
+            "confidence": float(event["confidence"]),
+            "points": map_points,
+        }
+        if map_direction is not None:
+            record["direction_ne"] = {
+                "north": map_direction["north"],
+                "east": map_direction["east"],
+            }
+            record["heading_deg"] = map_direction["heading_deg"]
+        return record
+
+    def _process_pending_visual_map(self):
+        """重试待处理视觉结果，直至成功或超过 TF 等待时间。"""
+        with self.vision_history_operation_lock:
+            self._process_pending_visual_map_locked()
+
+    def _process_pending_visual_map_locked(self):
+        """在清除互斥锁保护下处理待转换的视觉结果。"""
+        now = time.time()
+        with self.vision_pending_lock:
+            pending = list(self.vision_pending.items())
+        for key, event in pending:
+            if now > event["expires_at"]:
+                with self.vision_pending_lock:
+                    self.vision_pending.pop(key, None)
+                rospy.logwarn_throttle(
+                    2.0,
+                    "state_web: 视觉%s在检测时刻的TF等待超时，已丢弃",
+                    event["source"],
+                )
+                continue
+            try:
+                record = self._transform_visual_event(event)
+            except (
+                    tf.Exception,
+                    tf.LookupException,
+                    tf.ConnectivityException,
+                    tf.ExtrapolationException,
+                    ValueError,
+            ):
+                continue
+            self.vision_history.append_map(
+                event["category"],
+                record,
+                event["dedupe_key"],
+            )
+            with self.vision_pending_lock:
+                self.vision_pending.pop(key, None)
+
+    def _clear_pending_visual_map(self):
+        """清除尚未转换的旧坐标视觉结果。"""
+        with self.vision_pending_lock:
+            self.vision_pending.clear()
 
     def _store(self, name, data, ros_stamp=None, received_at=None):
         """线程安全保存一份话题快照。"""
@@ -1012,16 +1280,20 @@ class StateWebNode:
     def _pose_command_callback(self, message):
         """接收 NED 运动控制指令。"""
         mode = int(message.mode)
+        received_at = time.time()
+        target = serialize_pose_stamped(message.target)
         data = {
             "mode": mode,
             "mode_name": CONTROL_MODE_NAMES.get(mode, "未知"),
-            "target": serialize_pose_stamped(message.target),
+            "target": target,
             "force": serialize_motor(message.force),
         }
+        self.navigation_history.append_target(target, received_at)
         self._store(
             "pose_command",
             data,
             ros_stamp=ros_stamp_sec(message.target.header),
+            received_at=received_at,
         )
 
     def _actuator_command_callback(self, message):
@@ -1114,6 +1386,10 @@ class StateWebNode:
             ros_stamp=ros_stamp_sec(message.header),
         )
         if changed:
+            with self.vision_history_operation_lock:
+                self._clear_pending_visual_map()
+                self.vision_history.clear_map(time.time())
+            self.navigation_history.clear_trajectory(time.time())
             rospy.logwarn(
                 "state_web: 世界原点版本更新为 %d，Web 轨迹将清空",
                 revision,
@@ -1122,14 +1398,10 @@ class StateWebNode:
     def _lookup_tf_pose(self, child_frame):
         """查询世界坐标系到指定机体坐标系的最新位姿。"""
         try:
-            stamp = self.tf_listener.getLatestCommonTime(
-                self.world_frame,
-                child_frame,
-            )
             translation, quaternion = self.tf_listener.lookupTransform(
                 self.world_frame,
                 child_frame,
-                stamp,
+                rospy.Time(0),
             )
         except (
                 tf.Exception,
@@ -1139,12 +1411,29 @@ class StateWebNode:
         ):
             return None
 
-        stamp_sec = stamp.to_sec() if stamp != rospy.Time(0) else None
+        lookup_received_at = time.time()
+        stamp_sec = None
+        try:
+            stamp = self.tf_listener.getLatestCommonTime(
+                self.world_frame,
+                child_frame,
+            )
+            if stamp != rospy.Time(0):
+                stamp_sec = stamp.to_sec()
+        except (
+                tf.Exception,
+                tf.LookupException,
+                tf.ConnectivityException,
+                tf.ExtrapolationException,
+        ):
+            # 位姿已经通过 Time(0) 成功获取，时间戳失败不能使该帧失效。
+            pass
         orientation = quaternion_to_euler_deg(*quaternion)
         return {
             "frame_id": self.world_frame,
             "child_frame_id": child_frame,
             "stamp_sec": stamp_sec,
+            "lookup_received_at": lookup_received_at,
             "position_m": {
                 "x": float(translation[0]),
                 "y": float(translation[1]),
@@ -1162,6 +1451,7 @@ class StateWebNode:
     def _update_tf(self, unused_event):
         """轮询世界坐标系到 IMU、机体和相机的最新动态 TF。"""
         del unused_event
+        self._process_pending_visual_map()
         frame_poses = {
             "imu": self._lookup_tf_pose(self.imu_frame),
             "base": self._lookup_tf_pose(self.base_frame),
@@ -1170,12 +1460,17 @@ class StateWebNode:
         base_pose = frame_poses["base"]
         if base_pose is None:
             return
+        self.navigation_history.append_base_pose(base_pose, time.time())
 
         # 任意坐标系的新时间戳都会触发页面快照更新。
         signature = tuple(
             (
                 key,
-                None if pose is None else pose.get("stamp_sec"),
+                None if pose is None else (
+                    pose.get("stamp_sec")
+                    if pose.get("stamp_sec") is not None
+                    else pose.get("lookup_received_at")
+                ),
             )
             for key, pose in sorted(frame_poses.items())
         )
@@ -1303,6 +1598,17 @@ class StateWebNode:
             tf_pose,
             pose_command,
         )
+        unused_origin_values, origin_revision = self.origin_revision.snapshot()
+        del unused_origin_values
+        vision_history = self.vision_history.snapshot(
+            now,
+            self.world_frame,
+            origin_revision,
+        )
+        navigation_history = self.navigation_history.snapshot(
+            now,
+            self.world_frame,
+        )
 
         snapshots = {
             "feedback": feedback,
@@ -1337,6 +1643,7 @@ class StateWebNode:
                     "age_sec": channel.get("age_sec"),
                     "topic": source_status["topics"].get(kind),
                     "valid": bool(channel.get("valid")),
+                    "fps": channel.get("fps", 0.0),
                 }
 
         payload = {
@@ -1361,6 +1668,10 @@ class StateWebNode:
             "origin": origin,
             "attitude": attitude,
             "vision": vision,
+            "vision_map": vision_history["vision_map"],
+            "aruco_history": vision_history["aruco_history"],
+            "base_trajectory": navigation_history["base_trajectory"],
+            "target_history": navigation_history["target_history"],
             "topic_health": topic_health,
         }
         return sanitize_json(payload)
@@ -1392,6 +1703,28 @@ class StateWebNode:
         @self.app.route("/api/status")
         def api_status():
             return jsonify(self.status_payload())
+
+        @self.app.route("/api/vision-history/clear", methods=["POST"])
+        def clear_vision_history():
+            cleared_at = time.time()
+            with self.vision_history_operation_lock:
+                self._clear_pending_visual_map()
+                version = self.vision_history.clear_all(cleared_at)
+            return jsonify({
+                "ok": True,
+                "cleared_at": cleared_at,
+                "history_version": version,
+            })
+
+        @self.app.route("/api/base-trajectory/clear", methods=["POST"])
+        def clear_base_trajectory():
+            cleared_at = time.time()
+            version = self.navigation_history.clear_trajectory(cleared_at)
+            return jsonify({
+                "ok": True,
+                "cleared_at": cleared_at,
+                "history_version": version,
+            })
 
         @self.app.route("/health")
         def health():

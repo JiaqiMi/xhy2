@@ -1,4 +1,17 @@
 <launch>
+    <!--
+    名称：state_web.launch
+    功能：启动状态监控 Web、相机流和视觉标注集成
+    作者：xhy
+    监听：AUV 状态、TF、相机图像与视觉结果话题
+    发布：HTTP 状态接口与 MJPEG 相机流
+    记录：
+    2026.8.2
+        增加视觉标注最后有效结果保留时间参数。
+    2026.8.3
+        增加箭头位姿、视觉地图历史与 ArUco 历史判定参数。
+        增加 base_link 轨迹采样频率和保留时间参数。
+    -->
     <arg name="host" default="0.0.0.0" />
     <arg name="port" default="8088" />
 
@@ -16,6 +29,7 @@
     <arg name="rectangle_pose_topic" default="/vision/rectangle/pose" />
     <arg name="arrow_detection_topic" default="/vision/arrow/detections" />
     <arg name="arrow_direction_topic" default="/vision/arrow/direction" />
+    <arg name="arrow_pose_topic" default="/vision/arrow/pose" />
     <arg name="aruco_detection_topic" default="/vision/aruco/detections" />
     <arg name="aruco_pose_topic" default="/vision/aruco/pose" />
 
@@ -39,6 +53,13 @@
     <arg name="image_timeout" default="3.0" />
     <arg name="vision_timeout" default="2.0" />
     <arg name="vision_frame_tolerance" default="0.5" />
+    <arg name="vision_overlay_hold" default="1.0" />
+    <arg name="vision_map_history_limit" default="20" />
+    <arg name="aruco_history_window" default="10" />
+    <arg name="aruco_required_count" default="3" />
+    <arg name="aruco_min_confidence" default="0.5" />
+    <arg name="trajectory_sample_hz" default="1.0" />
+    <arg name="trajectory_duration_sec" default="60.0" />
     <arg name="state_timeout" default="2.0" />
     <arg name="command_timeout" default="2.0" />
     <arg name="tf_timeout" default="2.0" />
@@ -67,6 +88,7 @@
         <param name="rectangle_pose_topic" value="$(arg rectangle_pose_topic)" />
         <param name="arrow_detection_topic" value="$(arg arrow_detection_topic)" />
         <param name="arrow_direction_topic" value="$(arg arrow_direction_topic)" />
+        <param name="arrow_pose_topic" value="$(arg arrow_pose_topic)" />
         <param name="aruco_detection_topic" value="$(arg aruco_detection_topic)" />
         <param name="aruco_pose_topic" value="$(arg aruco_pose_topic)" />
 
@@ -90,6 +112,13 @@
         <param name="image_timeout" value="$(arg image_timeout)" />
         <param name="vision_timeout" value="$(arg vision_timeout)" />
         <param name="vision_frame_tolerance" value="$(arg vision_frame_tolerance)" />
+        <param name="vision_overlay_hold" value="$(arg vision_overlay_hold)" />
+        <param name="vision_map_history_limit" value="$(arg vision_map_history_limit)" />
+        <param name="aruco_history_window" value="$(arg aruco_history_window)" />
+        <param name="aruco_required_count" value="$(arg aruco_required_count)" />
+        <param name="aruco_min_confidence" value="$(arg aruco_min_confidence)" />
+        <param name="trajectory_sample_hz" value="$(arg trajectory_sample_hz)" />
+        <param name="trajectory_duration_sec" value="$(arg trajectory_duration_sec)" />
         <param name="state_timeout" value="$(arg state_timeout)" />
         <param name="command_timeout" value="$(arg command_timeout)" />
         <param name="tf_timeout" value="$(arg tf_timeout)" />

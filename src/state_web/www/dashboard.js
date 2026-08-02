@@ -11,10 +11,66 @@
     增加可持久化的手动地图旋转，支持指定航向为上。
     增加拖拽对角点绘制并持久化水池 N/E 边界。
     水池矩形改为按绘制时地图航向确定方向，并保存世界坐标角点。
+2026.8.2
+    在左目和鱼眼标题旁显示各在线视觉任务的检测帧率。
+2026.8.3
+    新增视觉地图绘制、持久化显示开关、历史清除和鱼眼识别历史。
+    新增 base_link 一分钟轨迹、独立清除按钮和最近两帧目标绘制。
+    新增视觉位置与置信度文字的独立持久化显示开关。
 */
 
 const MAP_UP_HEADING_KEY = "state_web.map_up_heading_deg";
 const POOL_BOUNDARY_KEY = "state_web.pool_boundary_ned";
+const VISUAL_HISTORY_VISIBLE_KEY = "state_web.visual_history_visible";
+const VISUAL_LABELS_VISIBLE_KEY = "state_web.visual_labels_visible";
+
+
+function loadVisualHistoryVisible() {
+    try {
+        const saved = window.localStorage.getItem(
+            VISUAL_HISTORY_VISIBLE_KEY,
+        );
+        return saved === null ? true : saved !== "false";
+    } catch (error) {
+        return true;
+    }
+}
+
+
+function saveVisualHistoryVisible(visible) {
+    try {
+        window.localStorage.setItem(
+            VISUAL_HISTORY_VISIBLE_KEY,
+            String(Boolean(visible)),
+        );
+    } catch (error) {
+        // 浏览器禁用本地存储时，本次页面内开关仍然有效。
+    }
+}
+
+
+function loadVisualLabelsVisible() {
+    try {
+        const saved = window.localStorage.getItem(
+            VISUAL_LABELS_VISIBLE_KEY,
+        );
+        return saved === null ? true : saved !== "false";
+    } catch (error) {
+        return true;
+    }
+}
+
+
+function saveVisualLabelsVisible(visible) {
+    try {
+        window.localStorage.setItem(
+            VISUAL_LABELS_VISIBLE_KEY,
+            String(Boolean(visible)),
+        );
+    } catch (error) {
+        // 浏览器禁用本地存储时，本次页面内开关仍然有效。
+    }
+}
 
 
 function normalizeMapHeading(value) {
@@ -164,6 +220,8 @@ const dashboardState = {
     mapPanX: 0,
     mapPanY: 0,
     mapUpHeading: loadMapUpHeading(),
+    visualHistoryVisible: loadVisualHistoryVisible(),
+    visualLabelsVisible: loadVisualLabelsVisible(),
     poolBounds: loadPoolBounds(),
     poolDraftBounds: null,
     poolDrawing: false,
@@ -397,6 +455,87 @@ function renderCamera(name, stream) {
         `${numberText(stream.fps, 1)} FPS`,
         `年龄 ${ageText(stream.age_sec)}`,
     ].join(" · ");
+}
+
+
+function renderVisionFps(vision) {
+    const labels = {
+        line: "线",
+        red_circle: "红圆",
+        shapes: "形状",
+        rectangle: "方框",
+        arrow: "箭头",
+        aruco: "ArUco",
+    };
+    for (const camera of ["left", "fisheye"]) {
+        const element = document.getElementById(
+            `camera-${camera}-vision-fps`,
+        );
+        const items = Object.entries(vision || {})
+            .filter(([, source]) => source?.camera === camera)
+            .map(([name, source]) => {
+                const channel = source?.channels?.detection;
+                if (!channel?.online) return null;
+                const fps = finiteNumber(source.fps ?? channel.fps);
+                const fpsText = fps !== null && fps > 0
+                    ? fps.toFixed(1)
+                    : "--";
+                return `${labels[name] || source.label || name} ${fpsText} FPS`;
+            })
+            .filter(Boolean);
+        element.textContent = items.length
+            ? items.join(" · ")
+            : "视觉 FPS --";
+        element.classList.toggle("is-online", items.length > 0);
+    }
+}
+
+
+function arucoAgeText(value) {
+    const age = finiteNumber(value);
+    if (age === null) return "--前";
+    if (age < 1) return `${Math.max(0, age).toFixed(1)}秒前`;
+    if (age < 10) return `${age.toFixed(1)}秒前`;
+    return `${Math.round(age)}秒前`;
+}
+
+
+function renderArucoHistory(history) {
+    const container = document.getElementById("aruco-history");
+    const expected = document.getElementById("aruco-expected-color");
+    const items = Array.isArray(history?.items) ? history.items : [];
+    const fragment = document.createDocumentFragment();
+    if (!items.length) {
+        const empty = document.createElement("span");
+        empty.className = "aruco-history-empty";
+        empty.textContent = "暂无有效识别";
+        fragment.appendChild(empty);
+    } else {
+        items.slice(0, 10).forEach((item) => {
+            const marker = document.createElement("span");
+            marker.className = "aruco-history-item";
+            marker.textContent = `ID ${integerText(item.marker_id)} · ${arucoAgeText(item.age_sec)}`;
+            marker.title = `置信度 ${numberText(item.confidence, 2)}`;
+            fragment.appendChild(marker);
+        });
+    }
+    container.replaceChildren(fragment);
+
+    const colors = {
+        yellow: "黄色",
+        green: "绿色",
+        red: "红色",
+    };
+    const color = colors[history?.expected_color]
+        ? history.expected_color
+        : null;
+    expected.className = `aruco-expected-color ${color || "pending"}`;
+    expected.querySelector(".aruco-color-text").textContent = color
+        ? `期望${colors[color]}`
+        : "待确认";
+    expected.title = color
+        ? `锁存 ID ${integerText(history.confirmed_marker_id)}，当前窗口命中 ${integerText(history.confirmed_count)}/${integerText(history.required_count)}`
+        : `最近 ${integerText(history?.window_size)} 次中尚无 ID 达到 ${integerText(history?.required_count)} 次`;
 }
 
 
@@ -1219,6 +1358,268 @@ function drawPoolBoundary(ctx, worldToScreen, boundary, draft = false) {
 }
 
 
+function drawBaseTrajectory(ctx, worldToScreen, trajectory) {
+    const points = Array.isArray(trajectory?.points)
+        ? trajectory.points.map((point) => ({
+            north: finiteNumber(point?.north_m),
+            east: finiteNumber(point?.east_m),
+        })).filter((point) => (
+            point.north !== null && point.east !== null
+        ))
+        : [];
+    if (!points.length) return;
+
+    const screens = points.map((point) => (
+        worldToScreen(point.north, point.east)
+    ));
+    ctx.save();
+    ctx.strokeStyle = "#48a9ff";
+    ctx.fillStyle = "#48a9ff";
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    if (screens.length > 1) {
+        ctx.beginPath();
+        ctx.moveTo(screens[0].x, screens[0].y);
+        screens.slice(1).forEach((point) => {
+            ctx.lineTo(point.x, point.y);
+        });
+        ctx.stroke();
+    }
+    screens.forEach((point, index) => {
+        ctx.globalAlpha = 0.32 + 0.68 * (index + 1) / screens.length;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, index === screens.length - 1 ? 3.5 : 2.3,
+            0, Math.PI * 2);
+        ctx.fill();
+    });
+    ctx.restore();
+}
+
+
+function targetHistoryItems(data) {
+    const history = Array.isArray(data.target_history?.items)
+        ? data.target_history.items.slice(0, 2)
+        : [];
+    if (history.length) return history;
+    const current = data.pose_command?.data?.target;
+    return current ? [current] : [];
+}
+
+
+const VISUAL_MAP_STYLES = {
+    red_circle: {color: "#ff3f50", marker: "circle"},
+    black_square: {color: "#080b10", outline: "#e8f0fa", marker: "square"},
+    yellow_circle: {color: "#ffd642", marker: "circle"},
+    red_line: {color: "#ff5364", marker: "line"},
+    arrow: {color: "#ff70d5", marker: "arrow"},
+    rectangle_red: {color: "#ff5364", marker: "circle"},
+    rectangle_yellow: {color: "#ffd642", marker: "circle"},
+    rectangle_green: {color: "#38d996", marker: "circle"},
+};
+
+
+function rectanglesOverlap(first, second) {
+    return !(
+        first.x + first.width < second.x
+        || second.x + second.width < first.x
+        || first.y + first.height < second.y
+        || second.y + second.height < first.y
+    );
+}
+
+
+function drawVisualMapLabel(
+    ctx,
+    anchor,
+    text,
+    color,
+    occupied,
+    width,
+    height,
+) {
+    ctx.save();
+    ctx.font = "bold 12px Microsoft YaHei, Consolas, monospace";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    const textWidth = Math.ceil(ctx.measureText(text).width);
+    const labelWidth = textWidth + 10;
+    const labelHeight = 20;
+    const offsets = [
+        [10, -25], [10, 8], [-labelWidth - 10, -25],
+        [-labelWidth - 10, 8], [10, -47], [-labelWidth - 10, -47],
+    ];
+    let box = null;
+    for (const [offsetX, offsetY] of offsets) {
+        const candidate = {
+            x: Math.max(2, Math.min(width - labelWidth - 2, anchor.x + offsetX)),
+            y: Math.max(2, Math.min(height - labelHeight - 2, anchor.y + offsetY)),
+            width: labelWidth,
+            height: labelHeight,
+        };
+        if (!occupied.some((item) => rectanglesOverlap(candidate, item))) {
+            box = candidate;
+            break;
+        }
+        if (box === null) box = candidate;
+    }
+    occupied.push(box);
+    ctx.fillStyle = "rgba(3, 13, 22, 0.82)";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.fillRect(box.x, box.y, box.width, box.height);
+    ctx.strokeRect(box.x, box.y, box.width, box.height);
+    ctx.fillStyle = color;
+    ctx.fillText(text, box.x + 5, box.y + 3);
+    ctx.restore();
+}
+
+
+function drawVisualPointMarker(ctx, screen, style) {
+    ctx.save();
+    ctx.fillStyle = style.color;
+    ctx.strokeStyle = style.outline || "rgba(3, 12, 19, 0.95)";
+    ctx.lineWidth = style.outline ? 2 : 1.5;
+    if (style.marker === "square") {
+        ctx.fillRect(screen.x - 6, screen.y - 6, 12, 12);
+        ctx.strokeRect(screen.x - 6, screen.y - 6, 12, 12);
+    } else {
+        ctx.beginPath();
+        ctx.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+
+function drawVisualArrow(ctx, origin, directionTip, color) {
+    let directionX = directionTip.x - origin.x;
+    let directionY = directionTip.y - origin.y;
+    const length = Math.hypot(directionX, directionY);
+    if (length <= 1e-6) return;
+    directionX /= length;
+    directionY /= length;
+    const arrowLength = 30;
+    const tip = {
+        x: origin.x + directionX * arrowLength,
+        y: origin.y + directionY * arrowLength,
+    };
+    const normalX = -directionY;
+    const normalY = directionX;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(origin.x, origin.y);
+    ctx.lineTo(tip.x, tip.y);
+    ctx.lineTo(
+        tip.x - directionX * 9 + normalX * 5,
+        tip.y - directionY * 9 + normalY * 5,
+    );
+    ctx.moveTo(tip.x, tip.y);
+    ctx.lineTo(
+        tip.x - directionX * 9 - normalX * 5,
+        tip.y - directionY * 9 - normalY * 5,
+    );
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(origin.x, origin.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+}
+
+
+function drawVisualMapHistory(ctx, worldToScreen, visionMap, width, height) {
+    if (!dashboardState.visualHistoryVisible) return;
+    const categories = visionMap?.categories;
+    if (!categories || typeof categories !== "object") return;
+    const occupied = [];
+    for (const [category, style] of Object.entries(VISUAL_MAP_STYLES)) {
+        const records = Array.isArray(categories[category])
+            ? categories[category]
+            : [];
+        records.forEach((record, index) => {
+            const points = Array.isArray(record?.points)
+                ? record.points.map((point) => ({
+                    north: finiteNumber(point?.north_m),
+                    east: finiteNumber(point?.east_m),
+                })).filter((point) => (
+                    point.north !== null && point.east !== null
+                ))
+                : [];
+            if (!points.length) return;
+            const screens = points.map((point) => (
+                worldToScreen(point.north, point.east)
+            ));
+            const confidence = finiteNumber(record?.confidence);
+            const alpha = 0.48 + 0.52 * (index + 1) / Math.max(1, records.length);
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            if (style.marker === "line") {
+                if (screens.length < 2) {
+                    ctx.restore();
+                    return;
+                }
+                ctx.strokeStyle = style.color;
+                ctx.fillStyle = style.color;
+                ctx.lineWidth = 2.5;
+                ctx.lineJoin = "round";
+                ctx.beginPath();
+                ctx.moveTo(screens[0].x, screens[0].y);
+                screens.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+                ctx.stroke();
+                screens.forEach((point) => {
+                    ctx.beginPath();
+                    ctx.arc(point.x, point.y, 3, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+            } else if (style.marker === "arrow") {
+                const direction = record?.direction_ne;
+                const north = finiteNumber(direction?.north);
+                const east = finiteNumber(direction?.east);
+                if (north === null || east === null) {
+                    ctx.restore();
+                    return;
+                }
+                drawVisualArrow(
+                    ctx,
+                    screens[0],
+                    worldToScreen(
+                        points[0].north + north,
+                        points[0].east + east,
+                    ),
+                    style.color,
+                );
+            } else {
+                drawVisualPointMarker(ctx, screens[0], style);
+            }
+            ctx.restore();
+
+            if (!dashboardState.visualLabelsVisible) return;
+            const anchor = screens[Math.floor((screens.length - 1) / 2)];
+            const confidenceText = confidence === null
+                ? "C --"
+                : `C ${confidence.toFixed(2)}`;
+            const label = style.marker === "line"
+                ? confidenceText
+                : `${confidenceText} · N ${points[0].north.toFixed(2)} E ${points[0].east.toFixed(2)}`;
+            drawVisualMapLabel(
+                ctx,
+                anchor,
+                label,
+                style.outline || style.color,
+                occupied,
+                width,
+                height,
+            );
+        });
+    }
+}
+
+
 function drawXYMap(data) {
     const canvas = document.getElementById("xy-canvas");
     const { context: ctx, width, height } = resizeCanvas(canvas);
@@ -1309,6 +1710,14 @@ function drawXYMap(data) {
         poolBounds,
         Boolean(dashboardState.poolDraftBounds),
     );
+    drawBaseTrajectory(ctx, worldToScreen, data.base_trajectory);
+    drawVisualMapHistory(
+        ctx,
+        worldToScreen,
+        data.vision_map,
+        width,
+        height,
+    );
 
     const tfData = data.tf?.data || {};
     const position = tfData.position_m;
@@ -1340,44 +1749,55 @@ function drawXYMap(data) {
         && actualFramePoints.camera
     );
 
-    const targetPose = data.pose_command?.data?.target;
-    const targetNorth = finiteNumber(targetPose?.position_m?.x);
-    const targetEast = finiteNumber(targetPose?.position_m?.y);
-    const targetScreen = targetNorth !== null && targetEast !== null
-        ? worldToScreen(targetNorth, targetEast)
-        : null;
-    const targetHeading = finiteNumber(
-        targetPose?.orientation_deg?.heading_deg,
-    );
-    const mapTargetHeading = targetHeading === null
-        ? null
-        : normalizeMapHeading(targetHeading - upHeading);
+    const targetFrames = targetHistoryItems(data).map((target, index) => {
+        const targetNorth = finiteNumber(target?.position_m?.x);
+        const targetEast = finiteNumber(target?.position_m?.y);
+        const targetHeading = finiteNumber(
+            target?.orientation_deg?.heading_deg,
+        );
+        return {
+            target,
+            index,
+            north: targetNorth,
+            east: targetEast,
+            screen: targetNorth !== null && targetEast !== null
+                ? worldToScreen(targetNorth, targetEast)
+                : null,
+            heading: targetHeading === null
+                ? null
+                : normalizeMapHeading(targetHeading - upHeading),
+        };
+    }).filter((frame) => frame.screen);
+    const latestTarget = targetFrames[0] || null;
 
-    if (actualScreen && targetScreen) {
+    if (actualScreen && latestTarget) {
         ctx.save();
-        ctx.strokeStyle = data.pose_command?.online ? "#b94ea8" : "#66727e";
+        ctx.strokeStyle = "#7f3fc5";
         ctx.lineWidth = 1.2;
         ctx.setLineDash([5, 5]);
         ctx.globalAlpha = 0.75;
         ctx.beginPath();
         ctx.moveTo(actualScreen.x, actualScreen.y);
-        ctx.lineTo(targetScreen.x, targetScreen.y);
+        ctx.lineTo(latestTarget.screen.x, latestTarget.screen.y);
         ctx.stroke();
         ctx.restore();
     }
 
-    if (targetScreen) {
-        const annotation = snapshotAnnotation(data.pose_command);
-        drawDirectionalPose(ctx, targetScreen, mapTargetHeading, {
-            color: data.pose_command?.online ? "#ff62cf" : "#7f8994",
+    [...targetFrames].reverse().forEach((frame) => {
+        const latest = frame.index === 0;
+        const annotation = latest
+            ? snapshotAnnotation(data.pose_command)
+            : `收到于 ${ageText(frame.target?.age_sec)}`;
+        drawDirectionalPose(ctx, frame.screen, frame.heading, {
+            color: latest ? "#6f2dbd" : "#c9a3ff",
             label: [
-                `目标 base_link N ${numberText(targetNorth, 2)}  E ${numberText(targetEast, 2)}`,
+                `${latest ? "最新目标" : "上一目标"} base_link N ${numberText(frame.north, 2)}  E ${numberText(frame.east, 2)}`,
                 annotation,
             ].filter(Boolean).join(" · "),
             marker: "diamond",
-            labelOffsetY: -22,
+            labelOffsetY: latest ? -25 : 11,
         });
-    }
+    });
 
     if (actualScreen) {
         const annotation = snapshotAnnotation(data.tf);
@@ -1560,17 +1980,19 @@ function drawZAxis(data) {
         ctx.restore();
     };
 
-    const targetZ = finiteNumber(
-        data.pose_command?.data?.target?.position_m?.z,
-    );
-    drawDepthMarker(
-        targetZ,
-        "目标",
-        data.pose_command?.online ? "#ff62cf" : "#7f8994",
-        snapshotAnnotation(data.pose_command),
-        true,
-        true,
-    );
+    [...targetHistoryItems(data)].reverse().forEach((target, reverseIndex, all) => {
+        const latest = reverseIndex === all.length - 1;
+        drawDepthMarker(
+            finiteNumber(target?.position_m?.z),
+            latest ? "最新目标" : "上一目标",
+            latest ? "#6f2dbd" : "#c9a3ff",
+            latest
+                ? snapshotAnnotation(data.pose_command)
+                : `收到于 ${ageText(target?.age_sec)}`,
+            true,
+            latest,
+        );
+    });
 
     const actualZ = finiteNumber(data.tf?.data?.position_m?.z);
     drawDepthMarker(
@@ -1793,6 +2215,8 @@ function renderDashboard(data) {
     renderCamera("left", data.streams?.left);
     renderCamera("right", data.streams?.right);
     renderCamera("fisheye", data.streams?.fisheye);
+    renderVisionFps(data.vision);
+    renderArucoHistory(data.aruco_history);
 
     const ready = document.getElementById("status-ready");
     ready.textContent = data.ready ? "坐标系已就绪" : "坐标系未就绪";
@@ -1936,6 +2360,79 @@ function configurePoolBoundary() {
         if (dashboardState.status) drawXYMap(dashboardState.status);
     });
     updatePoolBoundaryControls();
+}
+
+
+function configureVisualHistoryControls() {
+    const toggle = document.getElementById("show-visual-history");
+    const labelToggle = document.getElementById("show-visual-labels");
+    const clearButton = document.getElementById("clear-visual-history");
+    toggle.checked = dashboardState.visualHistoryVisible;
+    labelToggle.checked = dashboardState.visualLabelsVisible;
+    toggle.addEventListener("change", () => {
+        dashboardState.visualHistoryVisible = toggle.checked;
+        saveVisualHistoryVisible(toggle.checked);
+        if (dashboardState.status) drawXYMap(dashboardState.status);
+    });
+    labelToggle.addEventListener("change", () => {
+        dashboardState.visualLabelsVisible = labelToggle.checked;
+        saveVisualLabelsVisible(labelToggle.checked);
+        if (dashboardState.status) drawXYMap(dashboardState.status);
+    });
+
+    clearButton.addEventListener("click", async () => {
+        if (clearButton.disabled) return;
+        clearButton.disabled = true;
+        clearButton.textContent = "清除中…";
+        try {
+            const response = await fetch("/api/vision-history/clear", {
+                method: "POST",
+                cache: "no-store",
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            await response.json();
+            clearButton.textContent = "已清除";
+            await refreshStatus();
+        } catch (error) {
+            clearButton.textContent = "清除失败";
+            clearButton.title = `清除视觉历史失败：${error.message}`;
+        } finally {
+            window.setTimeout(() => {
+                clearButton.disabled = false;
+                clearButton.textContent = "清除视觉历史";
+                clearButton.title = "清除地图视觉绘图、鱼眼历史和期望颜色";
+            }, 1200);
+        }
+    });
+}
+
+
+function configureBaseTrajectoryControl() {
+    const clearButton = document.getElementById("clear-base-trajectory");
+    clearButton.addEventListener("click", async () => {
+        if (clearButton.disabled) return;
+        clearButton.disabled = true;
+        clearButton.textContent = "清除中…";
+        try {
+            const response = await fetch("/api/base-trajectory/clear", {
+                method: "POST",
+                cache: "no-store",
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            await response.json();
+            clearButton.textContent = "已清除";
+            await refreshStatus();
+        } catch (error) {
+            clearButton.textContent = "清除失败";
+            clearButton.title = `清除 base_link 轨迹失败：${error.message}`;
+        } finally {
+            window.setTimeout(() => {
+                clearButton.disabled = false;
+                clearButton.textContent = "清除轨迹";
+                clearButton.title = "只清除 base_link 轨迹";
+            }, 1200);
+        }
+    });
 }
 
 
@@ -2129,6 +2626,8 @@ function configureMapInteraction() {
 function initialize() {
     configureMapHeading();
     configurePoolBoundary();
+    configureVisualHistoryControls();
+    configureBaseTrajectoryControl();
     configureMapInteraction();
     window.addEventListener("resize", () => {
         if (dashboardState.status) drawNavigation(dashboardState.status);
