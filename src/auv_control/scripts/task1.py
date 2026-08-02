@@ -96,6 +96,7 @@ class Task1(Task1LineFollow):
     """在巡线状态机上增加按弧长触发的黄色/黑色动作。"""
 
     MARKER_ACTION = "MARKER_ACTION"
+    FALLBACK_TARGET = "FALLBACK_TARGET"
 
     def open_data_log(self):
         """为完整任务创建独立数据文件。"""
@@ -140,6 +141,36 @@ class Task1(Task1LineFollow):
         self.config_file = str(rospy.get_param("~config_file", ""))
         self.last_line_detection_time = None
         self.last_shape_detection_time = None
+        self.search_before_lock_max_cycles = max(1, int(rospy.get_param(
+            "~search_before_lock_max_cycles", 2
+        )))
+        self.search_after_lock_max_cycles = max(1, int(rospy.get_param(
+            "~search_after_lock_max_cycles", 1
+        )))
+        self.task_timeout_seconds = max(1.0, float(rospy.get_param(
+            "~task_timeout_seconds", 420.0
+        )))
+        self.fallback_move_enabled = bool(rospy.get_param(
+            "~fallback_move_enabled", True
+        ))
+        self.fallback_target_x = float(rospy.get_param(
+            "~fallback_target_x", 0.0
+        ))
+        self.fallback_target_y = float(rospy.get_param(
+            "~fallback_target_y", 0.0
+        ))
+        self.fallback_target_z = float(rospy.get_param(
+            "~fallback_target_z", 0.0
+        ))
+        self.fallback_target_yaw = wrap_angle(math.radians(float(
+            rospy.get_param("~fallback_target_yaw_deg", 0.0)
+        )))
+        self.task_execution_started_at = None
+        self.search_before_lock_completed_cycles = 0
+        self.search_after_lock_completed_cycles = 0
+        self.fallback_reason = None
+        self.fallback_triggered_at = None
+        self.fallback_goal = None
         self.actuator_topic = rospy.get_param(
             "~actuator_topic", "/cmd/actuator"
         )
@@ -229,6 +260,9 @@ class Task1(Task1LineFollow):
         ))
         self.yellow_dive_timeout = max(0.1, float(rospy.get_param(
             "~yellow_dive_timeout", 10.0
+        )))
+        self.yellow_return_wait_seconds = max(0.0, float(rospy.get_param(
+            "~yellow_return_wait_seconds", 3.0
         )))
         self.light1 = int(rospy.get_param("~light1", 0))
         self.light2 = int(rospy.get_param("~light2", 0))
@@ -321,6 +355,22 @@ class Task1(Task1LineFollow):
             marker_duplicate_distance=self.marker_duplicate_distance,
             marker_line_max_distance=self.marker_line_max_distance,
             marker_progress_tolerance=self.marker_progress_tolerance,
+            search_before_lock_max_cycles=(
+                self.search_before_lock_max_cycles
+            ),
+            search_after_lock_max_cycles=(
+                self.search_after_lock_max_cycles
+            ),
+            task_timeout_seconds=self.task_timeout_seconds,
+            fallback_move_enabled=self.fallback_move_enabled,
+            fallback_target={
+                "position": [
+                    self.fallback_target_x,
+                    self.fallback_target_y,
+                    self.fallback_target_z,
+                ],
+                "yaw_deg": math.degrees(self.fallback_target_yaw),
+            },
             use_reference_depth=self.use_reference_depth,
             reference_depth=self.reference_depth,
             use_reference_yaw=self.use_reference_yaw,
@@ -336,6 +386,7 @@ class Task1(Task1LineFollow):
                 self.yellow_contact_depth_tolerance
             ),
             yellow_dive_timeout=self.yellow_dive_timeout,
+            yellow_return_wait_seconds=self.yellow_return_wait_seconds,
             black_rotation_angle_deg=math.degrees(self.black_rotation_angle),
             black_rotation_direction=self.black_rotation_direction,
             black_rotation_lookahead_deg=math.degrees(
@@ -379,6 +430,200 @@ class Task1(Task1LineFollow):
                 topic=self.shape_detection_ready_topic,
             )
         self.last_shape_detection_time = rospy.Time.now()
+
+    def task_elapsed_seconds(self):
+        if self.task_execution_started_at is None:
+            return 0.0
+        return max(
+            0.0,
+            (rospy.Time.now() - self.task_execution_started_at).to_sec(),
+        )
+
+    def set_search_state(self, state):
+        previous_state = self.state
+        super().set_search_state(state)
+        if (
+            previous_state == self.WAIT_CAMERA
+            and state == self.SEARCH_FORWARD
+            and self.task_execution_started_at is None
+        ):
+            self.task_execution_started_at = rospy.Time.now()
+            rospy.loginfo(
+                "%s: 开始搜索长线；Task1 总超时计时开始，限制 %.1f s",
+                NODE_NAME,
+                self.task_timeout_seconds,
+            )
+            self.write_data_record(
+                "task_execution_started",
+                timeout_seconds=self.task_timeout_seconds,
+                search_before_lock_max_cycles=(
+                    self.search_before_lock_max_cycles
+                ),
+                search_after_lock_max_cycles=(
+                    self.search_after_lock_max_cycles
+                ),
+            )
+
+    def begin_extension_search_episode(self):
+        self.search_after_lock_completed_cycles = 0
+        self.write_data_record(
+            "search_episode_started",
+            search_phase="after_lock",
+            max_cycles=self.search_after_lock_max_cycles,
+            completed_path=round(self.completed_path_length, 6),
+        )
+
+    def handle_completed_search_cycle(self, search_phase):
+        if search_phase == "before_lock":
+            self.search_before_lock_completed_cycles += 1
+            completed_cycles = self.search_before_lock_completed_cycles
+            max_cycles = self.search_before_lock_max_cycles
+            next_state = self.SEARCH_FORWARD
+        else:
+            self.search_after_lock_completed_cycles += 1
+            completed_cycles = self.search_after_lock_completed_cycles
+            max_cycles = self.search_after_lock_max_cycles
+            next_state = self.SEARCH_LEFT
+
+        self.write_data_record(
+            "search_cycle_complete",
+            search_phase=search_phase,
+            completed_cycles=completed_cycles,
+            max_cycles=max_cycles,
+            line_locked=self.line_locked,
+            completed_path=round(self.completed_path_length, 6),
+        )
+        rospy.loginfo(
+            "%s: %s搜索完成第 %d/%d 轮",
+            NODE_NAME,
+            "锁线前" if search_phase == "before_lock" else "锁线后",
+            completed_cycles,
+            max_cycles,
+        )
+        if completed_cycles >= max_cycles:
+            self.enter_task_fallback(
+                "%s_search_exhausted" % search_phase
+            )
+        else:
+            self.set_search_state(next_state)
+        return True
+
+    def make_fallback_goal(self):
+        goal = self.make_pose(
+            self.fallback_target_x,
+            self.fallback_target_y,
+            self.fallback_target_yaw,
+        )
+        goal.pose.position.z = self.fallback_target_z
+        return goal
+
+    def clear_active_marker_action(self):
+        self.publish_lights(0, 0)
+        self.active_marker = None
+        self.marker_resume_state = None
+        self.marker_action_phase = None
+        self.marker_action_hold_goal = None
+        self.marker_action_dive_goal = None
+        self.marker_light_started_at = None
+        self.yellow_phase_started_at = None
+        self.yellow_dive_start_depth = None
+        self.marker_rotation_state = None
+
+    def enter_task_fallback(self, reason):
+        if self.state in (self.FALLBACK_TARGET, self.FINISH):
+            return
+        trigger_state = self.state
+        self.fallback_reason = reason
+        self.fallback_triggered_at = rospy.Time.now()
+        self.fallback_goal = self.make_fallback_goal()
+        self.clear_active_marker_action()
+        self.extension_search_active = False
+        self.search_target = None
+        self.search_cycle_anchor = None
+        self.hold_target = None
+        self.last_los_goal = None
+        self.clear_active_los_target()
+        self.write_data_record(
+            "task_fallback_start",
+            reason=reason,
+            trigger_state=trigger_state,
+            move_enabled=self.fallback_move_enabled,
+            goal=self.pose_record(self.fallback_goal),
+            task_elapsed_seconds=round(self.task_elapsed_seconds(), 6),
+            task_timeout_seconds=self.task_timeout_seconds,
+            search_before_lock_completed_cycles=(
+                self.search_before_lock_completed_cycles
+            ),
+            search_after_lock_completed_cycles=(
+                self.search_after_lock_completed_cycles
+            ),
+        )
+        if self.fallback_move_enabled:
+            rospy.logwarn(
+                "%s: Task1 触发兜底（%s）；前往绝对目标 "
+                "(%.2f, %.2f, %.2f, %.1f deg)，等待 HOVER 后结束",
+                NODE_NAME,
+                reason,
+                self.fallback_target_x,
+                self.fallback_target_y,
+                self.fallback_target_z,
+                math.degrees(self.fallback_target_yaw),
+            )
+            self.set_state(self.FALLBACK_TARGET)
+        else:
+            rospy.logwarn(
+                "%s: Task1 触发兜底（%s）；配置为不移动，原地结束",
+                NODE_NAME,
+                reason,
+            )
+            self.set_state(self.FINISH)
+
+    def check_task_timeout(self):
+        if (
+            self.task_execution_started_at is None
+            or self.state in (self.FALLBACK_TARGET, self.FINISH)
+            or self.task_elapsed_seconds() < self.task_timeout_seconds
+        ):
+            return
+        self.enter_task_fallback("task_timeout")
+
+    def run_fallback_target(self):
+        if self.fallback_goal is None:
+            self.fallback_goal = self.make_fallback_goal()
+        self.current_tracking_point = copy.deepcopy(
+            self.fallback_goal.pose.position
+        )
+        self.publish_motion_goal(self.fallback_goal)
+        rospy.loginfo_throttle(
+            2.0,
+            "%s: 正在前往 Task1 兜底目标；原因=%s，"
+            "目标=(%.2f, %.2f, %.2f, %.1f deg)，等待 HOVER",
+            NODE_NAME,
+            self.fallback_reason,
+            self.fallback_target_x,
+            self.fallback_target_y,
+            self.fallback_target_z,
+            math.degrees(self.fallback_target_yaw),
+        )
+        if not self.motion_arrived():
+            return
+        self.write_data_record(
+            "task_fallback_arrived",
+            reason=self.fallback_reason,
+            goal=self.pose_record(self.fallback_goal),
+            actual=self.pose_record(self.get_current_pose()),
+            task_elapsed_seconds=round(self.task_elapsed_seconds(), 6),
+        )
+        rospy.loginfo(
+            "%s: 兜底目标收到 HOVER，Task1 结束并允许进入 Task2",
+            NODE_NAME,
+        )
+        self.set_state(self.FINISH)
+
+    def try_lock_line(self):
+        if self.state in (self.FALLBACK_TARGET, self.FINISH):
+            return
+        super().try_lock_line()
 
     def marker_kind(self, message):
         if message.class_name in self.yellow_classes:
@@ -597,6 +842,8 @@ class Task1(Task1LineFollow):
             return endpoint_search.get(
                 self.state, "终点固定位置搜索红线延伸"
             )
+        if self.state == self.FALLBACK_TARGET:
+            return "前往 Task1 兜底目标并等待 HOVER"
         descriptions = {
             self.SEARCH_LEFT: "向左搜索红线",
             self.SEARCH_RIGHT: "向右搜索红线",
@@ -713,6 +960,44 @@ class Task1(Task1LineFollow):
                 self.yellow_contact_depth_tolerance
             ),
             yellow_dive_timeout=self.yellow_dive_timeout,
+            yellow_return_wait_seconds=self.yellow_return_wait_seconds,
+            yellow_return_elapsed_seconds=(
+                round(
+                    (
+                        rospy.Time.now() - self.yellow_phase_started_at
+                    ).to_sec(),
+                    6,
+                )
+                if (
+                    self.marker_action_phase == "YELLOW_RETURN"
+                    and self.yellow_phase_started_at is not None
+                ) else None
+            ),
+            task_execution_started_at=(
+                round(self.task_execution_started_at.to_sec(), 6)
+                if self.task_execution_started_at is not None else None
+            ),
+            task_elapsed_seconds=round(self.task_elapsed_seconds(), 6),
+            task_timeout_seconds=self.task_timeout_seconds,
+            search_cycles={
+                "before_lock": {
+                    "completed": self.search_before_lock_completed_cycles,
+                    "maximum": self.search_before_lock_max_cycles,
+                },
+                "after_lock": {
+                    "completed": self.search_after_lock_completed_cycles,
+                    "maximum": self.search_after_lock_max_cycles,
+                },
+            },
+            fallback={
+                "move_enabled": self.fallback_move_enabled,
+                "reason": self.fallback_reason,
+                "triggered_at": (
+                    round(self.fallback_triggered_at.to_sec(), 6)
+                    if self.fallback_triggered_at is not None else None
+                ),
+                "goal": self.pose_record(self.fallback_goal),
+            },
             use_reference_yaw=self.use_reference_yaw,
             reference_yaw_deg=round(
                 math.degrees(self.reference_yaw), 6
@@ -1352,20 +1637,42 @@ class Task1(Task1LineFollow):
             )
             return
 
+        if self.yellow_phase_started_at is None:
+            self.yellow_phase_started_at = rospy.Time.now()
+        return_elapsed = (
+            rospy.Time.now() - self.yellow_phase_started_at
+        ).to_sec()
         rospy.loginfo_throttle(
             2.0,
-            "%s: 黄色接触%s；当前/目标深度=%.2f/%.2f m，等待 HOVER",
+            "%s: 黄色接触%s；当前/目标深度=%.2f/%.2f m，"
+            "上浮等待=%.1f/%.1f s，之后检查 HOVER",
             NODE_NAME,
             stage,
             current_depth,
             goal.pose.position.z,
+            return_elapsed,
+            self.yellow_return_wait_seconds,
         )
+        if return_elapsed < self.yellow_return_wait_seconds:
+            return
         if not self.motion_arrived():
             return
 
+        self.write_data_record(
+            "yellow_return_complete",
+            marker=self.marker_entry_record(self.active_marker),
+            elapsed=round(return_elapsed, 6),
+            minimum_wait=self.yellow_return_wait_seconds,
+            actual_depth=round(current_depth, 6),
+            target_depth=round(goal.pose.position.z, 6),
+            depth_error=round(depth_error, 6),
+            goal=self.pose_record(goal),
+        )
         rospy.loginfo(
-            "%s: 黄色接触已回到任务深度 %.2f m",
+            "%s: 黄色接触上浮已等待 %.1f s 且收到 HOVER；"
+            "目标任务深度 %.2f m，恢复巡线",
             NODE_NAME,
+            return_elapsed,
             self.marker_action_hold_goal.pose.position.z,
         )
         self.complete_marker_action()
@@ -1524,6 +1831,11 @@ class Task1(Task1LineFollow):
         )
 
     def run_task_override_cycle(self):
+        self.check_task_timeout()
+        if self.state == self.FALLBACK_TARGET:
+            self.run_fallback_target()
+            return True
+
         now_seconds = rospy.Time.now().to_sec()
         with self.marker_lock:
             for window in self.marker_windows.values():
@@ -1556,6 +1868,7 @@ class Task1(Task1LineFollow):
         return True
 
     def after_control_cycle(self):
+        self.check_task_timeout()
         self.record_task1_cycle()
         self.log_task_summary()
 
@@ -1564,9 +1877,10 @@ class Task1(Task1LineFollow):
         self.cancel_motion()
         self.finished_pub.publish(String(data="task1 finished"))
         rospy.loginfo(
-            "%s: FINISH；巡线完成，黄色动作=%d/%d，黑色动作=%d/%d；"
+            "%s: FINISH；结束原因=%s，黄色动作=%d/%d，黑色动作=%d/%d；"
             "次数不足时也不反向巡航",
             NODE_NAME,
+            self.fallback_reason or "normal_endpoint",
             self.handled_counts["yellow"],
             self.required_counts["yellow"],
             self.handled_counts["black"],
@@ -1589,6 +1903,17 @@ class Task1(Task1LineFollow):
             known_line_stop_progress=(
                 round(self.known_line_stop_progress(), 6)
                 if self.use_known_line_length else None
+            ),
+            finish_reason=self.fallback_reason or "normal_endpoint",
+            fallback_move_enabled=self.fallback_move_enabled,
+            fallback_goal=self.pose_record(self.fallback_goal),
+            task_elapsed_seconds=round(self.task_elapsed_seconds(), 6),
+            task_timeout_seconds=self.task_timeout_seconds,
+            search_before_lock_completed_cycles=(
+                self.search_before_lock_completed_cycles
+            ),
+            search_after_lock_completed_cycles=(
+                self.search_after_lock_completed_cycles
             ),
         )
         rospy.signal_shutdown("task1 complete")
