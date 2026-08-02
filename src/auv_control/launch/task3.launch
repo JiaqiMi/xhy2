@@ -19,9 +19,9 @@
     <arg name="start_arrow_model" default="true" />
     <arg name="start_aruco_model" default="true" />
     <arg name="start_rectangle_model" default="true" />
-    <arg name="start_arrow_web" default="false" />
+    <arg name="start_arrow_web" default="true" />
     <arg name="start_aruco_web" default="false" />
-    <arg name="start_rectangle_web" default="false" />
+    <arg name="start_rectangle_web" default="true" />
     <arg name="arrow_web_port" default="8083" />
     <arg name="aruco_web_port" default="8082" />
     <arg name="rectangle_web_port" default="8080" />
@@ -33,6 +33,8 @@
 
     <!-- 模型、控制器、状态和执行器话题属于进程连接，不属于调优参数。 -->
     <arg name="arrow_topic" default="/vision/arrow/direction" />
+    <arg name="arrow_target_topic"
+         default="/vision/arrow/target_message" />
     <arg name="aruco_topic" default="/vision/aruco/target_message" />
     <arg name="aruco_web_detection_topic"
          default="/vision/aruco/detections" />
@@ -63,7 +65,9 @@
     <group if="$(arg start_arrow_model)">
         <remap from="/vision/arrow/direction"
                to="$(arg arrow_topic)" />
-        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
+        <remap from="/vision/arrow/target_message"
+               to="$(arg arrow_target_topic)" />
+        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection_speed.launch">
             <arg name="start_camera" value="false" />
             <arg name="start_splitter" value="false" />
             <arg name="start_web" value="$(arg start_arrow_web)" />
@@ -97,7 +101,7 @@
                to="$(arg rectangle_detection_topic)" />
         <remap from="/vision/rectangle/pose"
                to="$(arg rectangle_pose_topic)" />
-        <include file="$(find stereo_depth)/launch/test_rectangles_detection.launch">
+        <include file="$(find stereo_depth)/launch/test_rectangles_detection_speed.launch">
             <arg name="start_camera" value="$(arg start_down_camera)" />
             <arg name="start_splitter" value="$(arg start_down_splitter)" />
             <arg name="start_web" value="$(arg start_rectangle_web)" />
@@ -120,6 +124,8 @@
                value="$(arg task3_config_file)" />
         <param name="arrow_topic" type="string"
                value="$(arg arrow_topic)" />
+        <param name="arrow_target_topic" type="string"
+               value="$(arg arrow_target_topic)" />
         <param name="aruco_topic" type="string"
                value="$(arg aruco_topic)" />
         <param name="rectangle_topic" type="string"

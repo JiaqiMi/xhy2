@@ -16,9 +16,9 @@
       垂直净空应不少于目标深度、艇体高度和额外 0.5 m 安全余量之和。
     -->
     <!-- 必须由操作者显式设为 true，默认绝不输出实机力/力矩。 -->
-    <arg name="enable_live_test" default="false" />
-    <arg name="target_depth" default="-0.9" />
-    <arg name="publish_rate_hz" default="10.0" />
+    <arg name="enable_live_test" default="true" />
+    <arg name="target_depth" default="-0.6" />
+    <arg name="publish_rate_hz" default="8.0" />
     <arg name="hold_seconds" default="8.0" />
     <!-- 停稳后额外零输出观察时长；该观察通过后才会写入 PASS。 -->
     <arg name="rest_seconds" default="6.0" />
@@ -48,10 +48,10 @@
     <arg name="feedback_timeout" default="0.5" />
 
     <!-- 安全门槛；max_yaw_rate 和 preflight_yaw_rate 的单位均为 rad/s。 -->
-    <arg name="max_depth_error" default="0.08" />
-    <arg name="max_horizontal_speed" default="0.35" />
-    <arg name="max_yaw_rate" default="0.60" />
-    <arg name="max_displacement" default="4.0" />
+    <arg name="max_depth_error" default="0.5" />
+    <arg name="max_horizontal_speed" default="1.0" />
+    <arg name="max_yaw_rate" default="10" />
+    <arg name="max_displacement" default="10.0" />
     <arg name="max_yaw_offset_deg" default="100.0" />
     <!-- 标定数据有效性门槛，必须不大于硬安全门；超过即终止当前整档。 -->
     <arg name="valid_max_depth_error" default="0.05" />

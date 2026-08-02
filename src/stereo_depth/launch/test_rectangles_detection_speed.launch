@@ -4,6 +4,7 @@
     <arg name="start_camera" default="false" />
     <arg name="start_splitter" default="false" />
     <arg name="start_web" default="true" />
+    <arg name="node_output" default="screen" />
 
     <!-- ==================== 模型选择 ==================== -->
     <!--
@@ -57,18 +58,19 @@
         name="usb_cam"
         pkg="usb_cam"
         type="usb_cam_node"
+        output="$(arg node_output)"
         launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
 
     <node if="$(arg start_splitter)"
           pkg="stereo_splitter"
           type="split_stereo_image.py"
           name="split_stereo_image"
-          output="screen" />
+          output="$(arg node_output)" />
 
     <node pkg="yolo_bridge"
           type="yolo_wrapper.sh"
           name="yolo_rectangle_detector"
-          output="screen"
+          output="$(arg node_output)"
           launch-prefix="bash">
         <env name="NODE_NAME" value="/yolo_rectangle_detector" />
         
@@ -109,7 +111,7 @@
     <node pkg="stereo_depth"
           type="stereo_depth_node_speed.py"
           name="stereo_depth_rectangle"
-          output="screen">
+          output="$(arg node_output)">
         <param name="task_mode" value="center" />
         <param name="exp_env" value="$(arg exp_env)" />
         <param name="visualization" value="$(arg visualization)" />
@@ -166,6 +168,7 @@
     </node>
 
     <include if="$(arg start_web)"
+             ns="rectangle_web"
              file="$(find vision_web)/launch/vision_web.launch">
         <arg name="port" value="$(arg web_port)" />
         <arg name="image_topic"

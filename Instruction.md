@@ -6,11 +6,12 @@
 
 ```
 catkin_make_isolated \
---pkg auv_control \
 --cmake-args \
 -DCMAKE_BUILD_TYPE=Release \
 -DPYTHON_EXECUTABLE=/home/xhy/xhy_env/bin/python3.8
 ```
+
+
 
 使用 `--pkg auv_control` 单独编译单个包
 

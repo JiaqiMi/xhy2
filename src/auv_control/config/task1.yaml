@@ -42,7 +42,7 @@ search_yaw_sign: 1.0
 # 红线锁定与拟合
 line_classes: line
 line_lock_window_seconds: 0.3
-line_min_confidence: 0.70
+line_min_confidence: 0.78  # line 置信度下限
 line_point_merge_distance: 0.0
 line_point_update_alpha: 0.20
 line_curve_max_points: 200
@@ -92,8 +92,8 @@ yellow_required_count: 2
 black_required_count: 2
 
 # 灯光动作
-light_seconds: 3.0
-gap_seconds: 2
+light_seconds: 2.0
+gap_seconds: 1.5
 yellow_light_count: 1
 black_light_count: 2
 
@@ -102,7 +102,7 @@ black_light_count: 2
 # 回到 Task1 保持深度后仍等待控制端 HOVER。
 yellow_contact_enabled: true
 yellow_alignment_frame: hand
-yellow_contact_depth: -0.4
+yellow_contact_depth: -0.35
 yellow_contact_depth_tolerance: 0.05
 yellow_dive_timeout: 10.0
 
