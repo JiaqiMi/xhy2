@@ -261,38 +261,58 @@ input {
 }
 
 .navigation-title {
-    align-items: flex-start;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.navigation-intro {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 3px 10px;
+}
+
+.navigation-intro h2,
+.navigation-intro .subtitle {
+    white-space: nowrap;
 }
 
 .map-controls {
     display: grid;
     min-width: 0;
     flex: 1 1 auto;
-    grid-template-columns: minmax(330px, 0.82fr) minmax(500px, 1.18fr);
-    gap: 7px;
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
 }
 
 .map-control-group {
+    display: grid;
     min-width: 0;
-    padding: 4px 6px 6px;
+    align-items: center;
+    grid-template-columns: 62px minmax(0, 1fr);
+    gap: 5px;
+    padding: 3px 5px;
     border: 1px solid rgba(52, 80, 109, 0.72);
     border-radius: 9px;
     background: rgba(7, 21, 34, 0.54);
 }
 
 .trajectory-control-group {
-    grid-column: 1 / -1;
+    grid-column: auto;
 }
 
 .map-control-group-title {
     display: block;
-    margin: 0 0 4px 2px;
+    margin: 0;
     color: #7f96ad;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.08em;
-    line-height: 1;
-    text-align: left;
+    line-height: 1.2;
+    text-align: center;
 }
 
 .map-control-group-items {
@@ -303,7 +323,7 @@ input {
 }
 
 .trajectory-control-group .map-control-group-items {
-    grid-template-columns: repeat(3, minmax(0, 1fr)) 96px;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) 78px;
 }
 
 .visual-control-group .map-control-group-items {
@@ -311,14 +331,14 @@ input {
 }
 
 .map-operation-group .map-control-group-items {
-    grid-template-columns: 156px repeat(5, minmax(0, 1fr));
+    grid-template-columns: 112px repeat(5, minmax(0, 1fr));
 }
 
 .map-controls button,
 .map-legend {
     width: 100%;
     min-height: 30px;
-    padding: 5px 9px;
+    padding: 4px 5px;
     border: 1px solid #34506d;
     border-radius: 7px;
     background: #15283c;
@@ -335,7 +355,7 @@ input {
     min-height: 30px;
     align-items: center;
     gap: 5px;
-    padding: 4px 7px;
+    padding: 3px 5px;
     border: 1px solid #34506d;
     border-radius: 7px;
     background: #0d1d2d;
@@ -358,7 +378,7 @@ input {
 }
 
 .map-heading-control input {
-    width: 66px;
+    width: 48px;
     height: 24px;
     padding: 2px 5px;
     border: 1px solid #42617f;
@@ -380,6 +400,17 @@ input {
     gap: 6px;
     justify-content: center;
     cursor: default;
+}
+
+.map-operation-group button {
+    padding-right: 2px;
+    padding-left: 2px;
+    font-size: 11px;
+}
+
+.map-operation-group .map-heading-control {
+    gap: 3px;
+    font-size: 11px;
 }
 
 .map-legend::before {
@@ -683,13 +714,6 @@ summary {
         min-height: 430px;
     }
 
-    .navigation-title {
-        flex-direction: column;
-    }
-
-    .map-controls {
-        width: 100%;
-    }
 }
 
 @media (max-width: 760px) {
@@ -709,8 +733,8 @@ summary {
         grid-template-columns: 1fr;
     }
 
-    .trajectory-control-group {
-        grid-column: auto;
+    .map-control-group {
+        grid-template-columns: 1fr;
     }
 
     .trajectory-control-group .map-control-group-items,
