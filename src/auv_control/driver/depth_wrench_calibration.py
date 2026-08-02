@@ -17,6 +17,9 @@
 2026.8.2
     阶跃档位改为按各轴正负最大安全输出的百分比生成，并记录档位百分比；
     基线、激励、恢复和稳态统计时长均保留为 launch 可配置参数。
+2026.8.2
+    修复预检未锁定标定基准时发布零输出导致的启动异常；预检阶段改用实时位姿
+    构造零力保持指令，退出时按已锁定基准或最近预检位姿安全清零。
 """
 
 from __future__ import division
@@ -149,6 +152,7 @@ class DepthWrenchCalibration(object):
         self.latest_status_at = None
         self.initial_pose = None
         self.target_yaw = None
+        self.preflight_hold_pose = None
         self.started_at = None
         self.active_step = None
         self.trace_file = None
@@ -366,24 +370,32 @@ class DepthWrenchCalibration(object):
                     '%s: 预检通过，目标深度=%.3f m，起始航向=%.1f deg',
                     NODE_NAME, self.target_depth, math.degrees(self.target_yaw))
                 return
-            self._publish_command(None)
+            self._publish_preflight_hold(pose)
             rate.sleep()
         raise RuntimeError(
             '等待定深稳定、TF、速度或 mode={} 反馈超时'.format(
                 self.required_mode))
 
-    def _make_command(self, step):
+    def _make_command(self, step, reference_pose=None):
         """构造 mode=2 定深指令，并仅在当前标定轴施加力/力矩。"""
-        if self.initial_pose is None or self.target_yaw is None:
+        if self.initial_pose is not None and self.target_yaw is not None:
+            reference_pose = self.initial_pose
+            target_yaw = self.target_yaw
+        elif reference_pose is not None:
+            target_yaw = reference_pose[3]
+        else:
             raise RuntimeError('尚未锁定标定基准位姿')
+        target_depth = (
+            self.target_depth
+            if math.isfinite(self.target_depth) else reference_pose[2])
         command = PoseNEDcmd()
         command.mode = self.required_mode
         command.target.header.stamp = rospy.Time.now()
         command.target.header.frame_id = 'map'
-        command.target.pose.position.x = self.initial_pose[0]
-        command.target.pose.position.y = self.initial_pose[1]
-        command.target.pose.position.z = self.target_depth
-        quaternion = quaternion_from_euler(0.0, 0.0, self.target_yaw)
+        command.target.pose.position.x = reference_pose[0]
+        command.target.pose.position.y = reference_pose[1]
+        command.target.pose.position.z = target_depth
+        quaternion = quaternion_from_euler(0.0, 0.0, target_yaw)
         command.target.pose.orientation.x = quaternion[0]
         command.target.pose.orientation.y = quaternion[1]
         command.target.pose.orientation.z = quaternion[2]
@@ -401,6 +413,12 @@ class DepthWrenchCalibration(object):
     def _publish_command(self, step):
         """发布当前档位；所有未测试轴都显式清零。"""
         self.command_pub.publish(self._make_command(step))
+
+    def _publish_preflight_hold(self, pose):
+        """在基准锁定前以实时位姿发布零力保持指令。"""
+        self.preflight_hold_pose = pose
+        self.command_pub.publish(self._make_command(
+            None, reference_pose=pose))
 
     def _build_steps(self):
         """按轴、最大安全输出百分比和正负方向生成阶跃序列。"""
@@ -614,7 +632,7 @@ class DepthWrenchCalibration(object):
             self.aborted = True
             try:
                 self._publish_zero_burst()
-            except (AttributeError, rospy.ROSException):
+            except (AttributeError, RuntimeError, rospy.ROSException):
                 pass
         self._close_logs()
 
@@ -622,7 +640,14 @@ class DepthWrenchCalibration(object):
         """连续发布零力/力矩，覆盖最近一次非零阶跃命令。"""
         rate = rospy.Rate(self.publish_rate_hz)
         for unused_index in range(3):
-            self._publish_command(None)
+            if self.initial_pose is not None and self.target_yaw is not None:
+                self._publish_command(None)
+            elif self.preflight_hold_pose is not None:
+                self._publish_preflight_hold(self.preflight_hold_pose)
+            else:
+                rospy.logwarn(
+                    '%s: 未获取可用位姿，无法构造零力保持指令', NODE_NAME)
+                return
             rate.sleep()
 
     def run(self):
@@ -651,7 +676,7 @@ class DepthWrenchCalibration(object):
                 self._abort_step(self.active_step, error)
             try:
                 self._publish_zero_burst()
-            except rospy.ROSException:
+            except (RuntimeError, rospy.ROSException):
                 pass
             raise
         finally:

@@ -12,6 +12,9 @@
 2026.7.30
     按检测图像分辨率缩放视觉坐标，修正鱼眼 ArUco 框位置。
     在最终视频尺寸上绘制标注，并增大字体、字宽和标签间距。
+2026.8.2
+    统计各视觉结果话题的独立帧率并加入状态接口。
+    缓存最后一次有效视觉结果，标注失效后延迟一秒消失。
 """
 
 import copy
@@ -203,30 +206,64 @@ VISION_SOURCE_DEFAULTS = {
 class VisionOverlayStore:
     """缓存各视觉任务结果，并按相机帧筛选可绘制数据。"""
 
-    def __init__(self, sources, timeout, frame_tolerance):
+    def __init__(self, sources, timeout, frame_tolerance, hold_time):
         self.sources = copy.deepcopy(sources)
         self.timeout = float(timeout)
         self.frame_tolerance = float(frame_tolerance)
+        self.hold_time = max(0.001, float(hold_time))
         self.lock = threading.RLock()
         self.values = {
             source: {kind: None for kind in config["topics"]}
             for source, config in self.sources.items()
         }
+        self.drawable_values = {
+            source: {kind: None for kind in config["topics"]}
+            for source, config in self.sources.items()
+        }
+
+    @staticmethod
+    def _is_drawable(source, kind, payload):
+        """判断消息能否更新最后一次有效标注缓存。"""
+        if kind == "detection":
+            return has_vision_detections(payload)
+        return bool(
+            isinstance(payload, dict) and payload.get("valid") is True
+        )
 
     def store(self, source, kind, payload, received_at):
         """保存一类视觉 JSON 的最近一次有效格式消息。"""
         if source not in self.values or kind not in self.values[source]:
             return
         with self.lock:
-            self.values[source][kind] = {
+            previous = self.values[source][kind]
+            fps = update_fps(
+                previous.get("fps", 0.0) if previous else 0.0,
+                previous.get("received_at") if previous else None,
+                received_at,
+            )
+            packet = {
                 "payload": copy.deepcopy(payload),
                 "received_at": float(received_at),
+                "fps": fps,
+                "drawn_once": False,
             }
+            self.values[source][kind] = packet
+            if self._is_drawable(source, kind, payload):
+                self.drawable_values[source][kind] = copy.deepcopy(packet)
+
+    def _mark_drawn(self, source, kind, received_at):
+        """标记结果已通过严格帧同步检查，可进入短暂保留阶段。"""
+        with self.lock:
+            packet = self.drawable_values[source][kind]
+            if (
+                    packet is not None
+                    and packet.get("received_at") == received_at):
+                packet["drawn_once"] = True
 
     def packets_for_frame(self, camera, frame_stamp, now):
         """返回与当前相机帧同相机、同时间窗口的有效任务结果。"""
         with self.lock:
-            values = copy.deepcopy(self.values)
+            values = copy.deepcopy(self.drawable_values)
 
         active = {}
         for source, config in self.sources.items():
@@ -235,15 +272,30 @@ class VisionOverlayStore:
             packets = values.get(source, {})
             selected = {}
             for kind, packet in packets.items():
-                status = vision_packet_status(
+                strict_status = vision_packet_status(
                     packet,
                     now,
                     self.timeout,
                     frame_stamp,
                     self.frame_tolerance,
                 )
-                if not status["online"]:
-                    continue
+                if strict_status["online"]:
+                    self._mark_drawn(
+                        source,
+                        kind,
+                        packet.get("received_at"),
+                    )
+                else:
+                    held_status = vision_packet_status(
+                        packet,
+                        now,
+                        self.hold_time,
+                    )
+                    if (
+                            not packet
+                            or not packet.get("drawn_once")
+                            or not held_status["online"]):
+                        continue
                 payload = packet.get("payload") if packet else None
                 if not isinstance(payload, dict):
                     continue
@@ -268,6 +320,9 @@ class VisionOverlayStore:
             channels = {}
             for kind, packet in values[source].items():
                 status = vision_packet_status(packet, now, self.timeout)
+                status["fps"] = (
+                    packet.get("fps", 0.0) if packet else 0.0
+                )
                 message = packet.get("payload") if packet else None
                 if kind == "detection":
                     status["valid"] = has_vision_detections(message)
@@ -281,6 +336,7 @@ class VisionOverlayStore:
                 "label": config["label"],
                 "topics": copy.deepcopy(config["topics"]),
                 "channels": channels,
+                "fps": channels.get("detection", {}).get("fps", 0.0),
             }
         return payload
 
@@ -431,6 +487,9 @@ class StateWebNode:
         self.vision_frame_tolerance = float(
             rospy.get_param("~vision_frame_tolerance", 0.5)
         )
+        self.vision_overlay_hold = float(
+            rospy.get_param("~vision_overlay_hold", 1.0)
+        )
 
         self.topics = {
             "left": rospy.get_param(
@@ -491,6 +550,7 @@ class StateWebNode:
             self.vision_sources,
             self.vision_timeout,
             self.vision_frame_tolerance,
+            self.vision_overlay_hold,
         )
         self.origin_revision = OriginRevision()
         # 使用哨兵值，确保时间戳为 0 的首组 TF 也能被记录。
@@ -1337,6 +1397,7 @@ class StateWebNode:
                     "age_sec": channel.get("age_sec"),
                     "topic": source_status["topics"].get(kind),
                     "valid": bool(channel.get("valid")),
+                    "fps": channel.get("fps", 0.0),
                 }
 
         payload = {

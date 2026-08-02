@@ -1,4 +1,14 @@
 <launch>
+    <!--
+    名称：state_web.launch
+    功能：启动状态监控 Web、相机流和视觉标注集成
+    作者：xhy
+    监听：AUV 状态、TF、相机图像与视觉结果话题
+    发布：HTTP 状态接口与 MJPEG 相机流
+    记录：
+    2026.8.2
+        增加视觉标注最后有效结果保留时间参数。
+    -->
     <arg name="host" default="0.0.0.0" />
     <arg name="port" default="8088" />
 
@@ -39,6 +49,7 @@
     <arg name="image_timeout" default="3.0" />
     <arg name="vision_timeout" default="2.0" />
     <arg name="vision_frame_tolerance" default="0.5" />
+    <arg name="vision_overlay_hold" default="1.0" />
     <arg name="state_timeout" default="2.0" />
     <arg name="command_timeout" default="2.0" />
     <arg name="tf_timeout" default="2.0" />
@@ -90,6 +101,7 @@
         <param name="image_timeout" value="$(arg image_timeout)" />
         <param name="vision_timeout" value="$(arg vision_timeout)" />
         <param name="vision_frame_tolerance" value="$(arg vision_frame_tolerance)" />
+        <param name="vision_overlay_hold" value="$(arg vision_overlay_hold)" />
         <param name="state_timeout" value="$(arg state_timeout)" />
         <param name="command_timeout" value="$(arg command_timeout)" />
         <param name="tf_timeout" value="$(arg tf_timeout)" />

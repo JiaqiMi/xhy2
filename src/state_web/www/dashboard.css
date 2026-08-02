@@ -8,6 +8,8 @@
 2026.7.30
     增加地图向上航向输入控件样式。
     增加水池范围绘制模式及操作按钮样式。
+2026.8.2
+    增加相机标题旁的视觉检测帧率样式。
 */
 
 :root {
@@ -646,4 +648,26 @@ summary {
     .axis-status {
         min-width: 600px;
     }
+}
+
+.camera-heading-title {
+    display: flex;
+    min-width: 0;
+    flex: 1 1 auto;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px 9px;
+}
+
+.vision-fps {
+    color: #6f849b;
+    font-family: Consolas, "Microsoft YaHei", monospace;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.25;
+}
+
+.vision-fps.is-online {
+    color: var(--accent);
+    text-shadow: 0 0 6px rgba(67, 199, 255, 0.3);
 }

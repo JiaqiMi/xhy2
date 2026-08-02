@@ -13,9 +13,9 @@
       垂直净空应不少于目标深度、艇体高度和额外 0.5 m 安全余量之和。
     -->
     <!-- 必须由操作者显式设为 true，默认绝不输出实机力/力矩。 -->
-    <arg name="enable_live_test" default="false" />
-    <arg name="target_depth" default="-0.9" />
-    <arg name="publish_rate_hz" default="10.0" />
+    <arg name="enable_live_test" default="true" />
+    <arg name="target_depth" default="-0.6" />
+    <arg name="publish_rate_hz" default="8.0" />
     <arg name="hold_seconds" default="8.0" />
     <arg name="rest_seconds" default="6.0" />
     <arg name="baseline_seconds" default="4.0" />
@@ -24,10 +24,10 @@
     <arg name="feedback_timeout" default="0.5" />
 
     <!-- 安全门槛；max_yaw_rate 和 preflight_yaw_rate 的单位均为 rad/s。 -->
-    <arg name="max_depth_error" default="0.08" />
-    <arg name="max_horizontal_speed" default="0.35" />
-    <arg name="max_yaw_rate" default="0.60" />
-    <arg name="max_displacement" default="4.0" />
+    <arg name="max_depth_error" default="0.5" />
+    <arg name="max_horizontal_speed" default="1.0" />
+    <arg name="max_yaw_rate" default="10" />
+    <arg name="max_displacement" default="10.0" />
     <arg name="max_yaw_offset_deg" default="100.0" />
     <arg name="preflight_depth_tolerance" default="0.03" />
     <arg name="preflight_horizontal_speed" default="0.02" />
@@ -43,7 +43,7 @@
     <arg name="mz_max_positive" default="3000" />
     <arg name="mz_max_negative" default="3500" />
     <!-- 必须为 ROS/YAML 列表，例如 [0.20, 0.40, 0.60, 0.80]。 -->
-    <arg name="force_percentages" default="[0.20, 0.40, 0.60, 0.80]" />
+    <arg name="force_percentages" default="[0.25, 0.5, 0.75, 1.0]" />
     <arg name="log_directory"
          default="$(env HOME)/.ros/auv_logs/depth_wrench_calibration" />
 

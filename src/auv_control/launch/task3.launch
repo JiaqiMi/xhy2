@@ -19,9 +19,9 @@
     <arg name="start_arrow_model" default="true" />
     <arg name="start_aruco_model" default="true" />
     <arg name="start_rectangle_model" default="true" />
-    <arg name="start_arrow_web" default="false" />
+    <arg name="start_arrow_web" default="true" />
     <arg name="start_aruco_web" default="false" />
-    <arg name="start_rectangle_web" default="false" />
+    <arg name="start_rectangle_web" default="true" />
     <arg name="arrow_web_port" default="8083" />
     <arg name="aruco_web_port" default="8082" />
     <arg name="rectangle_web_port" default="8080" />
@@ -67,7 +67,7 @@
                to="$(arg arrow_topic)" />
         <remap from="/vision/arrow/target_message"
                to="$(arg arrow_target_topic)" />
-        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
+        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection_speed.launch">
             <arg name="start_camera" value="false" />
             <arg name="start_splitter" value="false" />
             <arg name="start_web" value="$(arg start_arrow_web)" />
@@ -101,7 +101,7 @@
                to="$(arg rectangle_detection_topic)" />
         <remap from="/vision/rectangle/pose"
                to="$(arg rectangle_pose_topic)" />
-        <include file="$(find stereo_depth)/launch/test_rectangles_detection.launch">
+        <include file="$(find stereo_depth)/launch/test_rectangles_detection_speed.launch">
             <arg name="start_camera" value="$(arg start_down_camera)" />
             <arg name="start_splitter" value="$(arg start_down_splitter)" />
             <arg name="start_web" value="$(arg start_rectangle_web)" />

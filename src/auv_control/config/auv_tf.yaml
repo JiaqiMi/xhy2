@@ -16,7 +16,7 @@ static_transforms:
     parent_frame: base_link
     child_frame: hand
     translation:
-      x: 0.430
+      x: 0.480
       y: 0.0
       z: 0.064
     rotation_rpy_deg:

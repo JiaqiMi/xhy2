@@ -71,8 +71,8 @@ force_slew_per_cycle: 10000.0       # 等于协议上限，取消每周期 TX/TY
 # brake_force_slew_per_cycle: 10000.0
 
 # 统一三轴速度环增益；yaw 的正负按 map 航向角速度误差选择，对应最终 MZ 正负。
-kv_x_positive: 20000.0              # 高速首轮：提高正向速度误差对应的 TX
-kv_x_negative: 22000.0              # 高速首轮：保留负向推进效率差异
+kv_x_positive: 14000.0              # 高速首轮：提高正向速度误差对应的 TX 原20000
+kv_x_negative: 18000.0              # 高速首轮：保留负向推进效率差异 原22000
 kv_y_positive: 45000.0              # 高速首轮：目标正向约 0.10 m/s
 kv_y_negative: 65000.0              # 高速首轮：目标负向约 0.10 m/s
 kp_yaw_positive: 18000.0            # data3 正转误差 P90=6.45 deg/s 时可避免持续触及 +3000，先消除跟踪饱和
@@ -136,8 +136,8 @@ hover_exit_hold_seconds: 0.50         # HOVER 或 Yaw 制动误差连续超限�
 mode_ack_timeout: 1.0                 # 接管确认及 HOVER 模式反馈最大允许间隔，单位 s
 
 # 统一三轴位置-速度-力控制。
-xy_max_speed: 0.4 # xy的最大参考速度，暂定为0.3m/s
-xy_position_gain: 2.00
+xy_max_speed: 0.35 # xy的最大参考速度，暂定为0.3m/s
+xy_position_gain: 1.20
 xy_max_acceleration: 0.40
 xy_max_jerk: 0.40
 xy_brake_jerk: 0.20  #TODO 定点制动速度参考的最大 jerk，单位 m/s^3，搞懂这个参数的意义
