@@ -67,7 +67,7 @@
                to="$(arg arrow_topic)" />
         <remap from="/vision/arrow/target_message"
                to="$(arg arrow_target_topic)" />
-        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
+        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection_speed.launch">
             <arg name="start_camera" value="false" />
             <arg name="start_splitter" value="false" />
             <arg name="start_web" value="$(arg start_arrow_web)" />
@@ -101,7 +101,7 @@
                to="$(arg rectangle_detection_topic)" />
         <remap from="/vision/rectangle/pose"
                to="$(arg rectangle_pose_topic)" />
-        <include file="$(find stereo_depth)/launch/test_rectangles_detection.launch">
+        <include file="$(find stereo_depth)/launch/test_rectangles_detection_speed.launch">
             <arg name="start_camera" value="$(arg start_down_camera)" />
             <arg name="start_splitter" value="$(arg start_down_splitter)" />
             <arg name="start_web" value="$(arg start_rectangle_web)" />
@@ -130,6 +130,8 @@
                value="$(arg aruco_topic)" />
         <param name="rectangle_topic" type="string"
                value="$(arg rectangle_detection_topic)" />
+        <param name="rectangle_target_topic" type="string"
+               value="$(arg rectangle_target_topic)" />
         <param name="motion_goal_topic" type="string"
                value="$(arg motion_goal_topic)" />
         <param name="motion_cancel_topic" type="string"

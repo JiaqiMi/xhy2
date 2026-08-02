@@ -31,7 +31,7 @@
         <remap from="/vision/arrow/direction" to="$(arg arrow_topic)" />
         <remap from="/vision/arrow/target_message"
                to="$(arg arrow_target_topic)" />
-        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
+        <include file="$(find stereo_depth)/launch/test_arrow_pose_detection_speed.launch">
             <arg name="start_camera" value="true" />
             <arg name="start_splitter" value="true" />
         </include>
