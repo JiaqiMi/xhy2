@@ -144,6 +144,7 @@ TF 后续短时失败不会阻塞状态话题；状态机使用最后有效位�
 | `CAPTURE` | 7 | 判断稳定或已发送 `mode=4`、正在等待接管确认 |
 | `HOVER` | 8 | 下位机已反馈 `mode=4`，目标到达并完成定点接管 |
 | `SAFE` | 9 | 反馈超时、接管超时或模式异常，任务不得继续推进 |
+| `THRUSTER_RECOVERY` | 10 | 保持 `mode=2` 和最新目标，正在执行侧推回中与反向恢复；任务继续等待 |
 
 典型流程：
 
@@ -151,6 +152,7 @@ TF 后续短时失败不会阻塞状态话题；状态机使用最后有效位�
 IDLE
 → TRANSLATE
 ↔ TRANSLATE_BRAKE
+↔ THRUSTER_RECOVERY
 → CAPTURE
 → HOVER
 ```

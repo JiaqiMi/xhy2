@@ -10,6 +10,8 @@ uint8 FINAL_BRAKE=6
 uint8 CAPTURE=7
 uint8 HOVER=8
 uint8 SAFE=9
+# 2026.8.2：TY/MZ 协议级侧推自动恢复的公开状态
+uint8 THRUSTER_RECOVERY=10
 
 # 三轴诊断子状态；X/Y 在统一二维轨迹下同步运行，Yaw 同时运行
 uint8 AXIS_HOLD=0

@@ -1,10 +1,16 @@
 #! /home/xhy/xhy_env/bin/python
 # -*- coding: utf-8 -*-
 """
-任务3子任务1：识别箭头并通过 motion_supervisor 完成搜索、对准和最终定位。
+名称：test_task3_1_acquire_area.py
+功能：识别箭头并通过 motion_supervisor 完成搜索、对准和最终定位
+作者：BroXu
+监听：视觉识别、/motion/state、/status/auv、/tf
+发布：/cmd/motion/goal、/cmd/motion/cancel、任务诊断
+记录：
+2026.8.2
+    将 THRUSTER_RECOVERY 视为有效等待状态，避免自动恢复期间误判任务失败。
 
-本节点只生成 map 绝对目标，不直接发布 /cmd/pose/ned，也不计算 TX、TY、MZ。
-motion_supervisor 负责平移、主动刹停、最终转向和 mode=4 定点接管。
+说明：本节点只生成 map 绝对目标，不直接发布 /cmd/pose/ned，也不计算 TX、TY、MZ。
 """
 
 from datetime import datetime
@@ -101,6 +107,7 @@ class Task3AcquireAreaTest(object):
         MotionState.CAPTURE: "CAPTURE",
         MotionState.HOVER: "HOVER",
         MotionState.SAFE: "SAFE",
+        MotionState.THRUSTER_RECOVERY: "THRUSTER_RECOVERY",
     }
 
     def __init__(self):

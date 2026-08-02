@@ -66,11 +66,14 @@
     收到取消指令时锁存当前目标深度，刹停终点仅使用实时水平位置和航向。
 2026.7.29
     Yaw 制动增加持续远离目标的异常退出，并禁止远离目标时重新锁存制动。
+2026.8.2
+    新增基于 TY/MZ、动力功率和运动响应的侧推异常检测，以及回中、反向和恢复跟踪状态机。
 """
 
 from __future__ import division
 
 import math
+from collections import deque
 
 
 MODE_DEPTH = 2
@@ -88,6 +91,12 @@ FINAL_BRAKE = 6
 CAPTURE = 7
 HOVER = 8
 SAFE = 9
+THRUSTER_RECOVERY = 10
+
+RECOVERY_ZERO_BEFORE_REVERSE = 'ZERO_BEFORE_REVERSE'
+RECOVERY_REVERSE_PULSE = 'REVERSE_PULSE'
+RECOVERY_ZERO_BEFORE_TRACK = 'ZERO_BEFORE_TRACK'
+RECOVERY_RECHECK_DELAY = 'RECHECK_DELAY'
 
 AXIS_HOLD = 0
 AXIS_TRACK = 1
@@ -110,6 +119,7 @@ STATE_NAMES = {
     CAPTURE: 'CAPTURE',
     HOVER: 'HOVER',
     SAFE: 'SAFE',
+    THRUSTER_RECOVERY: 'THRUSTER_RECOVERY',
 }
 
 
@@ -227,7 +237,9 @@ class VehicleState(object):
     def __init__(
             self, now, x, y, z, yaw, forward_velocity, lateral_velocity,
             yaw_rate, feedback_fresh=True, reported_mode=None,
-            reported_mode_stamp=None):
+            reported_mode_stamp=None, startup_complete=True,
+            power_feedback_fresh=False, power2_valid=False,
+            power2_power=None):
         self.now = float(now)
         self.x = float(x)
         self.y = float(y)
@@ -243,6 +255,11 @@ class VehicleState(object):
             if reported_mode_stamp is None
             else float(reported_mode_stamp)
         )
+        self.startup_complete = bool(startup_complete)
+        self.power_feedback_fresh = bool(power_feedback_fresh)
+        self.power2_valid = bool(power2_valid)
+        self.power2_power = (
+            None if power2_power is None else float(power2_power))
 
 
 class ControlOutput(object):
@@ -365,6 +382,28 @@ DEFAULT_PARAMETERS = {
     'effectiveness_yaw_ty': 0.0,
     'effectiveness_yaw_mz': 1.0,
     'effectiveness_min_determinant': 0.05,
+    # 侧推异常检测只使用上层协议 TY/MZ，不假设底层推进器分配矩阵。
+    'thruster_recovery_enabled': True,
+    'thruster_fault_combined_effort_min': 0.75,
+    'thruster_fault_axis_effort_min': 0.40,
+    'thruster_fault_tx_max': 500.0,
+    'thruster_fault_power_increment_max': 15.0,
+    'thruster_fault_lateral_speed_max': 0.010,
+    'thruster_fault_yaw_rate_max': math.radians(0.3),
+    'thruster_fault_hold_seconds': 2.0,
+    'thruster_power_idle_effort_max': 0.20,
+    'thruster_power_baseline_window_seconds': 10.0,
+    'thruster_power_baseline_min_seconds': 2.0,
+    'thruster_recovery_zero_before_seconds': 1.5,
+    'thruster_recovery_reverse_seconds': 1.0,
+    'thruster_recovery_zero_after_seconds': 0.5,
+    'thruster_recovery_reverse_ty_max': 2000.0,
+    'thruster_recovery_reverse_mz_max': 1500.0,
+    'thruster_recovery_power_increment_min': 15.0,
+    'thruster_recovery_lateral_speed_min': 0.010,
+    'thruster_recovery_yaw_rate_min': math.radians(0.5),
+    'thruster_recovery_response_hold_seconds': 0.25,
+    'thruster_recovery_recheck_delay_seconds': 2.0,
 }
 
 
@@ -413,10 +452,29 @@ class MotionSupervisorCore(object):
         self.reference_reset_pending = True
         self.goal_changed_pending = False
         self.goal_changed_at = None
+        self.thruster_power_baseline_samples = deque()
+        self.thruster_power_baseline = None
+        self.thruster_fault_started_at = None
+        self.thruster_fault_trigger_duration = 0.0
+        self.thruster_recovery_phase = ''
+        self.thruster_recovery_phase_started_at = None
+        self.thruster_recovery_count = 0
+        self.thruster_fault_ty = 0.0
+        self.thruster_fault_mz = 0.0
+        self.thruster_reverse_ty = 0.0
+        self.thruster_reverse_mz = 0.0
+        self.thruster_recovery_zero_power_samples = []
+        self.thruster_recovery_power_baseline = None
+        self.thruster_recovery_response_started_at = None
+        self.thruster_recovery_preliminary_success = False
+        self.thruster_recovery_final_confirmed = False
+        self.thruster_recheck_until = None
 
     def _validate_parameters(self):
         if not isinstance(self.parameters['pure_depth_control'], bool):
             raise ValueError('pure_depth_control 必须为布尔值')
+        if not isinstance(self.parameters['thruster_recovery_enabled'], bool):
+            raise ValueError('thruster_recovery_enabled 必须为布尔值')
         positive_names = (
             'max_tx_positive', 'max_tx_negative',
             'max_ty_positive', 'max_ty_negative',
@@ -461,6 +519,26 @@ class MotionSupervisorCore(object):
             'goal_replan_position_threshold', 'goal_replan_yaw_threshold',
             'control_dt_min',
             'control_dt_max', 'effectiveness_min_determinant',
+            'thruster_fault_combined_effort_min',
+            'thruster_fault_axis_effort_min',
+            'thruster_fault_tx_max',
+            'thruster_fault_power_increment_max',
+            'thruster_fault_lateral_speed_max',
+            'thruster_fault_yaw_rate_max',
+            'thruster_fault_hold_seconds',
+            'thruster_power_idle_effort_max',
+            'thruster_power_baseline_window_seconds',
+            'thruster_power_baseline_min_seconds',
+            'thruster_recovery_zero_before_seconds',
+            'thruster_recovery_reverse_seconds',
+            'thruster_recovery_zero_after_seconds',
+            'thruster_recovery_reverse_ty_max',
+            'thruster_recovery_reverse_mz_max',
+            'thruster_recovery_power_increment_min',
+            'thruster_recovery_lateral_speed_min',
+            'thruster_recovery_yaw_rate_min',
+            'thruster_recovery_response_hold_seconds',
+            'thruster_recovery_recheck_delay_seconds',
         )
         for name in positive_names:
             if self.parameters[name] <= 0:
@@ -497,6 +575,14 @@ class MotionSupervisorCore(object):
             raise ValueError('control_center_hold_tolerance 二维死区二维死区必须小于 capture_radius')
         if self.parameters['control_dt_min'] > self.parameters['control_dt_max']:
             raise ValueError('control_dt_min 不能大于 control_dt_max')
+        if self.parameters['thruster_fault_axis_effort_min'] > (
+                self.parameters['thruster_fault_combined_effort_min']):
+            raise ValueError(
+                'thruster_fault_axis_effort_min 不能大于 combined_effort_min')
+        if self.parameters['thruster_power_baseline_min_seconds'] > (
+                self.parameters['thruster_power_baseline_window_seconds']):
+            raise ValueError(
+                'thruster_power_baseline_min_seconds 不能大于窗口长度')
         for name in (
                 'max_tx_positive', 'max_tx_negative',
                 'max_ty_positive', 'max_ty_negative',
@@ -580,6 +666,7 @@ class MotionSupervisorCore(object):
         self.cancel_requested = False
         self.cancel_target_depth = None
         self.recovery_brake_requested = False
+        self._clear_thruster_recovery()
         self._reset_motion_references()
         self.cancel_brake_requested = True
         self.goal_changed_pending = False
@@ -600,6 +687,7 @@ class MotionSupervisorCore(object):
         self.cancel_requested = True
         self.cancel_brake_requested = False
         self.recovery_brake_requested = False
+        self._clear_thruster_recovery()
         self._reset_motion_references()
         self.x_axis_state = AXIS_BRAKE
         self.y_axis_state = AXIS_BRAKE
@@ -682,6 +770,200 @@ class MotionSupervisorCore(object):
         if command < 0.0:
             return negative
         return min(positive, negative)
+
+    @staticmethod
+    def _median(values):
+        """计算数值序列中位数，避免偶发功率尖峰污染空载基线。"""
+        ordered = sorted(values)
+        count = len(ordered)
+        if count == 0:
+            return None
+        middle = count // 2
+        if count % 2:
+            return ordered[middle]
+        return 0.5 * (ordered[middle - 1] + ordered[middle])
+
+    @staticmethod
+    def _power_feedback_usable(vehicle):
+        """仅接受新鲜、校验有效且为非负有限值的动力功率。"""
+        return (
+            vehicle.power_feedback_fresh
+            and vehicle.power2_valid
+            and vehicle.power2_power is not None
+            and math.isfinite(vehicle.power2_power)
+            and vehicle.power2_power >= 0.0
+        )
+
+    def _thruster_efforts(self, ty, mz):
+        """按实际命令方向限幅归一化 TY/MZ。"""
+        ty_limit = self._directional_parameter('max_ty', ty)
+        mz_limit = self._directional_parameter('max_mz', mz)
+        ty_effort = abs(float(ty)) / max(ty_limit, 1e-6)
+        mz_effort = abs(float(mz)) / max(mz_limit, 1e-6)
+        return ty_effort, mz_effort, math.hypot(ty_effort, mz_effort)
+
+    def _thruster_baseline_ready(self):
+        return self.thruster_power_baseline is not None
+
+    def _update_thruster_power_baseline(
+            self, vehicle, tx, combined_effort):
+        """用最近十秒稳定、低侧推输出样本更新动力空载功率中位数。"""
+        window = self.parameters['thruster_power_baseline_window_seconds']
+        map_yaw_rate = (
+            self.parameters['yaw_rate_to_map_sign'] * vehicle.yaw_rate)
+        eligible = (
+            self.state != THRUSTER_RECOVERY
+            and self._power_feedback_usable(vehicle)
+            and abs(tx) <= self.parameters['thruster_fault_tx_max']
+            and combined_effort <= self.parameters['thruster_power_idle_effort_max']
+            and math.hypot(
+                vehicle.forward_velocity, vehicle.lateral_velocity)
+            <= self.parameters['thruster_fault_lateral_speed_max']
+            and abs(map_yaw_rate)
+            <= self.parameters['thruster_fault_yaw_rate_max']
+        )
+        if eligible:
+            self.thruster_power_baseline_samples.append(
+                (vehicle.now, vehicle.power2_power))
+            cutoff = vehicle.now - window
+            while (self.thruster_power_baseline_samples
+                   and self.thruster_power_baseline_samples[0][0] < cutoff):
+                self.thruster_power_baseline_samples.popleft()
+            if len(self.thruster_power_baseline_samples) >= 2:
+                duration = (
+                    self.thruster_power_baseline_samples[-1][0]
+                    - self.thruster_power_baseline_samples[0][0]
+                )
+                if duration >= self.parameters[
+                        'thruster_power_baseline_min_seconds']:
+                    self.thruster_power_baseline = self._median([
+                        sample[1]
+                        for sample in self.thruster_power_baseline_samples
+                    ])
+
+    def _thruster_recheck_active(self, now):
+        if self.thruster_recheck_until is None:
+            return False
+        if now < self.thruster_recheck_until:
+            return True
+        self.thruster_recheck_until = None
+        if self.thruster_recovery_phase == RECOVERY_RECHECK_DELAY:
+            self.thruster_recovery_phase = ''
+            self.thruster_recovery_phase_started_at = None
+        return False
+
+    def _thruster_diagnostics(self, vehicle, tx, ty, mz):
+        """生成异常与恢复诊断量；不改变异常连续计时。"""
+        ty_effort, mz_effort, combined_effort = self._thruster_efforts(ty, mz)
+        self._update_thruster_power_baseline(vehicle, tx, combined_effort)
+        power_usable = self._power_feedback_usable(vehicle)
+        power_increment = None
+        if power_usable and self.thruster_power_baseline is not None:
+            power_increment = vehicle.power2_power - self.thruster_power_baseline
+
+        axis_min = self.parameters['thruster_fault_axis_effort_min']
+        ty_active = ty_effort >= axis_min
+        mz_active = mz_effort >= axis_min
+        lateral_stalled = (
+            not ty_active
+            or abs(vehicle.lateral_velocity)
+            <= self.parameters['thruster_fault_lateral_speed_max'])
+        map_yaw_rate = (
+            self.parameters['yaw_rate_to_map_sign'] * vehicle.yaw_rate)
+        yaw_stalled = (
+            not mz_active
+            or abs(map_yaw_rate)
+            <= self.parameters['thruster_fault_yaw_rate_max'])
+        power_low = (
+            power_increment is not None
+            and power_increment
+            <= self.parameters['thruster_fault_power_increment_max'])
+        recheck_active = self._thruster_recheck_active(vehicle.now)
+        final_lateral_response = (
+            ty_active
+            and abs(vehicle.lateral_velocity)
+            >= self.parameters['thruster_recovery_lateral_speed_min']
+            and ty * vehicle.lateral_velocity > 0.0)
+        final_yaw_response = (
+            mz_active
+            and abs(map_yaw_rate)
+            >= self.parameters['thruster_recovery_yaw_rate_min']
+            and mz * map_yaw_rate > 0.0)
+        final_motion_response = (
+            (not ty_active or final_lateral_response)
+            and (not mz_active or final_yaw_response)
+            and (ty_active or mz_active))
+        if (recheck_active
+                and combined_effort
+                >= self.parameters['thruster_fault_combined_effort_min']
+                and power_increment is not None
+                and power_increment
+                > self.parameters['thruster_fault_power_increment_max']
+                and final_motion_response):
+            self.thruster_recovery_final_confirmed = True
+        requested = (
+            self.parameters['thruster_recovery_enabled']
+            and vehicle.startup_complete
+            and self.goal_active
+            and self.state == TRANSLATE
+            and not self.cancel_requested
+            and not self.cancel_brake_requested
+            and not self.recovery_brake_requested
+            and not recheck_active
+            and self._thruster_baseline_ready()
+            and power_usable
+            and combined_effort
+            >= self.parameters['thruster_fault_combined_effort_min']
+            and abs(tx) <= self.parameters['thruster_fault_tx_max']
+            and (ty_active or mz_active)
+            and lateral_stalled
+            and yaw_stalled
+            and power_low
+        )
+        if self.thruster_fault_started_at is not None:
+            wait_seconds = max(
+                0.0, vehicle.now - self.thruster_fault_started_at)
+        elif self.thruster_recovery_phase:
+            wait_seconds = self.thruster_fault_trigger_duration
+        else:
+            wait_seconds = 0.0
+        recovery_power_increment = None
+        if (power_usable
+                and self.thruster_recovery_power_baseline is not None):
+            recovery_power_increment = (
+                vehicle.power2_power - self.thruster_recovery_power_baseline)
+        return {
+            'ty_effort': ty_effort,
+            'mz_effort': mz_effort,
+            'combined_effort': combined_effort,
+            'power2_idle_baseline_w': self.thruster_power_baseline,
+            'power2_increment_w': power_increment,
+            'thruster_power_feedback_usable': power_usable,
+            'thruster_fault_power_low': power_low,
+            'thruster_fault_lateral_stalled': lateral_stalled,
+            'thruster_fault_yaw_stalled': yaw_stalled,
+            'thruster_fault_requested': requested,
+            'thruster_fault_wait_s': wait_seconds,
+            'thruster_fault_triggered': self.state == THRUSTER_RECOVERY,
+            'thruster_recovery_phase': self.thruster_recovery_phase,
+            'thruster_recovery_count': self.thruster_recovery_count,
+            'thruster_fault_ty': self.thruster_fault_ty,
+            'thruster_fault_mz': self.thruster_fault_mz,
+            'thruster_reverse_ty': self.thruster_reverse_ty,
+            'thruster_reverse_mz': self.thruster_reverse_mz,
+            'thruster_recovery_power_baseline_w': (
+                self.thruster_recovery_power_baseline),
+            'thruster_recovery_power_increment_w': recovery_power_increment,
+            'thruster_recovery_power_response': False,
+            'thruster_recovery_lateral_response': False,
+            'thruster_recovery_yaw_response': False,
+            'thruster_recovery_motion_response': False,
+            'thruster_recovery_preliminary_success': (
+                self.thruster_recovery_preliminary_success),
+            'thruster_recovery_final_confirmed': (
+                self.thruster_recovery_final_confirmed),
+            'thruster_recheck_active': recheck_active,
+        }
 
     def _motion_parameter(self, prefix, error):
         """正常跟踪按目标误差方向选择参数。"""
@@ -979,7 +1261,10 @@ class MotionSupervisorCore(object):
             target.y - vehicle.y,
             vehicle.yaw,
         )
-        diagnostics = dict(diagnostics or {})
+        thruster_diagnostics = self._thruster_diagnostics(
+            vehicle, tx, ty, mz)
+        thruster_diagnostics.update(diagnostics or {})
+        diagnostics = thruster_diagnostics
         diagnostics.update({
             'raw_tx': raw_tx,
             'raw_ty': raw_ty,
@@ -987,6 +1272,14 @@ class MotionSupervisorCore(object):
             'limited_tx': tx,
             'limited_ty': ty,
             'limited_mz': mz,
+            'thruster_reverse_actual_ty': (
+                ty if (self.state == THRUSTER_RECOVERY
+                       and self.thruster_recovery_phase
+                       == RECOVERY_REVERSE_PULSE) else 0),
+            'thruster_reverse_actual_mz': (
+                mz if (self.state == THRUSTER_RECOVERY
+                       and self.thruster_recovery_phase
+                       == RECOVERY_REVERSE_PULSE) else 0),
         })
         return ControlOutput(
             self.state, mode, target, tx, ty, mz, distance, yaw_error,
@@ -1000,6 +1293,203 @@ class MotionSupervisorCore(object):
             y_speed=vehicle.lateral_velocity,
             diagnostics=diagnostics,
         )
+
+    def _clear_thruster_recovery(self, clear_recheck=True):
+        """清除当前恢复过程；取消或反馈异常时不得继续输出反向脉冲。"""
+        self.thruster_fault_started_at = None
+        self.thruster_fault_trigger_duration = 0.0
+        self.thruster_recovery_phase = ''
+        self.thruster_recovery_phase_started_at = None
+        self.thruster_fault_ty = 0.0
+        self.thruster_fault_mz = 0.0
+        self.thruster_reverse_ty = 0.0
+        self.thruster_reverse_mz = 0.0
+        self.thruster_recovery_zero_power_samples = []
+        self.thruster_recovery_power_baseline = None
+        self.thruster_recovery_response_started_at = None
+        self.thruster_recovery_preliminary_success = False
+        self.thruster_recovery_final_confirmed = False
+        if clear_recheck:
+            self.thruster_recheck_until = None
+
+    def _start_thruster_recovery(self, vehicle, output):
+        """锁存故障 TY/MZ，并生成保持比例、整体反号的受限恢复指令。"""
+        self.thruster_fault_trigger_duration = (
+            0.0 if self.thruster_fault_started_at is None else
+            max(0.0, vehicle.now - self.thruster_fault_started_at))
+        self.thruster_fault_ty = float(output.ty)
+        self.thruster_fault_mz = float(output.mz)
+        scale_candidates = [1.0]
+        if abs(self.thruster_fault_ty) > 1e-9:
+            scale_candidates.append(
+                self.parameters['thruster_recovery_reverse_ty_max']
+                / abs(self.thruster_fault_ty))
+        if abs(self.thruster_fault_mz) > 1e-9:
+            scale_candidates.append(
+                self.parameters['thruster_recovery_reverse_mz_max']
+                / abs(self.thruster_fault_mz))
+        scale = min(scale_candidates)
+        self.thruster_reverse_ty = -scale * self.thruster_fault_ty
+        self.thruster_reverse_mz = -scale * self.thruster_fault_mz
+        self.thruster_recovery_count += 1
+        self.thruster_recovery_phase = RECOVERY_ZERO_BEFORE_REVERSE
+        self.thruster_recovery_phase_started_at = vehicle.now
+        self.thruster_recovery_zero_power_samples = []
+        self.thruster_recovery_power_baseline = None
+        self.thruster_recovery_response_started_at = None
+        self.thruster_recovery_preliminary_success = False
+        self.thruster_recovery_final_confirmed = False
+        self.thruster_fault_started_at = None
+        self._transition(
+            THRUSTER_RECOVERY,
+            'TY/MZ 大指令、低功率且无运动，开始侧推自动恢复',
+        )
+
+    def _evaluate_thruster_fault(self, vehicle, output):
+        """累计异常连续时间；满足两秒后进入恢复状态。"""
+        requested = bool(output.diagnostics.get('thruster_fault_requested'))
+        if not requested:
+            self.thruster_fault_started_at = None
+            output.diagnostics['thruster_fault_wait_s'] = 0.0
+            return False
+        if self.thruster_fault_started_at is None:
+            self.thruster_fault_started_at = vehicle.now
+        wait_seconds = max(0.0, vehicle.now - self.thruster_fault_started_at)
+        output.diagnostics['thruster_fault_wait_s'] = wait_seconds
+        if wait_seconds < self.parameters['thruster_fault_hold_seconds']:
+            return False
+        self._start_thruster_recovery(vehicle, output)
+        return True
+
+    def _thruster_recovery_output(self, vehicle):
+        """执行回中、反向脉冲、再次回中并恢复原目标跟踪。"""
+        phase = self.thruster_recovery_phase
+        elapsed = max(
+            0.0,
+            vehicle.now - (self.thruster_recovery_phase_started_at
+                           if self.thruster_recovery_phase_started_at is not None
+                           else vehicle.now),
+        )
+        if phase == RECOVERY_ZERO_BEFORE_REVERSE:
+            if self._power_feedback_usable(vehicle):
+                self.thruster_recovery_zero_power_samples.append(
+                    vehicle.power2_power)
+            if elapsed < self.parameters['thruster_recovery_zero_before_seconds']:
+                return self._output(
+                    vehicle, MODE_DEPTH, immediate_zero=True)
+            self.thruster_recovery_power_baseline = self._median(
+                self.thruster_recovery_zero_power_samples)
+            self.thruster_recovery_phase = RECOVERY_REVERSE_PULSE
+            self.thruster_recovery_phase_started_at = vehicle.now
+            self.reason = '侧推完成回中，输出 TY/MZ 整体反向脉冲'
+            phase = RECOVERY_REVERSE_PULSE
+            elapsed = 0.0
+
+        if phase == RECOVERY_REVERSE_PULSE:
+            output = self._output(
+                vehicle,
+                MODE_DEPTH,
+                tx=0.0,
+                ty=self.thruster_reverse_ty,
+                mz=self.thruster_reverse_mz,
+            )
+            power_increment = None
+            if (self._power_feedback_usable(vehicle)
+                    and self.thruster_recovery_power_baseline is not None):
+                power_increment = (
+                    vehicle.power2_power
+                    - self.thruster_recovery_power_baseline)
+            power_response = (
+                power_increment is not None
+                and power_increment
+                >= self.parameters['thruster_recovery_power_increment_min'])
+            ty_effort, mz_effort, unused_combined = self._thruster_efforts(
+                self.thruster_fault_ty, self.thruster_fault_mz)
+            del unused_combined
+            axis_min = self.parameters['thruster_fault_axis_effort_min']
+            ty_active = ty_effort >= axis_min
+            mz_active = mz_effort >= axis_min
+            lateral_response = (
+                ty_active
+                and abs(vehicle.lateral_velocity)
+                >= self.parameters['thruster_recovery_lateral_speed_min']
+                and output.ty * vehicle.lateral_velocity > 0.0)
+            map_yaw_rate = (
+                self.parameters['yaw_rate_to_map_sign'] * vehicle.yaw_rate)
+            yaw_response = (
+                mz_active
+                and abs(map_yaw_rate)
+                >= self.parameters['thruster_recovery_yaw_rate_min']
+                and output.mz * map_yaw_rate > 0.0)
+            motion_response = lateral_response or yaw_response
+            response = power_response and motion_response
+            if response:
+                if self.thruster_recovery_response_started_at is None:
+                    self.thruster_recovery_response_started_at = vehicle.now
+            else:
+                self.thruster_recovery_response_started_at = None
+            response_wait = (
+                0.0 if self.thruster_recovery_response_started_at is None
+                else vehicle.now - self.thruster_recovery_response_started_at)
+            success = (
+                response
+                and response_wait
+                >= self.parameters['thruster_recovery_response_hold_seconds'])
+            output.diagnostics.update({
+                'thruster_recovery_power_increment_w': power_increment,
+                'thruster_recovery_power_response': power_response,
+                'thruster_recovery_lateral_response': lateral_response,
+                'thruster_recovery_yaw_response': yaw_response,
+                'thruster_recovery_motion_response': motion_response,
+                'thruster_recovery_response_wait_s': response_wait,
+                'thruster_recovery_preliminary_success': success,
+            })
+            if (not success
+                    and elapsed < self.parameters['thruster_recovery_reverse_seconds']):
+                return output
+            self.thruster_recovery_preliminary_success = success
+            recovery_diagnostics = dict(output.diagnostics)
+            self.thruster_recovery_phase = RECOVERY_ZERO_BEFORE_TRACK
+            self.thruster_recovery_phase_started_at = vehicle.now
+            self.reason = (
+                '反向脉冲已观察到功率和运动响应，再次回中'
+                if success else '反向脉冲到时，再次回中并恢复跟踪')
+            zero_output = self._output(
+                vehicle,
+                MODE_DEPTH,
+                immediate_zero=True,
+                diagnostics=recovery_diagnostics,
+            )
+            zero_output.diagnostics.update({
+                'thruster_recovery_phase': self.thruster_recovery_phase,
+                'thruster_recovery_preliminary_success': success,
+                'thruster_reverse_actual_ty': 0,
+                'thruster_reverse_actual_mz': 0,
+            })
+            return zero_output
+
+        if phase == RECOVERY_ZERO_BEFORE_TRACK:
+            if elapsed < self.parameters['thruster_recovery_zero_after_seconds']:
+                return self._output(
+                    vehicle, MODE_DEPTH, immediate_zero=True)
+            self._reset_motion_references(vehicle.now)
+            self.thruster_recovery_phase = RECOVERY_RECHECK_DELAY
+            self.thruster_recovery_phase_started_at = vehicle.now
+            self.thruster_recheck_until = (
+                vehicle.now
+                + self.parameters['thruster_recovery_recheck_delay_seconds'])
+            self.thruster_fault_started_at = None
+            self._transition(
+                TRANSLATE,
+                '侧推恢复流程完成，保留最新目标并恢复统一三轴跟踪',
+            )
+            return self._unified_pose_output(vehicle)
+
+        # 防止内部阶段异常时残留非零输出；下一周期可由重新跟踪接续。
+        self._clear_thruster_recovery()
+        self._reset_motion_references(vehicle.now)
+        self._transition(TRANSLATE, '侧推恢复内部阶段无效，安全回中后恢复跟踪')
+        return self._output(vehicle, MODE_DEPTH, immediate_zero=True)
 
     def _brake_output(self, vehicle):
         """启动、取消或反馈恢复时按三轴受限轨迹主动刹停。"""
@@ -1567,6 +2057,8 @@ class MotionSupervisorCore(object):
         yaw_rate_abs = abs(vehicle.yaw_rate)
 
         if not vehicle.feedback_fresh:
+            if self.state == THRUSTER_RECOVERY:
+                self._clear_thruster_recovery()
             if self.state != SAFE:
                 self._reset_motion_references(vehicle.now)
             self.recovery_brake_requested = self.goal_active
@@ -1582,6 +2074,9 @@ class MotionSupervisorCore(object):
                 self._transition(TRANSLATE_BRAKE, '反馈恢复，先确认停稳')
             else:
                 self._transition(IDLE, '反馈恢复，等待目标')
+
+        if self.state == THRUSTER_RECOVERY:
+            return self._thruster_recovery_output(vehicle)
 
         # 正常目标始终采用统一三轴轨迹，不再按 X/Y/yaw 分阶段控制。
         if self.state == IDLE:
@@ -1636,6 +2131,9 @@ class MotionSupervisorCore(object):
                 return self._brake_output(vehicle)
 
             output = self._unified_pose_output(vehicle)
+            if (self.state == TRANSLATE
+                    and self._evaluate_thruster_fault(vehicle, output)):
+                return self._thruster_recovery_output(vehicle)
             goal_static = (
                 output.diagnostics.get('goal_static_seconds', 0.0)
                 >= self.parameters['goal_static_capture_seconds']
