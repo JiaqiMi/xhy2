@@ -19,9 +19,9 @@
     <arg name="start_arrow_model" default="true" />
     <arg name="start_aruco_model" default="true" />
     <arg name="start_rectangle_model" default="true" />
-    <arg name="start_arrow_web" default="false" />
+    <arg name="start_arrow_web" default="true" />
     <arg name="start_aruco_web" default="false" />
-    <arg name="start_rectangle_web" default="false" />
+    <arg name="start_rectangle_web" default="true" />
     <arg name="arrow_web_port" default="8083" />
     <arg name="aruco_web_port" default="8082" />
     <arg name="rectangle_web_port" default="8080" />

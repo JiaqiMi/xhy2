@@ -1,0 +1,86 @@
+<launch>
+    <!--
+      定深 TX/TY/MZ 开环阶跃标定。
+      本节点直接独占 /cmd/pose/ned，运行前必须停止 motion_supervisor、人工遥控
+      及其他直接控制节点；下位机仅使用 mode=2 保持深度。
+
+      默认档位为各轴正/负最大安全输出的 20%、40%、60%、80%，正负最大值分别配置，
+      因而能覆盖推进器双向不对称性。每档先零输出基线 4 s，再施加 8 s，最后零输出恢复 6 s；
+      以上时长和所有档位均可通过 launch 参数调整。默认共 24 个阶跃，预计 7.3 分钟（不含预检）。
+
+      场地：程序在任一时刻距起点超过 4 m 时中止。默认参数至少需要
+      11 m x 11 m 无障碍水平水域，首次实测建议使用 15 m x 15 m；
+      垂直净空应不少于目标深度、艇体高度和额外 0.5 m 安全余量之和。
+    -->
+    <!-- 必须由操作者显式设为 true，默认绝不输出实机力/力矩。 -->
+    <arg name="enable_live_test" default="true" />
+    <arg name="target_depth" default="-0.6" />
+    <arg name="publish_rate_hz" default="8.0" />
+    <arg name="hold_seconds" default="8.0" />
+    <arg name="rest_seconds" default="6.0" />
+    <arg name="baseline_seconds" default="4.0" />
+    <arg name="steady_window_seconds" default="3.0" />
+    <arg name="startup_timeout" default="30.0" />
+    <arg name="feedback_timeout" default="0.5" />
+
+    <!-- 安全门槛；max_yaw_rate 和 preflight_yaw_rate 的单位均为 rad/s。 -->
+    <arg name="max_depth_error" default="0.5" />
+    <arg name="max_horizontal_speed" default="1.0" />
+    <arg name="max_yaw_rate" default="10" />
+    <arg name="max_displacement" default="10.0" />
+    <arg name="max_yaw_offset_deg" default="100.0" />
+    <arg name="preflight_depth_tolerance" default="0.03" />
+    <arg name="preflight_horizontal_speed" default="0.02" />
+    <arg name="preflight_yaw_rate" default="0.034906585" />
+    <!-- 速度变化超过下列阈值的首次采样，记为端到端实际响应延迟。 -->
+    <arg name="response_speed_threshold" default="0.01" />
+    <arg name="response_yaw_rate_threshold" default="0.0174532925" />
+    <!-- 每轴正负最大安全输出的绝对值，需与当前控制器限幅保持一致。 -->
+    <arg name="tx_max_positive" default="3000" />
+    <arg name="tx_max_negative" default="3000" />
+    <arg name="ty_max_positive" default="4000" />
+    <arg name="ty_max_negative" default="6000" />
+    <arg name="mz_max_positive" default="3000" />
+    <arg name="mz_max_negative" default="3500" />
+    <!-- 必须为 ROS/YAML 列表，例如 [0.20, 0.40, 0.60, 0.80]。 -->
+    <arg name="force_percentages" default="[0.25, 0.5, 0.75, 1.0]" />
+    <arg name="log_directory"
+         default="$(env HOME)/.ros/auv_logs/depth_wrench_calibration" />
+
+    <node pkg="auv_control" type="depth_wrench_calibration.py"
+          name="depth_wrench_calibration" output="screen">
+        <param name="enable_live_test" value="$(arg enable_live_test)" />
+        <param name="target_depth" value="$(arg target_depth)" />
+        <param name="publish_rate_hz" value="$(arg publish_rate_hz)" />
+        <param name="hold_seconds" value="$(arg hold_seconds)" />
+        <param name="rest_seconds" value="$(arg rest_seconds)" />
+        <param name="baseline_seconds" value="$(arg baseline_seconds)" />
+        <param name="steady_window_seconds" value="$(arg steady_window_seconds)" />
+        <param name="startup_timeout" value="$(arg startup_timeout)" />
+        <param name="feedback_timeout" value="$(arg feedback_timeout)" />
+        <param name="max_depth_error" value="$(arg max_depth_error)" />
+        <param name="max_horizontal_speed"
+               value="$(arg max_horizontal_speed)" />
+        <param name="max_yaw_rate" value="$(arg max_yaw_rate)" />
+        <param name="max_displacement" value="$(arg max_displacement)" />
+        <param name="max_yaw_offset_deg" value="$(arg max_yaw_offset_deg)" />
+        <param name="preflight_depth_tolerance"
+               value="$(arg preflight_depth_tolerance)" />
+        <param name="preflight_horizontal_speed"
+               value="$(arg preflight_horizontal_speed)" />
+        <param name="preflight_yaw_rate"
+               value="$(arg preflight_yaw_rate)" />
+        <param name="response_speed_threshold"
+               value="$(arg response_speed_threshold)" />
+        <param name="response_yaw_rate_threshold"
+               value="$(arg response_yaw_rate_threshold)" />
+        <param name="tx_max_positive" value="$(arg tx_max_positive)" />
+        <param name="tx_max_negative" value="$(arg tx_max_negative)" />
+        <param name="ty_max_positive" value="$(arg ty_max_positive)" />
+        <param name="ty_max_negative" value="$(arg ty_max_negative)" />
+        <param name="mz_max_positive" value="$(arg mz_max_positive)" />
+        <param name="mz_max_negative" value="$(arg mz_max_negative)" />
+        <param name="log_directory" value="$(arg log_directory)" />
+        <rosparam param="force_percentages" subst_value="true">$(arg force_percentages)</rosparam>
+    </node>
+</launch>

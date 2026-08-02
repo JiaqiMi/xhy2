@@ -11,6 +11,8 @@
     增加可持久化的手动地图旋转，支持指定航向为上。
     增加拖拽对角点绘制并持久化水池 N/E 边界。
     水池矩形改为按绘制时地图航向确定方向，并保存世界坐标角点。
+2026.8.2
+    在左目和鱼眼标题旁显示各在线视觉任务的检测帧率。
 */
 
 const MAP_UP_HEADING_KEY = "state_web.map_up_heading_deg";
@@ -102,10 +104,10 @@ function normalizePoolBoundary(value) {
     return {
         headingDeg: 0,
         corners: [
-            {north: normalizedNorthMin, east: normalizedEastMin},
-            {north: normalizedNorthMin, east: normalizedEastMax},
-            {north: normalizedNorthMax, east: normalizedEastMax},
-            {north: normalizedNorthMax, east: normalizedEastMin},
+            { north: normalizedNorthMin, east: normalizedEastMin },
+            { north: normalizedNorthMin, east: normalizedEastMax },
+            { north: normalizedNorthMax, east: normalizedEastMax },
+            { north: normalizedNorthMax, east: normalizedEastMin },
         ],
         lengthM: normalizedNorthMax - normalizedNorthMin,
         widthM: normalizedEastMax - normalizedEastMin,
@@ -397,6 +399,39 @@ function renderCamera(name, stream) {
         `${numberText(stream.fps, 1)} FPS`,
         `年龄 ${ageText(stream.age_sec)}`,
     ].join(" · ");
+}
+
+
+function renderVisionFps(vision) {
+    const labels = {
+        line: "线",
+        red_circle: "红圆",
+        shapes: "形状",
+        rectangle: "方框",
+        arrow: "箭头",
+        aruco: "ArUco",
+    };
+    for (const camera of ["left", "fisheye"]) {
+        const element = document.getElementById(
+            `camera-${camera}-vision-fps`,
+        );
+        const items = Object.entries(vision || {})
+            .filter(([, source]) => source?.camera === camera)
+            .map(([name, source]) => {
+                const channel = source?.channels?.detection;
+                if (!channel?.online) return null;
+                const fps = finiteNumber(source.fps ?? channel.fps);
+                const fpsText = fps !== null && fps > 0
+                    ? fps.toFixed(1)
+                    : "--";
+                return `${labels[name] || source.label || name} ${fpsText} FPS`;
+            })
+            .filter(Boolean);
+        element.textContent = items.length
+            ? items.join(" · ")
+            : "视觉 FPS --";
+        element.classList.toggle("is-online", items.length > 0);
+    }
 }
 
 
@@ -1044,11 +1079,11 @@ function clipLineToCanvas(start, end, width, height) {
 
 
 function drawMapCompass(ctx, width, upHeading) {
-    const center = {x: Math.max(42, width - 48), y: 50};
+    const center = { x: Math.max(42, width - 48), y: 50 };
     const arrowLength = 24;
     const axes = [
-        {label: "N", heading: -upHeading, color: "#43c7ff"},
-        {label: "E", heading: 90 - upHeading, color: "#ffbe45"},
+        { label: "N", heading: -upHeading, color: "#43c7ff" },
+        { label: "E", heading: 90 - upHeading, color: "#ffbe45" },
     ];
 
     ctx.save();
@@ -1134,7 +1169,7 @@ function drawPoolBoundary(ctx, worldToScreen, boundary, draft = false) {
             north: center.north + point.north / 4,
             east: center.east + point.east / 4,
         }),
-        {north: 0, east: 0},
+        { north: 0, east: 0 },
     );
     const positiveWorld = {
         north: (
@@ -1227,7 +1262,7 @@ function drawXYMap(data) {
     ctx.fillRect(0, 0, width, height);
 
     const mapTransform = createMapTransform(width, height);
-    const {scale, worldToScreen, screenToWorld} = mapTransform;
+    const { scale, worldToScreen, screenToWorld } = mapTransform;
     const upHeading = dashboardState.mapUpHeading;
     const gridStep = niceDistance(70 / scale);
     const visibleCorners = [
@@ -1793,6 +1828,7 @@ function renderDashboard(data) {
     renderCamera("left", data.streams?.left);
     renderCamera("right", data.streams?.right);
     renderCamera("fisheye", data.streams?.fisheye);
+    renderVisionFps(data.vision);
 
     const ready = document.getElementById("status-ready");
     ready.textContent = data.ready ? "坐标系已就绪" : "坐标系未就绪";

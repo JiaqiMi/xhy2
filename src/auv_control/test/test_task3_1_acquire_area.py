@@ -90,6 +90,7 @@ class Task3AcquireAreaTest(object):
     SEARCH_POSITION = "固定路径只搜索箭头位置"
     SEARCH_PATTERN = SEARCH_POSITION
     HOLD_WAIT = "锁定当前位姿并等待定点稳定"
+    VISUAL_STEP_WAIT = "视觉小步目标等待匹配HOVER"
     RECOVER_POSITION = "定点重新识别箭头位置"
     WAIT_FOR_ARROW = RECOVER_POSITION
     COARSE_POSITION_APPROACH = "首次稳定位置对应的camera粗对准"
@@ -662,6 +663,7 @@ class Task3AcquireAreaTest(object):
 
     def reject_map_target_frame(self, frame_index, reason):
         self.latest_map_target = None
+        # VISUAL_STEP_WAIT故意不计入：移动中的无效帧不能污染静止位置窗口。
         position_states = (
             self.SEARCH_POSITION,
             self.COLLECT_DIRECTION,
@@ -785,6 +787,7 @@ class Task3AcquireAreaTest(object):
             self.state,
         )
 
+        # VISUAL_STEP_WAIT故意不计入：移动帧只记录，HOVER后从空窗口重新累计。
         position_states = (
             self.SEARCH_POSITION,
             self.COLLECT_DIRECTION,
@@ -1281,6 +1284,16 @@ class Task3AcquireAreaTest(object):
         return self.yaw_correction_sign * normalize_angle_deg(
             self.camera_forward_angle_deg - direction_angle_deg
         )
+        if age > self.detection_timeout:
+            return None
+        return {
+            "angle_deg": self.mean_angle_deg([
+                item["angle_deg"] for item in best_group
+            ]),
+            "frame_index": latest["frame_index"],
+            "received_time": latest["received_time"],
+            "support_count": len(best_group),
+        }
 
     def get_frame_pose(self, frame, context):
         try:
@@ -2061,6 +2074,48 @@ class Task3AcquireAreaTest(object):
         self.hold_requested_at = None
         self.hold_next_state = None
 
+    def control_visual_step_wait(self):
+        elapsed = (rospy.Time.now() - self.state_started).to_sec()
+        rospy.loginfo_throttle(
+            self.log_interval,
+            (
+                "%s：视觉小步目标等待匹配HOVER：来源阶段=%s，"
+                "已等待%.1f/%.1fs，最短保持%.1fs；"
+                "期间持续识别但不累计位置、方向和完成窗口"
+            ),
+            NODE_NAME,
+            self.visual_step_origin_state or "未知",
+            elapsed,
+            self.cancel_timeout,
+            self.visual_step_min_wait,
+        )
+        self.log_arrival_gate("视觉小步目标等待匹配HOVER")
+        if elapsed >= self.cancel_timeout:
+            self.finish_task(
+                False,
+                "视觉小步目标未在规定时间进入匹配HOVER（来源阶段={}）".format(
+                    self.visual_step_origin_state or "未知"
+                ),
+            )
+            return
+        if elapsed < self.visual_step_min_wait:
+            return
+        if not self.visual_step_has_completed():
+            return
+
+        origin_state = self.visual_step_origin_state or "未知"
+        self.reset_visual_windows_after_step()
+        self.visual_step_requested_at = None
+        self.visual_step_origin_state = None
+        self.visual_step_min_wait = 0.0
+        self.set_state(
+            self.RECOVER_POSITION,
+            (
+                "{}下发的小步目标已由motion_supervisor匹配并进入HOVER；"
+                "已清空移动过程中的位置、方向和完成窗口，开始静止重新识别"
+            ).format(origin_state),
+        )
+
     def locked_map_target_age(self):
         if self.locked_arrow_received_time is None:
             return None
@@ -2438,6 +2493,8 @@ class Task3AcquireAreaTest(object):
             self.control_search_pattern()
         elif self.state == self.HOLD_WAIT:
             self.control_hold_wait()
+        elif self.state == self.VISUAL_STEP_WAIT:
+            self.control_visual_step_wait()
         elif self.state == self.RECOVER_POSITION:
             self.control_wait_for_arrow()
         elif self.state == self.COARSE_POSITION_APPROACH:

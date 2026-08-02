@@ -2,6 +2,8 @@
 # 记录：
 # 2026.7.31
 #   将当前完整参数命名为 low 档，由 launch 的 motion_profile 参数选择。
+# 2026.8.2
+#   新增 TY/MZ 协议级侧推异常检测与自动恢复参数，不改变正常跟踪、限幅和刹车参数。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -20,7 +22,7 @@ log_enabled: true                                 # 是否记录当前/目标位
 log_directory: ~/.ros/auv_logs/motion_supervisor  # CSV 日志目录，每次启动自动新建带时间戳文件
 log_flush_every: 20                               # 每累计多少个控制周期刷新磁盘，20 Hz 下约每秒刷新
 log_max_file_size_mb: 50.0                        # 单个 CSV 最大 50 MiB，后续分卷追加 _1、_2 等编号
-power_feedback_timeout: 1.0                       # /status/power 超过此时间未更新时标记为不新鲜，不影响控制
+power_feedback_timeout: 1.0                       # /status/power 超时不影响正常跟踪，但禁止触发侧推自动恢复
 
 # 正常跟踪与主动刹车共用方向性限幅和步长；参数后缀表示实际输出正负号。
 max_tx_positive: 2000.0             # 正 TX 最大值
@@ -153,3 +155,26 @@ effectiveness_yaw_tx: 0.0
 effectiveness_yaw_ty: 0.0
 effectiveness_yaw_mz: 1.0
 effectiveness_min_determinant: 0.05
+
+# TY/MZ 协议级侧推异常检测与自动恢复；low/high 两档保持完全一致。
+thruster_recovery_enabled: true
+thruster_fault_combined_effort_min: 0.75
+thruster_fault_axis_effort_min: 0.40
+thruster_fault_tx_max: 500.0
+thruster_fault_power_increment_max: 15.0
+thruster_fault_lateral_speed_max: 0.010
+thruster_fault_yaw_rate_max_deg_s: 0.3
+thruster_fault_hold_seconds: 2.0
+thruster_power_idle_effort_max: 0.20
+thruster_power_baseline_window_seconds: 10.0
+thruster_power_baseline_min_seconds: 2.0
+thruster_recovery_zero_before_seconds: 1.5
+thruster_recovery_reverse_seconds: 1.0
+thruster_recovery_zero_after_seconds: 0.5
+thruster_recovery_reverse_ty_max: 2000.0
+thruster_recovery_reverse_mz_max: 1500.0
+thruster_recovery_power_increment_min: 15.0
+thruster_recovery_lateral_speed_min: 0.010
+thruster_recovery_yaw_rate_min_deg_s: 0.5
+thruster_recovery_response_hold_seconds: 0.25
+thruster_recovery_recheck_delay_seconds: 2.0

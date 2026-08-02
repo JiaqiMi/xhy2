@@ -182,8 +182,9 @@ catkin_install_python(PROGRAMS
   driver/auv_tf_handler.py
   driver/main_driver.py
   driver/debug_driver_v2.py
-  deprecated/main_driver.py
+  # deprecated/main_driver.py
   driver/debug_protocol.py
+  driver/depth_wrench_calibration.py
   driver/lever_arm.py
   driver/map_initer.py
   driver/motion_supervisor.py

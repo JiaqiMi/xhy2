@@ -228,6 +228,7 @@ class Task3InspectAndDropTest:
         MotionState.CAPTURE: "CAPTURE",
         MotionState.HOVER: "HOVER",
         MotionState.SAFE: "SAFE",
+        MotionState.THRUSTER_RECOVERY: "THRUSTER_RECOVERY",
     }
 
     COLOR_LIGHTS = {
