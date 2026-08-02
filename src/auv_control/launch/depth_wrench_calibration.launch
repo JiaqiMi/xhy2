@@ -4,9 +4,12 @@
       本节点直接独占 /cmd/pose/ned，运行前必须停止 motion_supervisor、人工遥控
       及其他直接控制节点；下位机仅使用 mode=2 保持深度。
 
-      默认档位为各轴正/负最大安全输出的 20%、40%、60%、80%，正负最大值分别配置，
-      因而能覆盖推进器双向不对称性。每档先零输出基线 4 s，再施加 8 s，最后零输出恢复 6 s；
-      以上时长和所有档位均可通过 launch 参数调整。默认共 24 个阶跃，预计 7.3 分钟（不含预检）。
+      static 档默认为各轴正/负最大安全输出的 20%、40%、60%、80%，正负最大值分别配置，
+      因而能覆盖推进器双向不对称性。每档仅在稳定零输出基线通过后施加力矩，随后必须零输出
+      连续停稳并完成恢复观察才记为 PASS；任何恢复超速、超深、偏航或未停稳均记为 FAIL。
+      reverse_brake 档按每轴正/负方向执行“同向驱动 10 s、反向最大比例制动至零速、零输出观察”，
+      用于标定反向刹停时间和位移。test_profile 可选 static、reverse_brake 或 both；
+      默认 static，共 24 个阶跃。稳定基线和停稳均受水流影响，测试总时长不再使用固定值承诺。
 
       场地：程序在任一时刻距起点超过 4 m 时中止。默认参数至少需要
       11 m x 11 m 无障碍水平水域，首次实测建议使用 15 m x 15 m；
@@ -17,9 +20,30 @@
     <arg name="target_depth" default="-0.9" />
     <arg name="publish_rate_hz" default="10.0" />
     <arg name="hold_seconds" default="8.0" />
+    <!-- 停稳后额外零输出观察时长；该观察通过后才会写入 PASS。 -->
     <arg name="rest_seconds" default="6.0" />
     <arg name="baseline_seconds" default="4.0" />
     <arg name="steady_window_seconds" default="3.0" />
+    <!-- static：稳态力矩标定；reverse_brake：同向驱动后的反向刹停；both：依次执行两者。 -->
+    <arg name="test_profile" default="static" />
+    <arg name="reverse_brake_drive_seconds" default="10.0" />
+    <arg name="reverse_brake_timeout" default="12.0" />
+    <arg name="reverse_brake_observe_seconds" default="2.0" />
+    <arg name="reverse_brake_min_speed" default="0.05" />
+    <arg name="reverse_brake_min_yaw_rate" default="0.087266463" />
+    <arg name="reverse_brake_stop_speed" default="0.012" />
+    <arg name="reverse_brake_stop_yaw_rate" default="0.008726646" />
+    <!-- 基线必须先静止；超过 timeout 不开始下一档。角速度单位为 rad/s。 -->
+    <arg name="baseline_wait_timeout" default="30.0" />
+    <arg name="baseline_stable_seconds" default="2.0" />
+    <arg name="baseline_max_horizontal_speed" default="0.02" />
+    <arg name="baseline_max_yaw_rate" default="0.034906585" />
+    <arg name="baseline_max_axis_stddev" default="0.005" />
+    <!-- 撤力或反向刹停后的零输出停稳判定；三轴共用持续时间。 -->
+    <arg name="recovery_timeout" default="20.0" />
+    <arg name="recovery_stable_seconds" default="2.0" />
+    <arg name="recovery_max_horizontal_speed" default="0.015" />
+    <arg name="recovery_max_yaw_rate" default="0.008726646" />
     <arg name="startup_timeout" default="30.0" />
     <arg name="feedback_timeout" default="0.5" />
 
@@ -29,10 +53,14 @@
     <arg name="max_yaw_rate" default="0.60" />
     <arg name="max_displacement" default="4.0" />
     <arg name="max_yaw_offset_deg" default="100.0" />
+    <!-- 标定数据有效性门槛，必须不大于硬安全门；超过即终止当前整档。 -->
+    <arg name="valid_max_depth_error" default="0.05" />
+    <arg name="valid_max_displacement" default="1.0" />
+    <arg name="valid_max_yaw_offset_deg" default="10.0" />
     <arg name="preflight_depth_tolerance" default="0.03" />
     <arg name="preflight_horizontal_speed" default="0.02" />
     <arg name="preflight_yaw_rate" default="0.034906585" />
-    <!-- 速度变化超过下列阈值的首次采样，记为端到端实际响应延迟。 -->
+    <!-- 速度变化超过下列阈值的首次采样，记为可观测速响应时间，不等同 control_delay。 -->
     <arg name="response_speed_threshold" default="0.01" />
     <arg name="response_yaw_rate_threshold" default="0.0174532925" />
     <!-- 每轴正负最大安全输出的绝对值，需与当前控制器限幅保持一致。 -->
@@ -44,6 +72,9 @@
     <arg name="mz_max_negative" default="3500" />
     <!-- 必须为 ROS/YAML 列表，例如 [0.20, 0.40, 0.60, 0.80]。 -->
     <arg name="force_percentages" default="[0.20, 0.40, 0.60, 0.80]" />
+    <!-- 反向刹停使用的同向驱动百分比，以及反向制动百分比。 -->
+    <arg name="reverse_brake_drive_percentages" default="[0.40, 0.60, 0.80]" />
+    <arg name="reverse_brake_percentage" default="1.0" />
     <arg name="log_directory"
          default="$(env HOME)/.ros/auv_logs/depth_wrench_calibration" />
 
@@ -56,6 +87,38 @@
         <param name="rest_seconds" value="$(arg rest_seconds)" />
         <param name="baseline_seconds" value="$(arg baseline_seconds)" />
         <param name="steady_window_seconds" value="$(arg steady_window_seconds)" />
+        <param name="test_profile" value="$(arg test_profile)" />
+        <param name="reverse_brake_drive_seconds"
+               value="$(arg reverse_brake_drive_seconds)" />
+        <param name="reverse_brake_timeout"
+               value="$(arg reverse_brake_timeout)" />
+        <param name="reverse_brake_observe_seconds"
+               value="$(arg reverse_brake_observe_seconds)" />
+        <param name="reverse_brake_min_speed"
+               value="$(arg reverse_brake_min_speed)" />
+        <param name="reverse_brake_min_yaw_rate"
+               value="$(arg reverse_brake_min_yaw_rate)" />
+        <param name="reverse_brake_stop_speed"
+               value="$(arg reverse_brake_stop_speed)" />
+        <param name="reverse_brake_stop_yaw_rate"
+               value="$(arg reverse_brake_stop_yaw_rate)" />
+        <param name="baseline_wait_timeout"
+               value="$(arg baseline_wait_timeout)" />
+        <param name="baseline_stable_seconds"
+               value="$(arg baseline_stable_seconds)" />
+        <param name="baseline_max_horizontal_speed"
+               value="$(arg baseline_max_horizontal_speed)" />
+        <param name="baseline_max_yaw_rate"
+               value="$(arg baseline_max_yaw_rate)" />
+        <param name="baseline_max_axis_stddev"
+               value="$(arg baseline_max_axis_stddev)" />
+        <param name="recovery_timeout" value="$(arg recovery_timeout)" />
+        <param name="recovery_stable_seconds"
+               value="$(arg recovery_stable_seconds)" />
+        <param name="recovery_max_horizontal_speed"
+               value="$(arg recovery_max_horizontal_speed)" />
+        <param name="recovery_max_yaw_rate"
+               value="$(arg recovery_max_yaw_rate)" />
         <param name="startup_timeout" value="$(arg startup_timeout)" />
         <param name="feedback_timeout" value="$(arg feedback_timeout)" />
         <param name="max_depth_error" value="$(arg max_depth_error)" />
@@ -64,6 +127,12 @@
         <param name="max_yaw_rate" value="$(arg max_yaw_rate)" />
         <param name="max_displacement" value="$(arg max_displacement)" />
         <param name="max_yaw_offset_deg" value="$(arg max_yaw_offset_deg)" />
+        <param name="valid_max_depth_error"
+               value="$(arg valid_max_depth_error)" />
+        <param name="valid_max_displacement"
+               value="$(arg valid_max_displacement)" />
+        <param name="valid_max_yaw_offset_deg"
+               value="$(arg valid_max_yaw_offset_deg)" />
         <param name="preflight_depth_tolerance"
                value="$(arg preflight_depth_tolerance)" />
         <param name="preflight_horizontal_speed"
@@ -82,5 +151,8 @@
         <param name="mz_max_negative" value="$(arg mz_max_negative)" />
         <param name="log_directory" value="$(arg log_directory)" />
         <rosparam param="force_percentages" subst_value="true">$(arg force_percentages)</rosparam>
+        <rosparam param="reverse_brake_drive_percentages" subst_value="true">$(arg reverse_brake_drive_percentages)</rosparam>
+        <param name="reverse_brake_percentage"
+               value="$(arg reverse_brake_percentage)" />
     </node>
 </launch>
