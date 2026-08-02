@@ -18,17 +18,16 @@ task3_target_depth_m: 0.6
 # 该参数始终生效，与子任务超时跳点容错开关无关，单位deg。
 task3_initial_yaw_deg: 210.0
 
-# 任务3三级超时保护共用参数。
-# 第一级：运动反馈超过该时间未更新，当前子任务结束并进入恢复。
-# 第二级：总调度发布cancel后最多等待该时间完成刹停，再重试当前阶段一次。
-# 第三级：重试仍失败时直接跳过当前阶段，继续后续流程。
+# 运行安全检查参数，不属于阶段最终超时，也不会触发总调度恢复或重试。
+# motion_feedback_timeout只判断运动反馈是否新鲜；cancel_recovery_timeout保留给
+# 独立子任务的当前位置保持兼容逻辑，完整任务总调度不再使用cancel恢复。
 task3_protection:
   motion_feedback_timeout: 3.0
   cancel_recovery_timeout: 30.0
 
 
 # ============================================================
-# 子任务1：箭头搜索、粗对准、方向对准和最后固定前移
+# 子任务1：箭头搜索、位置/方向滑动窗和持续闭环移动对准
 # ROS私有参数命名空间：/test_task3_1_acquire_area
 # ============================================================
 test_task3_1_acquire_area:
@@ -39,37 +38,35 @@ test_task3_1_acquire_area:
   warning_log_interval: 2.0
 
   # 箭头基础识别
-  # min_confidence调大可减少误检，调小可增加弱目标召回。
+  # 位置帧先独立判断；局部箭头只要检测和深度有效即可进入位置窗口。
   min_confidence: 0.4
-  # 普通位置帧最大允许间隔，同时用于定点方向复核保护。
+  # 稳定位置帧达到该置信度后，才从空窗口开始判断完整箭头方向。
+  direction_start_confidence: 0.5
+  # 位置话题和方向话题分别允许的最大数据年龄；两个窗口不要求时间戳配对。
   detection_timeout: 2.0
-  # 运动中完整箭头丢失达到该时间后取消当前目标。
-  visual_loss_cancel_seconds: 2.0
 
-  # 箭头位置锁定：最近10个模型帧内，同一位置候选组命中3帧。
+  # 箭头位置锁定：三维箭头点先按原始图像时间戳转换到map；
+  # 最近10帧内，同一map位置候选组命中3帧即可，不要求完全相同。
   stable_detection_window_size: 10
-  stable_detection_count: 4
-  # 候选组中心最大二维抖动，单位px。
-  stable_center_tolerance_px: 40.0
-  # 候选框面积相对中位面积的最大变化比例。
-  stable_area_tolerance_ratio: 0.35
-  # 方向候选组或连续方向帧的最大角度抖动，单位deg。
+  stable_detection_count: 3
+  # 同一候选组相对map中位位置的最大二维距离，单位m。
+  stable_map_position_tolerance_m: 0.20
+  # base_link在map中的水平位置到箭头map位置的最终容差，单位m。
+  map_alignment_tolerance_m: 0.10
+  # 每次map小步取剩余水平误差的比例，再由下面最大/最小步长限幅。
+  map_goal_step_ratio: 0.50
+  # 方向候选组的最大角度抖动，单位deg。
   stable_angle_tolerance_deg: 12.0
-  # 粗居中和启用时的最终视觉对准连续确认帧数。
-  center_stable_detection_count: 2
 
-  # 定点方向复核：10帧内同一角度候选组命中3帧，不要求连续。
+  # 固定搜索阶段不判断方向；稳定位置帧达到方向启用阈值后才清空并启动方向窗。
+  # 最近10个不同关键点推理帧内同一角度候选组命中3帧，
+  # 不要求连续；局部箭头或关键点不完整的帧只用于粗位置，不作为有效方向帧。
   direction_confirm_window_size: 10
   direction_confirm_required_count: 3
-  # 机器人运动期间仍要求方向连续稳定2帧，避免使用旧位姿历史帧。
-  heading_stable_detection_count: 2
-  # 航向与横移联合对准连续通过帧数。
-  heading_aligned_detection_count: 2
-
-  # false：最后固定前移前不再检查最终视觉中心、方向和连续帧，
-  #        只等待当前目标对应的MotionState.HOVER。
-  # true：保留最终视觉中心、方向和连续帧判断。
-  enable_final_visual_alignment: false
+  # 最终完成判定也是滑动窗，由三维位置话题推进；每次读取当前方向窗锁定值。
+  # 最近10个三维位置帧内至少3帧满足map位置和航向误差，且最新帧必须通过。
+  alignment_window_size: 10
+  alignment_required_count: 3
 
   # motion_supervisor首次反馈等待；运行期反馈和取消保护统一读取
   # 文件顶部task3_protection，不在各子任务重复配置。
@@ -84,13 +81,18 @@ test_task3_1_acquire_area:
 
   # 独立运行子任务1时的启动悬停和搜索路径。
   initial_hover_seconds: 10.0
-  search_initial_forward_distance: 1.2
-  search_lateral_distance: 0.5
-  search_second_forward_distance: 0.60
-  search_third_forward_distance: 0.6
-  # 每次箭头子任务从启动悬停、三层搜索到粗细对准的总超时。
-  # 第一次和第二次箭头都使用该值。timeout_skip_enabled=true时，
-  # 达到该总时间不再重复整轮搜索，直接前往下一子任务的人工N/E点。
+  # 按相机到箭头平面0.80m、水平/垂直视场86/56deg估算：
+  # 单帧约覆盖左右1.49m、前后0.85m。搜索分成三段，每段先到中线
+  # 正前方，再左扫、右扫并回到中线；左右端点各0.75m、段间0.65m，
+  # 前后视野约重叠24%，理论连续覆盖约2.99m x 2.15m = 6.44m^2。
+  search_initial_forward_distance: 0.40
+  search_lateral_distance: 0.75
+  search_second_forward_distance: 0.65
+  search_third_forward_distance: 0.65
+  # 箭头子任务独立运行时的默认最终超时，从首次搜索运动目标开始计时；
+  # 完整任务中的第一次、第二次箭头分别使用task3_final下的独立参数。
+  # 三段搜索走完后保持最后搜索点继续识别，不提前失败；达到该时间后，
+  # 第一次箭头直接前往ArUco点，第二次箭头直接前往方框点，不恢复、不重试。
   max_wait_seconds: 120.0
 
   # 箭头模型图像尺寸和完整可见门槛
@@ -100,30 +102,19 @@ test_task3_1_acquire_area:
   full_arrow_min_bbox_width_px: 30.0
   full_arrow_min_bbox_height_px: 30.0
 
-  # 图像目标中心和普通中心容差；0.5/0.5表示图像正中心。
+  # 图像中心只用于日志记录，平移和完成判定只使用map误差。
   target_center_u_ratio: 0.5
   target_center_v_ratio: 0.5
-  center_tolerance_u_px: 50.0
-  center_tolerance_v_px: 50.0
 
-  # 航向对准阶段专用水平容差。
-  # 转向时横移不明显可逐步调小；左右振荡时调大。
-  heading_lateral_tolerance_px: 20.0
+  # 位置优先阶段保持当前航向，只按base_link到箭头map位置误差缓慢靠近。
+  coarse_visual_max_step_m: 0.20
+  coarse_visual_min_step_m: 0.05
+  coarse_goal_min_interval: 1.0
+  # 未获得稳定方向时，base_link进入该距离后暂停继续靠近，避免越过箭头。
+  coarse_position_stop_distance_m: 0.70
 
-  # 粗对准：归一化v/u误差到前后/左右位置小步的增益，单位m。
-  visual_forward_gain_m: 0.20
-  visual_lateral_gain_m: 0.20
-  visual_max_step_m: 0.50
-  visual_min_step_m: 0.05
-  visual_goal_min_interval: 1.0
-  # 运动方向相反时只修改对应符号为-1.0。
-  visual_forward_sign: 1.0
-  visual_lateral_sign: 1.0
-
-  # 细对准：航向和横移联合控制以及慢速前后居中。
-  fine_forward_gain_m: 0.20
-  fine_lateral_gain_m: 0.20
-  fine_visual_max_step_m: 0.50
+  # 方向窗通过后的联合闭环控制：同时更新base_link map位置和航向。
+  fine_visual_max_step_m: 0.20
   fine_visual_min_step_m: 0.05
   fine_yaw_max_step_deg: 10.0
   fine_goal_min_interval: 2.0
@@ -133,9 +124,8 @@ test_task3_1_acquire_area:
   yaw_correction_sign: 1.0
   yaw_tolerance_deg: 10.0
 
-  # 航向和图像中心对准后，base_link沿当前航向执行的一次性固定前移。
-  # 当前实验值为0.50m；目标下发后忽略后续视觉，不回退。
-  base_link_forward_offset: 0.5
+  # 联合误差窗口通过后冻结箭头map位置和目标航向；最终不再追逐视觉更新，
+  # 只等待base_link进入箭头位置容差、航向通过并由motion_supervisor报告HOVER。
 
   # 任务侧离底保护和最终悬停
   status_timeout: 1.0
@@ -188,7 +178,7 @@ test_task3_2_get_task:
   # 最近10帧内同一ID命中3帧立即成功，不要求连续。
   recognition_window_size: 10
   required_match_count: 3
-  recognition_timeout: 60.0
+  recognition_timeout: 40.0
   # 实时识别超过15秒仍未满足3/10帧时，优先使用任务开始以来
   # 已记录的三帧一致ArUco历史ID；没有历史ID才按人工颜色继续执行。
   # recognition_fallback_color只能填写yellow、green或red。
@@ -242,8 +232,10 @@ test_task3_3_inspect_and_drop:
   stable_center_tolerance_px: 40.0
   stable_area_tolerance_ratio: 0.35
   detection_timeout: 2.0
-  # 子任务3首次搜索、识别和对准的总超时。
-  # 超时后不再重试识别，整合任务先原地左转，再返回map/NED原点并上浮结束。
+  # 子任务3独立运行时的默认最终超时，从首次实际运动目标开始计时；
+  # 完整任务使用task3_final.box_timeout_seconds覆盖该值。
+  # 预设搜索路径走完后保持末点继续识别。
+  # 超时后不再恢复或重试，整合任务先原地左转，再返回map/NED原点并上浮结束。
   max_wait_seconds: 120.0
 
   # motion_supervisor首次反馈等待；运行期反馈和取消保护统一读取
@@ -357,14 +349,14 @@ test_task3_3_inspect_and_drop:
 
 
 # ============================================================
-# 完整任务3：四阶段调度、阶段前模型检查和三级超时保护
+# 完整任务3：四阶段调度、启动模型检查和单层最终超时保护
 # ROS私有参数命名空间：/task3_final
 # ============================================================
 task3_final:
   rate: 10.0
   log_directory: "~/.ros/auv_logs/task3"
   # true：终端只显示关键阶段、识别成功、跳点、超时、警告和错误；
-  # 完整逐帧识别、运动反馈和执行器信息仍全部写入上面的单个日志文件。
+  # 四路原始识别帧、运动反馈和执行器信息仍全部写入上面的单个日志文件。
   console_key_only: true
   # 终端中的识别窗口、运动等待和执行器反馈进度统一限频。
   # 0.5秒对应最高约2Hz；状态切换、3/10确认、子任务开始/结束不受此限制。
@@ -372,32 +364,34 @@ task3_final:
   # 终端中同类WARNING重复出现的最短间隔；ERROR不做频率限制。
   console_warning_repeat_interval: 3.0
 
-  # 等待三个模型全部持续发布且启动固定目标进入HOVER的最长时间。
+  # 等待三个模型链路和启动固定目标进入HOVER的最长时间。
   model_ready_timeout: 90.0
-  # 启动统一检查和每个子任务开始前复查所需的模型帧数。
+  # 箭头方向只统计不同关键点源帧，避免定时器重复发布虚假满足帧数；
+  # 箭头三维位置因目标未进入画面时不会发布有效消息，启动只检查发布端连接。
+  # ArUco和方框仍按实际话题帧数检查；进入阶段后不再增加额外复查超时。
   model_required_frames: 3
   model_output_timeout: 2.0
-  model_recovery_timeout: 10.0
 
-  # 第二级cancel恢复判定为停稳后，还需连续稳定的时间。
+  # 最终超时后移动到下一阶段标志点，HOVER还需连续稳定的时间。
   handoff_stable_seconds: 2
-  # 阶段交接使用文件顶部task3_protection中的统一运动反馈超时。
   # 启动时锁存map到base_link固定悬停点的最长等待时间。
   startup_tf_timeout: 8.0
 
-  # 子任务超时跳点容错总开关。第一版只依据上面三个子任务的时间参数
-  # 判断是否跳点，不做目标是否超出相机视野的推断。
-  # 填完下面2组人工测量点并完成水下验证后，再手动改为true。
-  timeout_skip_enabled: true
-  # 从当前刹停点移动到下一阶段人工测量点的最长时间。
-  timeout_skip_move_timeout: 120.0
+  # 三个识别阶段各自独立的最终超时，均从该阶段首次实际运动目标开始计时。
+  # 修改其中一个不会影响另外两个；ArUco继续使用自己的识别超时参数。
+  arrow1_timeout_seconds: 120.0
+  arrow2_timeout_seconds: 120.0
+  box_timeout_seconds: 120.0
+
+  # 唯一最终超时处理始终启用，不再提供三级保护开关或阶段重试。
+  # 箭头最终超时后移动到下一阶段人工测量点的最长时间。
+  final_timeout_move_timeout: 120.0
   # motion_supervisor到达目标并进入HOVER后，还需连续稳定的时间。
-  timeout_skip_arrival_stable_seconds: 2.0
+  final_timeout_arrival_stable_seconds: 2.0
   # 所有点都是执行reset_world_origin.launch成功后，map坐标系中的绝对目标。
   # N（北向）、E（东向）单位m；yaw_deg单位deg；
   # 深度统一使用文件顶部task3_target_depth_m。
-  # 开关为false时允许保留“待测”；开关改为true前必须全部换成有限数字。
-  timeout_skip_targets:
+  final_timeout_targets:
     # 第一次箭头达到总超时后，才移动到子任务2的ArUco识别点。
     # 正常完成时留在当前位置，稳定HOVER后直接进入ArUco子任务。
     aruco:

@@ -22,7 +22,7 @@ import rospy
 import tf
 from auv_control.msg import AUVData, ActuatorControl, MotionState
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
-from std_msgs.msg import Empty, String
+from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
@@ -97,7 +97,6 @@ DEFAULT_MAX_WAIT_SECONDS = 300.0
 # 操作模式和 motion_supervisor 接口参数。
 DEFAULT_OPERATION_MODE = "manual"
 DEFAULT_MOTION_GOAL_TOPIC = "/cmd/motion/goal"
-DEFAULT_MOTION_CANCEL_TOPIC = "/cmd/motion/cancel"
 DEFAULT_MOTION_STATE_TOPIC = "/motion/state"
 DEFAULT_STATUS_TOPIC = "/status/auv"
 DEFAULT_MOTION_STARTUP_TIMEOUT = 10.0
@@ -184,7 +183,7 @@ class Task3InspectAndDropTest:
 
     STATE_NAMES = {
         WAIT_FOR_TARGET: "等待目标颜色方框",
-        AUTO_HOVER_CONFIRM: "刹停后悬停复核方框",
+        AUTO_HOVER_CONFIRM: "当前位置保持后悬停复核方框",
         AUTO_APPROACH: "左右细对准并保持航向",
         HOLD_BEFORE_ACTION: "夹爪移动到中间",
         OPEN_CLAMP: "打开夹爪",
@@ -335,9 +334,6 @@ class Task3InspectAndDropTest:
         self.motion_goal_topic = str(rospy.get_param(
             "~motion_goal_topic", DEFAULT_MOTION_GOAL_TOPIC
         )).strip()
-        self.motion_cancel_topic = str(rospy.get_param(
-            "~motion_cancel_topic", DEFAULT_MOTION_CANCEL_TOPIC
-        )).strip()
         self.motion_state_topic = str(rospy.get_param(
             "~motion_state_topic", DEFAULT_MOTION_STATE_TOPIC
         )).strip()
@@ -350,7 +346,7 @@ class Task3InspectAndDropTest:
         self.motion_startup_timeout = float(rospy.get_param(
             "~motion_startup_timeout", DEFAULT_MOTION_STARTUP_TIMEOUT
         ))
-        self.cancel_timeout = float(rospy.get_param(
+        self.hold_timeout = float(rospy.get_param(
             "/task3_protection/cancel_recovery_timeout", 30.0
         ))
         self.status_timeout = float(rospy.get_param(
@@ -535,20 +531,18 @@ class Task3InspectAndDropTest:
             self.actuator_topic, ActuatorControl, queue_size=10
         )
         self.goal_pub = None
-        self.cancel_pub = None
         self.tf_listener = None
         if self.auto_enabled:
             self.goal_pub = rospy.Publisher(
                 self.motion_goal_topic, PoseStamped, queue_size=1
-            )
-            self.cancel_pub = rospy.Publisher(
-                self.motion_cancel_topic, Empty, queue_size=1
             )
             self.tf_listener = tf.TransformListener()
 
         self.state = self.WAIT_FOR_TARGET
         self.state_started = rospy.Time.now()
         self.task_started = rospy.Time.now()
+        self.motion_timeout_started_at = None
+        self.max_wait_timed_out = False
         self.last_model_message_time = None
         self.last_target_time = None
         self.detection_frame_window = []
@@ -571,8 +565,8 @@ class Task3InspectAndDropTest:
         self.last_motion_state_received = None
         self.last_motion_state_value = None
         self.motion_ready_once = False
-        self.motion_cancel_requested_at = None
-        self.motion_cancel_reason = ""
+        self.motion_hold_requested_at = None
+        self.motion_hold_reason = ""
         self.auto_search_resume_goal = None
         self.auto_search_paused_for_model = False
         self.last_visual_goal_frame = 0
@@ -655,12 +649,12 @@ class Task3InspectAndDropTest:
         if self.auto_enabled:
             rospy.loginfo(
                 (
-                    "%s：启动自动寻找模式，运动目标=%s，取消=%s，反馈=%s；"
+                    "%s：启动自动寻找模式，运动目标=%s，反馈=%s；"
+                    "所有暂停和刹停都改为下发机器人当前map位姿；"
                     "底层 mode=4、推力、阻尼和刹车全部由 motion_supervisor 管理"
                 ),
                 NODE_NAME,
                 self.motion_goal_topic,
-                self.motion_cancel_topic,
                 self.motion_state_topic,
             )
         else:
@@ -669,7 +663,7 @@ class Task3InspectAndDropTest:
                 NODE_NAME,
             )
         rospy.loginfo(
-            "%s：主循环频率=%.1fHz，总任务超时=%.1fs",
+            "%s：主循环频率=%.1fHz，首次运动后总超时=%.1fs",
             NODE_NAME,
             self.rate_hz,
             self.max_wait_seconds,
@@ -687,7 +681,7 @@ class Task3InspectAndDropTest:
             (
                 "%s：逐帧候选组：最近%d个模型帧内保留有效检测，"
                 "位置误差<=%.1fpx，面积变化比例<=%.2f；"
-                "识别超时 %.1fs，总等待上限 %.1fs"
+                "识别超时 %.1fs，首次运动后总等待上限 %.1fs"
             ),
             NODE_NAME,
             self.stable_detection_window_size,
@@ -748,12 +742,12 @@ class Task3InspectAndDropTest:
             rospy.loginfo(
                 (
                     "%s：motion_supervisor 判定：状态超时=%.2fs，启动等待=%.1fs，"
-                    "取消等待=%.1fs，目标匹配容差=(水平%.3fm,深度%.3fm,航向%.1fdeg)"
+                    "当前位置保持等待=%.1fs，目标匹配容差=(水平%.3fm,深度%.3fm,航向%.1fdeg)"
                 ),
                 NODE_NAME,
                 self.motion_state_timeout,
                 self.motion_startup_timeout,
-                self.cancel_timeout,
+                self.hold_timeout,
                 self.goal_match_position_tolerance,
                 self.goal_match_depth_tolerance,
                 self.goal_match_yaw_tolerance_deg,
@@ -1239,7 +1233,6 @@ class Task3InspectAndDropTest:
             )
         topics = (
             self.motion_goal_topic,
-            self.motion_cancel_topic,
             self.motion_state_topic,
             self.status_topic,
         )
@@ -1248,7 +1241,7 @@ class Task3InspectAndDropTest:
         if min(
             self.motion_state_timeout,
             self.motion_startup_timeout,
-            self.cancel_timeout,
+            self.hold_timeout,
             self.status_timeout,
             self.status_linear_velocity_scale,
         ) <= 0.0:
@@ -1384,7 +1377,28 @@ class Task3InspectAndDropTest:
             reason,
         )
 
+    def start_motion_timeout_clock(self, reason):
+        """首次实际运动目标生成时启动唯一总超时，后续不得重置。"""
+        if self.motion_timeout_started_at is not None:
+            return
+        self.motion_timeout_started_at = rospy.Time.now()
+        rospy.logwarn(
+            "%s：机器人开始执行运动动作，启动唯一总超时计时：%.1fs；原因=%s",
+            NODE_NAME,
+            self.max_wait_seconds,
+            reason,
+        )
+
+    def motion_timeout_elapsed(self):
+        if self.motion_timeout_started_at is None:
+            return None
+        return max(
+            0.0,
+            (rospy.Time.now() - self.motion_timeout_started_at).to_sec(),
+        )
+
     def set_body_offset_goal(self, current, forward, right, reason):
+        self.start_motion_timeout_clock(reason)
         goal_x = (
             current.pose.position.x
             + math.cos(self.auto_hold_yaw) * forward
@@ -1912,77 +1926,82 @@ class Task3InspectAndDropTest:
             return False
         return True
 
-    def request_motion_cancel(self, reason, discard_search_resume=False):
-        if not self.auto_enabled or self.cancel_pub is None:
+    def request_motion_hold(
+        self,
+        reason,
+        discard_search_resume=False,
+        force_refresh=False,
+    ):
+        if not self.auto_enabled or self.goal_pub is None:
             return False
         if discard_search_resume:
             self.auto_search_resume_goal = None
             self.auto_search_paused_for_model = False
-        if self.motion_cancel_requested_at is None:
-            self.cancel_pub.publish(Empty())
-            self.motion_cancel_requested_at = rospy.Time.now()
+        if force_refresh:
+            self.motion_hold_requested_at = None
+        if self.motion_hold_requested_at is None:
+            current = self.get_current_pose("生成当前位置保持目标")
+            if current is None:
+                return False
+            current_yaw = yaw_from_quaternion(current.pose.orientation)
+            self.set_active_goal(
+                current.pose.position.x,
+                current.pose.position.y,
+                current.pose.position.z,
+                current_yaw,
+                "当前位置保持：{}".format(reason),
+            )
+            self.motion_hold_requested_at = rospy.Time.now()
             rospy.logwarn(
-                "%s：发布 %s，要求 motion_supervisor 主动刹停并进入 HOVER；原因=%s",
+                "%s：不再发布 /cmd/motion/cancel；已下发当前位置保持目标，"
+                "等待 motion_supervisor 进入 HOVER；原因=%s",
                 NODE_NAME,
-                self.motion_cancel_topic,
                 reason,
             )
-        self.motion_cancel_reason = reason
-        self.active_goal = None
+        self.motion_hold_reason = reason
         return True
 
-    def cancel_has_completed(self):
+    def hold_has_completed(self):
         if (
-            self.motion_cancel_requested_at is None
-            or not self.motion_state_is_fresh()
-            or self.latest_motion_state.state != MotionState.HOVER
+            self.motion_hold_requested_at is None
+            or not self.motion_arrived()
         ):
             return False
         return (
             self.latest_motion_state.header.stamp
-            >= self.motion_cancel_requested_at
+            >= self.motion_hold_requested_at
         )
 
-    def wait_for_motion_cancel(self, context):
-        if self.motion_cancel_requested_at is None:
+    def wait_for_motion_hold(self, context):
+        if self.motion_hold_requested_at is None:
             return True
         elapsed = (
-            rospy.Time.now() - self.motion_cancel_requested_at
+            rospy.Time.now() - self.motion_hold_requested_at
         ).to_sec()
-        if elapsed >= self.cancel_timeout:
+        if elapsed >= self.hold_timeout:
             self.finish_task(
                 False,
-                "等待 motion_supervisor 主动刹停超时：{}".format(
-                    self.motion_cancel_reason
+                "等待当前位置保持目标进入 HOVER 超时：{}".format(
+                    self.motion_hold_reason
                 ),
             )
             return False
-        if not self.cancel_has_completed():
+        if not self.hold_has_completed():
             rospy.loginfo_throttle(
                 self.log_interval,
-                "%s：%s，等待刹停进入 HOVER %.1f/%.1fs",
+                "%s：%s，等待当前位置保持目标进入 HOVER %.1f/%.1fs",
                 NODE_NAME,
                 context,
                 elapsed,
-                self.cancel_timeout,
+                self.hold_timeout,
             )
             return False
 
-        current = self.get_current_pose("刹停完成后锁定当前位置")
-        if current is None:
-            return False
-        reason = self.motion_cancel_reason
-        self.motion_cancel_requested_at = None
-        self.motion_cancel_reason = ""
-        self.set_active_goal(
-            current.pose.position.x,
-            current.pose.position.y,
-            self.auto_hold_z,
-            self.auto_hold_yaw,
-            "主动刹停完成后锁定当前位置",
-        )
+        reason = self.motion_hold_reason
+        self.motion_hold_requested_at = None
+        self.motion_hold_reason = ""
         rospy.loginfo(
-            "%s：主动刹停完成并已锁定固定点，原因为：%s",
+            "%s：当前位置保持目标已进入 HOVER，原因为：%s",
             NODE_NAME,
             reason,
         )
@@ -2228,7 +2247,7 @@ class Task3InspectAndDropTest:
         if self.auto_search_index >= len(self.auto_search_plan):
             rospy.logwarn(
                 "%s：本轮预设搜索路径已经执行完毕，仍未稳定识别方框；"
-                "下一控制周期结束本轮搜索并交由总任务恢复",
+                "保持最后搜索点继续识别，不提前结束，等待唯一总超时",
                 NODE_NAME,
             )
 
@@ -2239,15 +2258,16 @@ class Task3InspectAndDropTest:
                     self.auto_search_step_goal
                 )
             self.auto_search_paused_for_model = True
-            self.request_motion_cancel(
+        if self.motion_hold_requested_at is None:
+            self.request_motion_hold(
                 "模型话题未就绪或已超时，暂停当前搜索位移"
             )
-        self.wait_for_motion_cancel("模型不可用，搜索暂停")
+        self.wait_for_motion_hold("模型不可用，搜索暂停")
 
     def resume_search_after_model_ready(self):
         if not self.auto_search_paused_for_model:
             return True
-        if not self.wait_for_motion_cancel("等待模型恢复前先完成刹停"):
+        if not self.wait_for_motion_hold("等待模型恢复前先完成当前位置保持"):
             return False
         if self.auto_search_resume_goal is None:
             self.auto_search_paused_for_model = False
@@ -2266,15 +2286,16 @@ class Task3InspectAndDropTest:
         self.auto_centered_frame_count = 0
         if self.state != self.WAIT_FOR_TARGET:
             return
-        if not self.wait_for_motion_cancel("搜索阶段等待主动刹停"):
+        if not self.wait_for_motion_hold("搜索阶段等待当前位置保持"):
             return
         if self.auto_search_index >= len(self.auto_search_plan):
-            self.finish_task(
-                False,
-                "预设搜索路径已经执行完毕，仍未识别到{}方框；"
-                "不在末点空等，交由总任务恢复并重试".format(
-                    self.target_color
-                ),
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：预设搜索路径已完成，保持最后搜索点继续识别%s方框；"
+                "不提前失败、不恢复、不重试，等待唯一总超时 %.1fs",
+                NODE_NAME,
+                self.target_color,
+                self.max_wait_seconds,
             )
             return
 
@@ -2351,7 +2372,7 @@ class Task3InspectAndDropTest:
             self.pause_search_for_model()
             rospy.logwarn_throttle(
                 self.warning_log_interval,
-                "%s：模型话题未就绪，搜索步骤 %d/%d 已主动刹停暂停",
+                "%s：模型话题未就绪，搜索步骤 %d/%d 已下发当前位置保持目标暂停",
                 NODE_NAME,
                 self.auto_search_index + 1,
                 len(self.auto_search_plan),
@@ -2537,7 +2558,7 @@ class Task3InspectAndDropTest:
         rospy.loginfo(
             (
                 "%s：[模型帧 #%d] 自动跟踪帧无效：%s；"
-                "清空最终连续帧，但保留上一小步目标，短暂丢帧不立即刹停"
+                "清空最终连续帧，但保留上一小步目标，短暂丢帧不立即改保持目标"
             ),
             NODE_NAME,
             frame_index,
@@ -2585,13 +2606,12 @@ class Task3InspectAndDropTest:
         status = self.get_recent_status("方框细对准")
         if status is None:
             if not self.visual_stop_locked:
-                self.request_motion_cancel(
+                self.visual_stop_locked = self.request_motion_hold(
                     "/status/auv 不可用，暂停方框细对准"
                 )
-                self.visual_stop_locked = True
             self.reset_auto_center_stability("/status/auv 不可用或超时")
             return
-        if not self.wait_for_motion_cancel("细对准等待主动刹停"):
+        if not self.wait_for_motion_hold("细对准等待当前位置保持"):
             return
 
         target_age = None
@@ -2601,12 +2621,11 @@ class Task3InspectAndDropTest:
             self.current_auto_target = None
             self.auto_tracking_frame_window = []
             if not self.visual_stop_locked:
-                self.request_motion_cancel(
+                self.visual_stop_locked = self.request_motion_hold(
                     "目标识别结果超时，停止细对准",
                     discard_search_resume=True,
                 )
-                self.visual_stop_locked = True
-            if not self.wait_for_motion_cancel("目标超时后等待定点接管"):
+            if not self.wait_for_motion_hold("目标超时后等待当前位置保持"):
                 return
             self.reset_auto_center_stability("目标识别结果超时")
             self.reset_stability()
@@ -2617,11 +2636,10 @@ class Task3InspectAndDropTest:
         target = self.current_auto_target
         if target is None:
             if not self.visual_stop_locked:
-                self.request_motion_cancel(
+                self.visual_stop_locked = self.request_motion_hold(
                     "当前模型帧未识别到目标，停止水平运动",
                     discard_search_resume=True,
                 )
-                self.visual_stop_locked = True
             self.reset_auto_center_stability("当前模型帧未识别到目标")
             return
         if self.auto_tracking_waiting_for_fresh_frame:
@@ -2810,7 +2828,7 @@ class Task3InspectAndDropTest:
     def confirm_target_after_hover(self):
         if self.state != self.AUTO_HOVER_CONFIRM:
             return
-        if not self.wait_for_motion_cancel("首次识别后等待刹停悬停"):
+        if not self.wait_for_motion_hold("首次识别后等待当前位置悬停"):
             return
 
         now = rospy.Time.now()
@@ -2820,7 +2838,7 @@ class Task3InspectAndDropTest:
             self.current_auto_target = None
             rospy.loginfo(
                 (
-                    "%s：motion_supervisor 已完成刹停并锁定当前位置；"
+                    "%s：motion_supervisor 已完成当前位置保持并进入HOVER；"
                     "先稳定悬停 %.2fs，期间模型帧不参与第二轮复核"
                 ),
                 NODE_NAME,
@@ -3424,7 +3442,7 @@ class Task3InspectAndDropTest:
                 self.log_interval,
                 (
                     "%s：[模型帧 #%d] 首次识别已通过，"
-                    "机器人尚未完成刹停，本帧不计入悬停复核窗口"
+                    "机器人尚未完成当前位置保持，本帧不计入悬停复核窗口"
                 ),
                 NODE_NAME,
                 frame_index,
@@ -3914,13 +3932,14 @@ class Task3InspectAndDropTest:
                 self.hover_confirmation_hover_at = None
                 self.hover_confirmation_started_at = None
                 self.reset_stability()
-                self.request_motion_cancel(
-                    "搜索阶段首次稳定识别目标，刹停后重新识别",
+                if not self.request_motion_hold(
+                    "搜索阶段首次稳定识别目标，保持当前位置后重新识别",
                     discard_search_resume=True,
-                )
+                ):
+                    return
                 self.set_state(
                     self.AUTO_HOVER_CONFIRM,
-                    "搜索中首次识别通过，等待刹停后重新采集识别帧",
+                    "搜索中首次识别通过，等待当前位置保持后重新采集识别帧",
                 )
             elif self.state == self.AUTO_HOVER_CONFIRM:
                 latest["center_u"] = latest["mean_center_u"]
@@ -4355,14 +4374,22 @@ class Task3InspectAndDropTest:
         if self.finished:
             return
         self.finished = True
-        if self.auto_enabled and self.cancel_pub is not None:
-            self.cancel_pub.publish(Empty())
-            self.active_goal = None
-            rospy.loginfo(
-                "%s：任务结束，已发布 %s 请求主动刹停并定点接管",
-                NODE_NAME,
-                self.motion_cancel_topic,
-            )
+        if self.auto_enabled:
+            if self.request_motion_hold(
+                "子任务3结束，保持机器人当前位姿",
+                discard_search_resume=True,
+                force_refresh=True,
+            ):
+                self.publish_active_goal()
+                rospy.loginfo(
+                    "%s：任务结束，已下发机器人当前map位姿保持目标",
+                    NODE_NAME,
+                )
+            else:
+                rospy.logerr(
+                    "%s：任务结束时无法读取当前map位姿，未生成新的保持目标",
+                    NODE_NAME,
+                )
         self.publish_actuator(self.clamp_closed, "off")
 
         if success:
@@ -4384,10 +4411,15 @@ class Task3InspectAndDropTest:
     def on_shutdown(self):
         if (
             getattr(self, "auto_enabled", False)
-            and getattr(self, "cancel_pub", None) is not None
+            and not getattr(self, "finished", False)
+            and getattr(self, "goal_pub", None) is not None
         ):
-            self.cancel_pub.publish(Empty())
-            self.active_goal = None
+            if self.request_motion_hold(
+                "子任务3节点关闭，保持机器人当前位姿",
+                discard_search_resume=True,
+                force_refresh=True,
+            ):
+                self.publish_active_goal()
         if hasattr(self, "actuator_pub"):
             self.publish_actuator(self.clamp_closed, "off")
 
@@ -4402,12 +4434,7 @@ class Task3InspectAndDropTest:
         while not rospy.is_shutdown() and not self.finished:
             now = rospy.Time.now()
             elapsed = (now - self.task_started).to_sec()
-
-            if self.auto_enabled and not self.handle_motion_health():
-                if self.finished:
-                    return
-                self.rate.sleep()
-                continue
+            timeout_elapsed = self.motion_timeout_elapsed()
 
             if (
                 self.state in (
@@ -4415,17 +4442,25 @@ class Task3InspectAndDropTest:
                     self.AUTO_HOVER_CONFIRM,
                     self.AUTO_APPROACH,
                 )
-                and elapsed >= self.max_wait_seconds
+                and timeout_elapsed is not None
+                and timeout_elapsed >= self.max_wait_seconds
             ):
+                self.max_wait_timed_out = True
                 self.finish_task(
                     False,
-                    "自动搜索/等待 %.1fs 后仍未完成 %s 方框确认与对齐"
-                    % (self.max_wait_seconds, self.target_color)
+                    "机器人开始运动后自动搜索/等待 %.1fs，仍未完成 %s 方框确认与对齐"
+                    % (timeout_elapsed, self.target_color)
                     if self.auto_enabled
-                    else "等待 %.1fs 后仍未稳定识别到 %s 方框"
-                    % (self.max_wait_seconds, self.target_color),
+                    else "机器人开始运动后等待 %.1fs，仍未稳定识别到 %s 方框"
+                    % (timeout_elapsed, self.target_color),
                 )
                 return
+
+            if self.auto_enabled and not self.handle_motion_health():
+                if self.finished:
+                    return
+                self.rate.sleep()
+                continue
 
             if self.state == self.WAIT_FOR_TARGET:
                 self.publish_actuator(self.clamp_closed, "off")
