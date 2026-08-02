@@ -1697,6 +1697,13 @@ class Task1LineFollow:
         self.set_state(state)
         self.search_target = None
 
+    def handle_completed_search_cycle(self, search_phase):
+        """完整 Task1 可在一轮搜索完成后接管下一步。"""
+        return False
+
+    def begin_extension_search_episode(self):
+        """完整 Task1 可在每次锁线后搜索开始时重置独立计数。"""
+
     def hover_confirmed(self):
         """控制端给出一次新鲜 MotionState.HOVER 即认为当前目标到达。"""
         return self.motion_arrived()
@@ -1722,6 +1729,13 @@ class Task1LineFollow:
         self.current_tracking_point = copy.deepcopy(self.search_target.pose.position)
         self.publish_dprov(self.search_target)
         if self.hover_confirmed():
+            if self.state == self.SEARCH_RETURN:
+                search_phase = (
+                    "after_lock"
+                    if self.extension_search_active else "before_lock"
+                )
+                if self.handle_completed_search_cycle(search_phase):
+                    return
             if (
                 self.extension_search_active
                 and self.state == self.SEARCH_RETURN
@@ -2150,6 +2164,7 @@ class Task1LineFollow:
                 "固定当前位置执行一轮左转、右转、返回航向搜索",
                 NODE_NAME,
             )
+            self.begin_extension_search_episode()
             self.set_search_state(self.SEARCH_LEFT)
 
     def publish_trajectory_status(self):
@@ -2407,7 +2422,7 @@ class Task1LineFollow:
                 self.after_control_cycle()
                 self.rate.sleep()
                 continue
-            if self.motion_failed():
+            if self.state != self.FINISH and self.motion_failed():
                 self.publish_trajectory_status()
                 rospy.logerr_throttle(
                     2.0,
