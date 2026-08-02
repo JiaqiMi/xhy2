@@ -68,6 +68,9 @@
     Yaw 制动增加持续远离目标的异常退出，并禁止远离目标时重新锁存制动。
 2026.8.2
     新增基于 TY/MZ、动力功率和运动响应的侧推异常检测，以及回中、反向和恢复跟踪状态机。
+2026.8.2
+    水平 TX/TY 改为独立方向性限幅，允许双轴同时达到各自安全上限；
+    删除对斜向输出的椭圆同比例缩小，保持正常跟踪与制动的双轴推进能力。
 """
 
 from __future__ import division
@@ -1219,19 +1222,11 @@ class MotionSupervisorCore(object):
         )
 
     def _limit_xy_force_vector(self, tx, ty):
-        """按可用正负推力形成椭圆限幅，保持二维合力方向。"""
-        limit_prefix = 'max_'
-        tx_limit = self.parameters[
-            limit_prefix + ('tx_positive' if tx >= 0.0 else 'tx_negative')]
-        ty_limit = self.parameters[
-            limit_prefix + ('ty_positive' if ty >= 0.0 else 'ty_negative')]
-        normalized = math.sqrt(
-            (tx / max(tx_limit, 1e-6)) ** 2
-            + (ty / max(ty_limit, 1e-6)) ** 2
+        """按各轴正负安全上限独立限幅，允许 TX、TY 同时满输出。"""
+        return (
+            self._axis_force_limit('tx', tx),
+            self._axis_force_limit('ty', ty),
         )
-        if normalized <= 1.0:
-            return tx, ty
-        return tx / normalized, ty / normalized
 
     def _output(self, vehicle, mode, tx=0.0, ty=0.0, mz=0.0,
                 x_braking=False, y_braking=False, yaw_braking=False,
