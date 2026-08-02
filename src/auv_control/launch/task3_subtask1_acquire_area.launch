@@ -1,6 +1,6 @@
 <launch>
     <!--
-      任务3子任务1：箭头搜索、对准和最后固定前移。
+      任务3子任务1：箭头搜索和双滑动窗闭环对准。
 
       所有识别阈值、帧数、距离、增益、容差和时间统一在
       config/task3.yaml的test_task3_1_acquire_area段修改。
@@ -17,6 +17,8 @@
 
     <!-- 下面只保留进程连接参数，不属于现场调优参数。 -->
     <arg name="arrow_topic" default="/vision/arrow/direction" />
+    <arg name="arrow_target_topic"
+         default="/vision/arrow/target_message" />
     <arg name="motion_goal_topic" default="/cmd/motion/goal" />
     <arg name="motion_cancel_topic" default="/cmd/motion/cancel" />
     <arg name="motion_state_topic" default="/motion/state" />
@@ -27,6 +29,8 @@
 
     <group if="$(arg start_arrow_model)">
         <remap from="/vision/arrow/direction" to="$(arg arrow_topic)" />
+        <remap from="/vision/arrow/target_message"
+               to="$(arg arrow_target_topic)" />
         <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
             <arg name="start_camera" value="true" />
             <arg name="start_splitter" value="true" />
@@ -43,6 +47,8 @@
           output="screen"
           required="true">
         <param name="arrow_topic" type="string" value="$(arg arrow_topic)" />
+        <param name="arrow_target_topic" type="string"
+               value="$(arg arrow_target_topic)" />
         <param name="motion_goal_topic" type="string"
                value="$(arg motion_goal_topic)" />
         <param name="motion_cancel_topic" type="string"

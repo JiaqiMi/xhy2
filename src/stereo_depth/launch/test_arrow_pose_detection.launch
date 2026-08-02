@@ -54,7 +54,8 @@
     <arg name="arrow_center_topic"
          default="/vision/arrow/center" />
 
-    <!-- 三关键点代表中心：keypoint_centroid 或 axis_midpoint -->
+    <!-- 完整方向帧使用三关键点中心；方向无效时自动退化为检测框中心提供粗位置。 -->
+    <!-- 完整方向帧中心：keypoint_centroid 或 axis_midpoint -->
     <arg name="depth_center_mode"
          default="keypoint_centroid" />
 
@@ -192,8 +193,11 @@
 
     <!-- ================= 箭头三维位置计算 ================= -->
     <!--
-        arrow_pose_direction_node.py 发布:
+        arrow_pose_direction_node.py 发布：
             /vision/arrow/center  geometry_msgs/PointStamped
+
+        完整箭头使用三关键点代表中心；关键点不完整但检测框有效时，
+        使用检测框中心继续提供粗位置，方向话题仍保持valid=false。
 
         stereo_depth_node.py 使用该像素周围 window_size 区域的
         有效深度均值，发布:

@@ -15,8 +15,10 @@ Outputs:
     /arrow/direction_vector               geometry_msgs/Vector3Stamped
     /arrow/annotated_image                sensor_msgs/Image
     /yolo_unified/arrow_center            geometry_msgs/PointStamped
-        point.x/point.y: depth representative pixel (u, v)
-        point.z: combined arrow confidence
+        point.x/point.y: depth representative pixel (u, v); falls back to
+                         bbox center when direction keypoints are incomplete
+        point.z: detection confidence for coarse center, combined keypoint
+                 confidence for complete direction frames
 
 Angle convention:
     image right = 0 deg
@@ -352,6 +354,10 @@ class ArrowPoseDirectionNode:
         result, reason = self.compute_direction(keypoints)
 
         if result is None:
+            self.publish_coarse_depth_center(
+                keypoints=keypoints,
+                image_stamp=image_header.stamp,
+            )
             self.draw_bbox(
                 annotated,
                 keypoints,
@@ -513,10 +519,15 @@ class ArrowPoseDirectionNode:
         result,
     ):
         stamp = self.valid_stamp(image_header.stamp)
+        keypoint_stamp = self.valid_stamp(keypoints.header.stamp)
+        if keypoints.header.stamp == rospy.Time():
+            keypoint_stamp = stamp
         frame_id = image_header.frame_id or "camera"
 
         payload = {
             "stamp": stamp.to_sec(),
+            "keypoint_stamp": keypoint_stamp.to_sec(),
+            "keypoint_stamp_nsec": str(keypoint_stamp.to_nsec()),
             "source": "arrow_pose_direction",
             "valid": True,
             "reason": "",
@@ -670,6 +681,52 @@ class ArrowPoseDirectionNode:
             self.depth_window_size,
         )
 
+    def publish_coarse_depth_center(self, keypoints, image_stamp):
+        """方向关键点不完整时，使用检测框中心提供粗三维位置输入。"""
+        class_name = str(keypoints.class_name).strip().lower()
+        confidence = float(keypoints.detection_confidence)
+        x1 = int(keypoints.x1)
+        y1 = int(keypoints.y1)
+        x2 = int(keypoints.x2)
+        y2 = int(keypoints.y2)
+        if (
+            class_name != self.target_class_name
+            or not math.isfinite(confidence)
+            or confidence <= 0.0
+            or x2 <= x1
+            or y2 <= y1
+        ):
+            return
+
+        stamp = self.valid_stamp(keypoints.header.stamp)
+        if keypoints.header.stamp == rospy.Time():
+            stamp = image_stamp
+        stamp_nsec = stamp.to_nsec()
+        if (
+            self.publish_center_once_per_keypoint
+            and self.last_center_stamp_nsec == stamp_nsec
+        ):
+            return
+
+        center_u = 0.5 * (x1 + x2)
+        center_v = 0.5 * (y1 + y2)
+        msg = PointStamped()
+        msg.header.stamp = stamp
+        msg.header.frame_id = self.target_class_name
+        msg.point.x = center_u
+        msg.point.y = center_v
+        msg.point.z = confidence
+        self.center_pub.publish(msg)
+        self.last_center_stamp_nsec = stamp_nsec
+
+        rospy.loginfo_throttle(
+            1.0,
+            "Arrow coarse depth center: bbox_center=(%.1f,%.1f), conf=%.3f",
+            center_u,
+            center_v,
+            confidence,
+        )
+
     def publish_invalid(
         self,
         now,
@@ -689,9 +746,22 @@ class ArrowPoseDirectionNode:
             if image_header is not None
             else "camera"
         )
+        keypoint_stamp = None
+        if keypoints is not None:
+            keypoint_stamp = self.valid_stamp(keypoints.header.stamp)
+            if keypoints.header.stamp == rospy.Time():
+                keypoint_stamp = stamp
 
         payload = {
             "stamp": stamp.to_sec(),
+            "keypoint_stamp": (
+                None if keypoint_stamp is None else keypoint_stamp.to_sec()
+            ),
+            "keypoint_stamp_nsec": (
+                None
+                if keypoint_stamp is None
+                else str(keypoint_stamp.to_nsec())
+            ),
             "source": "arrow_pose_direction",
             "valid": False,
             "reason": reason,
