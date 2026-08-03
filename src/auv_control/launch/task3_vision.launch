@@ -36,6 +36,7 @@
             <arg name="start_web" value="$(arg start_arrow_web)" />
             <arg name="start_depth" value="true" />
             <arg name="web_port" value="$(arg arrow_web_port)" />
+            <arg name="node_output" value="$(arg model_node_output)" />
         </include>
     </group>
 
@@ -62,6 +63,7 @@
             <arg name="start_splitter" value="$(arg start_down_splitter)" />
             <arg name="start_web" value="$(arg start_rectangle_web)" />
             <arg name="web_port" value="$(arg rectangle_web_port)" />
+            <arg name="node_output" value="$(arg model_node_output)" />
         </include>
     </group>
 </launch>

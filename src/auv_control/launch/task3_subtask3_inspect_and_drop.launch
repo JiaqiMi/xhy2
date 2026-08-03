@@ -23,6 +23,8 @@
     <!-- 进程连接参数。 -->
     <arg name="model_detection_topic"
          default="/vision/rectangle/detections" />
+    <arg name="model_target_topic"
+         default="/vision/rectangle/target_message" />
     <arg name="motion_goal_topic" default="/cmd/motion/goal" />
     <arg name="motion_state_topic" default="/motion/state" />
     <arg name="status_topic" default="/status/auv" />
@@ -36,7 +38,9 @@
     <group if="$(arg start_rectangle_model)">
         <remap from="/vision/rectangle/detections"
                to="$(arg model_detection_topic)" />
-        <include file="$(find stereo_depth)/launch/test_rectangles_detection.launch" />
+        <remap from="/vision/rectangle/target_message"
+               to="$(arg model_target_topic)" />
+        <include file="$(find stereo_depth)/launch/test_rectangles_detection_speed.launch" />
     </group>
 
     <!-- 节点内只覆盖话题连接；其余私有参数全部来自task3.yaml。 -->
@@ -47,6 +51,8 @@
           required="true">
         <param name="model_detection_topic" type="string"
                value="$(arg model_detection_topic)" />
+        <param name="model_target_topic" type="string"
+               value="$(arg model_target_topic)" />
         <param if="$(eval arg('target_color_override') != '')"
                name="target_color" type="string"
                value="$(arg target_color_override)" />

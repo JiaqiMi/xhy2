@@ -130,6 +130,8 @@
                value="$(arg aruco_topic)" />
         <param name="rectangle_topic" type="string"
                value="$(arg rectangle_detection_topic)" />
+        <param name="rectangle_target_topic" type="string"
+               value="$(arg rectangle_target_topic)" />
         <param name="motion_goal_topic" type="string"
                value="$(arg motion_goal_topic)" />
         <param name="motion_cancel_topic" type="string"

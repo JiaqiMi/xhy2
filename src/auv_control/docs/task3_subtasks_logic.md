@@ -173,7 +173,6 @@ Task 3 当前使用的话题约定：
 | `arrival_max_horizontal_speed` | `0.02` | 到达时最大水平速度，单位 `m/s` |
 | `arrival_max_yaw_rate_deg_s` | `0.5` | 到达时最大航向角速度 |
 | `max_depth_error` | `0.08` | 到达和最终保持允许深度误差 |
-| `min_ground_clearance` | `0.40` | 高度有效时的最低对地距离 |
 | `final_hold_seconds` | `10.0` | 本体到达箭头上方后的连续稳定悬停时间 |
 | `final_hold_timeout` | `30.0` | 最终稳定悬停最长等待时间 |
 

@@ -12,11 +12,14 @@
 # 任务3统一固定深度，单位m，填写水面以下的正深度。
 # 当前map坐标约定为水下Z为负，因此0.60m会作为map z=-0.60下发。
 # 完整任务、三个独立子任务及旧联调入口都读取这一处参数。
-task3_target_depth_m: 0.1
+task3_target_depth_m: 0.6
 
 # 完整任务3启动时锁存机器人当前map N/E，并调整到该map绝对航向。
 # 该参数始终生效，与子任务超时跳点容错开关无关，单位deg。
 task3_initial_yaw_deg: 210.0
+# 返回map原点时，以初始航向为基准向左偏移该角度得到绝对返航航向，单位deg。
+# 例如初始航向210度、偏移180度时，返原点和上浮阶段固定使用30度航向。
+task3_return_origin_yaw_offset_deg: 180.0
 
 # 运行安全检查参数，不属于阶段最终超时，也不会触发总调度恢复或重试。
 # motion_feedback_timeout只判断运动反馈是否新鲜。
@@ -44,17 +47,25 @@ test_task3_1_acquire_area:
   # 精确认阶段方向有效帧的最低置信度。
   direction_start_confidence: 0.5
   # 位置话题和方向话题分别允许的最大数据年龄。
-  detection_timeout: 2.0
+  detection_timeout: 5
 
   # 第一、第三步位置确认：只把有效三维位置写入最多10帧的队列；
   # 队列中任意3帧相对其平均位置的最大二维距离不超过下面容差即通过。
   stable_detection_window_size: 10
   stable_detection_count: 3
+  # 稳定组三帧从最早到最晚的最大接收时间跨度，单位s；超过后不参与粗对准或精确认。
+  stable_position_group_max_span_seconds: 10.0
   # 三帧位置相对其平均map位置的最大二维距离，单位m。
-  stable_map_position_tolerance_m: 0.20
+  stable_map_position_tolerance_m: 0.3
   # camera粗对准并进入HOVER后，重新得到的三帧平均位置与首次平均位置
   # 之间允许的最大二维距离，单位m。
-  fine_position_match_tolerance_m: 0.20
+  fine_position_match_tolerance_m: 0.3
+  # 精确认阶段连续多少个唯一推理源帧（方向或三维位置）为低置信度或未识别，
+  # 才确认首次位置是误识别；同一时间戳的方向/位置消息不会重复计数。
+  # 设为1表示任意一帧无效就立即恢复搜索；默认3帧用于过滤单帧抖动。
+  fine_false_positive_invalid_count: 3
+  # 已确认误识别的箭头map点忽略半径；后续落入该范围的位置帧不再参与锁定。
+  false_positive_ignore_radius_m: 0.30
   # 方向候选组的最大角度抖动，单位deg。
   stable_angle_tolerance_deg: 12.0
 
@@ -80,7 +91,7 @@ test_task3_1_acquire_area:
   # 单帧约覆盖左右1.49m、前后0.85m。搜索分成三段，每段先到中线
   # 正前方，再左扫、右扫并回到中线；左右端点各0.75m、段间0.65m，
   # 前后视野约重叠24%，理论连续覆盖约2.99m x 2.15m = 6.44m^2。
-  search_initial_forward_distance: 0.6
+  search_initial_forward_distance: 1.0
   search_lateral_distance: 0.5
   search_second_forward_distance: 0.65
   search_third_forward_distance: 0.65
@@ -167,6 +178,7 @@ test_task3_2_get_task:
   recognition_fallback_seconds: 15.0
   recognition_fallback_color: "red"
   mock_aruco_ids: [1, -1, 1, 2, -1, -1, 1]
+
   mock_frame_interval: 0.2
 
   # 识别成功后灯光动作
@@ -202,11 +214,17 @@ test_task3_3_inspect_and_drop:
   # 方框识别
   target_color: "red"
   min_confidence: 0.20
+  # 自动模式订阅带三维位置和原始时间戳的TargetDetection；人工模式仍可使用JSON检测话题。
+  model_target_topic: "/vision/rectangle/target_message"
   # 人工模式稳定候选组要求。
   stable_detection_count: 5
-  # 自动搜索和刹停后复核共用的滑动窗口。
+  # 自动模式最多保留10个有效map位置帧；任意3帧相近即通过。
   stable_detection_window_size: 10
   auto_search_stable_detection_count: 3
+  # 三帧map位置相对平均值的最大二维抖动，单位m。
+  stable_map_position_tolerance_m: 0.20
+  # camera粗对准后，二次三帧平均位置与首次平均位置的X误差门槛，单位m。
+  fine_position_x_tolerance_m: 0.10
   auto_hover_confirm_settle_seconds: 0.5
   auto_hover_confirm_timeout: 4.0
   # 细对准最终居中连续确认帧数。
@@ -237,7 +255,7 @@ test_task3_3_inspect_and_drop:
 
   # 自动搜索：先完成悬停和第一段前进，再观察并排的三个颜色方框。
   auto_initial_hover_seconds: 3.0
-  auto_search_first_forward_distance: 0.50
+  auto_search_first_forward_distance: 0.20
   auto_search_second_forward_distance: 0.30
   auto_search_third_forward_distance: 0.20
   # 左移从当前搜索点计算；右移从左移结束位置计算。
@@ -249,7 +267,7 @@ test_task3_3_inspect_and_drop:
   # false：完全跳过颜色布局推断，直接执行原三段定步长搜索。
   auto_color_fast_search_enabled: true
 
-  # 连续视觉细对准参数：只修正左右位置，并保持进入子任务3时锁存的航向。
+  # map精对准小步参数：XY均可移动，但精确认只判断X误差；航向始终保持锁存值。
   auto_visual_lateral_gain_m: 0.10
   auto_visual_min_step_m: 0.05
   auto_visual_max_step_m: 0.20
@@ -274,8 +292,8 @@ test_task3_3_inspect_and_drop:
   auto_action_max_depth_error: 0.08
   auto_action_max_yaw_error_deg: 5.0
 
-  # 自动模式识别、对准并稳定到达后，开灯和开爪前沿当前航向前进距离。
-  pre_drop_forward_distance: 0.10
+  # 自动模式精确认通过、锁定位置和航向后，开灯和开爪前沿当前航向前进20厘米。
+  pre_drop_forward_distance: 0.20
   # [HOVER超时-5] 子任务3投放前固定前进目标进入HOVER。
   pre_drop_forward_timeout: 600.0
 
@@ -307,6 +325,7 @@ test_task3_3_inspect_and_drop:
   # 固定向左转；角度必须大于0且小于180度。
   post_drop_turn_angle_deg: 90.0
   # [HOVER超时-6] 子任务3投放后左转、返回map原点分别等待HOVER。
+
   post_drop_step_timeout: 600.0
   # 到达map原点后的绝对NED/map上浮目标z；NED z向下为正，值越小表示越向上。
   post_drop_ascent_target_z: -1.3
@@ -361,9 +380,9 @@ task3_final:
 
   # 三个识别阶段各自独立的最终超时，均从该阶段首次实际运动目标开始计时。
   # 修改其中一个不会影响另外两个；ArUco继续使用自己的识别超时参数。
-  arrow1_timeout_seconds: 240.0
-  arrow2_timeout_seconds: 240.0
-  box_timeout_seconds: 240.0
+  arrow1_timeout_seconds: 180.0
+  arrow2_timeout_seconds: 180.0
+  box_timeout_seconds: 180.0
 
   # 唯一最终超时处理始终启用，不再提供三级保护开关或阶段重试。
   # [HOVER超时-8] 箭头最终超时后，下一阶段人工测量点目标进入HOVER。
@@ -377,8 +396,8 @@ task3_final:
     # 第一次箭头达到总超时后，才移动到子任务2的ArUco识别点。
     # 正常完成时留在当前位置，稳定HOVER后直接进入ArUco子任务。
     aruco:
-      N: "-4.56"
-      E: "-6.77"
+      N: "-4.89"
+      E: "-6.49"
       yaw_deg: "210"
     # ArUco完成识别和90度转向后，第二个箭头直接从当前位置开始；
     # 第二次箭头达到总超时后，才移动到统一的彩色方框点。
@@ -386,8 +405,8 @@ task3_final:
     # 该点只用于第二次箭头达到总超时后的子任务3交接。
     # 子任务3自身识别和对准超时后不再回到该点，直接返回map原点并上浮。
     box:
-      N: "-5.95"
-      E: "-5.25"
+      N: "-6.02"
+      E: "-4.57"
       yaw_deg: "120"
   # 整合模式已经在启动定点和阶段交接中统一悬停，因此关闭子任务内部
   # 重复的启动与结束等待。独立运行子任务时仍使用各子任务自己的参数。

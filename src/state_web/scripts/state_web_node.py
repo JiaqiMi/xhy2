@@ -19,6 +19,11 @@
     新增视觉目标 map 历史、时间戳 TF 重试、ArUco 历史和清除接口。
     新增 base_link 一分钟轨迹、轨迹清除接口和最近两帧目标位姿。
     三路实时 TF 统一使用 Time(0) 获取，公共时间查询失败不再影响位姿。
+    增加 map 到 hand 的最新 TF，并通过状态接口提供地图点位。
+    目标历史按 0.01m 位置阈值或 1° 航向阈值过滤重复命令。
+    将相机画面中的 Arrow 识别标注改为青蓝色。
+    base_link 轨迹默认按 1Hz 保留最多 1000 个点。
+    实际箭头终点改用 camera_center TF，地图文字仍显示 camera。
 """
 
 import copy
@@ -196,7 +201,7 @@ VISION_SOURCE_DEFAULTS = {
     "arrow": {
         "camera": "left",
         "label": "Arrow",
-        "color": (255, 93, 205),
+        "color": (238, 211, 34),
         "topics": {
             "detection": "/vision/arrow/detections",
             "arrow": "/vision/arrow/direction",
@@ -481,7 +486,11 @@ class StateWebNode:
         self.world_frame = rospy.get_param("~world_frame", "map")
         self.base_frame = rospy.get_param("~base_frame", "base_link")
         self.imu_frame = rospy.get_param("~imu_frame", "imu")
-        self.camera_frame = rospy.get_param("~camera_frame", "camera")
+        self.camera_frame = rospy.get_param(
+            "~camera_frame", "camera_center"
+        )
+        self.camera_label = rospy.get_param("~camera_label", "camera")
+        self.hand_frame = rospy.get_param("~hand_frame", "hand")
 
         self.stream_fps = float(rospy.get_param("~stream_fps", 8.0))
         self.jpeg_quality = int(rospy.get_param("~jpeg_quality", 75))
@@ -524,7 +533,13 @@ class StateWebNode:
             rospy.get_param("~trajectory_sample_hz", 1.0)
         )
         self.trajectory_duration_sec = float(
-            rospy.get_param("~trajectory_duration_sec", 60.0)
+            rospy.get_param("~trajectory_duration_sec", 1000.0)
+        )
+        self.target_position_threshold_m = float(
+            rospy.get_param("~target_position_threshold_m", 0.01)
+        )
+        self.target_heading_threshold_deg = float(
+            rospy.get_param("~target_heading_threshold_deg", 1.0)
         )
 
         self.topics = {
@@ -601,6 +616,8 @@ class StateWebNode:
             trajectory_hz=self.trajectory_sample_hz,
             trajectory_duration_sec=self.trajectory_duration_sec,
             target_limit=2,
+            target_position_threshold_m=self.target_position_threshold_m,
+            target_heading_threshold_deg=self.target_heading_threshold_deg,
         )
         self.origin_revision = OriginRevision()
         # 使用哨兵值，确保时间戳为 0 的首组 TF 也能被记录。
@@ -638,13 +655,14 @@ class StateWebNode:
         logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
         rospy.loginfo(
-            "state_web: 已启动，Web=http://%s:%d，TF=%s -> [%s, %s, %s]",
+            "state_web: 已启动，Web=http://%s:%d，TF=%s -> [%s, %s, %s, %s]",
             self.host,
             self.port,
             self.world_frame,
             self.imu_frame,
             self.base_frame,
             self.camera_frame,
+            self.hand_frame,
         )
         for key in (
                 "left", "right", "fisheye", "feedback", "velocity",
@@ -1449,13 +1467,14 @@ class StateWebNode:
         }
 
     def _update_tf(self, unused_event):
-        """轮询世界坐标系到 IMU、机体和相机的最新动态 TF。"""
+        """轮询世界坐标系到 IMU、机体、相机和 hand 的最新动态 TF。"""
         del unused_event
         self._process_pending_visual_map()
         frame_poses = {
             "imu": self._lookup_tf_pose(self.imu_frame),
             "base": self._lookup_tf_pose(self.base_frame),
             "camera": self._lookup_tf_pose(self.camera_frame),
+            "hand": self._lookup_tf_pose(self.hand_frame),
         }
         base_pose = frame_poses["base"]
         if base_pose is None:
@@ -1653,7 +1672,9 @@ class StateWebNode:
                 "world": self.world_frame,
                 "base": self.base_frame,
                 "imu": self.imu_frame,
-                "camera": self.camera_frame,
+                "camera": self.camera_label,
+                "camera_tf": self.camera_frame,
+                "hand": self.hand_frame,
             },
             "streams": streams,
             "tf": tf_pose,

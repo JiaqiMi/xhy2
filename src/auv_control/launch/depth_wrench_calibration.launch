@@ -4,12 +4,10 @@
       本节点直接独占 /cmd/pose/ned，运行前必须停止 motion_supervisor、人工遥控
       及其他直接控制节点；下位机仅使用 mode=2 保持深度。
 
-      static 档默认为各轴正/负最大安全输出的 20%、40%、60%、80%，正负最大值分别配置，
-      因而能覆盖推进器双向不对称性。每档仅在稳定零输出基线通过后施加力矩，随后必须零输出
-      连续停稳并完成恢复观察才记为 PASS；任何恢复超速、超深、偏航或未停稳均记为 FAIL。
-      reverse_brake 档按每轴正/负方向执行“同向驱动 10 s、反向最大比例制动至零速、零输出观察”，
-      用于标定反向刹停时间和位移。test_profile 可选 static、reverse_brake 或 both；
-      默认 static，共 24 个阶跃。稳定基线和停稳均受水流影响，测试总时长不再使用固定值承诺。
+      默认 cycle：每轴、每个百分比固定正向输出 7 s，随后立即反向输出 7 s，不撤力、不等停稳。
+      正反最大值分别配置，因此同一百分比可覆盖推进器双向不对称性；TX、TY、MZ 完整轮次
+      按顺序持续循环，直到操作员停止 launch。test_profile 仍可选 static、reverse_brake 或 both，
+      供需要停稳判定的离线诊断使用。
 
       场地：程序在任一时刻距起点超过 4 m 时中止。默认参数至少需要
       11 m x 11 m 无障碍水平水域，首次实测建议使用 15 m x 15 m；
@@ -24,15 +22,23 @@
     <arg name="rest_seconds" default="6.0" />
     <arg name="baseline_seconds" default="4.0" />
     <arg name="steady_window_seconds" default="3.0" />
-    <!-- static：稳态力矩标定；reverse_brake：同向驱动后的反向刹停；both：依次执行两者。 -->
-    <arg name="test_profile" default="static" />
+    <!-- cycle：固定正反循环；static、reverse_brake、both 为兼容的停稳诊断模式。 -->
+    <arg name="test_profile" default="cycle" />
+    <arg name="cycle_forward_seconds" default="7.0" />
+    <arg name="cycle_reverse_seconds" default="7.0" />
+    <!-- 0 表示无限循环；正整数表示完整 TX/TY/MZ 序列的轮数。 -->
+    <arg name="cycle_repeat_count" default="0" />
     <arg name="reverse_brake_drive_seconds" default="10.0" />
     <arg name="reverse_brake_timeout" default="12.0" />
     <arg name="reverse_brake_observe_seconds" default="2.0" />
-    <arg name="reverse_brake_min_speed" default="0.05" />
+    <!-- 仅当同向速度已达到门槛才允许反向制动，避免把噪声当成停车试验。 -->
+    <arg name="reverse_brake_min_speed" default="0.02" />
     <arg name="reverse_brake_min_yaw_rate" default="0.087266463" />
     <arg name="reverse_brake_stop_speed" default="0.012" />
     <arg name="reverse_brake_stop_yaw_rate" default="0.008726646" />
+    <!-- 刹停后零输出观察期间允许的最大反向速度；超过即判定超调。 -->
+    <arg name="reverse_brake_max_reverse_speed" default="0.012" />
+    <arg name="reverse_brake_max_reverse_yaw_rate" default="0.008726646" />
     <!-- 基线必须先静止；超过 timeout 不开始下一档。角速度单位为 rad/s。 -->
     <arg name="baseline_wait_timeout" default="30.0" />
     <arg name="baseline_stable_seconds" default="2.0" />
@@ -88,6 +94,12 @@
         <param name="baseline_seconds" value="$(arg baseline_seconds)" />
         <param name="steady_window_seconds" value="$(arg steady_window_seconds)" />
         <param name="test_profile" value="$(arg test_profile)" />
+        <param name="cycle_forward_seconds"
+               value="$(arg cycle_forward_seconds)" />
+        <param name="cycle_reverse_seconds"
+               value="$(arg cycle_reverse_seconds)" />
+        <param name="cycle_repeat_count"
+               value="$(arg cycle_repeat_count)" />
         <param name="reverse_brake_drive_seconds"
                value="$(arg reverse_brake_drive_seconds)" />
         <param name="reverse_brake_timeout"
@@ -102,6 +114,10 @@
                value="$(arg reverse_brake_stop_speed)" />
         <param name="reverse_brake_stop_yaw_rate"
                value="$(arg reverse_brake_stop_yaw_rate)" />
+        <param name="reverse_brake_max_reverse_speed"
+               value="$(arg reverse_brake_max_reverse_speed)" />
+        <param name="reverse_brake_max_reverse_yaw_rate"
+               value="$(arg reverse_brake_max_reverse_yaw_rate)" />
         <param name="baseline_wait_timeout"
                value="$(arg baseline_wait_timeout)" />
         <param name="baseline_stable_seconds"

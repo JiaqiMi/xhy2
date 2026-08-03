@@ -525,7 +525,6 @@ roslaunch auv_control task3_subtask3_inspect_and_drop.launch \
 | 最终base_link停在箭头前方/后方 | `base_link_forward_offset` | 前方未到增大，越过则减小 |
 | 目标丢失时太敏感 | `visual_loss_cancel_seconds` | 小幅增大，但必须不大于 `detection_timeout` |
 | 最终悬停经常计时清零 | `arrival_*`、`max_depth_error` | 根据“到达判定”中第一个未通过项调整 |
-| 对地距离保护频繁改目标 | `min_ground_clearance`、`ground_clearance_goal_update_threshold` | 先核对高度单位和符号，再调整更新阈值 |
 
 ### 7.3 子任务3关键参数
 
