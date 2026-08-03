@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 # -*- coding: utf-8 -*-
 """
 名称：test_task3_3_inspect_and_drop.py

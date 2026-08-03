@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env36/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 2025.7.23 00:55 已废弃
 2026.7.13 状态订阅话题调整为 /status/auv

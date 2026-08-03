@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称: task4_node.py
 功能: 巡线 作业

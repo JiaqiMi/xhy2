@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env36/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 # -*- coding: utf-8 -*-
 """
 名称：auv_tf_handler.py

@@ -13,10 +13,10 @@
     <arg name="model_flag" default="true" />
 
     <arg name="new_model_path"
-         default="/home/xhy/catkin_ws/models/model_shapes_260726.pt" />
+         default="/home/nvidia/catkin_ws/models/model_shapes_260726.pt" />
 
     <arg name="old_model_path"
-         default="/home/xhy/catkin_ws/models/shapes0714.pt" />
+         default="/home/nvidia/catkin_ws/models/shapes0714.pt" />
 
     <arg name="exp_env" default="water" />
     <arg name="conf_thre" default="0.2" />

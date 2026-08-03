@@ -13,13 +13,13 @@
     <arg name="model_flag" default="true" />
 
     <arg name="new_model_path"
-         default="/home/xhy/catkin_ws/models/model_red_circle_260726.pt" />
+         default="/home/nvidia/catkin_ws/models/model_red_circle_260726.pt" />
 
     <arg name="old_model_path"
-         default="/home/xhy/catkin_ws/models/red_circle0713.pt" />
+         default="/home/nvidia/catkin_ws/models/red_circle0713.pt" />
 
     <!-- <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/.pt" /> -->
+         default="/home/nvidia/catkin_ws/models/.pt" /> -->
     <arg name="exp_env" default="water" />
     <arg name="conf_thre" default="0.2" />
     <arg name="top_k" default="3" />

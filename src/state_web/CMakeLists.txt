@@ -37,5 +37,5 @@ install(FILES README.md
 )
 
 if(CATKIN_ENABLE_TESTING)
-  catkin_add_nosetests(test/test_state_web_core.py)
+  # catkin_add_nosetests(test/test_state_web_core.py)  # 测试文件已在上游被删除,引用一并注释 (ros-one-jammy)
 endif()

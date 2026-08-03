@@ -578,7 +578,7 @@ src/auv_control/docs/task3_subtasks_logic.md
 catkin_make_isolated \
   --cmake-args \
   -DCMAKE_BUILD_TYPE=Release \
-  -DPYTHON_EXECUTABLE=/home/xhy/xhy_env/bin/python3.8
+  -DPYTHON_EXECUTABLE=/home/nvidia/venvs/xhy_ros2/bin/python
 ```
 
 编译完成后加载环境：

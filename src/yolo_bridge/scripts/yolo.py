@@ -1,4 +1,4 @@
-#!/home/xhy/xhy_env/bin/python3.8
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 # -*- coding: utf-8 -*-
 
 import argparse
@@ -70,17 +70,17 @@ def resolve_model_path(task_mode, detect_mode, model_path):
         return model_path
 
     detect_models = {
-        1: "/home/xhy/catkin_ws/models/shapes0709.pt",
-        2: "/home/xhy/catkin_ws/models/rectangle0710.pt",
-        3: "/home/xhy/catkin_ws/models/line0709.pt",
-        4: "/home/xhy/catkin_ws/models/arrow0709.pt"
+        1: "/home/nvidia/catkin_ws/models/shapes0709.pt",
+        2: "/home/nvidia/catkin_ws/models/rectangle0710.pt",
+        3: "/home/nvidia/catkin_ws/models/line0709.pt",
+        4: "/home/nvidia/catkin_ws/models/arrow0709.pt"
     }
 
     segment_models = {
-        1: "/home/xhy/catkin_ws/models/shapes_model0719.pt",
-        2: "/home/xhy/catkin_ws/models/holes_model0719.pt",
-        3: "/home/xhy/catkin_ws/models/balls_model0725.pt",
-        4: "/home/xhy/catkin_ws/models/line0709.pt",
+        1: "/home/nvidia/catkin_ws/models/shapes_model0719.pt",
+        2: "/home/nvidia/catkin_ws/models/holes_model0719.pt",
+        3: "/home/nvidia/catkin_ws/models/balls_model0725.pt",
+        4: "/home/nvidia/catkin_ws/models/line0709.pt",
     }
 
     if task_mode == "detect":

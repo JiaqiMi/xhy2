@@ -6,9 +6,9 @@
     <arg name="start_web" default="true" />
 
     <!-- <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/line0709.pt" /> -->
+         default="/home/nvidia/catkin_ws/models/line0709.pt" /> -->
     <!-- <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/model_line_260726.pt" /> -->
+         default="/home/nvidia/catkin_ws/models/model_line_260726.pt" /> -->
     <!-- ==================== 模型选择 ==================== -->
     <!--
         true：使用 model_line_260726.pt
@@ -17,10 +17,10 @@
     <arg name="model_flag" default="true" />
 
     <arg name="new_model_path"
-         default="/home/xhy/catkin_ws/models/model_line_260726.pt" />
+         default="/home/nvidia/catkin_ws/models/model_line_260726.pt" />
 
     <arg name="old_model_path"
-         default="/home/xhy/catkin_ws/models/line0709.pt" />
+         default="/home/nvidia/catkin_ws/models/line0709.pt" />
 
 
     <!-- 10或20均可 -->

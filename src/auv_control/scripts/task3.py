@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 # -*- coding: utf-8 -*-
 """任务3整合版：在一个ROS节点内顺序执行三个子任务。
 

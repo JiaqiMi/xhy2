@@ -4,8 +4,8 @@
 
     <!-- 图像左右分割节点 -->
     <node pkg="stereo_splitter" type="split_image_info.py" name="split_stereo_image" output="screen" />
-        <param name="left_camera_yaml" value="/home/xhy/catkin_ws/camera/left.yaml"/>
-        <param name="right_camera_yaml" value="/home/xhy/catkin_ws/camera/right.yaml"/>
+        <param name="left_camera_yaml" value="/home/nvidia/catkin_ws/camera/left.yaml"/>
+        <param name="right_camera_yaml" value="/home/nvidia/catkin_ws/camera/right.yaml"/>
         <param name="input_image_topic" value="/usb_cam/image_raw"/>
 
     <!-- 左目图像去畸变 -->

@@ -6,7 +6,7 @@
     <arg name="start_web" default="false" />
 
     <!-- <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/rectangle0710.pt" /> -->
+         default="/home/nvidia/catkin_ws/models/rectangle0710.pt" /> -->
     <arg name="task_mode" default="segment3" />
     <arg name="detect_mode" default="4" />   
     <arg name="model_path" default="" />

@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称：task1_node.py
 功能：下潜、过门

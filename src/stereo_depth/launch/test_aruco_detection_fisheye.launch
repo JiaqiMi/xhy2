@@ -30,7 +30,7 @@
 
     <!-- 相机模型与标定 -->
     <arg name="calibration_file"
-         default="/home/xhy/catkin_ws/camera/fisheye.yaml" />
+         default="/home/nvidia/catkin_ws/camera/fisheye.yaml" />
 
     <!-- 标定参数填写正确后改成 true -->
     <arg name="enable_pose" default="false" />

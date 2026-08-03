@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env36/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称：debug_driver_v2.py
 功能：调试驱动V2，支持定深(02)/定深定向(03)/定点(04)三种模式

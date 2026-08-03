@@ -8,7 +8,7 @@ find_package(OpenCV REQUIRED)
 find_package(Boost REQUIRED COMPONENTS thread)
 
 if(cv_bridge_VERSION VERSION_GREATER "1.12.0")
-  add_compile_options(-std=c++11)
+  add_compile_options(-std=c++17)
 endif()
 
 # Dynamic reconfigure support

@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env36/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称：AUV协议发送器
 功能：用于与AUV进行通信的协议发送器

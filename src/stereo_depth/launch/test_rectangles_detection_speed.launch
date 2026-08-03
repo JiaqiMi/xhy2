@@ -14,10 +14,10 @@
     <arg name="model_flag" default="true" />
 
     <arg name="new_model_path"
-         default="/home/xhy/catkin_ws/models/model_rectangles_260726.pt" />
+         default="/home/nvidia/catkin_ws/models/model_rectangles_260726.pt" />
 
     <arg name="old_model_path"
-         default="/home/xhy/catkin_ws/models/rectangles0720.pt" />
+         default="/home/nvidia/catkin_ws/models/rectangles0720.pt" />
 
     <arg name="task_mode" default="detect" />
     <arg name="detect_mode" default="2" />   
