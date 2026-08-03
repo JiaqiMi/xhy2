@@ -10,6 +10,11 @@
     增加水池范围绘制模式及操作按钮样式。
 2026.8.2
     增加相机标题旁的视觉检测帧率样式。
+2026.8.3
+    增加视觉绘图控件、鱼眼识别历史和期望亮灯颜色样式。
+    增加 base_link 轨迹和两帧目标位置的地图图例样式。
+    复用视觉开关样式控制地图位置与置信度标注。
+    将轨迹、视觉和地图控件分组，并统一各组按钮宽度与对齐方式。
 */
 
 :root {
@@ -256,44 +261,124 @@ input {
 }
 
 .navigation-title {
-    align-items: flex-start;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.navigation-intro {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 3px 10px;
+}
+
+.navigation-intro h2,
+.navigation-intro .subtitle {
+    white-space: nowrap;
 }
 
 .map-controls {
-    display: flex;
+    display: grid;
+    min-width: 0;
+    flex: 1 1 auto;
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+}
+
+.map-control-group {
+    display: grid;
+    min-width: 0;
     align-items: center;
-    flex-wrap: wrap;
-    justify-content: flex-end;
+    grid-template-columns: 62px minmax(0, 1fr);
+    gap: 5px;
+    padding: 3px 5px;
+    border: 1px solid rgba(52, 80, 109, 0.72);
+    border-radius: 9px;
+    background: rgba(7, 21, 34, 0.54);
+}
+
+.trajectory-control-group {
+    grid-column: auto;
+}
+
+.map-control-group-title {
+    display: block;
+    margin: 0;
+    color: #7f96ad;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
+    text-align: center;
+}
+
+.map-control-group-items {
+    display: grid;
+    min-width: 0;
+    align-items: stretch;
     gap: 6px;
+}
+
+.trajectory-control-group .map-control-group-items {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) 78px;
+}
+
+.visual-control-group .map-control-group-items {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.map-operation-group .map-control-group-items {
+    grid-template-columns: 112px repeat(5, minmax(0, 1fr));
 }
 
 .map-controls button,
 .map-legend {
+    width: 100%;
     min-height: 30px;
-    padding: 5px 9px;
+    padding: 4px 5px;
     border: 1px solid #34506d;
     border-radius: 7px;
     background: #15283c;
     color: #c9d8e8;
     cursor: pointer;
     font-size: 12px;
+    text-align: center;
+    white-space: nowrap;
 }
 
-.map-heading-control {
+.map-heading-control,
+.visual-history-toggle {
     display: inline-flex;
     min-height: 30px;
     align-items: center;
     gap: 5px;
-    padding: 4px 7px;
+    padding: 3px 5px;
     border: 1px solid #34506d;
     border-radius: 7px;
     background: #0d1d2d;
     color: #c9d8e8;
     font-size: 12px;
+    justify-content: center;
+    white-space: nowrap;
+}
+
+.visual-history-toggle input {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--accent);
+}
+
+.visual-history-toggle:has(input:checked) {
+    border-color: rgba(67, 199, 255, 0.55);
+    color: #e9f8ff;
 }
 
 .map-heading-control input {
-    width: 66px;
+    width: 48px;
     height: 24px;
     padding: 2px 5px;
     border: 1px solid #42617f;
@@ -313,7 +398,19 @@ input {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    justify-content: center;
     cursor: default;
+}
+
+.map-operation-group button {
+    padding-right: 2px;
+    padding-left: 2px;
+    font-size: 11px;
+}
+
+.map-operation-group .map-heading-control {
+    gap: 3px;
+    font-size: 11px;
 }
 
 .map-legend::before {
@@ -330,12 +427,22 @@ input {
 }
 
 .map-legend.target {
-    color: var(--target);
+    color: #7f3fc5;
 }
 
 .map-legend.target::before {
     border-radius: 1px;
     transform: rotate(45deg);
+}
+
+.map-legend.trajectory {
+    color: #48a9ff;
+}
+
+.map-legend.trajectory::before {
+    width: 13px;
+    height: 3px;
+    border-radius: 999px;
 }
 
 .map-controls button:hover {
@@ -606,6 +713,7 @@ summary {
     .navigation-layout {
         min-height: 430px;
     }
+
 }
 
 @media (max-width: 760px) {
@@ -619,6 +727,20 @@ summary {
     .global-badges,
     .map-controls {
         justify-content: flex-start;
+    }
+
+    .map-controls {
+        grid-template-columns: 1fr;
+    }
+
+    .map-control-group {
+        grid-template-columns: 1fr;
+    }
+
+    .trajectory-control-group .map-control-group-items,
+    .visual-control-group .map-control-group-items,
+    .map-operation-group .map-control-group-items {
+        grid-template-columns: 1fr 1fr;
     }
 
     .stereo-grid {
@@ -670,4 +792,96 @@ summary {
 .vision-fps.is-online {
     color: var(--accent);
     text-shadow: 0 0 6px rgba(67, 199, 255, 0.3);
+}
+
+.aruco-history {
+    display: flex;
+    max-width: min(46vw, 520px);
+    min-width: 0;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 2px 3px;
+    overflow-x: auto;
+    color: #aabbd0;
+    font-family: Consolas, "Microsoft YaHei", monospace;
+    font-size: 11px;
+    font-weight: 500;
+    scrollbar-color: #34506d transparent;
+    scrollbar-width: thin;
+}
+
+.aruco-history-item,
+.aruco-history-empty {
+    flex: 0 0 auto;
+    padding: 2px 6px;
+    border: 1px solid #304862;
+    border-radius: 999px;
+    background: rgba(18, 38, 58, 0.82);
+    white-space: nowrap;
+}
+
+.aruco-history-item:first-child {
+    border-color: rgba(67, 199, 255, 0.55);
+    color: #dff7ff;
+}
+
+.aruco-history-empty {
+    color: #6f849b;
+}
+
+.aruco-expected-color {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border: 1px solid #405065;
+    border-radius: 999px;
+    color: #b6c3d3;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.aruco-color-dot {
+    width: 10px;
+    height: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    border-radius: 50%;
+    background: #748092;
+    box-shadow: 0 0 7px currentColor;
+}
+
+.aruco-expected-color.yellow {
+    border-color: rgba(255, 214, 66, 0.62);
+    color: #ffe36d;
+}
+
+.aruco-expected-color.yellow .aruco-color-dot {
+    background: #ffd642;
+}
+
+.aruco-expected-color.green {
+    border-color: rgba(56, 217, 150, 0.58);
+    color: #61e8ad;
+}
+
+.aruco-expected-color.green .aruco-color-dot {
+    background: #38d996;
+}
+
+.aruco-expected-color.red {
+    border-color: rgba(255, 100, 116, 0.62);
+    color: #ff8290;
+}
+
+.aruco-expected-color.red .aruco-color-dot {
+    background: #ff6474;
+}
+
+@media (max-width: 760px) {
+    .aruco-history {
+        max-width: 100%;
+        order: 5;
+    }
 }

@@ -11,10 +11,15 @@
     新增角度归一化、姿态换算、话题健康状态和原点版本管理。
 2026.7.30
     新增检测图像坐标到当前相机帧的分辨率映射。
+2026.8.3
+    新增视觉地图分类、三维坐标转换、滚动历史和 ArUco 判色工具。
+    新增 base_link 定时轨迹与最近两帧目标位姿历史工具。
 """
 
+import copy
 import math
 import threading
+from collections import Counter, deque
 
 
 CONTROL_MODE_NAMES = {
@@ -41,6 +46,27 @@ ACTUATOR_MODE_NAMES = {
     0: "状态/不响应",
     1: "补光灯控制",
     2: "执行器控制",
+}
+
+
+VISION_MAP_CATEGORIES = (
+    "red_circle",
+    "black_square",
+    "yellow_circle",
+    "red_line",
+    "arrow",
+    "rectangle_red",
+    "rectangle_yellow",
+    "rectangle_green",
+)
+
+ARUCO_COLOR_BY_ID = {
+    1: "yellow",
+    2: "yellow",
+    3: "green",
+    4: "green",
+    5: "red",
+    6: "red",
 }
 
 
@@ -272,6 +298,473 @@ def horizon_transform(roll_deg, pitch_deg, pixels_per_degree=2.0,
         "offset_px": clamped_pitch * scale,
         "clamped_pitch_deg": clamped_pitch,
     }
+
+
+def normalize_visual_label(value):
+    """将模型类别名归一化为便于匹配的英文下划线形式。"""
+    text = str(value or "").strip().lower()
+    for separator in ("-", " ", "/"):
+        text = text.replace(separator, "_")
+    return "_".join(part for part in text.split("_") if part)
+
+
+def vision_map_category(source, class_name):
+    """将视觉任务和模型类别映射为地图历史类别。"""
+    source = str(source or "").strip().lower()
+    label = normalize_visual_label(class_name)
+    if source == "red_circle":
+        return "red_circle"
+    if source == "line":
+        return "red_line"
+    if source == "arrow":
+        return "arrow"
+    if source == "shapes":
+        if label == "rectangle":
+            return "black_square"
+        if label == "circle":
+            return "yellow_circle"
+        return None
+    if source == "rectangle":
+        parts = set(label.split("_"))
+        for color in ("red", "yellow", "green"):
+            if label == color or color in parts:
+                return "rectangle_{}".format(color)
+    return None
+
+
+def finite_position(value):
+    """校验并复制一个有限三维位置字典。"""
+    if not isinstance(value, dict):
+        return None
+    values = [safe_float(value.get(axis)) for axis in ("x", "y", "z")]
+    if any(item is None for item in values):
+        return None
+    return dict(zip(("x", "y", "z"), values))
+
+
+def extract_vision_pose_points(source, payload):
+    """从单点、固定三点或 LineN payload 中提取有序三维点。"""
+    if not isinstance(payload, dict) or payload.get("valid") is not True:
+        return []
+    if str(source).strip().lower() != "line":
+        point = finite_position(payload.get("position_m"))
+        return [point] if point is not None else []
+
+    positions = payload.get("positions_m")
+    if isinstance(positions, list):
+        return [
+            point for point in (finite_position(item) for item in positions)
+            if point is not None
+        ]
+
+    samples = payload.get("samples")
+    if isinstance(samples, list):
+        points = []
+        for sample in samples:
+            if not isinstance(sample, dict) or sample.get("valid") is False:
+                continue
+            point = finite_position(sample.get("position_m"))
+            if point is not None:
+                points.append(point)
+        return points
+    return []
+
+
+def transform_visual_geometry(points, direction, translation, quaternion):
+    """使用刚体 TF 将相机点和可选方向向量转换到 map/NED。"""
+    if not isinstance(points, list) or not points:
+        raise ValueError("视觉点不能为空")
+    if not isinstance(translation, (list, tuple)) or len(translation) != 3:
+        raise ValueError("TF平移无效")
+    if not isinstance(quaternion, (list, tuple)) or len(quaternion) != 4:
+        raise ValueError("TF四元数无效")
+    translation_values = [safe_float(value) for value in translation]
+    quaternion_values = [safe_float(value) for value in quaternion]
+    if len(translation_values) != 3 or any(
+            value is None for value in translation_values):
+        raise ValueError("TF平移无效")
+    if len(quaternion_values) != 4 or any(
+            value is None for value in quaternion_values):
+        raise ValueError("TF四元数无效")
+    qx, qy, qz, qw = quaternion_values
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if norm <= 1e-12:
+        raise ValueError("TF四元数长度为零")
+    qx, qy, qz, qw = (value / norm for value in (qx, qy, qz, qw))
+    rotation = (
+        (
+            1.0 - 2.0 * (qy * qy + qz * qz),
+            2.0 * (qx * qy - qz * qw),
+            2.0 * (qx * qz + qy * qw),
+        ),
+        (
+            2.0 * (qx * qy + qz * qw),
+            1.0 - 2.0 * (qx * qx + qz * qz),
+            2.0 * (qy * qz - qx * qw),
+        ),
+        (
+            2.0 * (qx * qz - qy * qw),
+            2.0 * (qy * qz + qx * qw),
+            1.0 - 2.0 * (qx * qx + qy * qy),
+        ),
+    )
+
+    def rotate(vector):
+        return [
+            sum(rotation[row][column] * vector[column] for column in range(3))
+            for row in range(3)
+        ]
+
+    map_points = []
+    for point in points:
+        finite = finite_position(point)
+        if finite is None:
+            raise ValueError("视觉点包含无效坐标")
+        rotated = rotate([finite["x"], finite["y"], finite["z"]])
+        world = [
+            rotated[index] + translation_values[index]
+            for index in range(3)
+        ]
+        map_points.append({
+            "north_m": world[0],
+            "east_m": world[1],
+            "down_m": world[2],
+        })
+
+    map_direction = None
+    if direction is not None:
+        finite = finite_position(direction)
+        if finite is None:
+            raise ValueError("箭头方向包含无效坐标")
+        rotated = rotate([finite["x"], finite["y"], finite["z"]])
+        horizontal_length = math.hypot(rotated[0], rotated[1])
+        if horizontal_length <= 1e-9:
+            raise ValueError("箭头转换后的水平向量长度为零")
+        north = rotated[0] / horizontal_length
+        east = rotated[1] / horizontal_length
+        map_direction = {
+            "north": north,
+            "east": east,
+            "heading_deg": normalize_heading(
+                math.degrees(math.atan2(east, north))
+            ),
+        }
+    return map_points, map_direction
+
+
+class VisionHistoryState:
+    """线程安全维护地图视觉历史和鱼眼 ArUco 判色历史。"""
+
+    def __init__(self, map_limit=20, aruco_window=10,
+                 aruco_required_count=3, aruco_min_confidence=0.5):
+        self.map_limit = max(1, int(map_limit))
+        self.aruco_window_size = max(1, int(aruco_window))
+        self.aruco_required_count = max(1, int(aruco_required_count))
+        if self.aruco_required_count > self.aruco_window_size:
+            raise ValueError("ArUco确认次数不能大于历史窗口")
+        confidence = safe_float(aruco_min_confidence)
+        if confidence is None or not 0.0 <= confidence <= 1.0:
+            raise ValueError("ArUco最低置信度必须在0到1之间")
+        self.aruco_min_confidence = confidence
+        self.lock = threading.RLock()
+        self.map_values = {
+            category: deque(maxlen=self.map_limit)
+            for category in VISION_MAP_CATEGORIES
+        }
+        self.map_seen_order = deque(maxlen=max(128, self.map_limit * 16))
+        self.map_seen = set()
+        self.aruco_values = deque(maxlen=self.aruco_window_size)
+        self.aruco_seen_order = deque(maxlen=max(64, self.aruco_window_size * 8))
+        self.aruco_seen = set()
+        self.confirmed_marker_id = None
+        self.expected_color = None
+        self.version = 0
+        self.cleared_at = None
+
+    @staticmethod
+    def _remember(key, order, values):
+        if key in values:
+            return False
+        if order.maxlen and len(order) >= order.maxlen:
+            values.discard(order[0])
+        order.append(key)
+        values.add(key)
+        return True
+
+    def append_map(self, category, record, dedupe_key):
+        """向指定图形队列追加一条已经转换到 map 的记录。"""
+        if category not in self.map_values or not isinstance(record, dict):
+            return False
+        with self.lock:
+            if not self._remember(
+                    str(dedupe_key), self.map_seen_order, self.map_seen):
+                return False
+            item = copy.deepcopy(record)
+            item["category"] = category
+            self.map_values[category].append(item)
+            self.version += 1
+            return True
+
+    def append_aruco_payload(self, payload, received_at):
+        """将一帧中的全部合法 ArUco 依次加入最近十次历史。"""
+        if not isinstance(payload, dict):
+            return 0
+        stamp = safe_float(payload.get("stamp"))
+        detections = payload.get("detections")
+        if stamp is None or not isinstance(detections, list):
+            return 0
+
+        valid_items = []
+        for index, detection in enumerate(detections):
+            if not isinstance(detection, dict):
+                continue
+            marker_value = detection.get("marker_id", detection.get("class_id"))
+            try:
+                marker_id = int(marker_value)
+            except (TypeError, ValueError):
+                continue
+            confidence = safe_float(detection.get("confidence"))
+            if (
+                    marker_id not in ARUCO_COLOR_BY_ID
+                    or confidence is None
+                    or confidence < self.aruco_min_confidence):
+                continue
+            valid_items.append({
+                "marker_id": marker_id,
+                "confidence": confidence,
+                "stamp": stamp,
+                "received_at": float(received_at),
+                "source_index": index,
+            })
+
+        if not valid_items:
+            return 0
+        packet_key = "{:.9f}".format(stamp)
+        with self.lock:
+            if not self._remember(
+                    packet_key, self.aruco_seen_order, self.aruco_seen):
+                return 0
+            for item in valid_items:
+                self.aruco_values.append(item)
+            counts = Counter(
+                item["marker_id"] for item in self.aruco_values
+            )
+            candidate, count = min(
+                counts.items(),
+                key=lambda pair: (-pair[1], pair[0]),
+            )
+            if count >= self.aruco_required_count:
+                self.confirmed_marker_id = candidate
+                self.expected_color = ARUCO_COLOR_BY_ID[candidate]
+            self.version += 1
+            return len(valid_items)
+
+    def clear_map(self, cleared_at=None):
+        """仅清空依赖当前世界原点的地图视觉历史。"""
+        with self.lock:
+            for values in self.map_values.values():
+                values.clear()
+            self.map_seen_order.clear()
+            self.map_seen.clear()
+            self.version += 1
+            self.cleared_at = cleared_at
+            return self.version
+
+    def clear_all(self, cleared_at=None):
+        """原子清空地图、ArUco历史和已经锁存的期望颜色。"""
+        with self.lock:
+            for values in self.map_values.values():
+                values.clear()
+            self.map_seen_order.clear()
+            self.map_seen.clear()
+            self.aruco_values.clear()
+            self.aruco_seen_order.clear()
+            self.aruco_seen.clear()
+            self.confirmed_marker_id = None
+            self.expected_color = None
+            self.version += 1
+            self.cleared_at = cleared_at
+            return self.version
+
+    def snapshot(self, now, frame_id, origin_revision):
+        """生成 /api/status 使用的地图与 ArUco 历史快照。"""
+        current_time = safe_float(now)
+        with self.lock:
+            categories = {
+                category: [copy.deepcopy(item) for item in values]
+                for category, values in self.map_values.items()
+            }
+            aruco_items = []
+            for item in reversed(self.aruco_values):
+                output = copy.deepcopy(item)
+                received_at = safe_float(output.get("received_at"))
+                output["age_sec"] = (
+                    None if current_time is None or received_at is None
+                    else max(0.0, current_time - received_at)
+                )
+                aruco_items.append(output)
+            counts = Counter(
+                item["marker_id"] for item in self.aruco_values
+            )
+            confirmed_count = (
+                counts.get(self.confirmed_marker_id, 0)
+                if self.confirmed_marker_id is not None else 0
+            )
+            version = self.version
+            cleared_at = self.cleared_at
+            marker_id = self.confirmed_marker_id
+            expected_color = self.expected_color
+
+        return {
+            "vision_map": {
+                "frame_id": str(frame_id),
+                "origin_revision": int(origin_revision),
+                "history_version": version,
+                "limit_per_category": self.map_limit,
+                "categories": categories,
+            },
+            "aruco_history": {
+                "history_version": version,
+                "window_size": self.aruco_window_size,
+                "required_count": self.aruco_required_count,
+                "min_confidence": self.aruco_min_confidence,
+                "items": aruco_items,
+                "confirmed_marker_id": marker_id,
+                "confirmed_count": confirmed_count,
+                "expected_color": expected_color,
+                "latched": marker_id is not None,
+                "cleared_at": cleared_at,
+            },
+        }
+
+
+class NavigationHistoryState:
+    """线程安全维护 base_link 轨迹和最近目标位姿。"""
+
+    def __init__(self, trajectory_hz=1.0, trajectory_duration_sec=60.0,
+                 target_limit=2):
+        frequency = safe_float(trajectory_hz)
+        duration = safe_float(trajectory_duration_sec)
+        if frequency is None or frequency <= 0.0:
+            raise ValueError("轨迹采样频率必须大于零")
+        if duration is None or duration <= 0.0:
+            raise ValueError("轨迹保留时间必须大于零")
+        self.trajectory_hz = frequency
+        self.trajectory_duration_sec = duration
+        self.sample_period_sec = 1.0 / frequency
+        self.trajectory_limit = max(1, int(math.ceil(frequency * duration)))
+        self.target_limit = max(1, int(target_limit))
+        self.lock = threading.RLock()
+        self.trajectory = deque(maxlen=self.trajectory_limit)
+        self.targets = deque(maxlen=self.target_limit)
+        self.trajectory_version = 0
+        self.target_version = 0
+        self.trajectory_cleared_at = None
+
+    def append_base_pose(self, pose, sampled_at):
+        """按配置频率保存一条有效 map 下 base_link 位姿。"""
+        if not isinstance(pose, dict):
+            return False
+        position = finite_position(pose.get("position_m"))
+        sample_time = safe_float(sampled_at)
+        tf_stamp = safe_float(pose.get("stamp_sec"))
+        if position is None or sample_time is None:
+            return False
+        with self.lock:
+            if self.trajectory:
+                previous = self.trajectory[-1]
+                if (
+                        sample_time - previous["sampled_at"]
+                        < self.sample_period_sec):
+                    return False
+                previous_stamp = safe_float(previous.get("stamp_sec"))
+                if (
+                        tf_stamp is not None
+                        and previous_stamp is not None
+                        and tf_stamp == previous_stamp):
+                    return False
+            self.trajectory.append({
+                "north_m": position["x"],
+                "east_m": position["y"],
+                "down_m": position["z"],
+                "stamp_sec": tf_stamp,
+                "sampled_at": sample_time,
+            })
+            self.trajectory_version += 1
+            return True
+
+    def append_target(self, target, received_at):
+        """保存一帧有效目标位姿，队列中仅保留最新两帧。"""
+        if not isinstance(target, dict):
+            return False
+        position = finite_position(target.get("position_m"))
+        sample_time = safe_float(received_at)
+        if position is None or sample_time is None:
+            return False
+        item = copy.deepcopy(target)
+        item["received_at"] = sample_time
+        with self.lock:
+            self.targets.append(item)
+            self.target_version += 1
+            return True
+
+    def clear_trajectory(self, cleared_at=None):
+        """只清空 base_link 轨迹，不影响目标与视觉历史。"""
+        with self.lock:
+            self.trajectory.clear()
+            self.trajectory_version += 1
+            self.trajectory_cleared_at = safe_float(cleared_at)
+            return self.trajectory_version
+
+    def snapshot(self, now, frame_id):
+        """生成地图轨迹和目标最近两帧的状态快照。"""
+        current_time = safe_float(now)
+        with self.lock:
+            trajectory = []
+            for item in self.trajectory:
+                sampled_at = safe_float(item.get("sampled_at"))
+                if (
+                        current_time is not None
+                        and sampled_at is not None
+                        and current_time - sampled_at
+                        > self.trajectory_duration_sec):
+                    continue
+                output = copy.deepcopy(item)
+                output["age_sec"] = (
+                    None if current_time is None or sampled_at is None
+                    else max(0.0, current_time - sampled_at)
+                )
+                trajectory.append(output)
+            targets = []
+            for item in reversed(self.targets):
+                output = copy.deepcopy(item)
+                received_at = safe_float(output.get("received_at"))
+                output["age_sec"] = (
+                    None if current_time is None or received_at is None
+                    else max(0.0, current_time - received_at)
+                )
+                targets.append(output)
+            trajectory_version = self.trajectory_version
+            target_version = self.target_version
+            cleared_at = self.trajectory_cleared_at
+
+        return {
+            "base_trajectory": {
+                "frame_id": str(frame_id),
+                "sample_hz": self.trajectory_hz,
+                "duration_sec": self.trajectory_duration_sec,
+                "limit": self.trajectory_limit,
+                "history_version": trajectory_version,
+                "cleared_at": cleared_at,
+                "points": trajectory,
+            },
+            "target_history": {
+                "frame_id": str(frame_id),
+                "limit": self.target_limit,
+                "history_version": target_version,
+                "items": targets,
+            },
+        }
 
 
 class OriginRevision:

@@ -12,7 +12,7 @@
 # 任务3统一固定深度，单位m，填写水面以下的正深度。
 # 当前map坐标约定为水下Z为负，因此0.60m会作为map z=-0.60下发。
 # 完整任务、三个独立子任务及旧联调入口都读取这一处参数。
-task3_target_depth_m: 0.6
+task3_target_depth_m: 0.1
 
 # 完整任务3启动时锁存机器人当前map N/E，并调整到该map绝对航向。
 # 该参数始终生效，与子任务超时跳点容错开关无关，单位deg。
@@ -80,8 +80,8 @@ test_task3_1_acquire_area:
   # 单帧约覆盖左右1.49m、前后0.85m。搜索分成三段，每段先到中线
   # 正前方，再左扫、右扫并回到中线；左右端点各0.75m、段间0.65m，
   # 前后视野约重叠24%，理论连续覆盖约2.99m x 2.15m = 6.44m^2。
-  search_initial_forward_distance: 1.0
-  search_lateral_distance: 0.6
+  search_initial_forward_distance: 0.6
+  search_lateral_distance: 0.5
   search_second_forward_distance: 0.65
   search_third_forward_distance: 0.65
   # 箭头子任务独立运行时的默认最终超时，从首次搜索运动目标开始计时；
@@ -243,7 +243,7 @@ test_task3_3_inspect_and_drop:
 
   # 自动搜索：先完成悬停和第一段前进，再观察并排的三个颜色方框。
   auto_initial_hover_seconds: 3.0
-  auto_search_first_forward_distance: 0.70
+  auto_search_first_forward_distance: 0.50
   auto_search_second_forward_distance: 0.30
   auto_search_third_forward_distance: 0.20
   # 左移从当前搜索点计算；右移从左移结束位置计算。
@@ -367,8 +367,8 @@ task3_final:
 
   # 三个识别阶段各自独立的最终超时，均从该阶段首次实际运动目标开始计时。
   # 修改其中一个不会影响另外两个；ArUco继续使用自己的识别超时参数。
-  arrow1_timeout_seconds: 180.0
-  arrow2_timeout_seconds: 180.0
+  arrow1_timeout_seconds: 240.0
+  arrow2_timeout_seconds: 240.0
   box_timeout_seconds: 240.0
 
   # 唯一最终超时处理始终启用，不再提供三级保护开关或阶段重试。
