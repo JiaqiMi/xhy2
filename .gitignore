@@ -12,6 +12,9 @@ log/
 src/cv_bridge/
 src/geometry2/
 
+# ROS2 子模块,属 ros2-humble 分支)如果目录残留，则忽略
+src/vision_opencv_ros2/
+
 # 忽略所有 __pycache__ 文件夹
 __pycache__/
 
