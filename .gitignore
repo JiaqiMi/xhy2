@@ -38,6 +38,8 @@ datasets/xhy0718-balls/
 # 忽略模型
 train_models/
 models/
+install/
+models/
 
 # 仅保留在本地的纯 Python 单元测试（不依赖 ROS）
 /src/auv_control/test/test_debug_protocol.py
