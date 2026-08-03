@@ -1449,14 +1449,14 @@ function targetHistoryItems(data) {
 
 
 const VISUAL_MAP_STYLES = {
-    red_circle: { color: "#ff3f50", marker: "circle" },
-    black_square: { color: "#080b10", outline: "#e8f0fa", marker: "square" },
-    yellow_circle: { color: "#ffd642", marker: "circle" },
-    red_line: { color: "#ff5364", marker: "line" },
-    arrow: { color: "#22d3ee", marker: "arrow" },
-    rectangle_red: { color: "#ff5364", marker: "circle" },
-    rectangle_yellow: { color: "#ffd642", marker: "circle" },
-    rectangle_green: { color: "#38d996", marker: "circle" },
+    red_circle: {color: "#ff3f50", marker: "circle"},
+    black_square: {color: "#080b10", outline: "#e8f0fa", marker: "square"},
+    yellow_circle: {color: "#ffd642", marker: "circle"},
+    red_line: {color: "#ff5364", marker: "line"},
+    arrow: {color: "#22d3ee", marker: "arrow"},
+    rectangle_red: {color: "#ff5364", marker: "circle"},
+    rectangle_yellow: {color: "#ffd642", marker: "circle"},
+    rectangle_green: {color: "#38d996", marker: "circle"},
 };
 
 
