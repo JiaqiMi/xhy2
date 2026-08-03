@@ -202,11 +202,17 @@ test_task3_3_inspect_and_drop:
   # 方框识别
   target_color: "red"
   min_confidence: 0.20
+  # 自动模式订阅带三维位置和原始时间戳的TargetDetection；人工模式仍可使用JSON检测话题。
+  model_target_topic: "/vision/rectangle/target_message"
   # 人工模式稳定候选组要求。
   stable_detection_count: 5
-  # 自动搜索和刹停后复核共用的滑动窗口。
+  # 自动模式最多保留10个有效map位置帧；任意3帧相近即通过。
   stable_detection_window_size: 10
   auto_search_stable_detection_count: 3
+  # 三帧map位置相对平均值的最大二维抖动，单位m。
+  stable_map_position_tolerance_m: 0.20
+  # camera粗对准后，二次三帧平均位置与首次平均位置的X误差门槛，单位m。
+  fine_position_x_tolerance_m: 0.10
   auto_hover_confirm_settle_seconds: 0.5
   auto_hover_confirm_timeout: 4.0
   # 细对准最终居中连续确认帧数。
@@ -249,7 +255,7 @@ test_task3_3_inspect_and_drop:
   # false：完全跳过颜色布局推断，直接执行原三段定步长搜索。
   auto_color_fast_search_enabled: true
 
-  # 连续视觉细对准参数：只修正左右位置，并保持进入子任务3时锁存的航向。
+  # map精对准小步参数：XY均可移动，但精确认只判断X误差；航向始终保持锁存值。
   auto_visual_lateral_gain_m: 0.10
   auto_visual_min_step_m: 0.05
   auto_visual_max_step_m: 0.20
@@ -274,8 +280,8 @@ test_task3_3_inspect_and_drop:
   auto_action_max_depth_error: 0.08
   auto_action_max_yaw_error_deg: 5.0
 
-  # 自动模式识别、对准并稳定到达后，开灯和开爪前沿当前航向前进距离。
-  pre_drop_forward_distance: 0.10
+  # 自动模式精确认通过、锁定位置和航向后，开灯和开爪前沿当前航向前进20厘米。
+  pre_drop_forward_distance: 0.20
   # [HOVER超时-5] 子任务3投放前固定前进目标进入HOVER。
   pre_drop_forward_timeout: 600.0
 

@@ -2,23 +2,24 @@
 # -*- coding: utf-8 -*-
 """
 名称：test_task3_3_inspect_and_drop.py
-功能：识别指定颜色方框并执行投放动作
-作者：BroXu
-监听：视觉识别、/motion/state、/status/auv、/tf
-发布：/cmd/motion/goal、/cmd/motion/cancel、执行器和任务诊断
+功能：识别指定颜色方框，基于map位置完成camera粗对准、X误差精对准、投放和离场
+作者：Tangzongle
+监听：/vision/rectangle/target_message (auv_control/TargetDetection)
+      /vision/rectangle/detections (std_msgs/String，人工模式兼容)
+      /motion/state (auv_control/MotionState)
+      /status/auv (auv_control/AUVData)
+      /status/actuator (auv_control/ActuatorControl)
+发布：/cmd/motion/goal (geometry_msgs/PoseStamped)
+      /cmd/actuator (auv_control/ActuatorControl)
+      /finished (std_msgs/String)
 记录：
-2026.8.2
-    将 THRUSTER_RECOVERY 视为有效等待状态，避免自动恢复期间误判任务失败。
-
-说明：节点支持两种操作模式：
-  1. manual：人工控制机器人到方框上方，本节点只识别并执行灯光、夹爪动作；
-  2. auto：向 motion_supervisor 发布绝对位置目标，自动搜索并根据方框中心像素对齐。
-
-两种模式共用颜色过滤、滑动窗口候选组判断和执行器动作流程。
+2026.8.3
+    自动模式改为使用带时间戳的三维方框map位置队列，按三帧稳定位置完成camera粗对准和X误差精对准。
 """
 
 import copy
 from datetime import datetime
+import itertools
 import json
 import logging
 import math
@@ -27,7 +28,7 @@ import statistics
 
 import rospy
 import tf
-from auv_control.msg import AUVData, ActuatorControl, MotionState
+from auv_control.msg import AUVData, ActuatorControl, MotionState, TargetDetection
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from std_msgs.msg import String
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
@@ -88,12 +89,14 @@ def normalize_angle_rad(angle):
 # 模型识别参数。
 DEFAULT_RATE = 10.0
 DEFAULT_DETECTION_TOPIC = "/vision/rectangle/detections"
+DEFAULT_TARGET_TOPIC = "/vision/rectangle/target_message"
 DEFAULT_TARGET_COLOR = "yellow"
 DEFAULT_MIN_CONFIDENCE = 0.35
 DEFAULT_STABLE_DETECTION_COUNT = 5
 DEFAULT_AUTO_SEARCH_STABLE_DETECTION_COUNT = 3
 DEFAULT_AUTO_CENTER_STABLE_DETECTION_COUNT = 5
 DEFAULT_STABLE_DETECTION_WINDOW_SIZE = 10
+DEFAULT_STABLE_MAP_POSITION_TOLERANCE_M = 0.20
 DEFAULT_AUTO_HOVER_CONFIRM_SETTLE_SECONDS = 0.5
 DEFAULT_AUTO_HOVER_CONFIRM_TIMEOUT = 4.0
 DEFAULT_STABLE_CENTER_TOLERANCE_PX = 40.0
@@ -133,6 +136,7 @@ DEFAULT_AUTO_ACTION_MAX_VERTICAL_SPEED = 0.03
 DEFAULT_AUTO_ACTION_MAX_YAW_RATE = 0.05
 DEFAULT_AUTO_ACTION_MAX_DEPTH_ERROR = 0.08
 DEFAULT_AUTO_ACTION_MAX_YAW_ERROR_DEG = 5.0
+DEFAULT_FINE_POSITION_X_TOLERANCE_M = 0.10
 DEFAULT_AUTO_TARGET_CENTER_U_RATIO = 0.5
 DEFAULT_AUTO_TARGET_CENTER_V_RATIO = 0.5
 DEFAULT_AUTO_CENTER_TOLERANCE_U_PX = 60.0
@@ -146,7 +150,7 @@ DEFAULT_HOLD_SECONDS = 1.0
 DEFAULT_OPEN_SECONDS = 3.0
 DEFAULT_RETURN_RIGHT_SECONDS = 1.0
 DEFAULT_CLOSE_SECONDS = 0.0
-DEFAULT_PRE_DROP_FORWARD_DISTANCE = 0.10
+DEFAULT_PRE_DROP_FORWARD_DISTANCE = 0.20
 DEFAULT_PRE_DROP_FORWARD_TIMEOUT = 90.0
 DEFAULT_POST_DROP_MOTION_ENABLED = True
 DEFAULT_POST_DROP_TURN_ANGLE_DEG = 90.0
@@ -190,8 +194,8 @@ class Task3InspectAndDropTest:
 
     STATE_NAMES = {
         WAIT_FOR_TARGET: "等待目标颜色方框",
-        AUTO_HOVER_CONFIRM: "当前位置保持后悬停复核方框",
-        AUTO_APPROACH: "左右细对准并保持航向",
+        AUTO_HOVER_CONFIRM: "camera粗对准后等待HOVER复核方框",
+        AUTO_APPROACH: "方框map位置X误差精对准并保持航向",
         HOLD_BEFORE_ACTION: "夹爪移动到中间",
         OPEN_CLAMP: "打开夹爪",
         RETURN_GRIPPER_RIGHT: "打开状态回到右侧",
@@ -249,6 +253,9 @@ class Task3InspectAndDropTest:
         self.detection_topic = str(
             rospy.get_param("~model_detection_topic", DEFAULT_DETECTION_TOPIC)
         ).strip()
+        self.target_topic = str(
+            rospy.get_param("~model_target_topic", DEFAULT_TARGET_TOPIC)
+        ).strip()
         self.target_color = self.normalize_label(
             rospy.get_param("~target_color", DEFAULT_TARGET_COLOR)
         )
@@ -271,6 +278,10 @@ class Task3InspectAndDropTest:
         self.stable_detection_window_size = int(rospy.get_param(
             "~stable_detection_window_size",
             DEFAULT_STABLE_DETECTION_WINDOW_SIZE,
+        ))
+        self.stable_map_position_tolerance_m = float(rospy.get_param(
+            "~stable_map_position_tolerance_m",
+            DEFAULT_STABLE_MAP_POSITION_TOLERANCE_M,
         ))
         self.auto_hover_confirm_settle_seconds = float(rospy.get_param(
             "~auto_hover_confirm_settle_seconds",
@@ -455,6 +466,10 @@ class Task3InspectAndDropTest:
             "~auto_action_max_yaw_error_deg",
             DEFAULT_AUTO_ACTION_MAX_YAW_ERROR_DEG,
         ))
+        self.fine_position_x_tolerance_m = float(rospy.get_param(
+            "~fine_position_x_tolerance_m",
+            DEFAULT_FINE_POSITION_X_TOLERANCE_M,
+        ))
         self.auto_target_center_u_ratio = float(rospy.get_param(
             "~auto_target_center_u_ratio", DEFAULT_AUTO_TARGET_CENTER_U_RATIO
         ))
@@ -561,6 +576,20 @@ class Task3InspectAndDropTest:
         self.hover_confirmation_started_at = None
         self.hover_confirmation_resume_goal = None
         self.model_frame_index = 0
+        self.box_map_frame_index = 0
+        self.box_position_samples = []
+        self.box_coarse_map_x = None
+        self.box_coarse_map_y = None
+        self.box_coarse_camera_frame = None
+        self.box_fine_candidate = None
+        self.box_recheck_collecting = False
+        self.box_precision_goal_pending = False
+        self.box_final_goal_pending = False
+        self.box_final_map_x = None
+        self.box_final_map_y = None
+        self.box_final_camera_frame = None
+        self.box_last_target_time = None
+        self.box_position_lock_ready = False
         self.current_auto_target = None
         self.auto_tracking_frame_window = []
         self.auto_tracking_waiting_for_fresh_frame = False
@@ -625,12 +654,20 @@ class Task3InspectAndDropTest:
         self.actuator_pre_action_wait_started_at = None
         self.finished = False
 
-        self.detection_sub = rospy.Subscriber(
-            self.detection_topic,
-            String,
-            self.detection_callback,
-            queue_size=10,
-        )
+        if self.auto_enabled:
+            self.detection_sub = rospy.Subscriber(
+                self.target_topic,
+                TargetDetection,
+                self.rectangle_target_callback,
+                queue_size=20,
+            )
+        else:
+            self.detection_sub = rospy.Subscriber(
+                self.detection_topic,
+                String,
+                self.detection_callback,
+                queue_size=10,
+            )
         self.actuator_status_sub = rospy.Subscriber(
             self.actuator_status_topic,
             ActuatorControl,
@@ -678,10 +715,11 @@ class Task3InspectAndDropTest:
         )
         rospy.loginfo(
             (
-                "%s：模型话题=%s，目标颜色=%s，最低置信度=%.2f"
+                "%s：模型话题=%s，三维目标话题=%s，目标颜色=%s，最低置信度=%.2f"
             ),
             NODE_NAME,
             self.detection_topic,
+            self.target_topic,
             self.target_color,
             self.min_confidence,
         )
@@ -701,24 +739,22 @@ class Task3InspectAndDropTest:
         if self.auto_enabled:
             rospy.loginfo(
                 (
-                    "%s：自动模式帧数门槛：搜索候选组=%d/%d帧，"
-                    "悬停复核候选组=%d/%d帧，细对准居中确认=%d帧"
+                    "%s：自动模式三维位置门槛：最多%d帧队列，"
+                    "任意%d帧map位置相近即通过；精确认X误差<=%.3fm"
                 ),
                 NODE_NAME,
-                self.auto_search_stable_detection_count,
                 self.stable_detection_window_size,
                 self.auto_search_stable_detection_count,
-                self.stable_detection_window_size,
-                self.auto_center_stable_detection_count,
+                self.fine_position_x_tolerance_m,
             )
             rospy.loginfo(
                 (
-                    "%s：悬停复核时序：新HOVER后先稳定等待%.2fs，"
-                    "再开始重新识别，最长复核%.1fs；超时后恢复被打断的搜索步骤"
+                    "%s：自动识别流程：首次三帧平均位置 -> camera粗对准并等待HOVER -> "
+                    "再次三帧平均位置；X误差超限时按XY小步靠近，航向保持不变；"
+                    "X误差通过后锁定位置和航向，前移%.2fm后执行投放"
                 ),
                 NODE_NAME,
-                self.auto_hover_confirm_settle_seconds,
-                self.auto_hover_confirm_timeout,
+                self.pre_drop_forward_distance,
             )
             rospy.loginfo(
                 (
@@ -790,32 +826,13 @@ class Task3InspectAndDropTest:
             )
             rospy.loginfo(
                 (
-                    "%s：横向细对准：左右增益=%.3fm，"
-                    "步长范围=[%.3f,%.3f]m，最短更新间隔=%.2fs，"
-                    "左右方向符号=%.0f；纵向误差只记录，不控制前后；"
-                    "所有位置目标继续保持锁存航向"
+                    "%s：map精对准小步范围=[%.3f,%.3f]m，"
+                    "航向固定为进入子任务3时锁存的yaw；"
+                    "精确认只用X误差判定，Y参与移动但不作为门槛"
                 ),
                 NODE_NAME,
-                self.auto_visual_lateral_gain_m,
                 self.auto_visual_min_step_m,
                 self.auto_visual_max_step_m,
-                self.auto_visual_goal_min_interval,
-                self.auto_lateral_sign,
-            )
-            rospy.loginfo(
-                (
-                    "%s：横向细对准参考点=%.2fW，左右容差=%.1fpx，"
-                    "连续居中确认=%d帧；最终帧水平抖动<=%.1fpx，"
-                    "面积变化<=%.2f，单侧贴边不放行；"
-                    "纵向参考点%.2fH和误差仅用于日志"
-                ),
-                NODE_NAME,
-                self.auto_target_center_u_ratio,
-                self.auto_center_tolerance_u_px,
-                self.auto_center_stable_detection_count,
-                self.stable_center_tolerance_px,
-                self.stable_area_tolerance_ratio,
-                self.auto_target_center_v_ratio,
             )
             rospy.loginfo(
                 (
@@ -1119,6 +1136,8 @@ class Task3InspectAndDropTest:
             raise ValueError("task3_target_depth_m必须是大于0的有限数")
         if not self.detection_topic:
             raise ValueError("model_detection_topic 不能为空")
+        if self.auto_enabled and not self.target_topic:
+            raise ValueError("model_target_topic 不能为空")
         if not self.actuator_topic or not self.actuator_status_topic:
             raise ValueError("执行器指令和反馈话题不能为空")
         if not self.target_color:
@@ -1139,6 +1158,8 @@ class Task3InspectAndDropTest:
             raise ValueError("auto_hover_confirm_timeout 必须大于 0")
         if self.stable_center_tolerance_px < 0.0:
             raise ValueError("stable_center_tolerance_px 不能小于 0")
+        if self.stable_map_position_tolerance_m < 0.0:
+            raise ValueError("stable_map_position_tolerance_m 不能小于 0")
         if not 0.0 <= self.stable_area_tolerance_ratio <= 1.0:
             raise ValueError("stable_area_tolerance_ratio 必须在 0 到 1 之间")
         if self.detection_timeout <= 0.0:
@@ -1182,6 +1203,13 @@ class Task3InspectAndDropTest:
 
         if not self.auto_enabled:
             return
+        if (
+            not math.isfinite(self.fine_position_x_tolerance_m)
+            or self.fine_position_x_tolerance_m <= 0.0
+        ):
+            raise ValueError(
+                "fine_position_x_tolerance_m 必须是大于0的有限数"
+            )
         if (
             not math.isfinite(self.pre_drop_forward_distance)
             or self.pre_drop_forward_distance <= 0.0
@@ -1350,6 +1378,141 @@ class Task3InspectAndDropTest:
         pose.pose.orientation = Quaternion(*rotation)
         return pose
 
+    def get_camera_pose(self, camera_frame, context):
+        try:
+            self.tf_listener.waitForTransform(
+                "map", camera_frame, rospy.Time(0), rospy.Duration(0.5)
+            )
+            translation, rotation = self.tf_listener.lookupTransform(
+                "map", camera_frame, rospy.Time(0)
+            )
+        except tf.Exception as error:
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：无法读取map -> %s，%s暂停：%s",
+                NODE_NAME,
+                camera_frame,
+                context,
+                str(error),
+            )
+            return None
+        values = tuple(translation) + tuple(rotation)
+        if not all(math.isfinite(value) for value in values):
+            return None
+        pose = PoseStamped()
+        pose.header.frame_id = "map"
+        pose.header.stamp = rospy.Time.now()
+        pose.pose.position = Point(*translation)
+        pose.pose.orientation = Quaternion(*rotation)
+        return pose
+
+    def get_base_to_camera_offset(self, camera_frame, context):
+        try:
+            translation, _ = self.tf_listener.lookupTransform(
+                "base_link", camera_frame, rospy.Time(0)
+            )
+        except tf.Exception as error:
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：无法读取base_link -> %s，%s暂停：%s",
+                NODE_NAME,
+                camera_frame,
+                context,
+                str(error),
+            )
+            return None
+        if not all(math.isfinite(value) for value in translation):
+            return None
+        return translation
+
+    def set_camera_xy_goal(
+        self, target_x, target_y, target_yaw, camera_frame, reason
+    ):
+        offset = self.get_base_to_camera_offset(camera_frame, reason)
+        if offset is None:
+            return False
+        offset_map_x = (
+            math.cos(target_yaw) * offset[0]
+            - math.sin(target_yaw) * offset[1]
+        )
+        offset_map_y = (
+            math.sin(target_yaw) * offset[0]
+            + math.cos(target_yaw) * offset[1]
+        )
+        goal_x = target_x - offset_map_x
+        goal_y = target_y - offset_map_y
+        self.start_motion_timeout_clock(reason)
+        self.set_active_goal(
+            goal_x,
+            goal_y,
+            self.auto_hold_z,
+            target_yaw,
+            reason,
+        )
+        rospy.logwarn(
+            (
+                "%s：camera xy目标换算：camera_frame=%s，方框map=(%.3f,%.3f)，"
+                "base_link->camera偏置map=(%.3f,%.3f)m，保持yaw=%.2fdeg，"
+                "下发base_link目标=(%.3f,%.3f)"
+            ),
+            NODE_NAME,
+            camera_frame,
+            target_x,
+            target_y,
+            offset_map_x,
+            offset_map_y,
+            math.degrees(target_yaw),
+            goal_x,
+            goal_y,
+        )
+        return True
+
+    def set_limited_camera_goal(
+        self, target_x, target_y, target_yaw, camera_frame, reason
+    ):
+        camera_pose = self.get_camera_pose(camera_frame, reason)
+        if camera_pose is None:
+            return False
+        error_x = target_x - camera_pose.pose.position.x
+        error_y = target_y - camera_pose.pose.position.y
+        distance = math.hypot(error_x, error_y)
+        if distance <= 1e-6:
+            goal_x = target_x
+            goal_y = target_y
+            step_distance = 0.0
+        else:
+            step_distance = min(self.auto_visual_max_step_m, distance)
+            if step_distance < self.auto_visual_min_step_m:
+                step_distance = min(self.auto_visual_min_step_m, distance)
+            scale = step_distance / distance
+            goal_x = camera_pose.pose.position.x + error_x * scale
+            goal_y = camera_pose.pose.position.y + error_y * scale
+        if not self.set_camera_xy_goal(
+            goal_x,
+            goal_y,
+            target_yaw,
+            camera_frame,
+            reason,
+        ):
+            return False
+        rospy.loginfo(
+            (
+                "%s：方框map精对准小步：camera当前=(%.3f,%.3f)，"
+                "目标=(%.3f,%.3f)，XY误差=(%+.3f,%+.3f)m，"
+                "本次步长=%.3fm，航向保持%.2fdeg"
+            ),
+            NODE_NAME,
+            camera_pose.pose.position.x,
+            camera_pose.pose.position.y,
+            target_x,
+            target_y,
+            error_x,
+            error_y,
+            step_distance,
+            math.degrees(target_yaw),
+        )
+        return True
+
     def make_goal(self, x_value, y_value, z_value, yaw):
         values = (x_value, y_value, z_value, yaw)
         if not all(math.isfinite(value) for value in values):
@@ -1425,6 +1588,222 @@ class Task3InspectAndDropTest:
             reason,
         )
         return self.active_goal
+
+    def transform_box_target_to_map(self, message):
+        source_frame = str(message.pose.header.frame_id).strip()
+        stamp = message.pose.header.stamp
+        if not source_frame:
+            return None, "三维方框位置缺少frame_id"
+        if stamp == rospy.Time(0):
+            return None, "三维方框位置缺少原始图像时间戳"
+        age = (rospy.Time.now() - stamp).to_sec()
+        if age < -0.1:
+            return None, "三维方框位置时间戳来自未来"
+        if age > self.detection_timeout:
+            return None, "三维方框位置已过期{:.2f}s".format(age)
+        try:
+            self.tf_listener.waitForTransform(
+                "map", source_frame, stamp, rospy.Duration(1.0)
+            )
+            transformed = self.tf_listener.transformPose("map", message.pose)
+        except tf.Exception as error:
+            return None, "原始时间戳map<-{} TF不可用：{}".format(
+                source_frame, str(error)
+            )
+        values = (
+            transformed.pose.position.x,
+            transformed.pose.position.y,
+            transformed.pose.position.z,
+        )
+        if not all(math.isfinite(value) for value in values):
+            return None, "转换后的方框map位置包含无效数值"
+        return transformed, ""
+
+    @staticmethod
+    def box_position_group_summary(samples):
+        mean_x = sum(item["map_x"] for item in samples) / len(samples)
+        mean_y = sum(item["map_y"] for item in samples) / len(samples)
+        jitter = max(
+            math.hypot(
+                item["map_x"] - mean_x,
+                item["map_y"] - mean_y,
+            )
+            for item in samples
+        )
+        return mean_x, mean_y, jitter
+
+    def stable_box_position_groups(self):
+        now = rospy.Time.now()
+        fresh_samples = [
+            item
+            for item in self.box_position_samples
+            if (now - item["received_time"]).to_sec()
+            <= self.detection_timeout
+        ]
+        self.box_position_samples = fresh_samples[
+            -self.stable_detection_window_size:
+        ]
+        required_count = self.auto_search_stable_detection_count
+        if len(self.box_position_samples) < required_count:
+            return []
+        groups = []
+        for group in itertools.combinations(
+            self.box_position_samples, required_count
+        ):
+            _, _, jitter = self.box_position_group_summary(group)
+            if jitter <= self.stable_map_position_tolerance_m:
+                groups.append(list(group))
+        return groups
+
+    def best_box_position_group(self):
+        groups = self.stable_box_position_groups()
+        if not groups:
+            return None
+        return min(
+            groups,
+            key=lambda group: (
+                self.box_position_group_summary(group)[2],
+                -max(item["frame_index"] for item in group),
+            ),
+        )
+
+    def reset_box_position_queue(self):
+        self.box_position_samples = []
+        self.box_fine_candidate = None
+        self.box_last_target_time = None
+
+    def add_box_position_sample(self, sample):
+        self.box_position_samples.append(sample)
+        self.box_position_samples = self.box_position_samples[
+            -self.stable_detection_window_size:
+        ]
+        group = self.best_box_position_group()
+        if group is None:
+            rospy.loginfo(
+                (
+                    "%s：[方框map帧#%d] 有效位置写入队列=%d/%d，"
+                    "尚未找到相近的%d帧"
+                ),
+                NODE_NAME,
+                sample["frame_index"],
+                len(self.box_position_samples),
+                self.stable_detection_window_size,
+                self.auto_search_stable_detection_count,
+            )
+            return
+
+        mean_x, mean_y, jitter = self.box_position_group_summary(group)
+        candidate = {
+            "map_x": mean_x,
+            "map_y": mean_y,
+            "jitter": jitter,
+            "camera_frame": group[-1]["camera_frame"],
+            "frame_ids": [item["frame_index"] for item in group],
+            "received_time": group[-1]["received_time"],
+        }
+        rospy.loginfo(
+            (
+                "%s：[方框map帧#%d] 三帧位置确认通过：队列=%d/%d，"
+                "命中帧=%s，平均map=(%.3f,%.3f)，抖动=%.3f/%.3fm，阶段=%s"
+            ),
+            NODE_NAME,
+            sample["frame_index"],
+            len(self.box_position_samples),
+            self.stable_detection_window_size,
+            candidate["frame_ids"],
+            mean_x,
+            mean_y,
+            jitter,
+            self.stable_map_position_tolerance_m,
+            self.STATE_NAMES.get(self.state, "未知状态"),
+        )
+        if self.state == self.WAIT_FOR_TARGET:
+            self.box_coarse_map_x = mean_x
+            self.box_coarse_map_y = mean_y
+            self.box_coarse_camera_frame = candidate["camera_frame"]
+            self.box_position_lock_ready = True
+        elif self.state == self.AUTO_APPROACH and self.box_recheck_collecting:
+            self.box_fine_candidate = candidate
+            self.box_recheck_collecting = False
+
+    def rectangle_target_callback(self, message):
+        now = rospy.Time.now()
+        self.last_model_message_time = now
+        self.box_last_target_time = now
+        self.box_map_frame_index += 1
+        frame_index = self.box_map_frame_index
+        if self.state not in (
+            self.WAIT_FOR_TARGET,
+            self.AUTO_HOVER_CONFIRM,
+            self.AUTO_APPROACH,
+        ):
+            return
+        if self.state == self.WAIT_FOR_TARGET and self.auto_search_index == 0:
+            return
+        if self.state == self.AUTO_HOVER_CONFIRM:
+            return
+        if self.state == self.AUTO_APPROACH and not self.box_recheck_collecting:
+            return
+        class_name = str(message.class_name).strip()
+        confidence = self.finite_number(message.conf)
+        if self.detection_color(class_name) != self.target_color:
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：[方框map帧#%d] 忽略类别%s，目标颜色=%s",
+                NODE_NAME,
+                frame_index,
+                class_name or "空",
+                self.target_color,
+            )
+            return
+        if confidence is None or confidence < self.min_confidence:
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：[方框map帧#%d] 忽略置信度%s，最低=%.2f",
+                NODE_NAME,
+                frame_index,
+                "无效" if confidence is None else "{:.3f}".format(confidence),
+                self.min_confidence,
+            )
+            return
+        transformed, reason = self.transform_box_target_to_map(message)
+        if transformed is None:
+            rospy.logwarn_throttle(
+                self.warning_log_interval,
+                "%s：[方框map帧#%d] 无效：%s",
+                NODE_NAME,
+                frame_index,
+                reason,
+            )
+            return
+        if (
+            self.box_position_samples
+            and (now - self.box_position_samples[-1]["received_time"]).to_sec()
+            > self.detection_timeout
+        ):
+            self.reset_box_position_queue()
+            rospy.logwarn(
+                "%s：[方框map] 消息间隔超过%.2fs，清空过期位置队列",
+                NODE_NAME,
+                self.detection_timeout,
+            )
+        source = message.pose.pose.position
+        target = transformed.pose.position
+        sample = {
+            "frame_index": frame_index,
+            "received_time": now,
+            "source_stamp": message.pose.header.stamp,
+            "source_stamp_sec": message.pose.header.stamp.to_sec(),
+            "confidence": confidence,
+            "camera_frame": str(message.pose.header.frame_id).strip(),
+            "camera_x": float(source.x),
+            "camera_y": float(source.y),
+            "camera_z": float(source.z),
+            "map_x": float(target.x),
+            "map_y": float(target.y),
+            "map_z": float(target.z),
+        }
+        self.add_box_position_sample(sample)
 
     def start_pre_drop_forward(self, reason):
         if self.active_goal is None or self.auto_hold_yaw is None:
@@ -2290,11 +2669,185 @@ class Task3InspectAndDropTest:
         )
         return True
 
+    def begin_box_coarse_camera_alignment(self):
+        if (
+            not self.box_position_lock_ready
+            or self.box_coarse_map_x is None
+            or self.box_coarse_map_y is None
+            or not self.box_coarse_camera_frame
+        ):
+            return False
+        if not self.set_camera_xy_goal(
+            self.box_coarse_map_x,
+            self.box_coarse_map_y,
+            self.auto_hold_yaw,
+            self.box_coarse_camera_frame,
+            "首次三帧方框map位置通过，camera xy粗对准",
+        ):
+            return False
+        self.box_position_lock_ready = False
+        self.box_precision_goal_pending = False
+        self.box_final_goal_pending = False
+        self.box_recheck_collecting = False
+        self.hover_confirmation_hover_at = None
+        self.reset_box_position_queue()
+        self.set_state(
+            self.AUTO_HOVER_CONFIRM,
+            "首次稳定方框map位置已冻结，等待camera粗对准目标HOVER",
+        )
+        return True
+
+    def confirm_box_after_coarse_hover(self):
+        if self.state != self.AUTO_HOVER_CONFIRM:
+            return
+        if self.state_elapsed() >= self.hold_timeout:
+            self.finish_task(False, "camera粗对准方框目标未在规定时间进入HOVER")
+            return
+        if not self.motion_arrived():
+            self.log_arrival_gate("等待camera粗对准方框目标HOVER")
+            return
+        if self.auto_hover_confirm_settle_seconds > 0.0:
+            if self.hover_confirmation_hover_at is None:
+                self.hover_confirmation_hover_at = rospy.Time.now()
+                rospy.loginfo(
+                    "%s：camera粗对准已进入HOVER，先稳定%.2fs再重新识别方框",
+                    NODE_NAME,
+                    self.auto_hover_confirm_settle_seconds,
+                )
+                return
+            if (
+                rospy.Time.now() - self.hover_confirmation_hover_at
+            ).to_sec() < self.auto_hover_confirm_settle_seconds:
+                return
+        self.reset_box_position_queue()
+        self.box_recheck_collecting = True
+        self.hover_confirmation_hover_at = None
+        self.set_state(
+            self.AUTO_APPROACH,
+            "camera粗对准已HOVER，清空旧帧并开始三帧方框精确认",
+        )
+
+    def finish_box_position_alignment(self, candidate):
+        self.box_final_map_x = candidate["map_x"]
+        self.box_final_map_y = candidate["map_y"]
+        self.box_final_camera_frame = candidate["camera_frame"]
+        if not self.set_camera_xy_goal(
+            self.box_final_map_x,
+            self.box_final_map_y,
+            self.auto_hold_yaw,
+            self.box_final_camera_frame,
+            "方框X误差通过，锁定最终位置和固定航向",
+        ):
+            return False
+        self.box_final_goal_pending = True
+        self.box_recheck_collecting = False
+        self.reset_box_position_queue()
+        rospy.logwarn(
+            (
+                "%s：方框精确认完成：锁定map=(%.3f,%.3f)，"
+                "X误差门槛=%.3fm，航向固定=%.2fdeg；"
+                "最终位置HOVER后前移%.2fm"
+            ),
+            NODE_NAME,
+            self.box_final_map_x,
+            self.box_final_map_y,
+            self.fine_position_x_tolerance_m,
+            math.degrees(self.auto_hold_yaw),
+            self.pre_drop_forward_distance,
+        )
+        return True
+
+    def approach_box_by_map(self):
+        if self.state != self.AUTO_APPROACH:
+            return
+        if self.state_elapsed() >= self.hold_timeout:
+            self.finish_task(False, "方框map精对准目标未在规定时间进入HOVER")
+            return
+        if self.box_final_goal_pending:
+            if not self.motion_arrived():
+                self.log_arrival_gate("等待方框最终固定位置HOVER")
+                return
+            if not self.require_safe_actuator_feedback(
+                "方框最终位置HOVER后的投放动作放行"
+            ):
+                self.publish_actuator(
+                    self.clamp_closed,
+                    "off",
+                    self.heading_servo_right,
+                )
+                return
+            self.box_final_goal_pending = False
+            if not self.start_pre_drop_forward(
+                "方框X误差已通过，最终位置和航向已锁定"
+            ):
+                self.finish_task(False, "无法生成方框投放前20厘米前进目标")
+            return
+        if self.box_precision_goal_pending:
+            if not self.motion_arrived():
+                self.log_arrival_gate("等待方框map精对准小步HOVER")
+                return
+            self.box_precision_goal_pending = False
+            self.box_recheck_collecting = True
+            self.reset_box_position_queue()
+            rospy.loginfo(
+                "%s：方框map精对准小步已HOVER，重新累计三帧位置",
+                NODE_NAME,
+            )
+            return
+        if self.box_fine_candidate is None:
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：方框精确认中：等待%d帧相近map位置，队列=%d/%d",
+                NODE_NAME,
+                self.auto_search_stable_detection_count,
+                len(self.box_position_samples),
+                self.stable_detection_window_size,
+            )
+            return
+
+        candidate = self.box_fine_candidate
+        self.box_fine_candidate = None
+        x_error = candidate["map_x"] - self.box_coarse_map_x
+        rospy.loginfo(
+            (
+                "%s：方框三帧精确认候选：map=(%.3f,%.3f)，"
+                "相对首次点误差=(%+.3f,%+.3f)m，X门槛=%.3fm"
+            ),
+            NODE_NAME,
+            candidate["map_x"],
+            candidate["map_y"],
+            x_error,
+            candidate["map_y"] - self.box_coarse_map_y,
+            self.fine_position_x_tolerance_m,
+        )
+        if abs(x_error) <= self.fine_position_x_tolerance_m:
+            if not self.finish_box_position_alignment(candidate):
+                self.finish_task(False, "无法生成方框最终固定位置目标")
+            return
+        if not self.set_limited_camera_goal(
+            candidate["map_x"],
+            candidate["map_y"],
+            self.auto_hold_yaw,
+            candidate["camera_frame"],
+            "方框X误差超限，保持航向按XY小步靠近",
+        ):
+            return
+        self.box_precision_goal_pending = True
+        self.box_recheck_collecting = False
+        self.reset_box_position_queue()
+        self.set_state(
+            self.AUTO_APPROACH,
+            "方框X误差超过门槛，已下发一个XY精对准小步",
+        )
+
     def search_target_automatically(self, model_ready):
         self.auto_centered_frame_count = 0
         if self.state != self.WAIT_FOR_TARGET:
             return
         if not self.wait_for_motion_hold("搜索阶段等待当前位置保持"):
+            return
+        if self.box_position_lock_ready:
+            self.begin_box_coarse_camera_alignment()
             return
         if self.auto_search_index >= len(self.auto_search_plan):
             rospy.loginfo_throttle(
@@ -4473,18 +5026,23 @@ class Task3InspectAndDropTest:
             if self.state == self.WAIT_FOR_TARGET:
                 self.publish_actuator(self.clamp_closed, "off")
                 model_ready = False
+                model_topic = (
+                    self.target_topic if self.auto_enabled else self.detection_topic
+                )
                 if self.last_model_message_time is None:
                     rospy.logwarn_throttle(
                         self.warning_log_interval,
                         "%s：等待模型话题 %s，已等待 %.1fs",
                         NODE_NAME,
-                        self.detection_topic,
+                        model_topic,
                         elapsed,
                     )
                 else:
                     model_age = (now - self.last_model_message_time).to_sec()
                     if model_age > self.detection_timeout:
                         self.reset_stability()
+                        if self.auto_enabled:
+                            self.reset_box_position_queue()
                         rospy.logwarn_throttle(
                             self.warning_log_interval,
                             "%s：模型话题已 %.1fs 没有新消息",
@@ -4502,11 +5060,11 @@ class Task3InspectAndDropTest:
 
             elif self.state == self.AUTO_HOVER_CONFIRM:
                 self.publish_actuator(self.clamp_closed, "off")
-                self.confirm_target_after_hover()
+                self.confirm_box_after_coarse_hover()
 
             elif self.state == self.AUTO_APPROACH:
                 self.publish_actuator(self.clamp_closed, "off")
-                self.approach_target_automatically()
+                self.approach_box_by_map()
 
             elif self.state == self.PRE_DROP_FORWARD:
                 self.handle_pre_drop_forward()

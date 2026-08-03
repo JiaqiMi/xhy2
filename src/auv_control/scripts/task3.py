@@ -1,16 +1,17 @@
 #! /home/xhy/xhy_env/bin/python
 # -*- coding: utf-8 -*-
-"""任务3整合版：在一个ROS节点内顺序执行三个子任务。
-
-执行顺序：
-    第一次箭头 -> ArUco识别、亮灯和转向 -> 第二次箭头 -> 彩色方框投放
-
-三个识别模型由task3.launch一次性启动并保持常驻。本节点不再为每个
-阶段启动或关闭子任务launch，而是复用现有三个子任务类的控制方法。每个
-子任务结束时原本请求的rospy全局关闭会被转换为当前子函数返回。
-
-三个子任务和整合调度参数统一由config/task3.yaml加载到ROS参数服务器。
-独立子任务与整合任务读取同一份参数，避免两套实验值逐渐不一致。
+"""
+名称：task3.py
+功能：在一个ROS节点内顺序执行箭头、ArUco和方框投放三个子任务
+作者：Tangzongle
+监听：/vision/arrow/direction、/vision/arrow/target_message
+      /vision/aruco/target_message、/vision/rectangle/detections
+      /vision/rectangle/target_message、/motion/state、/status/auv
+发布：/cmd/motion/goal、/cmd/motion/cancel、/cmd/actuator
+      /task3_final/finished
+记录：
+2026.8.3
+    将方框子任务的三维TargetDetection话题传入嵌入式子任务，支持基于map位置的三帧确认流程。
 """
 
 from datetime import datetime
@@ -452,6 +453,10 @@ class Task3Final:
             "~rectangle_topic",
             "/vision/rectangle/detections",
         )).strip()
+        self.rectangle_target_topic = str(rospy.get_param(
+            "~rectangle_target_topic",
+            "/vision/rectangle/target_message",
+        )).strip()
         self.motion_goal_topic = str(rospy.get_param(
             "~motion_goal_topic",
             "/cmd/motion/goal",
@@ -563,6 +568,7 @@ class Task3Final:
         self.task2_params["aruco_topic"] = self.aruco_topic
         self.task2_params["actuator_topic"] = self.actuator_topic
         self.task3_params["model_detection_topic"] = self.rectangle_topic
+        self.task3_params["model_target_topic"] = self.rectangle_target_topic
         self.task3_params["status_topic"] = self.status_topic
         self.task3_params["actuator_topic"] = self.actuator_topic
         # 整合模式统一在阶段之间完成HOVER交接，取消子任务内部重复的

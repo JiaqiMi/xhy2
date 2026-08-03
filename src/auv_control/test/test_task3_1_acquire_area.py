@@ -1281,6 +1281,16 @@ class Task3AcquireAreaTest(object):
         return self.yaw_correction_sign * normalize_angle_deg(
             self.camera_forward_angle_deg - direction_angle_deg
         )
+        if age > self.detection_timeout:
+            return None
+        return {
+            "angle_deg": self.mean_angle_deg([
+                item["angle_deg"] for item in best_group
+            ]),
+            "frame_index": latest["frame_index"],
+            "received_time": latest["received_time"],
+            "support_count": len(best_group),
+        }
 
     def get_frame_pose(self, frame, context):
         try:

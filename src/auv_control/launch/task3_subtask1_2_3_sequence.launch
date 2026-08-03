@@ -62,7 +62,7 @@
                <!-- 箭头YOLO wrapper依赖根命名空间读取模型参数。 -->
         <group if="$(arg start_arrow_model)">
             <remap from="/vision/arrow/direction" to="$(arg arrow_topic)" />
-            <include file="$(find stereo_depth)/launch/test_arrow_pose_detection.launch">
+            <include file="$(find stereo_depth)/launch/test_arrow_pose_detection_speed.launch">
                 <arg name="start_camera" value="$(arg start_down_camera)" />
                 <arg name="start_splitter" value="$(arg start_down_splitter)" />
                 <arg name="start_web" value="$(arg start_arrow_web)" />
@@ -93,7 +93,7 @@
             <remap from="/vision/rectangle/target_message" to="$(arg rectangle_target_topic)" />
             <remap from="/vision/rectangle/detections" to="$(arg rectangle_detection_topic)" />
             <remap from="/vision/rectangle/pose" to="$(arg rectangle_pose_topic)" />
-            <include file="$(find stereo_depth)/launch/test_rectangles_detection.launch">
+            <include file="$(find stereo_depth)/launch/test_rectangles_detection_speed.launch">
                 <arg name="start_camera" value="$(arg start_down_camera)" />
                 <arg name="start_splitter" value="$(arg start_down_splitter)" />
                 <arg name="start_web" value="$(arg start_rectangle_web)" />
