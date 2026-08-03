@@ -27,6 +27,8 @@
     增加视觉预热开关；关闭时由 task3 自身启动视觉模型。
 2026.7.31
     支持 9 键预热 task1 视觉节点，并在 task1 中复用。
+2026.8.3
+    将任务正常退出与异常退出区分，task2 正常结束时保留 task3 视觉预热。
 """
 
 import errno
@@ -490,19 +492,39 @@ class StateControl:
                 self.terminate_vision_prewarm('task3 完成')
 
     def monitor_current_task(self):
-        """检测 launch 退出或超过配置时限，并清理任务状态。"""
+        """检测 launch 退出或超过配置时限，并按退出结果清理状态。"""
         if self.task_process is None or self.current_task is None:
             return
 
         exit_code = self.task_process.poll()
         if exit_code is not None:
             exited_mode = self.current_task['mode']
-            rospy.loginfo('%s 已退出，退出码：%s。', self.current_task['name'], exit_code)
+            task_name = self.current_task['name']
+            automatic = self.auto_mode
+            rospy.loginfo('%s 已退出，退出码：%s。', task_name, exit_code)
+
+            if exit_code == 0 and automatic:
+                rospy.loginfo('%s 正常完成，自动推进下一任务。', NODE_NAME)
+                self.start_next_task()
+                return
+
             self.task_process = None
             self.current_task = None
             self.task_start_time = None
             self._close_task_output()
             self.auto_mode = False
+            if exit_code == 0:
+                rospy.loginfo('%s 正常完成。', task_name)
+                if exited_mode == 1:
+                    self.terminate_task1_vision_prewarm('task1 正常完成')
+                elif exited_mode == 3:
+                    self.terminate_vision_prewarm('task3 正常完成')
+                else:
+                    rospy.loginfo('%s 保留 task3 视觉预热，等待启动 task3。',
+                                  NODE_NAME)
+                return
+
+            rospy.logerr('%s 异常退出，退出码：%s。', task_name, exit_code)
             if exited_mode == 1:
                 self.terminate_task1_vision_prewarm('任务异常退出')
             if (self.vision_prewarm is not None and
