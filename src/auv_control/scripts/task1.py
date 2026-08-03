@@ -340,6 +340,7 @@ class Task1(Task1LineFollow):
             target_topic=self.target_topic,
             line_detection_ready_topic=self.line_detection_ready_topic,
             shape_detection_ready_topic=self.shape_detection_ready_topic,
+            line_tracking_frame=self.line_tracking_frame,
             actuator_topic=self.actuator_topic,
             yellow_classes=sorted(self.yellow_classes),
             black_classes=sorted(self.black_classes),
@@ -932,6 +933,8 @@ class Task1(Task1LineFollow):
             stage_description=self.stage_description(),
             base=self.pose_record(current),
             camera=self.pose_record(camera),
+            tracking_frame=self.line_tracking_frame,
+            tracking=self.pose_record(camera),
             command_goal=self.pose_record(self.last_motion_goal),
             motion=self.motion_record(),
             line=line_data,
@@ -1257,11 +1260,12 @@ class Task1(Task1LineFollow):
 
     def marker_trigger_progress(self, kind):
         """黄色按 hand、其他标志按 base_link 巡线进度触发。"""
-        if kind != "yellow":
-            return self.completed_path_length
         if not self.tracking_curve_ready():
             return None
-        alignment_pose = self.get_frame_pose(self.yellow_alignment_frame)
+        trigger_frame = (
+            self.yellow_alignment_frame if kind == "yellow" else "base_link"
+        )
+        alignment_pose = self.get_frame_pose(trigger_frame)
         if alignment_pose is None:
             return None
         projection = self.project_to_curve(
@@ -1296,7 +1300,7 @@ class Task1(Task1LineFollow):
         due = []
         trigger_progresses = {
             "yellow": self.marker_trigger_progress("yellow"),
-            "black": self.completed_path_length,
+            "black": self.marker_trigger_progress("black"),
         }
         with self.marker_lock:
             retained = []

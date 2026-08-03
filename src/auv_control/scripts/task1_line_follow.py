@@ -9,15 +9,15 @@
     2. 未识别红线时，先定点向前移动，再依次左转、右转、回正后重复；
     3. 在短时间窗内选择置信度最高的第一条红线并锁定；
     4. conf >= 0.70 时 positions 中坐标有限的点全部进入拟合，后续高置信帧确认后立即冻结曲线段；
-    5. LOS 以 base_link 投影选择曲线前方目标，实际向 motion_supervisor
-       下发 base_link 与 LOS 目标之间的中点；新目标直接覆盖旧目标；
+    5. LOS 以 camera_center 投影选择曲线前方目标，计算中点后
+       补偿为 base_link 目标下发给 motion_supervisor；新目标直接覆盖旧目标；
     6. 已知曲线没有新目标时保持最后中点；控制端给出一次 HOVER 后，
        若进度和待固定尾段满足终点条件则直接结束，否则固定 XY 搜索一轮；
     7. 搜索到向前增长的新固定曲线就恢复巡线；达到最小进度且完整一轮
        没有增长则丢弃未固定尾段并结束任务。
 
 起终点定义：
-    以首次锁线时的 base_link 位置为固定参考点。所有已接受点中，距参考点
+    以首次锁线时的 camera_center 位置为固定参考点。所有已接受点中，距参考点
     最近的点记为红线起点，最远的点记为红线终点。参考点不会随机器人
     运动而改变，因此起终点不会在巡线过程中反转。
 
@@ -108,6 +108,9 @@
 2026.7.25
     深度和启动航向分别改用布尔开关选择当前值或参考值；参考航向启用时，
     先原地旋转并等待 HOVER，再开始启动定点和识别节点等待计时。
+2026.8.3
+    巡线投影、LOS 选点和到达判断改用 camera_center；下发运动目标前
+    按 base_link -> camera_center 水平杆臂补偿为 base_link 目标。
 """
 
 import copy
@@ -170,7 +173,7 @@ body{margin:0;background:#101820;color:#eef;font-family:Arial,"Microsoft YaHei"}
 header{padding:12px 18px;background:#172630}canvas{display:block;margin:16px auto;background:#f7fbfd;border-radius:8px}
 #s{margin-left:25px;color:#bcd0d8}.legend{font-size:13px;color:#bcd0d8;margin-top:8px}.legend span{margin-right:18px}
 </style></head><body><header><b>Task1 巡线轨迹</b><span id="s">等待数据</span>
-<div class="legend"><span>蓝线：base_link 实际轨迹</span><span>红/橙/绿：base_link 拟合/固定/执行轨迹</span><span>青色圆点→箭头：base_link→camera</span>
+<div class="legend"><span>蓝线：base_link 实际轨迹</span><span>红/橙/绿：base_link 拟合/固定/执行轨迹</span><span>青色圆点→箭头：base_link→巡线跟踪帧</span>
 <span>紫点：下发中点目标</span><span>棕点：LOS曲线目标</span><span>浅粉点：历史有效识别点</span><span>亮粉点：最新有效识别点</span><span>滚轮缩放，拖动平移</span></div></header>
 <canvas id="c" width="960" height="680"></canvas><script>
 const c=document.getElementById('c'),x=c.getContext('2d');let k=70,ox=90,oy=c.height-80,last={};
@@ -191,7 +194,7 @@ dot(d.line_start,'#21a366',7);dot(d.line_end,'#f39c12',7);dot(d.endpoint_candida
 dot(d.los_target,'#8b5a2b',6);tag(d.los_target,'LOS','#8b5a2b');
 latest.forEach((v,i)=>{dot(v,'#ff2d91',4);if(i===0||i===latest.length-1||i===Math.floor(latest.length/2))tag(v,`P${i+1}`,'#ff2d91')});
 dot(d.robot,'#00cfe8',8);bodyArrow(d.robot,d.camera);
-document.getElementById('s').textContent=`任务 ${d.state}/${d.los_phase||'-'}　监督器 ${d.motion_state??'-'}　base航向 ${(d.robot_yaw_deg||0).toFixed(1)}°　D(base/camera) ${(d.robot_down??0).toFixed(2)}/${(d.camera_down??0).toFixed(2)} m　识别点 总/有效/使用 ${d.line_input_point_count||0}/${d.line_valid_point_count||0}/${d.line_used_point_count||0}　历史 ${d.valid_line_point_history_count||0}　锁线 ${d.line_locked?'是':'否'}　固定/拟合 ${d.fixed_length||0}/${d.fitted_length||0} m　已完成/投影 ${d.completed_length||0}/${d.projected_length||0} m　终点证据 ${d.endpoint_stable_count||0}/${d.endpoint_stable_required||0}`}
+document.getElementById('s').textContent=`任务 ${d.state}/${d.los_phase||'-'}　监督器 ${d.motion_state??'-'}　base航向 ${(d.robot_yaw_deg||0).toFixed(1)}°　D(base/${d.tracking_frame||'tracking'}) ${(d.robot_down??0).toFixed(2)}/${(d.camera_down??0).toFixed(2)} m　识别点 总/有效/使用 ${d.line_input_point_count||0}/${d.line_valid_point_count||0}/${d.line_used_point_count||0}　历史 ${d.valid_line_point_history_count||0}　锁线 ${d.line_locked?'是':'否'}　固定/拟合 ${d.fixed_length||0}/${d.fitted_length||0} m　已完成/投影 ${d.completed_length||0}/${d.projected_length||0} m　终点证据 ${d.endpoint_stable_count||0}/${d.endpoint_stable_required||0}`}
 function pos(e){let r=c.getBoundingClientRect();return[(e.clientX-r.left)*c.width/r.width,(e.clientY-r.top)*c.height/r.height]}
 c.addEventListener('wheel',e=>{e.preventDefault();let m=pos(e),old=k,ne=(m[0]-ox)/old,nn=(oy-m[1])/old;k=Math.max(10,Math.min(500,k*(e.deltaY<0?1.15:1/1.15)));ox=m[0]-ne*k;oy=m[1]+nn*k;draw(last)},{passive:false});
 let drag=false,pm=null;c.addEventListener('mousedown',e=>{drag=true;pm=pos(e)});window.addEventListener('mouseup',()=>drag=false);window.addEventListener('mousemove',e=>{if(!drag)return;let m=pos(e);ox+=m[0]-pm[0];oy+=m[1]-pm[1];pm=m;draw(last)});
@@ -286,8 +289,8 @@ class Task1LineFollow:
         self.finished_topic = rospy.get_param("~finished_topic", "/finished")
         self.camera_topic = rospy.get_param("~camera_topic", "/left/image_raw")
         self.line_tracking_frame = str(rospy.get_param(
-            "~line_tracking_frame", "camera"
-        )).strip().lstrip("/") or "camera"
+            "~line_tracking_frame", "camera_center"
+        )).strip().lstrip("/") or "camera_center"
         self.trajectory_topic = rospy.get_param(
             "~trajectory_topic", "/task1/trajectory"
         )
@@ -368,7 +371,7 @@ class Task1LineFollow:
             )
         ))
 
-        # LOS 使用 base_link 选择前视点；向监督器下发当前位置到前视点的中点。
+        # LOS 使用跟踪帧选择前视点；中点经杆臂补偿后以 base_link 下发。
         self.los_lookahead_distance = float(rospy.get_param(
             "~los_lookahead_distance", 0.6
         ))
@@ -465,6 +468,7 @@ class Task1LineFollow:
         self.last_motion_goal = None
         self.motion_goal_changed_at = rospy.Time(0)
         self.last_los_goal = None
+        self.tracking_lever_arm = None
         self.cancel_sent = False
         self.data_logger = None
         self.data_log_path = None
@@ -542,9 +546,11 @@ class Task1LineFollow:
             queue_size=1,
         )
         rospy.loginfo(
-            "%s: 红线接口=auv_control/LineDetection；置信度达标后使用 positions 全部有限点；下限=%.2f",
+            "%s: 红线接口=auv_control/LineDetection；置信度达标后使用 "
+            "positions 全部有限点；下限=%.2f；巡线定位帧=%s",
             NODE_NAME,
             self.line_min_confidence,
+            self.line_tracking_frame,
         )
 
     def open_data_log(self):
@@ -557,6 +563,7 @@ class Task1LineFollow:
             self.write_data_record(
                 "startup",
                 log_directory=self.log_directory,
+                line_tracking_frame=self.line_tracking_frame,
                 line_min_confidence=self.line_min_confidence,
                 los_midpoint_ratio=self.los_midpoint_ratio,
                 endpoint_min_completed_path_length=(
@@ -663,12 +670,48 @@ class Task1LineFollow:
         return self.get_frame_pose("base_link")
 
     def get_tracking_pose(self):
-        """巡线定位、投影和到达判断统一使用 base_link。"""
-        return self.get_current_pose()
+        """巡线定位、投影和到达判断统一使用配置的跟踪帧。"""
+        return self.get_frame_pose(self.line_tracking_frame)
 
     def get_camera_pose(self):
-        """camera 只用于 Web 航向箭头和数据记录，不参与巡线控制。"""
-        return self.get_frame_pose(self.line_tracking_frame)
+        """保留原接口名；返回当前巡线跟踪帧位姿。"""
+        return self.get_tracking_pose()
+
+    def get_tracking_lever_arm(self):
+        """读取 base_link 指向巡线跟踪帧的水平杆臂。"""
+        if self.tracking_lever_arm is not None:
+            return self.tracking_lever_arm
+        try:
+            self.tf_listener.waitForTransform(
+                "base_link",
+                self.line_tracking_frame,
+                rospy.Time(0),
+                rospy.Duration(self.tf_timeout_seconds),
+            )
+            translation, _rotation = self.tf_listener.lookupTransform(
+                "base_link", self.line_tracking_frame, rospy.Time(0)
+            )
+        except tf.Exception as error:
+            rospy.logwarn_throttle(
+                2.0,
+                "%s: 等待 base_link -> %s 杆臂 TF: %s",
+                NODE_NAME,
+                self.line_tracking_frame,
+                error,
+            )
+            return None
+        self.tracking_lever_arm = (
+            float(translation[0]), float(translation[1])
+        )
+        rospy.loginfo(
+            "%s: 巡线定位帧=%s，base_link 水平杆臂="
+            "(%.3f, %.3f) m",
+            NODE_NAME,
+            self.line_tracking_frame,
+            self.tracking_lever_arm[0],
+            self.tracking_lever_arm[1],
+        )
+        return self.tracking_lever_arm
 
     def initialize_start_pose(self):
         if self.start_pose is not None:
@@ -721,9 +764,47 @@ class Task1LineFollow:
         pose.pose.orientation = Quaternion(*quaternion_from_euler(0.0, 0.0, yaw))
         return pose
 
+    def tracking_point_to_base_point(self, tracking_point, target_yaw):
+        """按目标航向将跟踪帧 XY 目标换算为 base_link 目标。"""
+        lever_arm = self.get_tracking_lever_arm()
+        if lever_arm is None:
+            return None
+        cosine = math.cos(target_yaw)
+        sine = math.sin(target_yaw)
+        offset_x = cosine * lever_arm[0] - sine * lever_arm[1]
+        offset_y = sine * lever_arm[0] + cosine * lever_arm[1]
+        return Point(
+            tracking_point.x - offset_x,
+            tracking_point.y - offset_y,
+            tracking_point.z,
+        )
+
+    def make_tracking_goal(self, tracking_point, target_yaw):
+        """将 map 下的跟踪帧目标补偿为 base_link 运动目标。"""
+        base_point = self.tracking_point_to_base_point(
+            tracking_point, target_yaw
+        )
+        if base_point is None:
+            return None
+        return self.make_pose(base_point.x, base_point.y, target_yaw)
+
     def tracking_curve_to_base_points(self, points):
-        """曲线已经是 base_link 规划轨迹，Web 直接显示。"""
-        return [copy.deepcopy(point) for point in points]
+        """将跟踪帧曲线换算为 Web 显示用的 base_link 轨迹。"""
+        if len(points) < 2:
+            return []
+        converted = []
+        for index, point in enumerate(points):
+            if index < len(points) - 1:
+                other = points[index + 1]
+                yaw = math.atan2(other.y - point.y, other.x - point.x)
+            else:
+                other = points[index - 1]
+                yaw = math.atan2(point.y - other.y, point.x - other.x)
+            base_point = self.tracking_point_to_base_point(point, yaw)
+            if base_point is None:
+                return []
+            converted.append(base_point)
+        return converted
 
     def publish_motion_goal(self, target):
         goal = copy.deepcopy(target)
@@ -756,23 +837,32 @@ class Task1LineFollow:
         self.publish_motion_goal(target)
 
     def publish_los_goal(self, los_point, desired_yaw):
-        """只在 LOS 产生新点时计算一次 base_link 到该点的中点目标。"""
+        """以跟踪帧计算 LOS 中点，再补偿为 base_link 目标。"""
         current = self.get_current_pose()
-        if current is None:
+        tracking = self.get_tracking_pose()
+        if current is None or tracking is None:
             return None
         ratio = self.los_midpoint_ratio
-        target_x = current.pose.position.x + ratio * (
-            los_point.x - current.pose.position.x
+        tracking_target = Point(
+            tracking.pose.position.x + ratio * (
+                los_point.x - tracking.pose.position.x
+            ),
+            tracking.pose.position.y + ratio * (
+                los_point.y - tracking.pose.position.y
+            ),
+            self.hold_z,
         )
-        target_y = current.pose.position.y + ratio * (
-            los_point.y - current.pose.position.y
-        )
-        goal = self.make_pose(target_x, target_y, desired_yaw)
+        goal = self.make_tracking_goal(tracking_target, desired_yaw)
+        if goal is None:
+            return None
         self.last_los_goal = copy.deepcopy(goal)
         self.publish_motion_goal(goal)
         self.write_data_record(
             "los_goal_update",
             base=self.pose_record(current),
+            tracking_frame=self.line_tracking_frame,
+            tracking=self.pose_record(tracking),
+            tracking_target=self.point_record(tracking_target),
             los_target=self.point_record(los_point),
             command_goal=self.pose_record(goal),
             target_s=round(self.active_los_target_s, 6)
@@ -1364,7 +1454,7 @@ class Task1LineFollow:
         self.endpoint_candidate_count = 0
 
     def update_endpoint_evidence(self, observed_points, tracking_point):
-        """base_link 接近最远点后，再次看到该点才累计稳定帧。"""
+        """巡线跟踪帧接近最远点后，再次看到该点才累计稳定帧。"""
         if self.line_end_point is None or self.line_reference_point is None:
             return
         if xy_distance(
@@ -1558,7 +1648,7 @@ class Task1LineFollow:
         tracking = self.get_tracking_pose()
         if current is None or tracking is None:
             self.record_line_frame(
-                "rejected", confidence, "base_link_pose_unavailable"
+                "rejected", confidence, "tracking_pose_unavailable"
             )
             return
         reference = (
@@ -1636,10 +1726,11 @@ class Task1LineFollow:
             if tracking is not None else float("nan")
         )
         rospy.loginfo(
-            "%s: 识别状态=已锁定；conf=%.2f，base_link=(%.2f, %.2f)，"
+            "%s: 识别状态=已锁定；conf=%.2f，%s=(%.2f, %.2f)，"
             "起点=(%.2f, %.2f)，当前最远点=(%.2f, %.2f)，距起点=%.2f m",
             NODE_NAME,
             self.line_lock_confidence,
+            self.line_tracking_frame,
             tracking.pose.position.x if tracking is not None else float("nan"),
             tracking.pose.position.y if tracking is not None else float("nan"),
             self.line_start_point.x,
@@ -1650,8 +1741,9 @@ class Task1LineFollow:
         )
         if self.activate_latest_tracking_curve(reset_progress=True):
             rospy.loginfo(
-                "%s: 首段固定曲线已就绪，直接开始 base_link 中点连续巡线",
+                "%s: 首段固定曲线已就绪，直接开始 %s 中点连续巡线",
                 NODE_NAME,
+                self.line_tracking_frame,
             )
             self.hold_target = None
             self.last_los_goal = None
@@ -2006,7 +2098,7 @@ class Task1LineFollow:
         rospy.loginfo_throttle(
             2.0,
             "%s: LOS 连续巡线；已完成/投影=%.2f/%.2f m，"
-            "已知轨迹=%.2f m，距末端=%.2f m，base目标误差=%.2f m，"
+            "已知轨迹=%.2f m，距末端=%.2f m，%s目标误差=%.2f m，"
             "航向误差=%.1f deg，"
             "LOS点=(%.2f, %.2f)，中点目标=(%.2f, %.2f)，motion_state=%s",
             NODE_NAME,
@@ -2014,6 +2106,7 @@ class Task1LineFollow:
             self.projected_path_s,
             self.tracking_curve_s[-1],
             endpoint_distance,
+            self.line_tracking_frame,
             position_error,
             math.degrees(yaw_error),
             self.active_los_target.x,
@@ -2207,7 +2300,12 @@ class Task1LineFollow:
             self.endpoint_candidate_point is not None
             and len(self.tracking_curve_points) >= 2
         ):
-            endpoint_base_candidate = copy.deepcopy(self.endpoint_candidate_point)
+            endpoint_yaw = self.tracking_yaw_at_s(
+                self.tracking_curve_s[-1]
+            )
+            endpoint_base_candidate = self.tracking_point_to_base_point(
+                self.endpoint_candidate_point, endpoint_yaw
+            )
         web_valid_points = self.web_valid_points_snapshot()
 
         payload = {
@@ -2239,12 +2337,13 @@ class Task1LineFollow:
             "completed_length": round(self.completed_path_length, 3),
             "robot": point_data(current.pose.position) if current else None,
             "camera": point_data(camera.pose.position) if camera else None,
+            "tracking": point_data(camera.pose.position) if camera else None,
             "robot_down": round(current.pose.position.z, 3) if current else None,
             "camera_down": round(camera.pose.position.z, 3) if camera else None,
             "robot_yaw_deg": round(math.degrees(yaw_from_quaternion(
                 current.pose.orientation
             )), 2) if current else 0.0,
-            "tracking_frame": "base_link",
+            "tracking_frame": self.line_tracking_frame,
             "tracking_point": point_data(base_target),
             "los_target": point_data(self.current_tracking_point),
             "los_phase": self.active_los_phase,
@@ -2288,7 +2387,7 @@ class Task1LineFollow:
     def log_debug_cycle(self):
         """以 DEBUG 级别记录每个控制周期的完整诊断。"""
         current = self.get_current_pose()
-        camera = self.get_camera_pose()
+        tracking = self.get_tracking_pose()
         if current is None:
             return
         target = self.current_tracking_point
@@ -2303,8 +2402,8 @@ class Task1LineFollow:
             )
         )
         position_error = (
-            xy_distance(current.pose.position, target)
-            if target is not None else float("nan")
+            xy_distance(tracking.pose.position, target)
+            if tracking is not None and target is not None else float("nan")
         )
         yaw_error = (
             math.degrees(abs(wrap_angle(target_yaw - current_yaw)))
@@ -2313,7 +2412,7 @@ class Task1LineFollow:
         motion_state = self.latest_motion_state
         rospy.logdebug(
             "%s: FULL state=%s base=(%.3f,%.3f,%.3f,%.2fdeg) "
-            "camera=(%.3f,%.3f,%.3f) los_target=(%.3f,%.3f) "
+            "%s=(%.3f,%.3f,%.3f) los_target=(%.3f,%.3f) "
             "base_goal=(%.3f,%.3f,%.3f,%.2fdeg) error=(%.3fm,%.2fdeg) "
             "path=%.3f/%.3f/%.3f active=(%s,%s) "
             "line=(%s,%.3f,%.3f,%s/%s,points=%d/%d/%d) "
@@ -2324,9 +2423,13 @@ class Task1LineFollow:
             current.pose.position.y,
             current.pose.position.z,
             math.degrees(current_yaw),
-            camera.pose.position.x if camera is not None else float("nan"),
-            camera.pose.position.y if camera is not None else float("nan"),
-            camera.pose.position.z if camera is not None else float("nan"),
+            self.line_tracking_frame,
+            tracking.pose.position.x
+            if tracking is not None else float("nan"),
+            tracking.pose.position.y
+            if tracking is not None else float("nan"),
+            tracking.pose.position.z
+            if tracking is not None else float("nan"),
             target.x if target is not None else float("nan"),
             target.y if target is not None else float("nan"),
             goal.pose.position.x if goal is not None else float("nan"),
@@ -2359,7 +2462,9 @@ class Task1LineFollow:
         self.write_data_record(
             "control_cycle",
             base=self.pose_record(current),
-            camera=self.pose_record(camera),
+            camera=self.pose_record(tracking),
+            tracking_frame=self.line_tracking_frame,
+            tracking=self.pose_record(tracking),
             los_target=self.point_record(target),
             command_goal=self.pose_record(goal),
             position_error=round(position_error, 6)

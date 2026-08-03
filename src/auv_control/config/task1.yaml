@@ -11,7 +11,7 @@ reference_depth: -0.6
 # 收到 HOVER 且识别/运动话题均有数据后，再定点缓冲 startup_hold_seconds
 use_reference_yaw: true
 reference_yaw_deg: -60.0
-line_tracking_frame: camera
+line_tracking_frame: camera_center
 
 # motion_supervisor 接口
 motion_goal_topic: /cmd/motion/goal
@@ -35,7 +35,7 @@ startup_hold_seconds: 3.0
 camera_message_timeout: 2.0
 tf_timeout_seconds: 1.0
 line_message_max_age_seconds: 5.0
-search_forward_distance: 1.5
+search_forward_distance: 1.2
 search_yaw_angle_deg: 45.0
 search_yaw_sign: 1.0
 # 一轮锁线前搜索：向前、左转、右转、回正；一轮锁线后搜索：左转、右转、回正
@@ -46,10 +46,10 @@ task_timeout_seconds: 420.0
 # 搜索耗尽或总超时后的统一兜底。false 时不移动，原地直接 FINISH
 fallback_move_enabled: true
 # true 时使用以下绝对 map 位姿，收到 HOVER 后 FINISH
-fallback_target_x: 0.0
-fallback_target_y: 0.0
-fallback_target_z: 0.0
-fallback_target_yaw_deg: 0.0
+fallback_target_x: -2.96
+fallback_target_y: -5.15
+fallback_target_z: -0.6
+fallback_target_yaw_deg: 210.0
 
 # 红线锁定与拟合
 line_classes: line
