@@ -164,10 +164,10 @@ function normalizePoolBoundary(value) {
     return {
         headingDeg: 0,
         corners: [
-            {north: normalizedNorthMin, east: normalizedEastMin},
-            {north: normalizedNorthMin, east: normalizedEastMax},
-            {north: normalizedNorthMax, east: normalizedEastMax},
-            {north: normalizedNorthMax, east: normalizedEastMin},
+            { north: normalizedNorthMin, east: normalizedEastMin },
+            { north: normalizedNorthMin, east: normalizedEastMax },
+            { north: normalizedNorthMax, east: normalizedEastMax },
+            { north: normalizedNorthMax, east: normalizedEastMin },
         ],
         lengthM: normalizedNorthMax - normalizedNorthMin,
         widthM: normalizedEastMax - normalizedEastMin,
@@ -1205,11 +1205,11 @@ function clipLineToCanvas(start, end, width, height) {
 
 
 function drawMapCompass(ctx, width, upHeading) {
-    const center = {x: Math.max(42, width - 48), y: 50};
+    const center = { x: Math.max(42, width - 48), y: 50 };
     const arrowLength = 24;
     const axes = [
-        {label: "N", heading: -upHeading, color: "#43c7ff"},
-        {label: "E", heading: 90 - upHeading, color: "#ffbe45"},
+        { label: "N", heading: -upHeading, color: "#43c7ff" },
+        { label: "E", heading: 90 - upHeading, color: "#ffbe45" },
     ];
 
     ctx.save();
@@ -1314,7 +1314,7 @@ function drawPoolBoundary(ctx, worldToScreen, boundary, draft = false) {
             north: center.north + point.north / 4,
             east: center.east + point.east / 4,
         }),
-        {north: 0, east: 0},
+        { north: 0, east: 0 },
     );
     const positiveWorld = {
         north: (
@@ -1670,7 +1670,7 @@ function drawXYMap(data) {
 
     updateBaseTrackingPan(data);
     const mapTransform = createMapTransform(width, height);
-    const {scale, worldToScreen, screenToWorld} = mapTransform;
+    const { scale, worldToScreen, screenToWorld } = mapTransform;
     const upHeading = dashboardState.mapUpHeading;
     const gridStep = niceDistance(70 / scale);
     const visibleCorners = [

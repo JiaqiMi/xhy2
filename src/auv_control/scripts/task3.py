@@ -25,6 +25,7 @@ import time
 from collections import Counter, deque
 
 import rospkg
+import rosnode
 import rospy
 import tf
 from auv_control.msg import MotionState, TargetDetection
@@ -382,6 +383,11 @@ class Task3Final:
         "aruco": "ArUco识别点",
         "box": "彩色方框点",
     }
+    SUBTASK3_UNUSED_MODEL_NODES = (
+        "/yolo_arrow_pose_detector",
+        "/task3_final/aruco_pipeline/fisheye_aruco_node",
+    )
+    MODEL_SHUTDOWN_TIMEOUT = 3.0
 
     def __init__(self):
         package_path = rospkg.RosPack().get_path("auv_control")
@@ -1913,6 +1919,8 @@ class Task3Final:
                 False,
             )
 
+        self.shutdown_unused_models_for_subtask3()
+
         rospy.loginfo(
             (
                 "%s：%s [%s开始] 目标颜色=%s，超时=%.1fs，"
@@ -1956,6 +1964,81 @@ class Task3Final:
             detail,
         )
         return success, detail, timed_out, drop_action_started
+
+    def shutdown_unused_models_for_subtask3(self):
+        """进入子任务3时关闭后续不再使用的箭头和ArUco检测进程。"""
+        requested_nodes = list(self.SUBTASK3_UNUSED_MODEL_NODES)
+        try:
+            active_nodes = set(rosnode.get_node_names())
+        except Exception as error:
+            rospy.logwarn(
+                "%s：进入子任务3前无法读取ROS节点列表，未关闭箭头和ArUco模型：%s",
+                NODE_NAME,
+                str(error),
+            )
+            return False
+
+        active_targets = [
+            node_name for node_name in requested_nodes
+            if node_name in active_nodes
+        ]
+        already_stopped = [
+            node_name for node_name in requested_nodes
+            if node_name not in active_nodes
+        ]
+        if already_stopped:
+            rospy.loginfo(
+                "%s：进入子任务3时以下模型节点已关闭：%s",
+                NODE_NAME,
+                ", ".join(already_stopped),
+            )
+        if not active_targets:
+            rospy.loginfo(
+                "%s：进入子任务3时箭头和ArUco模型均已关闭",
+                NODE_NAME,
+            )
+            return True
+
+        try:
+            stopped_nodes, failed_nodes = rosnode.kill_nodes(active_targets)
+        except Exception as error:
+            rospy.logwarn(
+                "%s：进入子任务3时关闭箭头和ArUco模型失败，任务继续：%s",
+                NODE_NAME,
+                str(error),
+            )
+            return False
+
+        deadline = time.monotonic() + self.MODEL_SHUTDOWN_TIMEOUT
+        remaining_nodes = set(active_targets)
+        while (
+            remaining_nodes
+            and not rospy.is_shutdown()
+            and time.monotonic() < deadline
+        ):
+            try:
+                remaining_nodes.intersection_update(rosnode.get_node_names())
+            except Exception:
+                break
+            if remaining_nodes:
+                rospy.sleep(0.1)
+
+        if stopped_nodes:
+            rospy.loginfo(
+                "%s：进入子任务3，已关闭模型节点：%s",
+                NODE_NAME,
+                ", ".join(str(node) for node in stopped_nodes),
+            )
+        unresolved_nodes = set(str(node) for node in failed_nodes)
+        unresolved_nodes.update(remaining_nodes)
+        if unresolved_nodes:
+            rospy.logwarn(
+                "%s：以下模型节点未确认关闭，子任务3继续执行：%s",
+                NODE_NAME,
+                ", ".join(sorted(unresolved_nodes)),
+            )
+            return False
+        return True
 
     def finish(self, success, detail):
         if self.finished:

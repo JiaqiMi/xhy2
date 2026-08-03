@@ -16,6 +16,10 @@
     使用三帧位置与同源方向完成camera粗精对准，并移除对地距离强制改写目标z的逻辑。
 2026.8.3
     精确认通过后一次下发冻结箭头位置和航向，取消独立航向与camera精对准阶段。
+2026.8.3
+    精确认连续低置信度时标记误识别点，返回触发搜索位置并继续未完成的绝对搜索路点。
+2026.8.3
+    限制稳定位置组三帧的最大时间跨度，超过配置时间不再触发粗对准或精确认。
 """
 
 from datetime import datetime
@@ -94,6 +98,7 @@ class Task3AcquireAreaTest(object):
     WAIT_FOR_ARROW = RECOVER_POSITION
     COARSE_POSITION_APPROACH = "首次稳定位置对应的camera粗对准"
     COLLECT_DIRECTION = "HOVER后二次位置和方向精确认"
+    FALSE_POSITIVE_RETURN = "误识别点返回触发搜索位置"
     FINAL_BASE_LINK_APPROACH = "冻结判别通过位置并移动base_link"
     FINAL_HOLD = "最终定点保持"
 
@@ -149,8 +154,17 @@ class Task3AcquireAreaTest(object):
         self.stable_map_position_tolerance_m = float(rospy.get_param(
             "~stable_map_position_tolerance_m", 0.20
         ))
+        self.stable_position_group_max_span_seconds = float(rospy.get_param(
+            "~stable_position_group_max_span_seconds", 10.0
+        ))
         self.fine_position_match_tolerance_m = float(rospy.get_param(
             "~fine_position_match_tolerance_m", 0.20
+        ))
+        self.fine_false_positive_invalid_count = int(rospy.get_param(
+            "~fine_false_positive_invalid_count", 3
+        ))
+        self.false_positive_ignore_radius_m = float(rospy.get_param(
+            "~false_positive_ignore_radius_m", 0.30
         ))
         self.stable_angle_tolerance_deg = float(rospy.get_param(
             "~stable_angle_tolerance_deg", 12.0
@@ -275,6 +289,12 @@ class Task3AcquireAreaTest(object):
         self.search_waypoints = []
         self.search_waypoint_index = -1
         self.search_recovery_resume_index = None
+        self.false_positive_resume_search_index = None
+        self.false_positive_trigger_pose = None
+        self.false_positive_recovery_pending = False
+        self.fine_invalid_source_keys = []
+        self.fine_invalid_reasons = []
+        self.rejected_arrow_map_points = []
         self.first_position_detected = False
 
         self.model_frame_index = 0
@@ -355,6 +375,7 @@ class Task3AcquireAreaTest(object):
             self.stable_detection_window_size,
             self.direction_confirm_window_size,
             self.direction_confirm_required_count,
+            self.fine_false_positive_invalid_count,
         ) < 1:
             raise ValueError("识别窗口和确认帧数必须大于等于1")
         if self.stable_detection_count > self.stable_detection_window_size:
@@ -383,6 +404,7 @@ class Task3AcquireAreaTest(object):
         if min(
             self.stable_map_position_tolerance_m,
             self.fine_position_match_tolerance_m,
+            self.false_positive_ignore_radius_m,
             self.stable_angle_tolerance_deg,
             self.full_arrow_edge_margin_px,
             self.full_arrow_min_bbox_width_px,
@@ -403,6 +425,7 @@ class Task3AcquireAreaTest(object):
             self.goal_match_depth_tolerance,
             self.goal_match_yaw_tolerance_deg,
             self.detection_timeout,
+            self.stable_position_group_max_span_seconds,
             self.log_interval,
             self.warning_log_interval,
         ) < 0.0:
@@ -410,6 +433,7 @@ class Task3AcquireAreaTest(object):
         if min(
             self.stable_map_position_tolerance_m,
             self.fine_position_match_tolerance_m,
+            self.false_positive_ignore_radius_m,
             self.stable_angle_tolerance_deg,
             self.search_initial_forward_distance,
             self.search_lateral_distance,
@@ -422,6 +446,7 @@ class Task3AcquireAreaTest(object):
             self.motion_startup_timeout,
             self.status_timeout,
             self.detection_timeout,
+            self.stable_position_group_max_span_seconds,
             self.log_interval,
             self.warning_log_interval,
         ) <= 0.0:
@@ -469,7 +494,7 @@ class Task3AcquireAreaTest(object):
                 "再前%.2fm -> 左右各%.2fm搜索 -> "
                 "位置滑动窗%d帧命中%d帧 -> "
                 "camera直达首次三帧平均位置并等待HOVER -> "
-                "重新收集三帧同源位置和方向 -> "
+                "重新收集三帧同源位置和方向；连续低置信度则返回触发点续跑原路点 -> "
                 "二次位置与首次位置差<=%.3fm且方向抖动<=%.1fdeg -> "
                 "一次下发冻结箭头位置和平均航向，使base_link直达固定map位姿 -> "
                 "HOVER保持%.1fs后完成"
@@ -492,7 +517,8 @@ class Task3AcquireAreaTest(object):
             (
                 "%s：识别：方向话题=%s，三维位置话题=%s，位置最低置信度=%.2f，"
                 "方向有效帧置信度=%.2f；数据超时=%.2fs；"
-                "位置队列最多%d个有效帧，任意%d帧相对均值抖动<=%.3fm即通过；"
+                "位置队列最多%d个有效帧，任意%d帧时间跨度<=%.1fs且"
+                "相对均值抖动<=%.3fm即通过；"
                 "粗对准HOVER后重新取帧，二次均值与首次均值差<=%.3fm；"
                 "二次确认要求这%d个位置帧具有同源方向帧，"
                 "方向相对圆周平均值抖动<=%.1fdeg"
@@ -505,6 +531,7 @@ class Task3AcquireAreaTest(object):
             self.detection_timeout,
             self.stable_detection_window_size,
             self.stable_detection_count,
+            self.stable_position_group_max_span_seconds,
             self.stable_map_position_tolerance_m,
             self.fine_position_match_tolerance_m,
             self.direction_confirm_required_count,
@@ -520,6 +547,16 @@ class Task3AcquireAreaTest(object):
             NODE_NAME,
             self.camera_forward_angle_deg,
             self.yaw_correction_sign,
+        )
+        rospy.loginfo(
+            (
+                "%s：误识别恢复：精确认连续%d个唯一推理源帧低置信度或未识别即触发；"
+                "误识别map点%.3fm半径内后续全部忽略；"
+                "先返回首次锁定发生时的机器人位置，再继续原绝对搜索路点的剩余距离"
+            ),
+            NODE_NAME,
+            self.fine_false_positive_invalid_count,
+            self.false_positive_ignore_radius_m,
         )
         rospy.loginfo(
             (
@@ -636,6 +673,85 @@ class Task3AcquireAreaTest(object):
             message.reason or "无",
         )
 
+    def reset_fine_invalid_evidence(self):
+        self.fine_invalid_source_keys = []
+        self.fine_invalid_reasons = []
+
+    def record_fine_invalid_evidence(self, source_key, reason):
+        if (
+            self.state != self.COLLECT_DIRECTION
+            or not self.direction_collection_active
+            or self.false_positive_recovery_pending
+        ):
+            return
+        key = str(source_key or "").strip()
+        if not key or key in self.fine_invalid_source_keys:
+            return
+        self.fine_invalid_source_keys.append(key)
+        self.fine_invalid_reasons.append(str(reason))
+        self.fine_invalid_source_keys = self.fine_invalid_source_keys[
+            -self.fine_false_positive_invalid_count:
+        ]
+        self.fine_invalid_reasons = self.fine_invalid_reasons[
+            -self.fine_false_positive_invalid_count:
+        ]
+        invalid_count = len(self.fine_invalid_source_keys)
+        rospy.logwarn(
+            (
+                "%s：精确认低置信度证据=%d/%d，源帧=%s，原因=%s；"
+                "达到门槛后判为误识别点并恢复搜索"
+            ),
+            NODE_NAME,
+            invalid_count,
+            self.fine_false_positive_invalid_count,
+            key,
+            reason,
+        )
+        if invalid_count >= self.fine_false_positive_invalid_count:
+            self.false_positive_recovery_pending = True
+
+    def rejected_arrow_point_match(self, map_x, map_y):
+        matches = []
+        for index, point in enumerate(self.rejected_arrow_map_points):
+            distance = math.hypot(map_x - point["x"], map_y - point["y"])
+            if distance <= self.false_positive_ignore_radius_m:
+                matches.append((distance, index, point))
+        if not matches:
+            return None
+        return min(matches, key=lambda item: item[0])
+
+    def mark_current_coarse_point_rejected(self):
+        if self.coarse_arrow_map_x is None or self.coarse_arrow_map_y is None:
+            return False
+        match = self.rejected_arrow_point_match(
+            self.coarse_arrow_map_x,
+            self.coarse_arrow_map_y,
+        )
+        if match is None:
+            point = {
+                "x": self.coarse_arrow_map_x,
+                "y": self.coarse_arrow_map_y,
+                "reasons": list(self.fine_invalid_reasons),
+            }
+            self.rejected_arrow_map_points.append(point)
+            point_index = len(self.rejected_arrow_map_points)
+        else:
+            _, index, point = match
+            point["reasons"] = list(self.fine_invalid_reasons)
+            point_index = index + 1
+        rospy.logwarn(
+            (
+                "%s：已标记误识别点#%d：map=(%.3f,%.3f)，"
+                "后续%.3fm半径内的箭头位置帧全部忽略"
+            ),
+            NODE_NAME,
+            point_index,
+            point["x"],
+            point["y"],
+            self.false_positive_ignore_radius_m,
+        )
+        return True
+
     def reject_arrow_frame(self, frame_index, reason):
         self.latest_detection = None
         direction_states = (self.COLLECT_DIRECTION,)
@@ -739,6 +855,19 @@ class Task3AcquireAreaTest(object):
             )
             return
         if confidence is None or confidence < self.min_confidence:
+            stamp = message.pose.header.stamp
+            source_key = (
+                "map-frame:{}".format(frame_index)
+                if stamp == rospy.Time(0)
+                else "nsec:{}".format(stamp.to_nsec())
+            )
+            self.record_fine_invalid_evidence(
+                source_key,
+                "三维位置置信度{}低于{:.2f}".format(
+                    confidence,
+                    self.min_confidence,
+                ),
+            )
             self.reject_map_target_frame(
                 frame_index,
                 "三维目标置信度{}低于{:.2f}".format(
@@ -753,6 +882,25 @@ class Task3AcquireAreaTest(object):
 
         source = message.pose.pose.position
         target = transformed.pose.position
+        rejected_match = self.rejected_arrow_point_match(target.x, target.y)
+        if rejected_match is not None:
+            distance, index, point = rejected_match
+            self.reject_map_target_frame(
+                frame_index,
+                (
+                    "map位置(%.3f,%.3f)距已确认误识别点#%d"
+                    "(%.3f,%.3f)仅%.3fm，处于忽略半径%.3fm内"
+                ) % (
+                    target.x,
+                    target.y,
+                    index + 1,
+                    point["x"],
+                    point["y"],
+                    distance,
+                    self.false_positive_ignore_radius_m,
+                ),
+            )
+            return
         detection = {
             "frame_index": frame_index,
             "received_time": now,
@@ -896,6 +1044,12 @@ class Task3AcquireAreaTest(object):
         if self.state in (self.FINAL_BASE_LINK_APPROACH, self.FINAL_HOLD):
             return
         if not bool(payload.get("valid", False)):
+            self.record_fine_invalid_evidence(
+                source_key,
+                "方向模型未识别到箭头：{}".format(
+                    payload.get("reason") or "valid=false"
+                ),
+            )
             self.reject_arrow_frame(
                 frame_index,
                 "模型未识别到箭头：{}".format(
@@ -918,6 +1072,13 @@ class Task3AcquireAreaTest(object):
             confidence is None
             or confidence < self.direction_start_confidence
         ):
+            self.record_fine_invalid_evidence(
+                source_key,
+                "方向置信度{}低于{:.2f}".format(
+                    confidence,
+                    self.direction_start_confidence,
+                ),
+            )
             self.reject_arrow_frame(
                 frame_index,
                 "方向置信度{}低于{:.2f}".format(
@@ -985,6 +1146,11 @@ class Task3AcquireAreaTest(object):
                 * (bbox_values[3] - bbox_values[1])
             ),
         }
+        if (
+            self.state == self.COLLECT_DIRECTION
+            and not self.false_positive_recovery_pending
+        ):
+            self.reset_fine_invalid_evidence()
         full_visible, full_visible_reason = self.full_arrow_visible(detection)
         detection["full_visible"] = full_visible
         detection["full_visible_reason"] = full_visible_reason
@@ -1103,6 +1269,7 @@ class Task3AcquireAreaTest(object):
             (
                 "%s：位置确认通过：最多%d个有效帧中找到%d帧相近数据，"
                 "命中帧=%s，平均map位置=(%.3f,%.3f)，"
+                "三帧时间跨度=%.2f/<=%.2fs，"
                 "相对平均值最大抖动=%.3f/%.3fm，平均置信度=%.3f"
             ),
             NODE_NAME,
@@ -1111,6 +1278,8 @@ class Task3AcquireAreaTest(object):
             locked_frame_ids,
             mean_x,
             mean_y,
+            self.position_group_time_span_seconds(best_stable_group),
+            self.stable_position_group_max_span_seconds,
             map_jitter,
             self.stable_map_position_tolerance_m,
             locked["confidence"],
@@ -1129,6 +1298,13 @@ class Task3AcquireAreaTest(object):
         )
         return mean_x, mean_y, map_jitter
 
+    @staticmethod
+    def position_group_time_span_seconds(samples):
+        received_times = [
+            item["received_time"].to_sec() for item in samples
+        ]
+        return max(received_times) - min(received_times)
+
     def stable_position_groups(self):
         if len(self.detection_samples) < self.stable_detection_count:
             return []
@@ -1136,6 +1312,11 @@ class Task3AcquireAreaTest(object):
         for group in itertools.combinations(
             self.detection_samples, self.stable_detection_count
         ):
+            if (
+                self.position_group_time_span_seconds(group)
+                > self.stable_position_group_max_span_seconds
+            ):
+                continue
             _, _, map_jitter = self.position_group_summary(group)
             if map_jitter <= self.stable_map_position_tolerance_m:
                 groups.append(list(group))
@@ -1281,16 +1462,6 @@ class Task3AcquireAreaTest(object):
         return self.yaw_correction_sign * normalize_angle_deg(
             self.camera_forward_angle_deg - direction_angle_deg
         )
-        if age > self.detection_timeout:
-            return None
-        return {
-            "angle_deg": self.mean_angle_deg([
-                item["angle_deg"] for item in best_group
-            ]),
-            "frame_index": latest["frame_index"],
-            "received_time": latest["received_time"],
-            "support_count": len(best_group),
-        }
 
     def get_frame_pose(self, frame, context):
         try:
@@ -1912,6 +2083,20 @@ class Task3AcquireAreaTest(object):
         current = self.get_current_pose("首次稳定位置camera粗对准")
         if current is None:
             return False
+        resume_index = (
+            self.search_recovery_resume_index
+            if self.search_recovery_resume_index is not None
+            else self.search_waypoint_index
+        )
+        if not 0 <= resume_index < len(self.search_waypoints):
+            self.finish_task(False, "锁定箭头位置时无法确定被中断的搜索路点")
+            return False
+        trigger_pose = {
+            "x": current.pose.position.x,
+            "y": current.pose.position.y,
+            "z": self.target_z,
+            "yaw": self.initial_hold_yaw,
+        }
         self.coarse_arrow_map_x = self.latest_map_target["map_x"]
         self.coarse_arrow_map_y = self.latest_map_target["map_y"]
         self.coarse_arrow_camera_frame = self.latest_map_target["camera_frame"]
@@ -1924,15 +2109,26 @@ class Task3AcquireAreaTest(object):
             "首次三帧稳定位置通过，保持当前航向并让camera的xy对准该平均点",
         ):
             return False
+        self.false_positive_trigger_pose = trigger_pose
+        self.false_positive_resume_search_index = resume_index
+        self.search_recovery_resume_index = None
+        self.false_positive_recovery_pending = False
+        self.reset_fine_invalid_evidence()
         rospy.logwarn(
             (
                 "%s：第一步位置已冻结：map平均点=(%.3f,%.3f)，"
-                "命中位置帧=%s；开始第二步camera粗对准"
+                "命中位置帧=%s；触发搜索位置=(%.3f,%.3f)，"
+                "被中断搜索点=%d/%d[%s]；开始第二步camera粗对准"
             ),
             NODE_NAME,
             self.coarse_arrow_map_x,
             self.coarse_arrow_map_y,
             self.latest_map_target.get("stable_frame_ids", []),
+            trigger_pose["x"],
+            trigger_pose["y"],
+            resume_index + 1,
+            len(self.search_waypoints),
+            self.search_waypoints[resume_index]["label"],
         )
         self.set_state(
             self.COARSE_POSITION_APPROACH,
@@ -2158,6 +2354,8 @@ class Task3AcquireAreaTest(object):
             return
         self.reset_first_lock()
         self.reset_direction_lock()
+        self.reset_fine_invalid_evidence()
+        self.false_positive_recovery_pending = False
         self.direction_collection_active = True
         self.visual_step_requested_at = None
         self.set_state(
@@ -2166,7 +2364,110 @@ class Task3AcquireAreaTest(object):
             "从当前位置重新收集三帧同源位置和方向",
         )
 
+    def begin_false_positive_recovery(self):
+        trigger_pose = self.false_positive_trigger_pose
+        resume_index = self.false_positive_resume_search_index
+        if trigger_pose is None or resume_index is None or not (
+            0 <= resume_index < len(self.search_waypoints)
+        ):
+            self.finish_task(False, "误识别恢复缺少触发搜索位置或原搜索路点")
+            return False
+        if not self.mark_current_coarse_point_rejected():
+            self.finish_task(False, "误识别恢复无法标记首次箭头位置")
+            return False
+
+        waypoint = self.search_waypoints[resume_index]
+        remaining_distance = math.hypot(
+            waypoint["x"] - trigger_pose["x"],
+            waypoint["y"] - trigger_pose["y"],
+        )
+        invalid_reasons = list(self.fine_invalid_reasons)
+        self.reset_first_lock()
+        self.reset_direction_lock()
+        self.reset_fine_invalid_evidence()
+        self.first_position_detected = False
+        self.direction_collection_active = False
+        self.false_positive_recovery_pending = False
+        self.search_recovery_resume_index = None
+        self.set_active_goal(
+            trigger_pose["x"],
+            trigger_pose["y"],
+            trigger_pose["z"],
+            trigger_pose["yaw"],
+            (
+                "精确认连续低置信度，返回触发搜索位置；"
+                "到达后恢复第{}/{}点{}"
+            ).format(
+                resume_index + 1,
+                len(self.search_waypoints),
+                waypoint["label"],
+            ),
+        )
+        rospy.logwarn(
+            (
+                "%s：精确认判定为误识别：原因=%s；"
+                "先返回触发搜索位置=(%.3f,%.3f)，"
+                "再继续原搜索点%d/%d[%s]，预计剩余距离=%.3fm"
+            ),
+            NODE_NAME,
+            invalid_reasons,
+            trigger_pose["x"],
+            trigger_pose["y"],
+            resume_index + 1,
+            len(self.search_waypoints),
+            waypoint["label"],
+            remaining_distance,
+        )
+        self.set_state(
+            self.FALSE_POSITIVE_RETURN,
+            "误识别点已加入黑名单，返回触发搜索位置",
+        )
+        return True
+
+    def control_false_positive_return(self):
+        elapsed = (rospy.Time.now() - self.state_started).to_sec()
+        if elapsed >= self.cancel_timeout:
+            self.finish_task(False, "未在规定时间返回误识别触发搜索位置")
+            return
+        if not self.motion_arrived():
+            self.log_arrival_gate("等待返回误识别触发搜索位置")
+            return
+
+        trigger_pose = self.false_positive_trigger_pose
+        resume_index = self.false_positive_resume_search_index
+        if trigger_pose is None or resume_index is None or not (
+            0 <= resume_index < len(self.search_waypoints)
+        ):
+            self.finish_task(False, "到达触发搜索位置后无法恢复原搜索路点")
+            return
+        waypoint = self.search_waypoints[resume_index]
+        remaining_distance = math.hypot(
+            waypoint["x"] - trigger_pose["x"],
+            waypoint["y"] - trigger_pose["y"],
+        )
+        self.activate_search_waypoint(resume_index)
+        self.false_positive_trigger_pose = None
+        self.false_positive_resume_search_index = None
+        self.coarse_arrow_map_x = None
+        self.coarse_arrow_map_y = None
+        self.coarse_arrow_camera_frame = None
+        self.set_state(
+            self.SEARCH_POSITION,
+            (
+                "已返回误识别触发位置；继续原搜索点{}/{}[{}]，"
+                "剩余约{:.3f}m，黑名单继续生效"
+            ).format(
+                resume_index + 1,
+                len(self.search_waypoints),
+                waypoint["label"],
+                remaining_distance,
+            ),
+        )
+
     def control_collect_direction(self):
+        if self.false_positive_recovery_pending:
+            self.begin_false_positive_recovery()
+            return
         candidate = self.fine_confirmation_candidate()
         if candidate is not None:
             current = self.get_current_pose("冻结精确认箭头位置和方向")
@@ -2454,6 +2755,8 @@ class Task3AcquireAreaTest(object):
             self.control_coarse_position_approach()
         elif self.state == self.COLLECT_DIRECTION:
             self.control_collect_direction()
+        elif self.state == self.FALSE_POSITIVE_RETURN:
+            self.control_false_positive_return()
         elif self.state == self.FINAL_BASE_LINK_APPROACH:
             self.control_final_base_link_approach()
         elif self.state == self.FINAL_HOLD:
