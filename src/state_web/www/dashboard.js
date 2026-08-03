@@ -17,6 +17,12 @@
     新增视觉地图绘制、持久化显示开关、历史清除和鱼眼识别历史。
     新增 base_link 一分钟轨迹、独立清除按钮和最近两帧目标绘制。
     新增视觉位置与置信度文字的独立持久化显示开关。
+    增加 XY 位置图双击全页放大、再次双击原位恢复功能。
+    在实际 base_link 到 camera 箭头上叠加无标注的深绿色 hand 点。
+    将最新和上一目标及其连接线改为高对比粉色系。
+    清除操作完成后恢复单行工具栏使用的短按钮名称。
+    将视觉识别 arrow 改为青蓝色，与粉色 target 明确区分。
+    增加只锁定 base_link 居中的实时跟踪，不自动旋转地图航向。
 */
 
 const MAP_UP_HEADING_KEY = "state_web.map_up_heading_deg";
@@ -158,10 +164,10 @@ function normalizePoolBoundary(value) {
     return {
         headingDeg: 0,
         corners: [
-            {north: normalizedNorthMin, east: normalizedEastMin},
-            {north: normalizedNorthMin, east: normalizedEastMax},
-            {north: normalizedNorthMax, east: normalizedEastMax},
-            {north: normalizedNorthMax, east: normalizedEastMin},
+            { north: normalizedNorthMin, east: normalizedEastMin },
+            { north: normalizedNorthMin, east: normalizedEastMax },
+            { north: normalizedNorthMax, east: normalizedEastMax },
+            { north: normalizedNorthMax, east: normalizedEastMin },
         ],
         lengthM: normalizedNorthMax - normalizedNorthMin,
         widthM: normalizedEastMax - normalizedEastMin,
@@ -219,6 +225,7 @@ const dashboardState = {
     mapScale: 20,
     mapPanX: 0,
     mapPanY: 0,
+    mapTracking: false,
     mapUpHeading: loadMapUpHeading(),
     visualHistoryVisible: loadVisualHistoryVisible(),
     visualLabelsVisible: loadVisualLabelsVisible(),
@@ -231,6 +238,7 @@ const dashboardState = {
     poolDrawStartClientY: 0,
     zScale: 20,
     zPanY: 0,
+    xyMapExpanded: false,
     dragging: false,
     dragStartX: 0,
     dragStartY: 0,
@@ -1143,6 +1151,20 @@ function drawActualFrameArrow(ctx, points, heading, options) {
 }
 
 
+function drawHandPoint(ctx, screen) {
+    if (!screen) return;
+    ctx.save();
+    ctx.fillStyle = "#087844";
+    ctx.strokeStyle = "#031018";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+}
+
+
 function clipLineToCanvas(start, end, width, height) {
     const deltaX = end.x - start.x;
     const deltaY = end.y - start.y;
@@ -1183,11 +1205,11 @@ function clipLineToCanvas(start, end, width, height) {
 
 
 function drawMapCompass(ctx, width, upHeading) {
-    const center = {x: Math.max(42, width - 48), y: 50};
+    const center = { x: Math.max(42, width - 48), y: 50 };
     const arrowLength = 24;
     const axes = [
-        {label: "N", heading: -upHeading, color: "#43c7ff"},
-        {label: "E", heading: 90 - upHeading, color: "#ffbe45"},
+        { label: "N", heading: -upHeading, color: "#43c7ff" },
+        { label: "E", heading: 90 - upHeading, color: "#ffbe45" },
     ];
 
     ctx.save();
@@ -1263,6 +1285,25 @@ function createMapTransform(width, height) {
 }
 
 
+function updateBaseTrackingPan(data) {
+    if (!dashboardState.mapTracking) return false;
+    const tfData = data?.tf?.data || {};
+    const basePose = tfData.frame_poses?.base || tfData;
+    const north = finiteNumber(basePose.position_m?.x);
+    const east = finiteNumber(basePose.position_m?.y);
+    if (north === null || east === null) return false;
+
+    const rotation = dashboardState.mapUpHeading * Math.PI / 180;
+    const rotationCos = Math.cos(rotation);
+    const rotationSin = Math.sin(rotation);
+    const mapEast = east * rotationCos - north * rotationSin;
+    const mapNorth = east * rotationSin + north * rotationCos;
+    dashboardState.mapPanX = -mapEast * dashboardState.mapScale;
+    dashboardState.mapPanY = mapNorth * dashboardState.mapScale;
+    return true;
+}
+
+
 function drawPoolBoundary(ctx, worldToScreen, boundary, draft = false) {
     if (!boundary) return;
     const corners = boundary.corners.map((point) => (
@@ -1273,7 +1314,7 @@ function drawPoolBoundary(ctx, worldToScreen, boundary, draft = false) {
             north: center.north + point.north / 4,
             east: center.east + point.east / 4,
         }),
-        {north: 0, east: 0},
+        { north: 0, east: 0 },
     );
     const positiveWorld = {
         north: (
@@ -1408,14 +1449,14 @@ function targetHistoryItems(data) {
 
 
 const VISUAL_MAP_STYLES = {
-    red_circle: {color: "#ff3f50", marker: "circle"},
-    black_square: {color: "#080b10", outline: "#e8f0fa", marker: "square"},
-    yellow_circle: {color: "#ffd642", marker: "circle"},
-    red_line: {color: "#ff5364", marker: "line"},
-    arrow: {color: "#ff70d5", marker: "arrow"},
-    rectangle_red: {color: "#ff5364", marker: "circle"},
-    rectangle_yellow: {color: "#ffd642", marker: "circle"},
-    rectangle_green: {color: "#38d996", marker: "circle"},
+    red_circle: { color: "#ff3f50", marker: "circle" },
+    black_square: { color: "#080b10", outline: "#e8f0fa", marker: "square" },
+    yellow_circle: { color: "#ffd642", marker: "circle" },
+    red_line: { color: "#ff5364", marker: "line" },
+    arrow: { color: "#22d3ee", marker: "arrow" },
+    rectangle_red: { color: "#ff5364", marker: "circle" },
+    rectangle_yellow: { color: "#ffd642", marker: "circle" },
+    rectangle_green: { color: "#38d996", marker: "circle" },
 };
 
 
@@ -1627,8 +1668,9 @@ function drawXYMap(data) {
     ctx.fillStyle = "#07111d";
     ctx.fillRect(0, 0, width, height);
 
+    updateBaseTrackingPan(data);
     const mapTransform = createMapTransform(width, height);
-    const {scale, worldToScreen, screenToWorld} = mapTransform;
+    const { scale, worldToScreen, screenToWorld } = mapTransform;
     const upHeading = dashboardState.mapUpHeading;
     const gridStep = niceDistance(70 / scale);
     const visibleCorners = [
@@ -1743,6 +1785,7 @@ function drawXYMap(data) {
     const actualFramePoints = {
         base: frameScreen(framePoses.base) || actualScreen,
         camera: frameScreen(framePoses.camera),
+        hand: frameScreen(framePoses.hand),
     };
     const hasActualFrameArrow = Boolean(
         actualFramePoints.base
@@ -1772,7 +1815,7 @@ function drawXYMap(data) {
 
     if (actualScreen && latestTarget) {
         ctx.save();
-        ctx.strokeStyle = "#7f3fc5";
+        ctx.strokeStyle = "#ff78cf";
         ctx.lineWidth = 1.2;
         ctx.setLineDash([5, 5]);
         ctx.globalAlpha = 0.75;
@@ -1789,7 +1832,7 @@ function drawXYMap(data) {
             ? snapshotAnnotation(data.pose_command)
             : `收到于 ${ageText(frame.target?.age_sec)}`;
         drawDirectionalPose(ctx, frame.screen, frame.heading, {
-            color: latest ? "#6f2dbd" : "#c9a3ff",
+            color: latest ? "#ff4fbd" : "#ffb0df",
             label: [
                 `${latest ? "最新目标" : "上一目标"} base_link N ${numberText(frame.north, 2)}  E ${numberText(frame.east, 2)}`,
                 annotation,
@@ -1826,6 +1869,7 @@ function drawXYMap(data) {
                 label: actualLabel,
             });
         }
+        drawHandPoint(ctx, actualFramePoints.hand);
     }
 
     const scaleDistance = niceDistance(110 / scale);
@@ -1985,7 +2029,7 @@ function drawZAxis(data) {
         drawDepthMarker(
             finiteNumber(target?.position_m?.z),
             latest ? "最新目标" : "上一目标",
-            latest ? "#6f2dbd" : "#c9a3ff",
+            latest ? "#ff4fbd" : "#ffb0df",
             latest
                 ? snapshotAnnotation(data.pose_command)
                 : `收到于 ${ageText(target?.age_sec)}`,
@@ -2265,8 +2309,11 @@ function updateMapHint() {
             ? `松开完成水池矩形 · 上方 ${mapHeadingText()}°`
             : `按住并拖拽水池两个对角点 · 上方 ${mapHeadingText()}°`;
     } else {
+        const expansionText = dashboardState.xyMapExpanded
+            ? "双击恢复"
+            : "双击放大";
         hint.textContent =
-            `滚轮缩放 · 拖拽平移 · 上方 ${mapHeadingText()}°`;
+            `滚轮缩放 · 拖拽平移 · ${expansionText} · 上方 ${mapHeadingText()}°`;
     }
 }
 
@@ -2399,7 +2446,7 @@ function configureVisualHistoryControls() {
         } finally {
             window.setTimeout(() => {
                 clearButton.disabled = false;
-                clearButton.textContent = "清除视觉历史";
+                clearButton.textContent = "清视觉";
                 clearButton.title = "清除地图视觉绘图、鱼眼历史和期望颜色";
             }, 1200);
         }
@@ -2428,7 +2475,7 @@ function configureBaseTrajectoryControl() {
         } finally {
             window.setTimeout(() => {
                 clearButton.disabled = false;
-                clearButton.textContent = "清除轨迹";
+                clearButton.textContent = "清轨迹";
                 clearButton.title = "只清除 base_link 轨迹";
             }, 1200);
         }
@@ -2438,7 +2485,9 @@ function configureBaseTrajectoryControl() {
 
 function configureMapInteraction() {
     const canvas = document.getElementById("xy-canvas");
+    const card = canvas.closest(".xy-card");
     const zCanvas = document.getElementById("z-canvas");
+    const trackingButton = document.getElementById("track-base-link");
     const pointerMap = (event) => {
         const rect = canvas.getBoundingClientRect();
         const transform = createMapTransform(rect.width, rect.height);
@@ -2450,6 +2499,65 @@ function configureMapInteraction() {
     const redrawXYMap = () => {
         drawXYMap(dashboardState.status || {});
     };
+    const updateTrackingControl = () => {
+        trackingButton.classList.toggle(
+            "is-active",
+            dashboardState.mapTracking,
+        );
+        trackingButton.textContent = dashboardState.mapTracking
+            ? "跟踪中"
+            : "跟踪";
+        trackingButton.setAttribute(
+            "aria-pressed",
+            String(dashboardState.mapTracking),
+        );
+        canvas.classList.toggle(
+            "is-tracking",
+            dashboardState.mapTracking,
+        );
+    };
+
+    trackingButton.addEventListener("click", () => {
+        dashboardState.mapTracking = !dashboardState.mapTracking;
+        dashboardState.dragging = false;
+        canvas.classList.remove("is-dragging");
+        updateTrackingControl();
+        redrawXYMap();
+    });
+    updateTrackingControl();
+    const setMapExpanded = (expanded) => {
+        dashboardState.xyMapExpanded = Boolean(expanded);
+        card.classList.toggle(
+            "is-expanded",
+            dashboardState.xyMapExpanded,
+        );
+        document.body.classList.toggle(
+            "xy-map-expanded",
+            dashboardState.xyMapExpanded,
+        );
+        canvas.setAttribute(
+            "aria-label",
+            dashboardState.xyMapExpanded
+                ? "NED XY 位置图，双击恢复原布局"
+                : "NED XY 位置图，双击放大查看",
+        );
+        updateMapHint();
+        window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(redrawXYMap);
+        });
+    };
+
+    canvas.addEventListener("dblclick", (event) => {
+        event.preventDefault();
+        if (dashboardState.poolDrawing) return;
+        setMapExpanded(!dashboardState.xyMapExpanded);
+    });
+
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && dashboardState.xyMapExpanded) {
+            setMapExpanded(false);
+        }
+    });
 
     canvas.addEventListener("wheel", (event) => {
         event.preventDefault();
@@ -2478,6 +2586,7 @@ function configureMapInteraction() {
             redrawXYMap();
             return;
         }
+        if (dashboardState.mapTracking) return;
         dashboardState.dragging = true;
         dashboardState.dragStartX = event.clientX;
         dashboardState.dragStartY = event.clientY;

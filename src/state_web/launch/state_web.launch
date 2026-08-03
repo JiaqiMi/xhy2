@@ -11,6 +11,10 @@
     2026.8.3
         增加箭头位姿、视觉地图历史与 ArUco 历史判定参数。
         增加 base_link 轨迹采样频率和保留时间参数。
+        增加 hand TF 坐标系参数，用于地图点位显示。
+        增加目标位置与航向变化阈值，过滤 5Hz 重复目标。
+        将 base_link 轨迹上限调整为 1Hz 下的 1000 个点。
+        箭头终点 TF 改为 camera_center，显示标签保持 camera。
     -->
     <arg name="host" default="0.0.0.0" />
     <arg name="port" default="8088" />
@@ -45,7 +49,9 @@
     <arg name="world_frame" default="map" />
     <arg name="base_frame" default="base_link" />
     <arg name="imu_frame" default="imu" />
-    <arg name="camera_frame" default="camera" />
+    <arg name="camera_frame" default="camera_center" />
+    <arg name="camera_label" default="camera" />
+    <arg name="hand_frame" default="hand" />
 
     <arg name="stream_fps" default="8.0" />
     <arg name="jpeg_quality" default="75" />
@@ -59,7 +65,9 @@
     <arg name="aruco_required_count" default="3" />
     <arg name="aruco_min_confidence" default="0.5" />
     <arg name="trajectory_sample_hz" default="1.0" />
-    <arg name="trajectory_duration_sec" default="60.0" />
+    <arg name="trajectory_duration_sec" default="1000.0" />
+    <arg name="target_position_threshold_m" default="0.01" />
+    <arg name="target_heading_threshold_deg" default="1.0" />
     <arg name="state_timeout" default="2.0" />
     <arg name="command_timeout" default="2.0" />
     <arg name="tf_timeout" default="2.0" />
@@ -105,6 +113,8 @@
         <param name="base_frame" value="$(arg base_frame)" />
         <param name="imu_frame" value="$(arg imu_frame)" />
         <param name="camera_frame" value="$(arg camera_frame)" />
+        <param name="camera_label" value="$(arg camera_label)" />
+        <param name="hand_frame" value="$(arg hand_frame)" />
 
         <param name="stream_fps" value="$(arg stream_fps)" />
         <param name="jpeg_quality" value="$(arg jpeg_quality)" />
@@ -119,6 +129,8 @@
         <param name="aruco_min_confidence" value="$(arg aruco_min_confidence)" />
         <param name="trajectory_sample_hz" value="$(arg trajectory_sample_hz)" />
         <param name="trajectory_duration_sec" value="$(arg trajectory_duration_sec)" />
+        <param name="target_position_threshold_m" value="$(arg target_position_threshold_m)" />
+        <param name="target_heading_threshold_deg" value="$(arg target_heading_threshold_deg)" />
         <param name="state_timeout" value="$(arg state_timeout)" />
         <param name="command_timeout" value="$(arg command_timeout)" />
         <param name="tf_timeout" value="$(arg tf_timeout)" />

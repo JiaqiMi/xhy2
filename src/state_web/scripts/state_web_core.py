@@ -14,6 +14,8 @@
 2026.8.3
     新增视觉地图分类、三维坐标转换、滚动历史和 ArUco 判色工具。
     新增 base_link 定时轨迹与最近两帧目标位姿历史工具。
+    目标历史仅在位置变化 0.01m 或航向变化 1° 时滚动。
+    base_link 轨迹默认按 1Hz 保留最多 1000 个点。
 """
 
 import copy
@@ -641,19 +643,28 @@ class VisionHistoryState:
 class NavigationHistoryState:
     """线程安全维护 base_link 轨迹和最近目标位姿。"""
 
-    def __init__(self, trajectory_hz=1.0, trajectory_duration_sec=60.0,
-                 target_limit=2):
+    def __init__(self, trajectory_hz=1.0, trajectory_duration_sec=1000.0,
+                 target_limit=2, target_position_threshold_m=0.01,
+                 target_heading_threshold_deg=1.0):
         frequency = safe_float(trajectory_hz)
         duration = safe_float(trajectory_duration_sec)
+        position_threshold = safe_float(target_position_threshold_m)
+        heading_threshold = safe_float(target_heading_threshold_deg)
         if frequency is None or frequency <= 0.0:
             raise ValueError("轨迹采样频率必须大于零")
         if duration is None or duration <= 0.0:
             raise ValueError("轨迹保留时间必须大于零")
+        if position_threshold is None or position_threshold <= 0.0:
+            raise ValueError("目标位置变化阈值必须大于零")
+        if heading_threshold is None or heading_threshold <= 0.0:
+            raise ValueError("目标航向变化阈值必须大于零")
         self.trajectory_hz = frequency
         self.trajectory_duration_sec = duration
         self.sample_period_sec = 1.0 / frequency
         self.trajectory_limit = max(1, int(math.ceil(frequency * duration)))
         self.target_limit = max(1, int(target_limit))
+        self.target_position_threshold_m = position_threshold
+        self.target_heading_threshold_deg = heading_threshold
         self.lock = threading.RLock()
         self.trajectory = deque(maxlen=self.trajectory_limit)
         self.targets = deque(maxlen=self.target_limit)
@@ -694,7 +705,7 @@ class NavigationHistoryState:
             return True
 
     def append_target(self, target, received_at):
-        """保存一帧有效目标位姿，队列中仅保留最新两帧。"""
+        """目标位置或航向达到阈值时，滚动保存最近两帧。"""
         if not isinstance(target, dict):
             return False
         position = finite_position(target.get("position_m"))
@@ -704,6 +715,41 @@ class NavigationHistoryState:
         item = copy.deepcopy(target)
         item["received_at"] = sample_time
         with self.lock:
+            if self.targets:
+                previous = self.targets[-1]
+                previous_position = finite_position(
+                    previous.get("position_m")
+                )
+                position_changed = any(
+                    abs(position[axis] - previous_position[axis])
+                    >= self.target_position_threshold_m
+                    for axis in ("x", "y", "z")
+                )
+                heading = safe_float(
+                    (target.get("orientation_deg") or {}).get(
+                        "heading_deg"
+                    )
+                )
+                previous_heading = safe_float(
+                    (previous.get("orientation_deg") or {}).get(
+                        "heading_deg"
+                    )
+                )
+                heading_error = shortest_heading_error(
+                    heading,
+                    previous_heading,
+                )
+                heading_changed = (
+                    heading_error is not None
+                    and abs(heading_error)
+                    >= self.target_heading_threshold_deg
+                )
+                if not position_changed and not heading_changed:
+                    # 只刷新时间；保留已接纳目标作为累计变化的比较基准。
+                    previous["received_at"] = sample_time
+                    if item.get("stamp_sec") is not None:
+                        previous["stamp_sec"] = item["stamp_sec"]
+                    return False
             self.targets.append(item)
             self.target_version += 1
             return True
@@ -761,6 +807,12 @@ class NavigationHistoryState:
             "target_history": {
                 "frame_id": str(frame_id),
                 "limit": self.target_limit,
+                "position_change_threshold_m": (
+                    self.target_position_threshold_m
+                ),
+                "heading_change_threshold_deg": (
+                    self.target_heading_threshold_deg
+                ),
                 "history_version": target_version,
                 "items": targets,
             },

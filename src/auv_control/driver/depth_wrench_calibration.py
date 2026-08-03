@@ -26,6 +26,12 @@
     标定步骤改为“稳定基线—驱动/反向制动—零输出停稳”的原子流程；只有恢复停稳后
     才记录 PASS。新增数据有效性门槛、基线标准差、恢复指标和参数/版本元数据，避免
     残余运动、航向漂移及部署参数不明污染力矩标定结果。
+2026.8.3
+    预检、运行时安全门和配置错误均改为记录 ERROR 后保持零输出并等待恢复；不会因
+    单次异常退出标定节点。所有静态档位也先驱动、再反向刹停，并拒绝刹车反向超调。
+2026.8.3
+    默认测试档改为不撤力的固定正反循环：每轴正向输出 7 s 后立即反向输出 7 s；
+    不以速度、基线、超调或停稳作为流程分支，保留硬安全门并记录正反向稳态数据。
 """
 
 from __future__ import division
@@ -95,6 +101,7 @@ class DepthWrenchCalibration(object):
         'peak_displacement_m', 'peak_yaw_offset_deg', 'reported_mode',
         'brake_start_axis_velocity', 'brake_stop_time_s',
         'brake_stop_displacement', 'brake_reverse_peak_velocity',
+        'reverse_steady_axis_velocity',
         'baseline_axis_stddev', 'recovery_time_s',
         'recovery_axis_velocity', 'recovery_horizontal_speed_mps',
         'recovery_yaw_rate_rad_s', 'metadata_path',
@@ -119,7 +126,13 @@ class DepthWrenchCalibration(object):
         self.steady_window_seconds = float(rospy.get_param(
             '~steady_window_seconds', 3.0))
         self.test_profile = str(rospy.get_param(
-            '~test_profile', 'static')).strip().lower()
+            '~test_profile', 'cycle')).strip().lower()
+        self.cycle_forward_seconds = float(rospy.get_param(
+            '~cycle_forward_seconds', 7.0))
+        self.cycle_reverse_seconds = float(rospy.get_param(
+            '~cycle_reverse_seconds', 7.0))
+        self.cycle_repeat_count = int(rospy.get_param(
+            '~cycle_repeat_count', 0))
         self.reverse_brake_drive_seconds = float(rospy.get_param(
             '~reverse_brake_drive_seconds', 10.0))
         self.reverse_brake_timeout = float(rospy.get_param(
@@ -127,13 +140,17 @@ class DepthWrenchCalibration(object):
         self.reverse_brake_observe_seconds = float(rospy.get_param(
             '~reverse_brake_observe_seconds', 2.0))
         self.reverse_brake_min_speed = float(rospy.get_param(
-            '~reverse_brake_min_speed', 0.05))
+            '~reverse_brake_min_speed', 0.02))
         self.reverse_brake_min_yaw_rate = float(rospy.get_param(
             '~reverse_brake_min_yaw_rate', math.radians(5.0)))
         self.reverse_brake_stop_speed = float(rospy.get_param(
             '~reverse_brake_stop_speed', 0.012))
         self.reverse_brake_stop_yaw_rate = float(rospy.get_param(
             '~reverse_brake_stop_yaw_rate', math.radians(0.5)))
+        self.reverse_brake_max_reverse_speed = float(rospy.get_param(
+            '~reverse_brake_max_reverse_speed', 0.012))
+        self.reverse_brake_max_reverse_yaw_rate = float(rospy.get_param(
+            '~reverse_brake_max_reverse_yaw_rate', math.radians(0.5)))
         self.baseline_wait_timeout = float(rospy.get_param(
             '~baseline_wait_timeout', 30.0))
         self.baseline_stable_seconds = float(rospy.get_param(
@@ -264,11 +281,15 @@ class DepthWrenchCalibration(object):
         """在输出前完成所有数值和安全边界校验。"""
         numeric = (
             self.publish_rate_hz, self.hold_seconds, self.rest_seconds,
+            self.cycle_forward_seconds, self.cycle_reverse_seconds,
             self.baseline_seconds, self.steady_window_seconds,
             self.reverse_brake_drive_seconds, self.reverse_brake_timeout,
             self.reverse_brake_observe_seconds, self.reverse_brake_min_speed,
             self.reverse_brake_min_yaw_rate, self.reverse_brake_stop_speed,
-            self.reverse_brake_stop_yaw_rate, self.reverse_brake_percentage,
+            self.reverse_brake_stop_yaw_rate,
+            self.reverse_brake_max_reverse_speed,
+            self.reverse_brake_max_reverse_yaw_rate,
+            self.reverse_brake_percentage,
             self.baseline_wait_timeout, self.baseline_stable_seconds,
             self.baseline_max_horizontal_speed, self.baseline_max_yaw_rate,
             self.baseline_max_axis_stddev, self.recovery_timeout,
@@ -292,6 +313,8 @@ class DepthWrenchCalibration(object):
                 self.reverse_brake_min_yaw_rate,
                 self.reverse_brake_stop_speed,
                 self.reverse_brake_stop_yaw_rate,
+                self.reverse_brake_max_reverse_speed,
+                self.reverse_brake_max_reverse_yaw_rate,
                 self.startup_timeout, self.feedback_timeout,
                 self.max_depth_error, self.max_horizontal_speed,
                 self.max_yaw_rate, self.max_displacement,
@@ -302,9 +325,11 @@ class DepthWrenchCalibration(object):
             raise ValueError('rest_seconds 不能小于 0')
         if self.reverse_brake_observe_seconds < 0.0:
             raise ValueError('reverse_brake_observe_seconds 不能小于 0')
-        if self.test_profile not in ('static', 'reverse_brake', 'both'):
+        if self.test_profile not in ('cycle', 'static', 'reverse_brake', 'both'):
             raise ValueError(
-                'test_profile 只能是 static、reverse_brake 或 both')
+                'test_profile 只能是 cycle、static、reverse_brake 或 both')
+        if self.cycle_repeat_count < 0:
+            raise ValueError('cycle_repeat_count 只能为 0（无限循环）或正整数')
         if not 0.0 < self.reverse_brake_percentage <= 1.0:
             raise ValueError('reverse_brake_percentage 必须在 (0, 1] 内')
         if math.isinf(self.target_depth):
@@ -431,6 +456,7 @@ class DepthWrenchCalibration(object):
         values = {}
         for name, value in sorted(self.__dict__.items()):
             if (name.startswith(('baseline_', 'recovery_', 'reverse_brake_',
+                                 'cycle_',
                                  'valid_', 'max_', 'preflight_', 'response_'))
                     or name in ('publish_rate_hz', 'hold_seconds',
                                 'rest_seconds', 'steady_window_seconds',
@@ -505,43 +531,47 @@ class DepthWrenchCalibration(object):
 
     def _wait_for_preflight(self):
         """等待 TF、速度和模式反馈齐全，随后锁定标定深度与航向基准。"""
-        deadline = rospy.Time.now() + rospy.Duration(self.startup_timeout)
         rate = rospy.Rate(self.publish_rate_hz)
-        while not rospy.is_shutdown() and rospy.Time.now() < deadline:
-            self._assert_command_topic_exclusive()
-            try:
-                pose = self._read_pose()
-            except RuntimeError:
+        while not rospy.is_shutdown():
+            deadline = rospy.Time.now() + rospy.Duration(self.startup_timeout)
+            while not rospy.is_shutdown() and rospy.Time.now() < deadline:
+                try:
+                    self._assert_command_topic_exclusive()
+                    pose = self._read_pose()
+                except RuntimeError as error:
+                    rospy.logerr_throttle(2.0, '%s: 预检等待：%s',
+                                          NODE_NAME, error)
+                    rate.sleep()
+                    continue
+                velocity, velocity_age = self._latest_velocity_snapshot()
+                status_age = self._status_age()
+                mode_ok = (
+                    not self.require_mode_feedback
+                    or (status_age <= self.feedback_timeout
+                        and self.reported_mode == self.required_mode))
+                if not math.isfinite(self.target_depth):
+                    self.target_depth = pose[2]
+                stable = velocity is not None and (
+                    abs(pose[2] - self.target_depth)
+                    <= self.preflight_depth_tolerance
+                    and math.hypot(velocity[0], velocity[1])
+                    <= self.preflight_horizontal_speed
+                    and abs(velocity[2]) <= self.preflight_yaw_rate)
+                if (velocity is not None
+                        and velocity_age <= self.feedback_timeout
+                        and mode_ok and stable):
+                    self.initial_pose = pose
+                    self.target_yaw = pose[3]
+                    rospy.loginfo(
+                        '%s: 预检通过，目标深度=%.3f m，起始航向=%.1f deg',
+                        NODE_NAME, self.target_depth,
+                        math.degrees(self.target_yaw))
+                    return
+                self._publish_preflight_hold(pose)
                 rate.sleep()
-                continue
-            velocity, velocity_age = self._latest_velocity_snapshot()
-            status_age = self._status_age()
-            mode_ok = (
-                not self.require_mode_feedback
-                or (status_age <= self.feedback_timeout
-                    and self.reported_mode == self.required_mode))
-            if not math.isfinite(self.target_depth):
-                self.target_depth = pose[2]
-            stable = velocity is not None and (
-                abs(pose[2] - self.target_depth)
-                <= self.preflight_depth_tolerance
-                and math.hypot(velocity[0], velocity[1])
-                <= self.preflight_horizontal_speed
-                and abs(velocity[2]) <= self.preflight_yaw_rate)
-            if (velocity is not None
-                    and velocity_age <= self.feedback_timeout
-                    and mode_ok and stable):
-                self.initial_pose = pose
-                self.target_yaw = pose[3]
-                rospy.loginfo(
-                    '%s: 预检通过，目标深度=%.3f m，起始航向=%.1f deg',
-                    NODE_NAME, self.target_depth, math.degrees(self.target_yaw))
-                return
-            self._publish_preflight_hold(pose)
-            rate.sleep()
-        raise RuntimeError(
-            '等待定深稳定、TF、速度或 mode={} 反馈超时'.format(
-                self.required_mode))
+            rospy.logerr(
+                '%s: 预检等待超过 %.1f s，保持零输出并继续等待 mode=%d、TF 与稳定反馈',
+                NODE_NAME, self.startup_timeout, self.required_mode)
 
     def _make_command(self, step, reference_pose=None):
         """构造 mode=2 定深指令，并仅在当前标定轴施加力/力矩。"""
@@ -592,17 +622,36 @@ class DepthWrenchCalibration(object):
         steps = []
         for axis in ('tx', 'ty', 'mz'):
             positive_limit, negative_limit = self.axis_limits[axis]
+            if self.test_profile == 'cycle':
+                for percentage in self.force_percentages:
+                    command = int(round(positive_limit * percentage))
+                    reverse_command = -int(round(
+                        negative_limit * percentage))
+                    if command == 0 or reverse_command == 0:
+                        raise ValueError(
+                            '{} 的 {:.3f} 循环档位生成了零输出'.format(
+                                axis, percentage))
+                    steps.append(CalibrationStep(
+                        len(steps) + 1, axis, command, percentage,
+                        profile='cycle', brake_command=reverse_command,
+                        brake_percentage=percentage))
             if self.test_profile in ('static', 'both'):
                 for percentage in self.force_percentages:
                     for sign in (1, -1):
                         limit = positive_limit if sign > 0 else negative_limit
                         command = sign * int(round(limit * percentage))
-                        if command == 0:
+                        brake_limit = (
+                            negative_limit if sign > 0 else positive_limit)
+                        brake_command = -sign * int(round(
+                            brake_limit * self.reverse_brake_percentage))
+                        if command == 0 or brake_command == 0:
                             raise ValueError(
                                 '{} 的 {:.3f} 档位生成了零输出'.format(
                                     axis, percentage))
                         steps.append(CalibrationStep(
-                            len(steps) + 1, axis, command, percentage))
+                            len(steps) + 1, axis, command, percentage,
+                            profile='static', brake_command=brake_command,
+                            brake_percentage=self.reverse_brake_percentage))
             if self.test_profile in ('reverse_brake', 'both'):
                 for percentage in self.reverse_brake_drive_percentages:
                     for sign in (1, -1):
@@ -844,7 +893,8 @@ class DepthWrenchCalibration(object):
                        response_latency, steady_values, peak_velocity,
                        peak_depth_error, peak_displacement, peak_yaw_offset,
                        result, reason, reverse_metrics=None,
-                       baseline_stddev=None, recovery_metrics=None):
+                       baseline_stddev=None, recovery_metrics=None,
+                       cycle_metrics=None):
         """写入单个阶跃的可直接分析摘要。"""
         row = {
             'step': step.index,
@@ -880,6 +930,7 @@ class DepthWrenchCalibration(object):
             'brake_stop_time_s': '',
             'brake_stop_displacement': '',
             'brake_reverse_peak_velocity': '',
+            'reverse_steady_axis_velocity': '',
             'baseline_axis_stddev': (
                 '' if baseline_stddev is None else baseline_stddev),
             'recovery_time_s': '',
@@ -892,8 +943,60 @@ class DepthWrenchCalibration(object):
             row.update(reverse_metrics)
         if recovery_metrics is not None:
             row.update(recovery_metrics)
+        if cycle_metrics is not None:
+            row.update(cycle_metrics)
         self.summary_writer.writerow(row)
         self.summary_file.flush()
+
+    def _execute_cycle(self, step):
+        """固定执行正向 7 s、反向 7 s，不插入撤力或停稳等待。"""
+        started_at = rospy.Time.now().to_sec()
+        steady_count = max(
+            1, int(math.ceil(self.steady_window_seconds * self.publish_rate_hz)))
+        forward_values = deque(maxlen=steady_count)
+        reverse_values = deque(maxlen=steady_count)
+        peak_velocity = 0.0
+        peak_depth_error = 0.0
+        peak_displacement = 0.0
+        peak_yaw_offset = 0.0
+        rate = rospy.Rate(self.publish_rate_hz)
+        reverse_step = CalibrationStep(
+            step.index, step.axis, step.brake_command, step.brake_percentage,
+            profile=step.profile, brake_command=step.brake_command,
+            brake_percentage=step.brake_percentage)
+        phases = (
+            (step, 'cycle_forward', self.cycle_forward_seconds, forward_values),
+            (reverse_step, 'cycle_reverse', self.cycle_reverse_seconds,
+             reverse_values),
+        )
+        for command_step, phase, duration, values in phases:
+            deadline = rospy.Time.now() + rospy.Duration(duration)
+            while not rospy.is_shutdown() and rospy.Time.now() < deadline:
+                self._assert_command_topic_exclusive()
+                self._publish_command(command_step)
+                unused_row, velocity, pose = self._snapshot(command_step, phase)
+                velocity_age = self._latest_velocity_snapshot()[1]
+                self._assert_safe(velocity, pose, velocity_age, self._status_age())
+                axis_velocity = self._axis_velocity(step, velocity)
+                values.append(axis_velocity)
+                peak_velocity = max(peak_velocity, abs(axis_velocity))
+                peak_depth_error = max(peak_depth_error, abs(
+                    pose[2] - self.target_depth))
+                peak_displacement = max(peak_displacement, math.hypot(
+                    pose[0] - self.initial_pose[0],
+                    pose[1] - self.initial_pose[1]))
+                peak_yaw_offset = max(peak_yaw_offset, abs(wrap_angle(
+                    pose[3] - self.target_yaw)))
+                rate.sleep()
+        finished_at = rospy.Time.now().to_sec()
+        self._write_summary(
+            step, started_at, finished_at, 0.0, None, tuple(forward_values),
+            peak_velocity, peak_depth_error, peak_displacement, peak_yaw_offset,
+            'PASS', '固定正向/反向周期完成', cycle_metrics={
+                'reverse_steady_axis_velocity': (
+                    '' if not reverse_values else
+                    sum(reverse_values) / float(len(reverse_values))),
+            })
 
     def _execute_step(self, step):
         """执行静态阶跃并在零输出恢复停稳后，才确认该档通过。"""
@@ -959,13 +1062,29 @@ class DepthWrenchCalibration(object):
             'peak_displacement': peak_displacement,
             'peak_yaw_offset': peak_yaw_offset,
         })
+        drive_velocity = (sum(steady_values) / float(len(steady_values))
+                          if steady_values else baseline)
+        peak_metrics = {
+            'peak_velocity': peak_velocity,
+            'peak_depth_error': peak_depth_error,
+            'peak_displacement': peak_displacement,
+            'peak_yaw_offset': peak_yaw_offset,
+        }
+        reverse_metrics = self._brake_to_stop(
+            step, baseline, drive_velocity, peak_metrics)
+        peak_velocity = peak_metrics['peak_velocity']
+        peak_depth_error = peak_metrics['peak_depth_error']
+        peak_displacement = peak_metrics['peak_displacement']
+        peak_yaw_offset = peak_metrics['peak_yaw_offset']
+        self.active_measurement.update(peak_metrics)
         recovery_metrics = self._recover_step(step)
         finished_at = rospy.Time.now().to_sec()
         self._write_summary(
             step, started_at, finished_at, baseline, response_latency,
             tuple(steady_values), peak_velocity, peak_depth_error,
-            peak_displacement, peak_yaw_offset, 'PASS', '完成并停稳',
-            baseline_stddev=baseline_stddev, recovery_metrics=recovery_metrics)
+            peak_displacement, peak_yaw_offset, 'PASS', '完成、反向刹停并停稳',
+            reverse_metrics=reverse_metrics, baseline_stddev=baseline_stddev,
+            recovery_metrics=recovery_metrics)
         self.active_measurement = None
         rospy.loginfo(
             '%s: %s=%+d 完成，响应延迟=%s s，稳态速度=%.4f',
@@ -986,6 +1105,96 @@ class DepthWrenchCalibration(object):
         if axis == 'tx':
             return cosine * delta_x + sine * delta_y
         return -sine * delta_x + cosine * delta_y
+
+    def _brake_to_stop(self, step, baseline, drive_velocity, metrics):
+        """先确认已有同向速度，再施加反向力矩并拒绝反向超调。"""
+        if step.brake_command is None:
+            raise RuntimeError('{}=%+d 未配置反向刹车力矩'.format(
+                step.axis.upper(), step.command))
+        drive_sign = math.copysign(1.0, step.command)
+        minimum_speed = (
+            self.reverse_brake_min_yaw_rate
+            if step.axis == 'mz' else self.reverse_brake_min_speed)
+        stop_threshold = (
+            self.reverse_brake_stop_yaw_rate
+            if step.axis == 'mz' else self.reverse_brake_stop_speed)
+        max_reverse_speed = (
+            self.reverse_brake_max_reverse_yaw_rate
+            if step.axis == 'mz' else self.reverse_brake_max_reverse_speed)
+        if drive_sign * (drive_velocity - baseline) < minimum_speed:
+            raise RuntimeError(
+                '{}=%+d 驱动后速度不足 {:.4f}，不执行无效刹车'.format(
+                    step.axis.upper(), step.command, minimum_speed))
+
+        brake_step = CalibrationStep(
+            step.index, step.axis, step.brake_command,
+            step.brake_percentage, profile=step.profile,
+            brake_command=step.brake_command,
+            brake_percentage=step.brake_percentage)
+        brake_started_at = rospy.Time.now().to_sec()
+        brake_start_pose = self._read_pose()
+        stop_at = None
+        stop_pose = None
+        reverse_peak_velocity = 0.0
+        deadline = rospy.Time.now() + rospy.Duration(self.reverse_brake_timeout)
+        rate = rospy.Rate(self.publish_rate_hz)
+        while not rospy.is_shutdown() and rospy.Time.now() < deadline:
+            self._assert_command_topic_exclusive()
+            self._publish_command(brake_step)
+            unused_row, velocity, pose = self._snapshot(
+                brake_step, 'brake')
+            velocity_age = self._latest_velocity_snapshot()[1]
+            self._assert_sample_acceptable(
+                velocity, pose, velocity_age, self._status_age())
+            axis_velocity = self._axis_velocity(step, velocity)
+            signed_velocity = drive_sign * (axis_velocity - baseline)
+            metrics['peak_velocity'] = max(
+                metrics['peak_velocity'], abs(axis_velocity - baseline))
+            metrics['peak_depth_error'] = max(
+                metrics['peak_depth_error'], abs(pose[2] - self.target_depth))
+            metrics['peak_displacement'] = max(
+                metrics['peak_displacement'], math.hypot(
+                    pose[0] - self.initial_pose[0], pose[1] - self.initial_pose[1]))
+            metrics['peak_yaw_offset'] = max(
+                metrics['peak_yaw_offset'], abs(wrap_angle(
+                    pose[3] - self.target_yaw)))
+            if signed_velocity < 0.0:
+                reverse_peak_velocity = max(reverse_peak_velocity, -signed_velocity)
+            if abs(axis_velocity - baseline) <= stop_threshold:
+                stop_at = rospy.Time.now().to_sec()
+                stop_pose = pose
+                break
+            rate.sleep()
+        if stop_at is None or stop_pose is None:
+            raise RuntimeError('{}=%+d 在 {:.1f} s 内未刹停'.format(
+                step.axis.upper(), step.command, self.reverse_brake_timeout))
+
+        observe_deadline = rospy.Time.now() + rospy.Duration(
+            self.reverse_brake_observe_seconds)
+        while not rospy.is_shutdown() and rospy.Time.now() < observe_deadline:
+            self._assert_command_topic_exclusive()
+            self._publish_command(None)
+            unused_row, velocity, pose = self._snapshot(
+                step, 'brake_observe', applied_command=0)
+            velocity_age = self._latest_velocity_snapshot()[1]
+            self._assert_sample_acceptable(
+                velocity, pose, velocity_age, self._status_age())
+            signed_velocity = drive_sign * (
+                self._axis_velocity(step, velocity) - baseline)
+            if signed_velocity < 0.0:
+                reverse_peak_velocity = max(reverse_peak_velocity, -signed_velocity)
+            rate.sleep()
+        if reverse_peak_velocity > max_reverse_speed:
+            raise RuntimeError('{}=%+d 刹车反向超调 {:.4f}，上限 {:.4f}'.format(
+                step.axis.upper(), step.command, reverse_peak_velocity,
+                max_reverse_speed))
+        return {
+            'brake_start_axis_velocity': drive_velocity,
+            'brake_stop_time_s': stop_at - brake_started_at,
+            'brake_stop_displacement': drive_sign * self._axis_displacement(
+                step.axis, brake_start_pose, stop_pose),
+            'brake_reverse_peak_velocity': reverse_peak_velocity,
+        }
 
     def _execute_reverse_brake(self, step):
         """执行同向驱动、反向制动与零输出停稳，记录完整停车指标。"""
@@ -1124,6 +1333,13 @@ class DepthWrenchCalibration(object):
                 step.axis, brake_start_pose, stop_pose),
             'brake_reverse_peak_velocity': reverse_peak_velocity,
         }
+        max_reverse_speed = (
+            self.reverse_brake_max_reverse_yaw_rate
+            if step.axis == 'mz' else self.reverse_brake_max_reverse_speed)
+        if reverse_peak_velocity > max_reverse_speed:
+            raise RuntimeError('{}=%+d 刹车反向超调 {:.4f}，上限 {:.4f}'.format(
+                step.axis.upper(), step.command, reverse_peak_velocity,
+                max_reverse_speed))
         self.active_measurement.update({
             'steady_values': tuple(drive_values),
             'peak_velocity': peak_velocity,
@@ -1195,46 +1411,68 @@ class DepthWrenchCalibration(object):
         rospy.logwarn(
             '%s: 开始 %d 个定深力/力矩阶跃；必须保持控制话题独占',
             NODE_NAME, len(steps))
-        try:
+        round_index = 0
+        while not rospy.is_shutdown():
             for step in steps:
-                self.active_step = step
-                rospy.loginfo(
-                    '%s: [%d/%d] %s %s=%+d', NODE_NAME, step.index,
-                    len(steps), step.profile, step.axis.upper(), step.command)
-                if step.profile == 'reverse_brake':
-                    self._execute_reverse_brake(step)
-                else:
-                    self._execute_step(step)
-                self.active_step = None
-            self.active_step = None
-            self._zero_hold(self.rest_seconds, 'complete_hold')
-            self.completed = True
-            rospy.loginfo('%s: 标定完成，已持续输出零力/力矩', NODE_NAME)
-        except (RuntimeError, rospy.ROSException) as error:
-            self.aborted = True
-            if self.active_step is not None:
-                self._abort_step(self.active_step, error)
+                while not rospy.is_shutdown():
+                    self.active_step = step
+                    rospy.loginfo(
+                        '%s: 第 %d 轮 [%d/%d] %s %s=%+d', NODE_NAME,
+                        round_index + 1, step.index, len(steps),
+                        step.profile, step.axis.upper(), step.command)
+                    try:
+                        if step.profile == 'cycle':
+                            self._execute_cycle(step)
+                        elif step.profile == 'reverse_brake':
+                            self._execute_reverse_brake(step)
+                        else:
+                            self._execute_step(step)
+                        self.active_step = None
+                        break
+                    except (RuntimeError, rospy.ROSException) as error:
+                        rospy.logerr(
+                            '%s: %s=%+d 失败：%s；已记录 FAIL，保持零输出并重新等待预检',
+                            NODE_NAME, step.axis.upper(), step.command, error)
+                        self._abort_step(step, error)
+                        try:
+                            self._publish_zero_burst()
+                        except (RuntimeError, rospy.ROSException) as zero_error:
+                            rospy.logerr('%s: 零输出保持失败：%s', NODE_NAME,
+                                         zero_error)
+                        self._wait_for_preflight()
+            round_index += 1
+            if (self.test_profile != 'cycle'
+                    or (self.cycle_repeat_count > 0
+                        and round_index >= self.cycle_repeat_count)):
+                break
+        if not rospy.is_shutdown():
             try:
-                self._publish_zero_burst()
-            except (RuntimeError, rospy.ROSException):
-                pass
-            raise
-        finally:
+                self.active_step = None
+                self._zero_hold(self.rest_seconds, 'complete_hold')
+                self.completed = True
+                rospy.loginfo('%s: 标定完成，已持续输出零力/力矩', NODE_NAME)
+            finally:
+                self._close_logs()
+        else:
             self._close_logs()
 
 
 def main():
     rospy.init_node(NODE_NAME)
-    try:
-        DepthWrenchCalibration().run()
-    except (
-            ValueError,
-            RuntimeError,
-            OSError,
-            IOError,
-            ROSMasterException) as error:
-        rospy.logfatal('%s: %s', NODE_NAME, error)
-        raise SystemExit(1)
+    rate = rospy.Rate(1.0)
+    while not rospy.is_shutdown():
+        try:
+            DepthWrenchCalibration().run()
+            return
+        except (
+                ValueError,
+                RuntimeError,
+                OSError,
+                IOError,
+                ROSMasterException) as error:
+            rospy.logerr('%s: 初始化或完成保持失败：%s；1 s 后继续等待',
+                         NODE_NAME, error)
+            rate.sleep()
 
 
 if __name__ == '__main__':

@@ -228,7 +228,6 @@ class Task3InspectAndDropTest:
         MotionState.CAPTURE: "CAPTURE",
         MotionState.HOVER: "HOVER",
         MotionState.SAFE: "SAFE",
-        MotionState.THRUSTER_RECOVERY: "THRUSTER_RECOVERY",
     }
 
     COLOR_LIGHTS = {
@@ -432,6 +431,16 @@ class Task3InspectAndDropTest:
             "~auto_color_fast_search_enabled",
             DEFAULT_AUTO_COLOR_FAST_SEARCH_ENABLED,
         ))
+        if self.auto_enabled and self.auto_color_fast_search_enabled:
+            self.auto_color_fast_search_enabled = False
+            rospy.logwarn(
+                (
+                    "%s：自动map对准模式下 /vision/rectangle/detections "
+                    "仅用于模型在线检查，已禁用依赖二维检测内容的快速颜色搜索；"
+                    "继续使用固定步长搜索路径"
+                ),
+                NODE_NAME,
+            )
         self.auto_visual_lateral_gain_m = float(rospy.get_param(
             "~auto_visual_lateral_gain_m", DEFAULT_AUTO_VISUAL_LATERAL_GAIN_M
         ))
@@ -654,7 +663,14 @@ class Task3InspectAndDropTest:
         self.actuator_pre_action_wait_started_at = None
         self.finished = False
 
+        self.model_health_sub = None
         if self.auto_enabled:
+            self.model_health_sub = rospy.Subscriber(
+                self.detection_topic,
+                String,
+                self.rectangle_health_callback,
+                queue_size=10,
+            )
             self.detection_sub = rospy.Subscriber(
                 self.target_topic,
                 TargetDetection,
@@ -1726,9 +1742,12 @@ class Task3InspectAndDropTest:
             self.box_fine_candidate = candidate
             self.box_recheck_collecting = False
 
+    def rectangle_health_callback(self, _message):
+        """只用持续发布的二维检测话题判断方框模型是否在线。"""
+        self.last_model_message_time = rospy.Time.now()
+
     def rectangle_target_callback(self, message):
         now = rospy.Time.now()
-        self.last_model_message_time = now
         self.box_last_target_time = now
         self.box_map_frame_index += 1
         frame_index = self.box_map_frame_index
@@ -5026,9 +5045,7 @@ class Task3InspectAndDropTest:
             if self.state == self.WAIT_FOR_TARGET:
                 self.publish_actuator(self.clamp_closed, "off")
                 model_ready = False
-                model_topic = (
-                    self.target_topic if self.auto_enabled else self.detection_topic
-                )
+                model_topic = self.detection_topic
                 if self.last_model_message_time is None:
                     rospy.logwarn_throttle(
                         self.warning_log_interval,

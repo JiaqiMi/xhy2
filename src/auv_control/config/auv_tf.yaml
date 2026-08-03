@@ -34,6 +34,17 @@ static_transforms:
       roll: 0.0
       pitch: 0.0
       yaw: 90.0
+  camera_center:
+    parent_frame: base_link
+    child_frame: camera_center
+    translation:
+      x: 0.658
+      y: 0.0
+      z: -0.21
+    rotation_rpy_deg:
+      roll: 0.0
+      pitch: 0.0
+      yaw: 90.0
   camera_front:
     parent_frame: base_link
     child_frame: camera_front
