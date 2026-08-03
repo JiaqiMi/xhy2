@@ -15,6 +15,8 @@
 记录：
 2026.8.3
     自动模式改为使用带时间戳的三维方框map位置队列，按三帧稳定位置完成camera粗对准和X误差精对准。
+2026.8.3
+    投放后返原点改为使用任务初始航向向左偏移配置角度得到的绝对航向。
 """
 
 import copy
@@ -153,7 +155,8 @@ DEFAULT_CLOSE_SECONDS = 0.0
 DEFAULT_PRE_DROP_FORWARD_DISTANCE = 0.20
 DEFAULT_PRE_DROP_FORWARD_TIMEOUT = 90.0
 DEFAULT_POST_DROP_MOTION_ENABLED = True
-DEFAULT_POST_DROP_TURN_ANGLE_DEG = 90.0
+DEFAULT_TASK3_INITIAL_YAW_DEG = 215.0
+DEFAULT_RETURN_ORIGIN_YAW_OFFSET_DEG = 180.0
 DEFAULT_POST_DROP_STEP_TIMEOUT = 90.0
 DEFAULT_POST_DROP_ASCENT_SECONDS = 5.0
 DEFAULT_POST_DROP_ASCENT_TARGET_Z = -1.3
@@ -332,9 +335,13 @@ class Task3InspectAndDropTest:
             "~post_drop_motion_enabled",
             DEFAULT_POST_DROP_MOTION_ENABLED,
         ))
-        self.post_drop_turn_angle_deg = float(rospy.get_param(
-            "~post_drop_turn_angle_deg",
-            DEFAULT_POST_DROP_TURN_ANGLE_DEG,
+        self.task3_initial_yaw_deg = float(rospy.get_param(
+            "/task3_initial_yaw_deg",
+            DEFAULT_TASK3_INITIAL_YAW_DEG,
+        ))
+        self.return_origin_yaw_offset_deg = float(rospy.get_param(
+            "/task3_return_origin_yaw_offset_deg",
+            DEFAULT_RETURN_ORIGIN_YAW_OFFSET_DEG,
         ))
         self.post_drop_step_timeout = float(rospy.get_param(
             "~post_drop_step_timeout",
@@ -552,6 +559,9 @@ class Task3InspectAndDropTest:
         self.light2 = int(rospy.get_param("~light2", DEFAULT_LIGHT2))
 
         self.validate_params()
+        self.return_origin_target_yaw = normalize_angle_rad(math.radians(
+            self.task3_initial_yaw_deg - self.return_origin_yaw_offset_deg
+        ))
 
         # mode 字段由传感器协议新增；团队消息定义合并并重新编译后才会存在。
         self.actuator_mode_supported = hasattr(ActuatorControl(), "mode")
@@ -788,13 +798,16 @@ class Task3InspectAndDropTest:
             )
             rospy.loginfo(
                 (
-                    "%s：投放后离场：启用=%s，左转=%.1fdeg，"
+                    "%s：投放后离场：启用=%s，任务初始航向=%.1fdeg，"
+                    "向左偏移=%.1fdeg，返原点绝对航向=%.1fdeg；"
                     "随后返回map原点(0,0)，每一步到达超时=%.1fs；"
                     "到原点后向NED z=%.2f上浮、持续%.1fs并结束"
                 ),
                 NODE_NAME,
                 "是" if self.post_drop_motion_enabled else "否",
-                self.post_drop_turn_angle_deg,
+                self.task3_initial_yaw_deg,
+                self.return_origin_yaw_offset_deg,
+                math.degrees(self.return_origin_target_yaw),
                 self.post_drop_step_timeout,
                 self.post_drop_ascent_target_z,
                 self.post_drop_ascent_seconds,
@@ -1238,12 +1251,13 @@ class Task3InspectAndDropTest:
             raise ValueError("pre_drop_forward_timeout 必须是大于0的有限数")
         if self.post_drop_motion_enabled:
             if (
-                not math.isfinite(self.post_drop_turn_angle_deg)
-                or self.post_drop_turn_angle_deg <= 0.0
-                or self.post_drop_turn_angle_deg >= 180.0
+                not math.isfinite(self.task3_initial_yaw_deg)
+                or not math.isfinite(self.return_origin_yaw_offset_deg)
+                or self.return_origin_yaw_offset_deg < 0.0
+                or self.return_origin_yaw_offset_deg >= 360.0
             ):
                 raise ValueError(
-                    "post_drop_turn_angle_deg 必须在0到180度之间"
+                    "task3初始航向必须是有限数，返原点航向左偏角必须在0到360度之间"
                 )
             if (
                 not math.isfinite(self.post_drop_step_timeout)
@@ -1890,24 +1904,24 @@ class Task3InspectAndDropTest:
             return False
 
         start_yaw = yaw_from_quaternion(source_goal.pose.orientation)
-        self.post_drop_target_yaw = normalize_angle_rad(
-            start_yaw - math.radians(self.post_drop_turn_angle_deg)
-        )
+        self.post_drop_target_yaw = self.return_origin_target_yaw
         self.set_active_goal(
             source_goal.pose.position.x,
             source_goal.pose.position.y,
             self.auto_hold_z,
             self.post_drop_target_yaw,
-            "投放完成后原地左转%.1f度"
-            % self.post_drop_turn_angle_deg,
+            "投放完成后原地对准返原点绝对航向%.1f度"
+            % math.degrees(self.post_drop_target_yaw),
         )
         rospy.loginfo(
             (
-                "%s：[投放后离场] 开始原地左转%.1f度，"
-                "保持位置=(%.3f,%.3f,%.3f)，航向=%.1fdeg -> %.1fdeg"
+                "%s：[投放后离场] 开始原地对准返原点绝对航向，"
+                "任务初始航向=%.1fdeg，向左偏移=%.1fdeg，"
+                "保持位置=(%.3f,%.3f,%.3f)，当前航向=%.1fdeg -> 目标航向=%.1fdeg"
             ),
             NODE_NAME,
-            self.post_drop_turn_angle_deg,
+            self.task3_initial_yaw_deg,
+            self.return_origin_yaw_offset_deg,
             self.active_goal.pose.position.x,
             self.active_goal.pose.position.y,
             self.active_goal.pose.position.z,
@@ -2035,11 +2049,11 @@ class Task3InspectAndDropTest:
             self.finish_task(
                 True,
                 (
-                    "识别和投放完成，左转%.1f度、返回map原点(0,0)，"
+                    "识别和投放完成，对准返原点绝对航向%.1f度、返回map原点(0,0)，"
                     "向NED z=%.2f上浮、持续%.1fs后结束"
                 )
                 % (
-                    self.post_drop_turn_angle_deg,
+                    math.degrees(self.post_drop_target_yaw),
                     self.post_drop_ascent_target_z,
                     self.post_drop_ascent_seconds,
                 ),

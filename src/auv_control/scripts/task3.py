@@ -12,6 +12,8 @@
 记录：
 2026.8.3
     将方框子任务的三维TargetDetection话题传入嵌入式子任务，支持基于map位置的三帧确认流程。
+2026.8.3
+    返原点航向改为任务初始航向向左偏移配置角度得到的绝对航向，避免继承中间识别误差。
 """
 
 from datetime import datetime
@@ -405,6 +407,21 @@ class Task3Final:
         ))
         if not math.isfinite(self.initial_yaw_deg):
             raise ValueError("task3_initial_yaw_deg必须是有限数")
+        self.return_origin_yaw_offset_deg = float(rospy.get_param(
+            "/task3_return_origin_yaw_offset_deg", 180.0
+        ))
+        if (
+            not math.isfinite(self.return_origin_yaw_offset_deg)
+            or self.return_origin_yaw_offset_deg < 0.0
+            or self.return_origin_yaw_offset_deg >= 360.0
+        ):
+            raise ValueError(
+                "task3_return_origin_yaw_offset_deg必须在0到360度之间"
+            )
+        self.return_origin_target_yaw = self.angle_difference(
+            math.radians(self.initial_yaw_deg),
+            math.radians(self.return_origin_yaw_offset_deg),
+        )
 
         self.task1_params = load_task_params(
             "/test_task3_1_acquire_area"
@@ -415,21 +432,12 @@ class Task3Final:
         self.task3_params = load_task_params(
             "/test_task3_3_inspect_and_drop"
         )
-        self.post_drop_turn_angle_deg = float(
-            self.task3_params.get("post_drop_turn_angle_deg", 90.0)
-        )
         self.post_drop_step_timeout = float(
             self.task3_params.get("post_drop_step_timeout", 90.0)
         )
         self.post_drop_ascent_target_z = float(
             self.task3_params.get("post_drop_ascent_target_z", -1.3)
         )
-        if (
-            not math.isfinite(self.post_drop_turn_angle_deg)
-            or self.post_drop_turn_angle_deg <= 0.0
-            or self.post_drop_turn_angle_deg >= 180.0
-        ):
-            raise ValueError("post_drop_turn_angle_deg必须在0到180度之间")
         if (
             not math.isfinite(self.post_drop_step_timeout)
             or self.post_drop_step_timeout <= 0.0
@@ -1503,10 +1511,7 @@ class Task3Final:
             return None, "无法获得返航起始位姿，不能安全生成上浮目标"
 
         start_yaw = self.yaw_from_pose(current_goal.pose)
-        turn_yaw = self.angle_difference(
-            start_yaw,
-            math.radians(self.post_drop_turn_angle_deg),
-        )
+        turn_yaw = self.return_origin_target_yaw
         turn_goal = self.make_map_goal(
             current_goal.pose.position.x,
             current_goal.pose.position.y,
@@ -1515,12 +1520,14 @@ class Task3Final:
         )
         rospy.logwarn(
             (
-                "%s：%s开始原地左转%.1f度："
-                "保持位置=(%.3f,%.3f,%.3f)，航向=%.1fdeg -> %.1fdeg"
+                "%s：%s开始原地对准返原点绝对航向："
+                "初始航向=%.1fdeg，向左偏移=%.1fdeg，"
+                "保持位置=(%.3f,%.3f,%.3f)，当前航向=%.1fdeg -> 目标航向=%.1fdeg"
             ),
             NODE_NAME,
             context,
-            self.post_drop_turn_angle_deg,
+            self.initial_yaw_deg,
+            self.return_origin_yaw_offset_deg,
             turn_goal.pose.position.x,
             turn_goal.pose.position.y,
             turn_goal.pose.position.z,
@@ -1531,19 +1538,19 @@ class Task3Final:
             turn_goal,
             self.post_drop_step_timeout,
             self.handoff_stable_seconds,
-            "{}原地左转{:.1f}度".format(
+            "{}原地对准返原点绝对航向{:.1f}度".format(
                 context,
-                self.post_drop_turn_angle_deg,
+                math.degrees(self.return_origin_target_yaw),
             ),
         )
         yaw = turn_yaw
         if not turned:
-            recovered_goal = self.capture_current_map_goal(
-                self.fixed_map_z,
-                "{}左转超时后锁存当前航向".format(context),
+            rospy.logwarn(
+                "%s：%s原地航向对准超时，返回原点时继续使用绝对航向%.1fdeg",
+                NODE_NAME,
+                context,
+                math.degrees(yaw),
             )
-            if recovered_goal is not None:
-                yaw = self.yaw_from_pose(recovered_goal.pose)
 
         origin_goal = self.make_map_goal(
             0.0,
@@ -1605,10 +1612,10 @@ class Task3Final:
         if rospy.is_shutdown():
             return False, "ROS关闭，上浮保持被中止"
         turn_detail = (
-            "已原地左转%.1f度" % self.post_drop_turn_angle_deg
+            "已原地对准返原点绝对航向%.1f度" % math.degrees(yaw)
             if turned
-            else "原地左转%.1f度超时，按安全停稳航向继续"
-            % self.post_drop_turn_angle_deg
+            else "原地航向对准超时，返原点时继续对准绝对航向%.1f度"
+            % math.degrees(yaw)
         )
         return_detail = (
             "已返回map原点并向z=%.2f上浮、持续%.1fs"
@@ -2190,11 +2197,11 @@ class Task3Final:
         rospy.logwarn(
             (
                 "%s：彩色方框达到唯一最终超时：%s；不恢复、不重试，"
-                "立即原地左转%.1f度、返回map/NED原点并上浮"
+                "立即原地对准返原点绝对航向%.1f度、返回map/NED原点并上浮"
             ),
             NODE_NAME,
             detail,
-            self.post_drop_turn_angle_deg,
+            math.degrees(self.return_origin_target_yaw),
         )
         returned_to_origin, return_detail = self.return_origin_and_ascend(
             "彩色方框最终超时"
