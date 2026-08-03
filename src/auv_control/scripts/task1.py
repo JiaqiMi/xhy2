@@ -192,7 +192,7 @@ class Task1(Task1LineFollow):
             "~marker_window_size", 10
         )))
         marker_required_valid = max(1, int(rospy.get_param(
-            "~marker_required_valid", 3
+            "~marker_required_valid", 5
         )))
         marker_sample_timeout = max(0.1, float(rospy.get_param(
             "~marker_sample_timeout", 10.0

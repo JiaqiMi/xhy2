@@ -35,7 +35,7 @@ startup_hold_seconds: 3.0
 camera_message_timeout: 2.0
 tf_timeout_seconds: 1.0
 line_message_max_age_seconds: 5.0
-search_forward_distance: 1.5
+search_forward_distance: 1.2
 search_yaw_angle_deg: 45.0
 search_yaw_sign: 1.0
 # 一轮锁线前搜索：向前、左转、右转、回正；一轮锁线后搜索：左转、右转、回正
@@ -91,7 +91,7 @@ yellow_min_confidence: 0.30
 black_min_confidence: 0.30
 max_camera_distance: 5.0
 marker_window_size: 10
-marker_required_valid: 3
+marker_required_valid: 5
 marker_sample_timeout: 10.0
 marker_cluster_distance: 0.25
 marker_duplicate_distance: 0.60
