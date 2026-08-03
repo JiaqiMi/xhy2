@@ -18,7 +18,7 @@
       high：加载完整高速参数；
       其他值会在解析 selected_config_file 时直接报错，防止使用控制器默认值启动。
     -->
-    <arg name="motion_profile" default="high" />
+    <arg name="motion_profile" default="low" />
     <arg name="low_config_file"
          default="$(find auv_control)/config/motion_supervisor_low.yaml" />
     <arg name="high_config_file"

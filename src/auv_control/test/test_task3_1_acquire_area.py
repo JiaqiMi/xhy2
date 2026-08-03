@@ -20,6 +20,12 @@
     精确认连续低置信度时标记误识别点，返回触发搜索位置并继续未完成的绝对搜索路点。
 2026.8.3
     限制稳定位置组三帧的最大时间跨度，超过配置时间不再触发粗对准或精确认。
+2026.8.3
+    启动悬停和搜索路径锁存固定下发目标航向，不再使用机器人瞬时实际航向。
+2026.8.3
+    增加固定航向模式：只使用箭头稳定位置完成最终对准，方向帧不参与判定。
+2026.8.4
+    将侧推自动恢复MotionState=10作为有效等待状态，不再误判为未知异常。
 """
 
 from datetime import datetime
@@ -37,6 +43,9 @@ from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
 NODE_NAME = "test_task3_1_acquire_area"
+THRUSTER_RECOVERY_STATE = int(getattr(
+    MotionState, "THRUSTER_RECOVERY", 10
+))
 
 
 def configure_task_file_logging(subtask_name):
@@ -113,6 +122,7 @@ class Task3AcquireAreaTest(object):
         MotionState.CAPTURE: "CAPTURE",
         MotionState.HOVER: "HOVER",
         MotionState.SAFE: "SAFE",
+        THRUSTER_RECOVERY_STATE: "THRUSTER_RECOVERY",
     }
 
     def __init__(self):
@@ -239,6 +249,20 @@ class Task3AcquireAreaTest(object):
             "/task3_target_depth_m", 0.60
         ))
         self.fixed_map_z = -self.fixed_depth_m
+        heading_mode = rospy.get_param("/task3_heading_mode", 1)
+        if type(heading_mode) is not int or heading_mode not in (1, 2, 3):
+            raise ValueError("task3_heading_mode必须是整数1、2或3")
+        self.heading_mode = heading_mode
+        self.fixed_heading_enabled = heading_mode in (2, 3)
+        self.task3_initial_yaw_deg = float(rospy.get_param(
+            "/task3_initial_yaw_deg", 210.0
+        ))
+        self.search_yaw_deg = float(rospy.get_param(
+            "~search_yaw_deg", self.task3_initial_yaw_deg
+        ))
+        self.configured_initial_yaw = normalize_angle_rad(math.radians(
+            self.search_yaw_deg
+        ))
         self.goal_match_position_tolerance = float(rospy.get_param(
             "~goal_match_position_tolerance", 0.03
         ))
@@ -356,6 +380,12 @@ class Task3AcquireAreaTest(object):
             raise ValueError("rate 必须大于0")
         if not math.isfinite(self.fixed_depth_m) or self.fixed_depth_m <= 0.0:
             raise ValueError("task3_target_depth_m必须是大于0的有限数")
+        for name, value in (
+            ("task3_initial_yaw_deg", self.task3_initial_yaw_deg),
+            ("search_yaw_deg", self.search_yaw_deg),
+        ):
+            if not math.isfinite(value) or value < 0.0 or value >= 360.0:
+                raise ValueError("{}必须在[0, 360)度范围内".format(name))
         if not all((
             self.arrow_topic,
             self.arrow_target_topic,
@@ -477,6 +507,11 @@ class Task3AcquireAreaTest(object):
             raise ValueError("final_hold_timeout 不能小于 final_hold_seconds")
 
     def log_startup_config(self):
+        alignment_flow = (
+            "粗对准后只复核稳定位置并保持阶段固定航向"
+            if self.fixed_heading_enabled
+            else "粗对准后复核同源位置和方向并按箭头方向修正航向"
+        )
         rospy.loginfo(
             (
                 "%s：启动子任务1；本节点不发布/cmd/pose/ned，"
@@ -488,15 +523,21 @@ class Task3AcquireAreaTest(object):
             self.motion_state_topic,
         )
         rospy.loginfo(
+            "%s：航向模式=%d（%s），当前箭头搜索固定航向=%.1fdeg；%s",
+            NODE_NAME,
+            self.heading_mode,
+            "固定" if self.fixed_heading_enabled else "箭头调整",
+            self.search_yaw_deg,
+            alignment_flow,
+        )
+        rospy.loginfo(
             (
                 "%s：流程：固定点HOVER悬停%.1fs -> 前%.2fm -> 左右各%.2fm -> "
                 "再前%.2fm -> 左右各%.2fm搜索 -> "
                 "再前%.2fm -> 左右各%.2fm搜索 -> "
                 "位置滑动窗%d帧命中%d帧 -> "
-                "camera直达首次三帧平均位置并等待HOVER -> "
-                "重新收集三帧同源位置和方向；连续低置信度则返回触发点续跑原路点 -> "
-                "二次位置与首次位置差<=%.3fm且方向抖动<=%.1fdeg -> "
-                "一次下发冻结箭头位置和平均航向，使base_link直达固定map位姿 -> "
+                "camera直达首次三帧平均位置并等待HOVER -> %s -> "
+                "一次下发冻结箭头位置和目标航向，使base_link直达固定map位姿 -> "
                 "HOVER保持%.1fs后完成"
             ),
             NODE_NAME,
@@ -509,8 +550,7 @@ class Task3AcquireAreaTest(object):
             self.search_lateral_distance,
             self.stable_detection_window_size,
             self.stable_detection_count,
-            self.fine_position_match_tolerance_m,
-            self.stable_angle_tolerance_deg,
+            alignment_flow,
             self.final_hold_seconds,
         )
         rospy.loginfo(
@@ -519,9 +559,7 @@ class Task3AcquireAreaTest(object):
                 "方向有效帧置信度=%.2f；数据超时=%.2fs；"
                 "位置队列最多%d个有效帧，任意%d帧时间跨度<=%.1fs且"
                 "相对均值抖动<=%.3fm即通过；"
-                "粗对准HOVER后重新取帧，二次均值与首次均值差<=%.3fm；"
-                "二次确认要求这%d个位置帧具有同源方向帧，"
-                "方向相对圆周平均值抖动<=%.1fdeg"
+                "粗对准HOVER后重新取帧，二次均值与首次均值差<=%.3fm；%s"
             ),
             NODE_NAME,
             self.arrow_topic,
@@ -534,8 +572,15 @@ class Task3AcquireAreaTest(object):
             self.stable_position_group_max_span_seconds,
             self.stable_map_position_tolerance_m,
             self.fine_position_match_tolerance_m,
-            self.direction_confirm_required_count,
-            self.stable_angle_tolerance_deg,
+            (
+                "固定模式不读取方向作为通过条件"
+                if self.fixed_heading_enabled
+                else "二次确认要求{}个位置帧具有同源方向帧，方向抖动<={:.1f}deg"
+                .format(
+                    self.direction_confirm_required_count,
+                    self.stable_angle_tolerance_deg,
+                )
+            ),
         )
         rospy.loginfo(
             (
@@ -548,23 +593,25 @@ class Task3AcquireAreaTest(object):
             self.camera_forward_angle_deg,
             self.yaw_correction_sign,
         )
+        if not self.fixed_heading_enabled:
+            rospy.loginfo(
+                (
+                    "%s：误识别恢复：精确认连续%d个唯一推理源帧低置信度或未识别即触发；"
+                    "误识别map点%.3fm半径内后续全部忽略；"
+                    "先返回首次锁定发生时的机器人位置，再继续原绝对搜索路点的剩余距离"
+                ),
+                NODE_NAME,
+                self.fine_false_positive_invalid_count,
+                self.false_positive_ignore_radius_m,
+            )
         rospy.loginfo(
-            (
-                "%s：误识别恢复：精确认连续%d个唯一推理源帧低置信度或未识别即触发；"
-                "误识别map点%.3fm半径内后续全部忽略；"
-                "先返回首次锁定发生时的机器人位置，再继续原绝对搜索路点的剩余距离"
-            ),
+            "%s：完成条件：%s；一次下发为base_link最终固定目标并等待匹配HOVER",
             NODE_NAME,
-            self.fine_false_positive_invalid_count,
-            self.false_positive_ignore_radius_m,
-        )
-        rospy.loginfo(
             (
-                "%s：完成条件：HOVER后二次三帧平均位置与首次点距离通过，"
-                "且这三帧的同源方向角稳定；冻结二次平均位置和平均方向，"
-                "一次下发为base_link最终固定目标并等待匹配HOVER"
+                "HOVER后二次稳定位置与首次点距离通过，冻结位置和阶段固定航向"
+                if self.fixed_heading_enabled
+                else "HOVER后二次稳定位置与首次点距离通过且同源方向稳定，冻结位置和平均方向"
             ),
-            NODE_NAME,
         )
         rospy.loginfo(
             (
@@ -1043,6 +1090,15 @@ class Task3AcquireAreaTest(object):
             return
         if self.state in (self.FINAL_BASE_LINK_APPROACH, self.FINAL_HOLD):
             return
+        if self.fixed_heading_enabled:
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：[箭头唯一推理帧#%d] 固定航向模式只记录方向话题存活；"
+                "本帧不参与通过条件、误识别恢复或航向目标计算",
+                NODE_NAME,
+                frame_index,
+            )
+            return
         if not bool(payload.get("valid", False)):
             self.record_fine_invalid_evidence(
                 source_key,
@@ -1458,6 +1514,39 @@ class Task3AcquireAreaTest(object):
             ),
         )
 
+    def fine_position_candidate(self):
+        if self.coarse_arrow_map_x is None or self.coarse_arrow_map_y is None:
+            return None
+        candidates = []
+        for position_group in self.stable_position_groups():
+            mean_x, mean_y, position_jitter = self.position_group_summary(
+                position_group
+            )
+            coarse_difference = math.hypot(
+                mean_x - self.coarse_arrow_map_x,
+                mean_y - self.coarse_arrow_map_y,
+            )
+            if coarse_difference > self.fine_position_match_tolerance_m:
+                continue
+            candidates.append({
+                "map_x": mean_x,
+                "map_y": mean_y,
+                "position_jitter": position_jitter,
+                "coarse_difference": coarse_difference,
+                "position_frame_ids": [
+                    item["frame_index"] for item in position_group
+                ],
+            })
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda item: (
+                item["position_jitter"],
+                item["coarse_difference"],
+            ),
+        )
+
     def heading_error_from_direction_deg(self, direction_angle_deg):
         return self.yaw_correction_sign * normalize_angle_deg(
             self.camera_forward_angle_deg - direction_angle_deg
@@ -1597,9 +1686,11 @@ class Task3AcquireAreaTest(object):
         if status is None or current is None:
             return False
         current_yaw = yaw_from_quaternion(current.pose.orientation)
+        fixed_yaw = self.configured_initial_yaw
+        fixed_yaw_source = "当前箭头阶段配置航向"
         self.initial_hold_x = current.pose.position.x
         self.initial_hold_y = current.pose.position.y
-        self.initial_hold_yaw = current_yaw
+        self.initial_hold_yaw = fixed_yaw
         self.target_z = self.fixed_map_z
         self.control_initialized = True
         rospy.loginfo(
@@ -1613,21 +1704,26 @@ class Task3AcquireAreaTest(object):
             current.pose.position.x,
             current.pose.position.y,
             self.target_z,
-            current_yaw,
-            "锁存启动水平位置和航向，并使用任务统一固定深度",
+            self.initial_hold_yaw,
+            "锁存启动水平位置和固定下发航向，并使用任务统一固定深度",
         )
         self.set_state(
             self.INITIAL_HOVER,
             "TF和/status/auv已就绪，开始追踪固定启动点",
         )
         rospy.loginfo(
-            "%s：固定悬停点已锁存：map=(%.3f,%.3f,%.3f)，yaw=%.2fdeg；"
-            "悬停期间不会随当前漂移位置更新",
+            (
+                "%s：固定悬停点已锁存：map=(%.3f,%.3f,%.3f)，"
+                "固定目标yaw=%.2fdeg，当前实际yaw=%.2fdeg，来源=%s；"
+                "悬停和后续搜索前进均保持该固定目标航向"
+            ),
             NODE_NAME,
             self.initial_hold_x,
             self.initial_hold_y,
             self.target_z,
             math.degrees(self.initial_hold_yaw),
+            math.degrees(current_yaw),
+            fixed_yaw_source,
         )
         return True
 
@@ -1848,15 +1944,14 @@ class Task3AcquireAreaTest(object):
         current = self.get_current_pose("锁定阶段切换保持位姿")
         if current is None:
             return False
-        current_yaw = yaw_from_quaternion(current.pose.orientation)
         self.hold_requested_at = rospy.Time.now()
         self.hold_next_state = next_state
         self.set_active_goal(
             current.pose.position.x,
             current.pose.position.y,
             self.target_z,
-            current_yaw,
-            "阶段切换时锁定当前实际位姿，不发布cancel",
+            self.initial_hold_yaw,
+            "阶段切换时锁定当前位置并保持阶段固定航向，不发布cancel",
         )
         rospy.logwarn(
             (
@@ -2100,13 +2195,12 @@ class Task3AcquireAreaTest(object):
         self.coarse_arrow_map_x = self.latest_map_target["map_x"]
         self.coarse_arrow_map_y = self.latest_map_target["map_y"]
         self.coarse_arrow_camera_frame = self.latest_map_target["camera_frame"]
-        current_yaw = yaw_from_quaternion(current.pose.orientation)
         if not self.set_camera_xy_goal(
             self.coarse_arrow_map_x,
             self.coarse_arrow_map_y,
-            current_yaw,
+            self.initial_hold_yaw,
             self.coarse_arrow_camera_frame,
-            "首次三帧稳定位置通过，保持当前航向并让camera的xy对准该平均点",
+            "首次三帧稳定位置通过，保持阶段固定航向并让camera的xy对准该平均点",
         ):
             return False
         self.false_positive_trigger_pose = trigger_pose
@@ -2356,12 +2450,17 @@ class Task3AcquireAreaTest(object):
         self.reset_direction_lock()
         self.reset_fine_invalid_evidence()
         self.false_positive_recovery_pending = False
-        self.direction_collection_active = True
+        self.direction_collection_active = not self.fixed_heading_enabled
         self.visual_step_requested_at = None
         self.set_state(
             self.COLLECT_DIRECTION,
-            "camera粗对准目标已进入匹配HOVER；清空移动期间数据，"
-            "从当前位置重新收集三帧同源位置和方向",
+            (
+                "camera粗对准目标已进入匹配HOVER；清空移动期间数据，"
+                "从当前位置只重新收集稳定位置"
+                if self.fixed_heading_enabled
+                else "camera粗对准目标已进入匹配HOVER；清空移动期间数据，"
+                "从当前位置重新收集三帧同源位置和方向"
+            ),
         )
 
     def begin_false_positive_recovery(self):
@@ -2464,7 +2563,68 @@ class Task3AcquireAreaTest(object):
             ),
         )
 
+    def control_collect_fixed_position(self):
+        candidate = self.fine_position_candidate()
+        if candidate is not None:
+            self.final_arrow_map_x = candidate["map_x"]
+            self.final_arrow_map_y = candidate["map_y"]
+            self.final_target_yaw = self.initial_hold_yaw
+            self.final_position_frame_ids = candidate["position_frame_ids"]
+            self.final_direction_frame_ids = []
+            self.direction_collection_active = False
+            rospy.logwarn(
+                (
+                    "%s：固定航向模式精确认通过：二次平均map=(%.3f,%.3f)，"
+                    "与首次点差=%.3f/%.3fm，位置帧=%s，位置抖动=%.3fm；"
+                    "忽略箭头方向，最终yaw固定为%.2fdeg"
+                ),
+                NODE_NAME,
+                self.final_arrow_map_x,
+                self.final_arrow_map_y,
+                candidate["coarse_difference"],
+                self.fine_position_match_tolerance_m,
+                candidate["position_frame_ids"],
+                candidate["position_jitter"],
+                math.degrees(self.final_target_yaw),
+            )
+            self.begin_final_base_link_approach(
+                "固定航向模式二次稳定位置通过，直接下发冻结位置和阶段固定航向"
+            )
+            return
+
+        position_groups = self.stable_position_groups()
+        position_difference = None
+        if position_groups:
+            position_difference = min(
+                math.hypot(
+                    self.position_group_summary(group)[0]
+                    - self.coarse_arrow_map_x,
+                    self.position_group_summary(group)[1]
+                    - self.coarse_arrow_map_y,
+                )
+                for group in position_groups
+            )
+        rospy.loginfo_throttle(
+            self.log_interval,
+            (
+                "%s：固定航向模式位置精确认中：有效位置=%d/%d，"
+                "二次稳定位置与首次位置差=%s/<=%.3fm；箭头方向完全忽略"
+            ),
+            NODE_NAME,
+            len(self.detection_samples),
+            self.stable_detection_window_size,
+            (
+                "未形成稳定组"
+                if position_difference is None
+                else "{:.3f}m".format(position_difference)
+            ),
+            self.fine_position_match_tolerance_m,
+        )
+
     def control_collect_direction(self):
+        if self.fixed_heading_enabled:
+            self.control_collect_fixed_position()
+            return
         if self.false_positive_recovery_pending:
             self.begin_false_positive_recovery()
             return
@@ -2556,7 +2716,11 @@ class Task3AcquireAreaTest(object):
             self.final_arrow_map_y,
             self.target_z,
             self.final_target_yaw,
-            "冻结最终判别通过的稳定箭头位置和航向，直达该固定map位姿",
+            (
+                "冻结最终稳定箭头位置和阶段固定航向，直达该固定map位姿"
+                if self.fixed_heading_enabled
+                else "冻结最终判别通过的稳定箭头位置和航向，直达该固定map位姿"
+            ),
         )
         self.direction_collection_active = False
         self.latest_detection = None
@@ -2574,7 +2738,7 @@ class Task3AcquireAreaTest(object):
             self.final_arrow_map_y,
             self.target_z,
             self.final_position_frame_ids,
-            self.final_direction_frame_ids,
+            self.final_direction_frame_ids or "固定模式忽略",
             math.degrees(self.final_target_yaw),
         )
         return True
@@ -2636,8 +2800,13 @@ class Task3AcquireAreaTest(object):
             if stable_elapsed >= self.final_hold_seconds:
                 self.finish_task(
                     True,
-                    "base_link已稳定到达最终判别冻结位置；"
-                    "最终移动期间未再使用箭头位置或方向",
+                    (
+                        "base_link已稳定到达冻结位置并保持阶段固定航向；"
+                        "箭头方向未参与通过条件"
+                        if self.fixed_heading_enabled
+                        else "base_link已稳定到达最终判别冻结位置；"
+                        "最终移动期间未再使用箭头位置或方向"
+                    ),
                 )
                 return
         else:
