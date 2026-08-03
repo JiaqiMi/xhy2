@@ -15,6 +15,11 @@
     增加 base_link 轨迹和两帧目标位置的地图图例样式。
     复用视觉开关样式控制地图位置与置信度标注。
     将轨迹、视觉和地图控件分组，并统一各组按钮宽度与对齐方式。
+    按 1920×1080 单屏基准固定顶栏，并让两排主面板严格占满剩余视口。
+    增加 XY 位置图全页放大层及恢复状态样式。
+    1920×1080 下将地图工具压缩为单行统一尺寸，扩大绘图区。
+    将目标图例由紫色调整为高对比粉色。
+    为 base_link 实时居中跟踪按钮和跟踪画布增加状态样式。
 */
 
 :root {
@@ -40,6 +45,7 @@
 html,
 body {
     width: 100%;
+    height: 100%;
     min-height: 100%;
     margin: 0;
     background:
@@ -60,18 +66,22 @@ input {
 
 .app-shell {
     display: flex;
+    min-width: 0;
+    min-height: 0;
     flex-direction: column;
     width: 100vw;
     height: 100vh;
     padding: 12px;
+    overflow: hidden;
     gap: 10px;
 }
 
 .topbar {
     display: flex;
+    min-height: 0;
+    flex: 0 0 64px;
     align-items: center;
     justify-content: space-between;
-    min-height: 64px;
     padding: 8px 14px;
     border: 1px solid var(--panel-border);
     border-radius: 12px;
@@ -152,10 +162,20 @@ input {
 .dashboard-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-rows: minmax(260px, 0.88fr) minmax(360px, 1.12fr);
+    grid-template-rows: minmax(0, 44fr) minmax(0, 56fr);
     min-height: 0;
     flex: 1;
     gap: 10px;
+}
+
+@media (min-width: 1600px) and (min-height: 900px) {
+    .app-shell {
+        padding: 10px;
+    }
+
+    .dashboard-grid {
+        grid-template-rows: minmax(0, 43fr) minmax(0, 57fr);
+    }
 }
 
 .panel {
@@ -331,7 +351,7 @@ input {
 }
 
 .map-operation-group .map-control-group-items {
-    grid-template-columns: 112px repeat(5, minmax(0, 1fr));
+    grid-template-columns: 112px repeat(6, minmax(0, 1fr));
 }
 
 .map-controls button,
@@ -427,7 +447,7 @@ input {
 }
 
 .map-legend.target {
-    color: #7f3fc5;
+    color: #ff62cf;
 }
 
 .map-legend.target::before {
@@ -460,6 +480,77 @@ input {
 .map-controls button:disabled {
     cursor: not-allowed;
     opacity: 0.45;
+}
+
+@media (min-width: 1251px) and (max-width: 1799px) {
+    .map-controls {
+        grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+    }
+
+    .map-operation-group {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (min-width: 1800px) {
+    .navigation-title {
+        gap: 4px;
+        margin-bottom: 6px;
+    }
+
+    .map-controls {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 5px;
+    }
+
+    .map-control-group {
+        display: block;
+        flex: 0 0 auto;
+        padding: 2px 4px;
+    }
+
+    .map-control-group-title {
+        display: none;
+    }
+
+    .trajectory-control-group .map-control-group-items,
+    .visual-control-group .map-control-group-items,
+    .map-operation-group .map-control-group-items {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .map-controls button,
+    .map-legend,
+    .visual-history-toggle {
+        width: 56px;
+        min-width: 56px;
+        height: 28px;
+        min-height: 28px;
+        flex: 0 0 56px;
+        padding: 2px 3px;
+        overflow: hidden;
+        font-size: 11px;
+        text-overflow: ellipsis;
+    }
+
+    .map-heading-control {
+        width: 82px;
+        min-width: 82px;
+        height: 28px;
+        min-height: 28px;
+        flex: 0 0 82px;
+        padding: 2px 3px;
+    }
+
+    .map-heading-control input {
+        width: 38px;
+        height: 22px;
+        padding: 1px 3px;
+    }
 }
 
 .navigation-layout {
@@ -501,6 +592,31 @@ input {
 
 .xy-card canvas.is-drawing {
     cursor: crosshair;
+}
+
+.xy-card canvas.is-tracking:not(.is-drawing) {
+    cursor: default;
+}
+
+.xy-card.is-expanded {
+    position: fixed;
+    z-index: 1000;
+    inset: 10px;
+    border-color: rgba(67, 199, 255, 0.72);
+    border-radius: 12px;
+    background: #06111e;
+    box-shadow:
+        0 0 0 1px rgba(67, 199, 255, 0.18),
+        0 24px 80px rgba(0, 0, 0, 0.72);
+}
+
+body.xy-map-expanded {
+    overflow: hidden;
+}
+
+body.xy-map-expanded .xy-card.is-expanded .canvas-hint {
+    color: #b9d9ef;
+    background: rgba(3, 10, 18, 0.84);
 }
 
 .canvas-hint {

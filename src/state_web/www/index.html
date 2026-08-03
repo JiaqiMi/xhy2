@@ -17,6 +17,14 @@
     增加视觉位置与置信度标注的独立显示开关。
     将轨迹、视觉和地图工具按功能分组并统一组内控件宽度。
     为布局样式增加版本参数，避免浏览器继续使用旧尺寸缓存。
+    删除重复的视觉与地图控件，并兼容服务端和本地文件两种资源加载方式。
+    将页面显示基准调整为 1920×1080 单屏四面板布局。
+    增加 XY 位置图双击放大与原位恢复提示。
+    更新地图脚本版本以加载 hand 深绿色点绘制功能。
+    将地图工具改为单行短标签，并更新目标粉色样式版本。
+    更新脚本版本以区分粉色 target 与青蓝色视觉 arrow。
+    将 base_link 轨迹图例更新为最多 1000 点。
+    增加不旋转地图航向的 base_link 实时居中跟踪按钮。
 -->
 <html lang="zh-CN">
 
@@ -24,7 +32,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AUV 运行状态监控</title>
-    <link rel="stylesheet" href="/assets/dashboard.css?v=20260803-layout3">
+    <script>
+        // 本地直接预览时使用同目录资源，服务端运行时保持 /assets 路由。
+        const dashboardAssetRoot = window.location.protocol === "file:"
+            ? "."
+            : "/assets";
+        const dashboardStylesheet = document.createElement("link");
+        dashboardStylesheet.rel = "stylesheet";
+        dashboardStylesheet.href = `${dashboardAssetRoot}/dashboard.css?v=20260803-map9`;
+        document.head.appendChild(dashboardStylesheet);
+    </script>
 </head>
 
 <body>
@@ -113,31 +130,31 @@
             </section>
 
             <section class="panel navigation-panel">
-            <div class="panel-title navigation-title">
-                <div class="navigation-intro">
-                    <h2>NED 实际与目标位姿</h2>
-                    <span class="subtitle">XY 地图可指定向上航向，Z/Down 向下</span>
-                </div>
-                <div class="map-controls">
+                <div class="panel-title navigation-title">
+                    <div class="navigation-intro">
+                        <h2>NED 实际与目标位姿</h2>
+                        <span class="subtitle">XY 地图可指定向上航向，Z/Down 向下</span>
+                    </div>
+                    <div class="map-controls">
                     <div class="map-control-group trajectory-control-group">
                         <span class="map-control-group-title">轨迹与目标</span>
                         <div class="map-control-group-items">
                             <span class="map-legend actual"
                                   title="实际 TF：base_link → camera">
-                                实际 base → camera
+                                实TF
                             </span>
                             <span class="map-legend trajectory"
-                                  title="base_link 轨迹：1 Hz，最近 60 秒">
-                                轨迹 1Hz / 60s
+                                  title="base_link 轨迹：1 Hz，最多 1000 个点">
+                                轨迹1k
                             </span>
                             <span class="map-legend target"
                                   title="最新目标为深紫色，上一帧目标为浅紫色">
-                                目标 新 / 上一帧
+                                目标
                             </span>
                             <button id="clear-base-trajectory"
                                     type="button"
                                     title="只清除 base_link 轨迹">
-                                清除轨迹
+                                清轨迹
                             </button>
                         </div>
                     </div>
@@ -150,19 +167,19 @@
                                 <input id="show-visual-history"
                                        type="checkbox"
                                        checked>
-                                <span>显示视觉绘图</span>
+                                <span>绘图</span>
                             </label>
                             <label class="visual-history-toggle"
                                    for="show-visual-labels">
                                 <input id="show-visual-labels"
                                        type="checkbox"
                                        checked>
-                                <span>显示位置标注</span>
+                                <span>标注</span>
                             </label>
                             <button id="clear-visual-history"
                                     type="button"
                                     title="清除地图视觉绘图、鱼眼历史和期望颜色">
-                                清除视觉历史
+                                清视觉
                             </button>
                         </div>
                     </div>
@@ -172,7 +189,7 @@
                         <div class="map-control-group-items">
                             <label class="map-heading-control"
                                    for="map-up-heading">
-                                <span>向上航向</span>
+                                <span>上</span>
                                 <input id="map-up-heading"
                                        type="number"
                                        min="0"
@@ -190,79 +207,40 @@
                             <button id="north-up-map"
                                     type="button"
                                     title="恢复 0° 北向上">
-                                北向上
+                                北向
+                            </button>
+                            <button id="track-base-link"
+                                    type="button"
+                                    aria-pressed="false"
+                                    title="实时将 base_link 置于地图中心，不改变地图航向">
+                                跟踪
                             </button>
                             <button id="draw-pool-boundary"
                                     type="button"
                                     title="在地图上拖拽水池的两个对角点">
-                                绘制水池
+                                画水池
                             </button>
                             <button id="clear-pool-boundary"
                                     type="button"
                                     title="清除已保存的水池范围">
-                                清除水池
+                                清水池
                             </button>
                             <button id="reset-map"
                                     type="button"
                                     title="重置 2D 位置图和深度图">
-                                回到原点
+                                原点
                             </button>
                         </div>
                     </div>
-                </div>
-            </div>
-
-                        <div class="map-control-group visual-control-group">
-                            <span class="map-control-group-title">视觉</span>
-                            <div class="map-control-group-items">
-                                <label class="visual-history-toggle" for="show-visual-history">
-                                    <input id="show-visual-history" type="checkbox" checked>
-                                    <span>显示视觉绘图</span>
-                                </label>
-                                <label class="visual-history-toggle" for="show-visual-labels">
-                                    <input id="show-visual-labels" type="checkbox" checked>
-                                    <span>显示位置标注</span>
-                                </label>
-                                <button id="clear-visual-history" type="button" title="清除地图视觉绘图、鱼眼历史和期望颜色">
-                                    清除视觉历史
-                                </button>
-                            </div>
-                        </div>
-
-                        <div class="map-control-group map-operation-group">
-                            <span class="map-control-group-title">地图</span>
-                            <div class="map-control-group-items">
-                                <label class="map-heading-control" for="map-up-heading">
-                                    <span>向上航向</span>
-                                    <input id="map-up-heading" type="number" min="0" max="359" step="1"
-                                        inputmode="decimal" aria-label="地图向上航向">
-                                    <span>°</span>
-                                </label>
-                                <button id="apply-map-heading" type="button" title="应用地图向上航向">
-                                    应用
-                                </button>
-                                <button id="north-up-map" type="button" title="恢复 0° 北向上">
-                                    北向上
-                                </button>
-                                <button id="draw-pool-boundary" type="button" title="在地图上拖拽水池的两个对角点">
-                                    绘制水池
-                                </button>
-                                <button id="clear-pool-boundary" type="button" title="清除已保存的水池范围">
-                                    清除水池
-                                </button>
-                                <button id="reset-map" type="button" title="重置 2D 位置图和深度图">
-                                    回到原点
-                                </button>
-                            </div>
-                        </div>
                     </div>
                 </div>
 
                 <div class="navigation-layout">
                     <div class="canvas-card xy-card">
-                        <canvas id="xy-canvas"></canvas>
+                        <canvas id="xy-canvas"
+                                aria-label="NED XY 位置图，双击放大查看"></canvas>
                         <div id="map-hint" class="canvas-hint">
-                            滚轮缩放 · 拖拽平移 · 上方 0°
+                            滚轮缩放 · 拖拽平移 · 双击放大 · 上方 0°
                         </div>
                     </div>
 
@@ -337,7 +315,12 @@
         </main>
     </div>
 
-    <script src="/assets/dashboard.js"></script>
+    <script>
+        const dashboardScript = document.createElement("script");
+        dashboardScript.src = `${dashboardAssetRoot}/dashboard.js?v=20260803-map9`;
+        dashboardScript.async = false;
+        document.body.appendChild(dashboardScript);
+    </script>
 </body>
 
 </html>
