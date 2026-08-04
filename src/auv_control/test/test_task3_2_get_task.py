@@ -75,6 +75,7 @@ DEFAULT_HOLD_BASE_FRAME = "base_link"
 DEFAULT_INITIAL_HOVER_SECONDS = 10.0
 DEFAULT_INITIAL_HOVER_TIMEOUT = 30.0
 DEFAULT_HOLD_POSE_TIMEOUT = 5.0
+DEFAULT_MAX_WAIT_SECONDS = 120.0
 
 DEFAULT_TURN_ENABLED = True
 DEFAULT_ARUCO_YAW_DEG = 120.0
@@ -139,6 +140,9 @@ class Task3GetTaskTest:
     }
 
     def __init__(self):
+        self.task_started_wall_time = time.monotonic()
+        self.max_wait_timed_out = False
+        self.last_total_timeout_reason = ""
         self.rate_hz = float(rospy.get_param("~rate", DEFAULT_RATE))
         self.rate = rospy.Rate(self.rate_hz)
 
@@ -165,6 +169,9 @@ class Task3GetTaskTest:
         ))
         self.hold_pose_timeout = float(rospy.get_param(
             "~hold_pose_timeout", DEFAULT_HOLD_POSE_TIMEOUT
+        ))
+        self.max_wait_seconds = float(rospy.get_param(
+            "~max_wait_seconds", DEFAULT_MAX_WAIT_SECONDS
         ))
         self.motion_state_timeout = float(rospy.get_param(
             "/task3_protection/motion_feedback_timeout", 3.0
@@ -382,7 +389,8 @@ class Task3GetTaskTest:
                 self.initial_hover_timeout,
                 self.hold_pose_timeout,
                 self.motion_state_timeout,
-                self.turn_timeout) <= 0.0:
+                self.turn_timeout,
+                self.max_wait_seconds) <= 0.0:
             raise ValueError("悬停、TF、运动状态和转向超时必须大于0")
         if (
             not math.isfinite(self.aruco_yaw_deg)
@@ -482,8 +490,9 @@ class Task3GetTaskTest:
         )
         rospy.loginfo(
             (
-                "%s：转向参数：启用=%s，绝对ArUco航向=%.1fdeg，超时=%.1fs，"
-                "稳定确认=%.1fs，完成后保持=%.1fs"
+                "%s：转向参数：启用=%s，绝对ArUco航向=%.1fdeg，"
+                "局部HOVER超时%.1fs仅记录，稳定确认=%.1fs，完成后保持=%.1fs；"
+                "子任务进入后唯一总超时=%.1fs"
             ),
             NODE_NAME,
             str(self.turn_enabled),
@@ -491,6 +500,7 @@ class Task3GetTaskTest:
             self.turn_timeout,
             self.turn_stable_seconds,
             self.turn_hold_seconds,
+            self.max_wait_seconds,
         )
         rospy.loginfo(
             (
@@ -622,6 +632,8 @@ class Task3GetTaskTest:
     def capture_hold_pose(self):
         deadline = rospy.Time.now() + rospy.Duration(self.hold_pose_timeout)
         while not rospy.is_shutdown() and rospy.Time.now() < deadline:
+            if self.total_timeout_reached("锁存ArUco启动定点"):
+                return False
             try:
                 self.tf_listener.waitForTransform(
                     self.hold_map_frame,
@@ -788,14 +800,7 @@ class Task3GetTaskTest:
         while not rospy.is_shutdown():
             now = time.monotonic()
             elapsed = now - started_at
-            if elapsed >= timeout:
-                rospy.logerr(
-                    "%s：%s超过%.1fs仍未稳定到达；%s",
-                    NODE_NAME,
-                    reason,
-                    timeout,
-                    self.motion_state_debug_text(),
-                )
+            if self.total_timeout_reached(reason):
                 return False
             if not self.publish_position_hold(reason):
                 return False
@@ -823,10 +828,11 @@ class Task3GetTaskTest:
                 stable_started_at = None
                 rospy.loginfo_throttle(
                     1.0,
-                    "%s：等待%s，剩余%.1fs：%s；%s",
+                    "%s：等待%s，已用时%.1fs（局部HOVER超时%.1fs仅记录）：%s；%s",
                     NODE_NAME,
                     reason,
-                    max(0.0, timeout - elapsed),
+                    elapsed,
+                    timeout,
                     detail,
                     self.motion_state_debug_text(),
                 )
@@ -874,6 +880,8 @@ class Task3GetTaskTest:
     def hold_active_goal_for(self, seconds, reason):
         started_at = time.monotonic()
         while not rospy.is_shutdown() and time.monotonic() - started_at < seconds:
+            if self.total_timeout_reached(reason):
+                return False
             self.publish_position_hold(reason)
             rospy.loginfo_throttle(
                 1.0,
@@ -885,6 +893,26 @@ class Task3GetTaskTest:
             )
             self.rate.sleep()
         return not rospy.is_shutdown()
+
+    def total_timeout_elapsed(self):
+        return max(0.0, time.monotonic() - self.task_started_wall_time)
+
+    def total_timeout_reached(self, context):
+        elapsed = self.total_timeout_elapsed()
+        if elapsed < self.max_wait_seconds:
+            return False
+        self.max_wait_timed_out = True
+        self.last_total_timeout_reason = (
+            "ArUco子任务进入后总时间达到{:.1f}s；当前阶段={}"
+            .format(elapsed, context)
+        )
+        rospy.logerr_throttle(
+            1.0,
+            "%s：%s",
+            NODE_NAME,
+            self.last_total_timeout_reason,
+        )
+        return True
 
     @staticmethod
     def window_text(window_values):
@@ -1127,6 +1155,9 @@ class Task3GetTaskTest:
         )
 
         while not rospy.is_shutdown():
+            if self.total_timeout_reached("ArUco识别"):
+                self.accept_detections = False
+                return None
             self.publish_position_hold("ArUco识别与历史/人工颜色兜底阶段")
             now = rospy.Time.now()
 
@@ -1249,6 +1280,9 @@ class Task3GetTaskTest:
         )
         while not rospy.is_shutdown():
             now = time.monotonic()
+            if self.total_timeout_reached("灯光阶段{}".format(color)):
+                self.last_light_failure_reason = self.last_total_timeout_reason
+                return False
             self.publish_position_hold("灯光阶段继续保持识别固定点")
             self.publish_lights(color)
 
@@ -1384,7 +1418,11 @@ class Task3GetTaskTest:
             return
 
         if not self.capture_hold_pose():
-            reason = "无法记录启动定点，请检查 map -> base_link TF"
+            reason = (
+                self.last_total_timeout_reason
+                if self.max_wait_timed_out
+                else "无法记录启动定点，请检查 map -> base_link TF"
+            )
             self.finalize_task(False, reason)
             rospy.signal_shutdown(reason)
             return
@@ -1402,7 +1440,11 @@ class Task3GetTaskTest:
             self.initial_hover_seconds,
             "识别前定点悬停",
         ):
-            reason = "识别前固定点未能在规定时间稳定"
+            reason = (
+                self.last_total_timeout_reason
+                if self.max_wait_timed_out
+                else "识别前固定点未能稳定进入HOVER"
+            )
             self.finalize_task(False, reason)
             rospy.signal_shutdown(reason)
             return
@@ -1420,10 +1462,14 @@ class Task3GetTaskTest:
         )
         marker_id = self.wait_for_recognition()
         if marker_id is None and not self.used_recognition_fallback:
-            reason = "识别时间超过{:.1f}s，未满足最近{}帧内同ID达到{}帧".format(
-                self.recognition_timeout,
-                self.recognition_window_size,
-                self.required_match_count,
+            reason = (
+                self.last_total_timeout_reason
+                if self.max_wait_timed_out
+                else "识别时间超过{:.1f}s，未满足最近{}帧内同ID达到{}帧".format(
+                    self.recognition_timeout,
+                    self.recognition_window_size,
+                    self.required_match_count,
+                )
             )
             self.finalize_task(False, reason)
             rospy.signal_shutdown(reason)
@@ -1490,14 +1536,23 @@ class Task3GetTaskTest:
                     "ArUco识别后原地对准绝对航向{:.1f}度".format(
                         self.aruco_yaw_deg),
             ):
-                reason = "ArUco识别成功，但绝对航向{:.1f}度未稳定到达".format(
-                    self.aruco_yaw_deg)
+                reason = (
+                    self.last_total_timeout_reason
+                    if self.max_wait_timed_out
+                    else "ArUco识别成功，但绝对航向{:.1f}度未稳定到达".format(
+                        self.aruco_yaw_deg
+                    )
+                )
                 self.finalize_task(False, reason)
                 rospy.signal_shutdown(reason)
                 return
             if not self.hold_active_goal_for(
                     self.turn_hold_seconds, "转向完成后的定点保持"):
-                reason = "转向完成后的定点保持被中止"
+                reason = (
+                    self.last_total_timeout_reason
+                    if self.max_wait_timed_out
+                    else "转向完成后的定点保持被中止"
+                )
                 self.finalize_task(False, reason)
                 rospy.signal_shutdown(reason)
                 return

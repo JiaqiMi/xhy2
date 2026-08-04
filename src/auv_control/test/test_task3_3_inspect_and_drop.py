@@ -29,6 +29,7 @@ import logging
 import math
 import os
 import statistics
+import time
 
 import rospy
 import tf
@@ -157,8 +158,7 @@ DEFAULT_HOLD_SECONDS = 1.0
 DEFAULT_OPEN_SECONDS = 3.0
 DEFAULT_RETURN_RIGHT_SECONDS = 1.0
 DEFAULT_CLOSE_SECONDS = 0.0
-DEFAULT_PRE_DROP_FORWARD_DISTANCE = 0.20
-DEFAULT_PRE_DROP_FORWARD_TIMEOUT = 90.0
+DEFAULT_PRE_DROP_HAND_FRAME = "hand"
 DEFAULT_POST_DROP_MOTION_ENABLED = True
 DEFAULT_ARUCO_YAW_DEG = 120.0
 DEFAULT_RETURN_ORIGIN_YAW_DEG = 30.0
@@ -197,7 +197,7 @@ class Task3InspectAndDropTest:
     CLOSE_CLAMP = 6
     POST_DROP_TURN = 7
     POST_DROP_RETURN_ORIGIN = 8
-    PRE_DROP_FORWARD = 9
+    PRE_DROP_HAND_ALIGN = 9
     POST_DROP_ASCEND = 10
 
     STATE_NAMES = {
@@ -210,7 +210,7 @@ class Task3InspectAndDropTest:
         CLOSE_CLAMP: "关闭夹爪",
         POST_DROP_TURN: "投放后原点航向对准",
         POST_DROP_RETURN_ORIGIN: "投放后返回map原点",
-        PRE_DROP_FORWARD: "投放前固定前进",
+        PRE_DROP_HAND_ALIGN: "投放前夹爪TF对准",
         POST_DROP_ASCEND: "原点持续上浮",
     }
 
@@ -330,14 +330,10 @@ class Task3InspectAndDropTest:
         self.close_seconds = float(
             rospy.get_param("~close_seconds", DEFAULT_CLOSE_SECONDS)
         )
-        self.pre_drop_forward_distance = float(rospy.get_param(
-            "~pre_drop_forward_distance",
-            DEFAULT_PRE_DROP_FORWARD_DISTANCE,
-        ))
-        self.pre_drop_forward_timeout = float(rospy.get_param(
-            "~pre_drop_forward_timeout",
-            DEFAULT_PRE_DROP_FORWARD_TIMEOUT,
-        ))
+        self.pre_drop_hand_frame = str(rospy.get_param(
+            "~pre_drop_hand_frame",
+            DEFAULT_PRE_DROP_HAND_FRAME,
+        )).strip()
         self.post_drop_motion_enabled = bool(rospy.get_param(
             "~post_drop_motion_enabled",
             DEFAULT_POST_DROP_MOTION_ENABLED,
@@ -606,7 +602,7 @@ class Task3InspectAndDropTest:
         self.state = self.WAIT_FOR_TARGET
         self.state_started = rospy.Time.now()
         self.task_started = rospy.Time.now()
-        self.motion_timeout_started_at = None
+        self.motion_timeout_started_at = time.monotonic()
         self.max_wait_timed_out = False
         self.last_model_message_time = None
         self.last_target_time = None
@@ -761,7 +757,7 @@ class Task3InspectAndDropTest:
                 NODE_NAME,
             )
         rospy.loginfo(
-            "%s：主循环频率=%.1fHz，首次运动后总超时=%.1fs",
+            "%s：主循环频率=%.1fHz，子任务进入后总超时=%.1fs",
             NODE_NAME,
             self.rate_hz,
             self.max_wait_seconds,
@@ -780,7 +776,7 @@ class Task3InspectAndDropTest:
             (
                 "%s：逐帧候选组：最近%d个模型帧内保留有效检测，"
                 "位置误差<=%.1fpx，面积变化比例<=%.2f；"
-                "识别超时 %.1fs，首次运动后总等待上限 %.1fs"
+                "识别数据新鲜度 %.1fs，子任务总等待上限 %.1fs"
             ),
             NODE_NAME,
             self.stable_detection_window_size,
@@ -804,20 +800,19 @@ class Task3InspectAndDropTest:
                 (
                     "%s：自动识别流程：首次三帧平均位置 -> camera粗对准并等待HOVER -> "
                     "再次三帧平均位置；X误差超限时按XY小步靠近，航向保持不变；"
-                    "X误差通过后锁定位置和航向，前移%.2fm后执行投放"
+                    "X误差通过后锁定中心点，通过TF让夹爪坐标系对准该点后执行投放"
                 ),
                 NODE_NAME,
-                self.pre_drop_forward_distance,
             )
             rospy.loginfo(
                 (
-                    "%s：自动动作时序：投放前前进%.2fm -> "
+                    "%s：自动动作时序：夹爪坐标系%s对准精确认中心点 -> "
                     "右侧闭合 -> 中间闭合%.1fs -> "
                     "中间打开%.1fs -> 打开状态回右侧%.1fs -> "
                     "右侧闭合%.1fs"
                 ),
                 NODE_NAME,
-                self.pre_drop_forward_distance,
+                self.pre_drop_hand_frame,
                 self.hold_seconds,
                 self.open_seconds,
                 self.return_right_seconds,
@@ -826,7 +821,7 @@ class Task3InspectAndDropTest:
             rospy.loginfo(
                 (
                     "%s：投放后离场：启用=%s，返原点绝对航向=%.1fdeg；"
-                    "随后返回map原点(0,0)，每一步到达超时=%.1fs；"
+                    "随后返回map原点(0,0)，局部HOVER超时%.1fs仅记录；"
                     "到原点后向NED z=%.2f上浮、持续%.1fs并结束"
                 ),
                 NODE_NAME,
@@ -1273,16 +1268,8 @@ class Task3InspectAndDropTest:
             raise ValueError(
                 "fine_position_x_tolerance_m 必须是大于0的有限数"
             )
-        if (
-            not math.isfinite(self.pre_drop_forward_distance)
-            or self.pre_drop_forward_distance <= 0.0
-        ):
-            raise ValueError("pre_drop_forward_distance 必须是大于0的有限数")
-        if (
-            not math.isfinite(self.pre_drop_forward_timeout)
-            or self.pre_drop_forward_timeout <= 0.0
-        ):
-            raise ValueError("pre_drop_forward_timeout 必须是大于0的有限数")
+        if not self.pre_drop_hand_frame:
+            raise ValueError("pre_drop_hand_frame 不能为空")
         if self.post_drop_motion_enabled:
             if (
                 not math.isfinite(self.post_drop_step_timeout)
@@ -1461,17 +1448,17 @@ class Task3InspectAndDropTest:
         pose.pose.orientation = Quaternion(*rotation)
         return pose
 
-    def get_base_to_camera_offset(self, camera_frame, context):
+    def get_base_to_frame_offset(self, target_frame, context):
         try:
             translation, _ = self.tf_listener.lookupTransform(
-                "base_link", camera_frame, rospy.Time(0)
+                "base_link", target_frame, rospy.Time(0)
             )
         except tf.Exception as error:
             rospy.logwarn_throttle(
                 self.warning_log_interval,
                 "%s：无法读取base_link -> %s，%s暂停：%s",
                 NODE_NAME,
-                camera_frame,
+                target_frame,
                 context,
                 str(error),
             )
@@ -1480,10 +1467,16 @@ class Task3InspectAndDropTest:
             return None
         return translation
 
-    def set_camera_xy_goal(
-        self, target_x, target_y, target_yaw, camera_frame, reason
+    def set_frame_xy_goal(
+        self,
+        target_x,
+        target_y,
+        target_yaw,
+        target_frame,
+        frame_label,
+        reason,
     ):
-        offset = self.get_base_to_camera_offset(camera_frame, reason)
+        offset = self.get_base_to_frame_offset(target_frame, reason)
         if offset is None:
             return False
         offset_map_x = (
@@ -1506,14 +1499,16 @@ class Task3InspectAndDropTest:
         )
         rospy.logwarn(
             (
-                "%s：camera xy目标换算：camera_frame=%s，方框map=(%.3f,%.3f)，"
-                "base_link->camera偏置map=(%.3f,%.3f)m，保持yaw=%.2fdeg，"
+                "%s：%s xy目标换算：target_frame=%s，方框map=(%.3f,%.3f)，"
+                "base_link->%s偏置map=(%.3f,%.3f)m，保持yaw=%.2fdeg，"
                 "下发base_link目标=(%.3f,%.3f)"
             ),
             NODE_NAME,
-            camera_frame,
+            frame_label,
+            target_frame,
             target_x,
             target_y,
+            target_frame,
             offset_map_x,
             offset_map_y,
             math.degrees(target_yaw),
@@ -1521,6 +1516,18 @@ class Task3InspectAndDropTest:
             goal_y,
         )
         return True
+
+    def set_camera_xy_goal(
+        self, target_x, target_y, target_yaw, camera_frame, reason
+    ):
+        return self.set_frame_xy_goal(
+            target_x,
+            target_y,
+            target_yaw,
+            camera_frame,
+            "camera",
+            reason,
+        )
 
     def set_limited_camera_goal(
         self, target_x, target_y, target_yaw, camera_frame, reason
@@ -1604,10 +1611,10 @@ class Task3InspectAndDropTest:
         )
 
     def start_motion_timeout_clock(self, reason):
-        """首次实际运动目标生成时启动唯一总超时，后续不得重置。"""
+        """总超时已在子任务入口启动；运动目标不得重置该计时。"""
         if self.motion_timeout_started_at is not None:
             return
-        self.motion_timeout_started_at = rospy.Time.now()
+        self.motion_timeout_started_at = time.monotonic()
         rospy.logwarn(
             "%s：机器人开始执行运动动作，启动唯一总超时计时：%.1fs；原因=%s",
             NODE_NAME,
@@ -1620,7 +1627,7 @@ class Task3InspectAndDropTest:
             return None
         return max(
             0.0,
-            (rospy.Time.now() - self.motion_timeout_started_at).to_sec(),
+            time.monotonic() - self.motion_timeout_started_at,
         )
 
     def set_body_offset_goal(self, current, forward, right, reason):
@@ -1863,63 +1870,63 @@ class Task3InspectAndDropTest:
         }
         self.add_box_position_sample(sample)
 
-    def start_pre_drop_forward(self, reason):
-        if self.active_goal is None or self.auto_hold_yaw is None:
+    def start_pre_drop_hand_alignment(self, reason):
+        if (
+            self.box_final_map_x is None
+            or self.box_final_map_y is None
+            or self.auto_hold_yaw is None
+        ):
             return False
-        source_goal = copy.deepcopy(self.active_goal)
         self.pending_drop_reason = str(reason)
         self.auto_action_hold_position = None
-        self.set_body_offset_goal(
-            source_goal,
-            self.pre_drop_forward_distance,
-            0.0,
-            "开灯和开爪前沿当前航向前进%.2fm"
-            % self.pre_drop_forward_distance,
-        )
+        if not self.set_frame_xy_goal(
+            self.box_final_map_x,
+            self.box_final_map_y,
+            self.auto_hold_yaw,
+            self.pre_drop_hand_frame,
+            "夹爪",
+            "投放前使用夹爪TF对准方框精确认中心点",
+        ):
+            return False
         rospy.loginfo(
             (
-                "%s：[投放前前进] 识别和对准已通过，先沿当前航向"
-                "前进%.2fm，目标=(%.3f,%.3f,%.3f)"
+                "%s：[投放前夹爪对准] 精确认中心map=(%.3f,%.3f)，"
+                "夹爪坐标系=%s，已转换为base_link目标=(%.3f,%.3f,%.3f)"
             ),
             NODE_NAME,
-            self.pre_drop_forward_distance,
+            self.box_final_map_x,
+            self.box_final_map_y,
+            self.pre_drop_hand_frame,
             self.active_goal.pose.position.x,
             self.active_goal.pose.position.y,
             self.active_goal.pose.position.z,
         )
         self.set_state(
-            self.PRE_DROP_FORWARD,
-            "投放动作前固定前进目标已发布",
+            self.PRE_DROP_HAND_ALIGN,
+            "投放动作前夹爪TF对准目标已发布",
         )
         return True
 
-    def handle_pre_drop_forward(self):
+    def handle_pre_drop_hand_alignment(self):
         self.publish_actuator(self.clamp_closed, "off")
-        if self.motion_step_timed_out(
-            "投放前固定前进",
-            self.pre_drop_forward_timeout,
-        ):
-            return
         if self.motion_arrived():
             if not self.capture_action_hold_position():
-                self.finish_task(False, "投放前前进到达，但无法锁定动作定点")
+                self.finish_task(False, "夹爪对准到达，但无法锁定动作定点")
                 return
             reason = self.pending_drop_reason
             self.pending_drop_reason = ""
             self.begin_drop_actuator_action(
-                "%s；投放前已前进%.2fm并进入HOVER"
-                % (reason, self.pre_drop_forward_distance)
+                "%s；夹爪坐标系已对准精确认中心点并进入HOVER" % reason
             )
             return
         rospy.loginfo_throttle(
             self.log_interval,
-            "%s：[投放前前进] 进行中 %.1f/%.1fs，motion=%s",
+            "%s：[投放前夹爪对准] 等待HOVER %.1fs，motion=%s；只受子任务总超时限制",
             NODE_NAME,
             self.state_elapsed(),
-            self.pre_drop_forward_timeout,
             self.current_motion_state_name(),
         )
-        self.log_arrival_gate("投放前固定前进到达判定")
+        self.log_arrival_gate("投放前夹爪TF对准到达判定")
 
     def start_post_drop_turn(self):
         source_goal = self.active_goal
@@ -2017,12 +2024,15 @@ class Task3InspectAndDropTest:
         elapsed = self.state_elapsed()
         if elapsed < timeout:
             return False
-        self.finish_task(
-            False,
-            "%s超过%.1fs仍未到达HOVER"
-            % (step_name, timeout),
+        rospy.logwarn_throttle(
+            self.warning_log_interval,
+            "%s：%s已等待%.1fs，局部HOVER超时%.1fs不终止任务；继续等待子任务总超时",
+            NODE_NAME,
+            step_name,
+            elapsed,
+            timeout,
         )
-        return True
+        return False
 
     def handle_post_drop_turn(self):
         self.publish_actuator(self.clamp_closed, "off")
@@ -2437,14 +2447,6 @@ class Task3InspectAndDropTest:
         elapsed = (
             rospy.Time.now() - self.motion_hold_requested_at
         ).to_sec()
-        if elapsed >= self.hold_timeout:
-            self.finish_task(
-                False,
-                "等待当前位置保持目标进入 HOVER 超时：{}".format(
-                    self.motion_hold_reason
-                ),
-            )
-            return False
         if not self.hold_has_completed():
             rospy.loginfo_throttle(
                 self.log_interval,
@@ -2791,9 +2793,6 @@ class Task3InspectAndDropTest:
     def confirm_box_after_coarse_hover(self):
         if self.state != self.AUTO_HOVER_CONFIRM:
             return
-        if self.state_elapsed() >= self.hold_timeout:
-            self.finish_task(False, "camera粗对准方框目标未在规定时间进入HOVER")
-            return
         if not self.motion_arrived():
             self.log_arrival_gate("等待camera粗对准方框目标HOVER")
             return
@@ -2837,22 +2836,19 @@ class Task3InspectAndDropTest:
             (
                 "%s：方框精确认完成：锁定map=(%.3f,%.3f)，"
                 "X误差门槛=%.3fm，航向固定=%.2fdeg；"
-                "最终位置HOVER后前移%.2fm"
+                "最终camera位置HOVER后使用夹爪坐标系%s对准该中心点"
             ),
             NODE_NAME,
             self.box_final_map_x,
             self.box_final_map_y,
             self.fine_position_x_tolerance_m,
             math.degrees(self.auto_hold_yaw),
-            self.pre_drop_forward_distance,
+            self.pre_drop_hand_frame,
         )
         return True
 
     def approach_box_by_map(self):
         if self.state != self.AUTO_APPROACH:
-            return
-        if self.state_elapsed() >= self.hold_timeout:
-            self.finish_task(False, "方框map精对准目标未在规定时间进入HOVER")
             return
         if self.box_final_goal_pending:
             if not self.motion_arrived():
@@ -2868,10 +2864,10 @@ class Task3InspectAndDropTest:
                 )
                 return
             self.box_final_goal_pending = False
-            if not self.start_pre_drop_forward(
+            if not self.start_pre_drop_hand_alignment(
                 "方框X误差已通过，最终位置和航向已锁定"
             ):
-                self.finish_task(False, "无法生成方框投放前20厘米前进目标")
+                self.finish_task(False, "无法生成方框投放前夹爪TF对准目标")
             return
         if self.box_precision_goal_pending:
             if not self.motion_arrived():
@@ -4645,8 +4641,8 @@ class Task3InspectAndDropTest:
 
     def start_drop_action(self, reason):
         if self.auto_enabled:
-            if not self.start_pre_drop_forward(reason):
-                self.finish_task(False, "无法生成投放前固定前进目标")
+            if not self.start_pre_drop_hand_alignment(reason):
+                self.finish_task(False, "无法生成投放前夹爪TF对准目标")
             return
         self.begin_drop_actuator_action(reason)
 
@@ -5098,21 +5094,16 @@ class Task3InspectAndDropTest:
             timeout_elapsed = self.motion_timeout_elapsed()
 
             if (
-                self.state in (
-                    self.WAIT_FOR_TARGET,
-                    self.AUTO_HOVER_CONFIRM,
-                    self.AUTO_APPROACH,
-                )
-                and timeout_elapsed is not None
+                timeout_elapsed is not None
                 and timeout_elapsed >= self.max_wait_seconds
             ):
                 self.max_wait_timed_out = True
                 self.finish_task(
                     False,
-                    "机器人开始运动后自动搜索/等待 %.1fs，仍未完成 %s 方框确认与对齐"
+                    "子任务进入后总时间达到 %.1fs，仍未完成 %s 方框任务"
                     % (timeout_elapsed, self.target_color)
                     if self.auto_enabled
-                    else "机器人开始运动后等待 %.1fs，仍未稳定识别到 %s 方框"
+                    else "子任务进入后总时间达到 %.1fs，仍未稳定识别到 %s 方框"
                     % (timeout_elapsed, self.target_color),
                 )
                 return
@@ -5164,8 +5155,8 @@ class Task3InspectAndDropTest:
                 self.publish_actuator(self.clamp_closed, "off")
                 self.approach_box_by_map()
 
-            elif self.state == self.PRE_DROP_FORWARD:
-                self.handle_pre_drop_forward()
+            elif self.state == self.PRE_DROP_HAND_ALIGN:
+                self.handle_pre_drop_hand_alignment()
 
             elif self.state == self.HOLD_BEFORE_ACTION:
                 if self.auto_enabled:

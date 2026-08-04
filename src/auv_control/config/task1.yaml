@@ -54,7 +54,7 @@ fallback_target_yaw_deg: 210.0
 # 红线锁定与拟合
 line_classes: line
 line_lock_window_seconds: 0.3
-line_min_confidence: 0.8  # line 置信度下限
+line_min_confidence: 0.65  # line 置信度下限
 line_point_merge_distance: 0.0
 line_point_update_alpha: 0.20
 line_curve_max_points: 200

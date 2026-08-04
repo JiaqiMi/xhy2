@@ -34,6 +34,7 @@ import json
 import logging
 import math
 import os
+import time
 import rospy
 import tf
 from auv_control.msg import AUVData, MotionState, TargetDetection
@@ -293,7 +294,7 @@ class Task3AcquireAreaTest(object):
             "/finished", String, queue_size=10
         )
         self.task_started = rospy.Time.now()
-        self.motion_timeout_started_at = None
+        self.motion_timeout_started_at = time.monotonic()
         self.state = self.WAIT_FOR_CONTROL
         self.state_started = self.task_started
         self.task_finished = False
@@ -616,7 +617,7 @@ class Task3AcquireAreaTest(object):
         rospy.loginfo(
             (
                 "%s：运动反馈超时=%.2fs，启动等待=%.1fs，"
-                "camera粗对准/当前位置目标等待HOVER超时=%.1fs；"
+                "camera粗对准/当前位置目标已取消局部HOVER超时（原配置%.1fs仅记录）；"
                 "HOVER目标匹配容差=(水平%.3fm,深度%.3fm,航向%.1fdeg)"
             ),
             NODE_NAME,
@@ -1757,10 +1758,10 @@ class Task3AcquireAreaTest(object):
         )
 
     def start_motion_timeout_clock(self, reason):
-        """首次实际运动目标生成时启动唯一总超时，后续不得重置。"""
+        """总超时已在子任务入口启动；运动目标不得重置该计时。"""
         if self.motion_timeout_started_at is not None:
             return
-        self.motion_timeout_started_at = rospy.Time.now()
+        self.motion_timeout_started_at = time.monotonic()
         rospy.logwarn(
             "%s：机器人开始执行运动动作，启动唯一总超时计时：%.1fs；原因=%s",
             NODE_NAME,
@@ -1773,7 +1774,7 @@ class Task3AcquireAreaTest(object):
             return None
         return max(
             0.0,
-            (rospy.Time.now() - self.motion_timeout_started_at).to_sec(),
+            time.monotonic() - self.motion_timeout_started_at,
         )
 
     def set_body_offset_goal(self, current, forward, right, yaw, reason):
@@ -2330,7 +2331,7 @@ class Task3AcquireAreaTest(object):
             self.log_interval,
             (
                 "%s：等待当前位置保持目标稳定：motion=%s，速度=%.3fm/s，"
-                "输出=(%d,%d,%d)，%.1f/%.1fs；"
+                "输出=(%d,%d,%d)，已等待%.1fs，只受子任务总超时限制；"
                 "位置窗=%d/%d、方向窗=%d/%d"
             ),
             NODE_NAME,
@@ -2340,15 +2341,11 @@ class Task3AcquireAreaTest(object):
             self.latest_motion_state.ty,
             self.latest_motion_state.mz,
             elapsed,
-            self.cancel_timeout,
             position_progress[2],
             self.stable_detection_count,
             direction_progress[2],
             self.direction_confirm_required_count,
         )
-        if elapsed >= self.cancel_timeout:
-            self.finish_task(False, "当前位置保持目标未在规定时间进入HOVER")
-            return
         if not self.hold_has_completed():
             return
         next_state = self.hold_next_state
@@ -2441,9 +2438,6 @@ class Task3AcquireAreaTest(object):
     def control_coarse_position_approach(self):
         elapsed = (rospy.Time.now() - self.state_started).to_sec()
         self.log_arrival_gate("等待camera到达首次三帧平均位置")
-        if elapsed >= self.cancel_timeout:
-            self.finish_task(False, "camera粗对准目标未在规定时间进入HOVER")
-            return
         if not self.visual_step_has_completed():
             return
         self.reset_first_lock()
@@ -2525,9 +2519,6 @@ class Task3AcquireAreaTest(object):
 
     def control_false_positive_return(self):
         elapsed = (rospy.Time.now() - self.state_started).to_sec()
-        if elapsed >= self.cancel_timeout:
-            self.finish_task(False, "未在规定时间返回误识别触发搜索位置")
-            return
         if not self.motion_arrived():
             self.log_arrival_gate("等待返回误识别触发搜索位置")
             return
@@ -2763,15 +2754,6 @@ class Task3AcquireAreaTest(object):
                 "不再核对任何箭头位置和方向，开始最终稳定保持",
             )
             return
-        if (rospy.Time.now() - self.state_started).to_sec() >= self.final_hold_timeout:
-            self.finish_task(
-                False,
-                "base_link未在{:.1f}s内到达冻结箭头目标".format(
-                    self.final_hold_timeout
-                ),
-            )
-
-
     def control_final_hold(self):
         now = rospy.Time.now()
         hover_ok = self.motion_arrived()
@@ -2817,15 +2799,6 @@ class Task3AcquireAreaTest(object):
                 )
             self.final_hold_stable_started = None
             self.log_arrival_gate("最终保持等待当前目标对应的新鲜HOVER")
-        if (now - self.state_started).to_sec() >= self.final_hold_timeout:
-            self.finish_task(
-                False,
-                "最终定点{:.1f}s内未连续稳定保持{:.1f}s".format(
-                    self.final_hold_timeout,
-                    self.final_hold_seconds,
-                ),
-            )
-
     def current_motion_state_name(self):
         if self.latest_motion_state is None:
             return "未收到"
@@ -2943,7 +2916,7 @@ class Task3AcquireAreaTest(object):
             ):
                 self.finish_task(
                     False,
-                    "机器人开始运动后，搜索和对准累计达到{:.1f}s".format(
+                    "子任务进入后总时间达到{:.1f}s".format(
                         timeout_elapsed
                     ),
                 )
