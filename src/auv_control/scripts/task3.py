@@ -553,6 +553,10 @@ class Task3Final:
             "/task3_final/arrow1_timeout_seconds",
             self.task1_params.get("max_wait_seconds", 120.0),
         ))
+        self.aruco_timeout_seconds = float(rospy.get_param(
+            "/task3_final/aruco_timeout_seconds",
+            self.task2_params.get("max_wait_seconds", 120.0),
+        ))
         self.arrow2_timeout_seconds = float(rospy.get_param(
             "/task3_final/arrow2_timeout_seconds",
             self.task1_params.get("max_wait_seconds", 120.0),
@@ -596,16 +600,18 @@ class Task3Final:
         if (
             not all(math.isfinite(value) for value in (
                 self.arrow1_timeout_seconds,
+                self.aruco_timeout_seconds,
                 self.arrow2_timeout_seconds,
                 self.box_timeout_seconds,
             ))
             or min(
                 self.arrow1_timeout_seconds,
+                self.aruco_timeout_seconds,
                 self.arrow2_timeout_seconds,
                 self.box_timeout_seconds,
             ) <= 0.0
         ):
-            raise ValueError("三个阶段最终超时必须是大于0的有限数")
+            raise ValueError("四个子任务总超时必须是大于0的有限数")
         if min(
             self.final_timeout_move_timeout,
             self.final_timeout_arrival_stable_seconds,
@@ -828,13 +834,14 @@ class Task3Final:
         )
         rospy.logwarn(
             (
-                "%s：单层最终超时保护（均从机器人首次执行运动动作开始计时）："
-                "箭头1=%.1fs后前往ArUco点；箭头2=%.1fs后前往方框点；"
-                "方框=%.1fs后原地转向、"
-                "返回map原点并上浮；所有阶段只执行一次，不cancel恢复、不重试"
+                "%s：唯一子任务总超时（均从进入对应子任务开始计时）："
+                "箭头1=%.1fs后前往ArUco点；ArUco=%.1fs后按异常航向交接；"
+                "箭头2=%.1fs后前往方框点；方框=%.1fs后按原点绝对航向"
+                "返航并上浮；局部HOVER等待时限不触发阶段跳转"
             ),
             NODE_NAME,
             self.arrow1_timeout_seconds,
+            self.aruco_timeout_seconds,
             self.arrow2_timeout_seconds,
             self.box_timeout_seconds,
         )
@@ -945,7 +952,7 @@ class Task3Final:
                         self.embedded_timed_out = True
                         self.finish_task(
                             False,
-                            "机器人开始运动后，搜索和对准累计达到{:.1f}s".format(
+                            "子任务进入后，搜索和对准累计达到{:.1f}s".format(
                                 timeout_elapsed
                             ),
                         )
@@ -981,12 +988,16 @@ class Task3Final:
             def __init__(self):
                 self.embedded_success = None
                 self.embedded_detail = ""
+                self.embedded_timed_out = False
                 self.embedded_active = True
                 super().__init__()
 
             def finalize_task(self, success, detail):
                 self.embedded_success = bool(success)
                 self.embedded_detail = str(detail)
+                self.embedded_timed_out = bool(
+                    not success and self.max_wait_timed_out
+                )
                 self.accept_detections = False
                 self.publish_lights("off")
                 if success:
@@ -1778,8 +1789,8 @@ class Task3Final:
             self.rate.sleep()
         return False
 
-    def request_safety_hover(self, context):
-        """运行期异常时请求主动刹停，并有界等待新的HOVER反馈。"""
+    def request_safety_hover(self, context, wait_for_hover=True):
+        """请求主动刹停；总超时已到时不再等待HOVER反馈。"""
         requested_at = time.monotonic()
         try:
             self.cancel_pub.publish(Empty())
@@ -1791,6 +1802,16 @@ class Task3Final:
                 str(error),
             )
             return False
+        if not wait_for_hover:
+            rospy.logwarn(
+                (
+                    "%s：[%s] 已发布motion cancel；子任务总超时已到，"
+                    "不等待局部HOVER，立即执行超时任务"
+                ),
+                NODE_NAME,
+                context,
+            )
+            return True
         rospy.logwarn(
             "%s：[%s] 已发布motion cancel；保持当前位置并等待HOVER，最长%.1fs",
             NODE_NAME,
@@ -1841,6 +1862,76 @@ class Task3Final:
                 self.cancel_recovery_timeout,
                 "未收到" if state is None else str(state.state),
                 "是" if fresh else "否",
+            )
+            self.rate.sleep()
+        return False
+
+    def defer_subtask_failure_to_total_timeout(
+        self,
+        label,
+        stage_started_at,
+        timeout_seconds,
+        detail,
+    ):
+        """子任务提前异常时悬停，直到唯一总超时到点再交回超时路径。"""
+        try:
+            self.cancel_pub.publish(Empty())
+            rospy.logwarn(
+                (
+                    "%s：[%s] 在总超时前异常：%s；已发布motion cancel，"
+                    "保持悬停直到该子任务总超时%.1fs"
+                ),
+                NODE_NAME,
+                label,
+                detail,
+                timeout_seconds,
+            )
+        except Exception as error:
+            rospy.logexception(
+                "%s：[%s] 异常后发布motion cancel失败；仍等待子任务总超时：%s",
+                NODE_NAME,
+                label,
+                str(error),
+            )
+
+        while not rospy.is_shutdown():
+            elapsed = max(0.0, time.monotonic() - stage_started_at)
+            if elapsed >= timeout_seconds:
+                rospy.logerr(
+                    (
+                        "%s：[%s] 子任务进入后总时间达到%.1fs；"
+                        "立即交给总调度执行超时任务"
+                    ),
+                    NODE_NAME,
+                    label,
+                    elapsed,
+                )
+                return True
+
+            with self.motion_lock:
+                state = self.latest_motion_state
+                received_at = self.latest_motion_state_wall_time
+            fresh = (
+                state is not None
+                and received_at is not None
+                and time.monotonic() - received_at <= self.motion_state_timeout
+            )
+            hovering = bool(
+                fresh
+                and state.startup_complete
+                and state.state == MotionState.HOVER
+            )
+            rospy.loginfo_throttle(
+                1.0,
+                (
+                    "%s：[%s] 异常保护中：已用时%.1f/%.1fs，"
+                    "HOVER=%s；HOVER等待不触发阶段跳转"
+                ),
+                NODE_NAME,
+                label,
+                elapsed,
+                timeout_seconds,
+                "是" if hovering else "否",
             )
             self.rate.sleep()
         return False
@@ -1971,6 +2062,7 @@ class Task3Final:
 
     def run_subtask1(self, run_index):
         label = "第{}次箭头子任务".format(run_index)
+        stage_started_at = time.monotonic()
         flow_step = (
             "1/{}".format(self.mission_stage_count)
             if run_index == 1
@@ -2035,7 +2127,7 @@ class Task3Final:
             (
                 "%s：%s [%s开始] 直接进入子函数，不启动子任务launch；"
                 "本次启动悬停=%.1fs，搜索固定航向=%.1fdeg，"
-                "模式=%d（%s），首次运动后最终超时=%.1fs"
+                "模式=%d（%s），子任务进入后总超时=%.1fs"
             ),
             NODE_NAME,
             KEY_LOG_MARKER,
@@ -2051,6 +2143,7 @@ class Task3Final:
         final_yaw = None
         try:
             task = self.EmbeddedTask1()
+            task.motion_timeout_started_at = stage_started_at
             success, detail = task.run()
             timed_out = bool(task.embedded_timed_out)
             if success:
@@ -2062,6 +2155,16 @@ class Task3Final:
         finally:
             if task is not None:
                 self.deactivate_task(task)
+
+        if not success and not timed_out and not rospy.is_shutdown():
+            timed_out = self.defer_subtask_failure_to_total_timeout(
+                label,
+                stage_started_at,
+                timeout_seconds,
+                detail,
+            )
+            if timed_out:
+                detail = "{}；异常后保持悬停至子任务总超时".format(detail)
 
         rospy.loginfo(
             "%s：%s [%s结束] success=%s，%s",
@@ -2075,12 +2178,14 @@ class Task3Final:
 
     def run_subtask2(self):
         label = "ArUco子任务"
+        stage_started_at = time.monotonic()
         flow_step = "2/{}".format(self.mission_stage_count)
+        self.task2_params["max_wait_seconds"] = self.aruco_timeout_seconds
         self.log_flow_stage(
             flow_step,
             label,
             "进入ArUco子任务",
-            "总任务启动时已确认ArUco模型可用；识别超时完全由ArUco子任务自行处理",
+            "总任务启动时已确认ArUco模型可用；全流程只受ArUco子任务总超时限制",
             "进入定点悬停、ID确认、亮灯和原地转向",
         )
 
@@ -2117,14 +2222,20 @@ class Task3Final:
         )
 
         rospy.loginfo(
-            "%s：%s [%s开始] 直接进入子函数，不启动子任务launch",
+            (
+                "%s：%s [%s开始] 直接进入子函数，不启动子任务launch；"
+                "子任务进入后总超时=%.1fs"
+            ),
             NODE_NAME,
             KEY_LOG_MARKER,
             label,
+            self.aruco_timeout_seconds,
         )
         task = None
+        timed_out = False
         try:
             task = self.EmbeddedTask2()
+            task.task_started_wall_time = stage_started_at
             task.run()
             if task.embedded_success is None:
                 success = False
@@ -2134,6 +2245,7 @@ class Task3Final:
                 detail = task.embedded_detail
             marker_id = task.confirmed_marker_id
             color = task.confirmed_color
+            timed_out = bool(task.embedded_timed_out)
             if color is None and success and marker_id is not None:
                 color = task.color_for_marker(marker_id)
         except Exception as error:
@@ -2145,6 +2257,16 @@ class Task3Final:
             if task is not None:
                 self.deactivate_task(task)
 
+        if not success and not timed_out and not rospy.is_shutdown():
+            timed_out = self.defer_subtask_failure_to_total_timeout(
+                label,
+                stage_started_at,
+                self.aruco_timeout_seconds,
+                detail,
+            )
+            if timed_out:
+                detail = "{}；异常后保持悬停至子任务总超时".format(detail)
+
         rospy.loginfo(
             "%s：%s [%s结束] success=%s，颜色=%s，%s",
             NODE_NAME,
@@ -2154,10 +2276,11 @@ class Task3Final:
             str(color),
             detail,
         )
-        return success, detail, color
+        return success, detail, timed_out, color
 
     def run_subtask3(self, target_color, search_yaw):
         label = "彩色方框投放子任务"
+        stage_started_at = time.monotonic()
         flow_step = (
             "3/3" if self.skip_second_arrow else "4/4"
         )
@@ -2180,19 +2303,21 @@ class Task3Final:
             "目标颜色={}，识别和运动反馈满足当前状态门槛".format(
                 target_color
             ),
-            "投放前前移、灯光夹爪动作、返回N/E原点并持续上浮",
+            "夹爪TF对准精确认中心、灯光夹爪动作、返回N/E原点并持续上浮",
         )
 
         self.task3_params["target_color"] = str(target_color)
         if str(self.task3_params.get("operation_mode", "")).lower() != "auto":
-            return (
-                False,
-                (
-                    "整合任务要求子任务3的operation_mode=auto，当前为{}"
-                ).format(self.task3_params.get("operation_mode")),
-                False,
-                False,
+            detail = (
+                "整合任务要求子任务3的operation_mode=auto，当前为{}"
+            ).format(self.task3_params.get("operation_mode"))
+            timed_out = self.defer_subtask_failure_to_total_timeout(
+                label,
+                stage_started_at,
+                self.box_timeout_seconds,
+                detail,
             )
+            return False, detail, timed_out, False
 
         self.shutdown_unused_models_for_subtask3()
 
@@ -2213,6 +2338,7 @@ class Task3Final:
         drop_action_started = False
         try:
             task = self.EmbeddedTask3()
+            task.motion_timeout_started_at = stage_started_at
             task.run()
             drop_action_started = bool(task.drop_action_started)
             if task.embedded_success is None:
@@ -2229,6 +2355,16 @@ class Task3Final:
         finally:
             if task is not None:
                 self.deactivate_task(task)
+
+        if not success and not timed_out and not rospy.is_shutdown():
+            timed_out = self.defer_subtask_failure_to_total_timeout(
+                label,
+                stage_started_at,
+                self.box_timeout_seconds,
+                detail,
+            )
+            if timed_out:
+                detail = "{}；异常后保持悬停至子任务总超时".format(detail)
 
         rospy.loginfo(
             "%s：%s [%s结束] success=%s，%s",
@@ -2498,7 +2634,10 @@ class Task3Final:
                 "达到最终超时" if timed_out else "运行期异常按超时降级",
                 detail,
             )
-            self.request_safety_hover("第一次箭头异常/超时交接")
+            self.request_safety_hover(
+                "第一次箭头异常/超时交接",
+                wait_for_hover=not timed_out,
+            )
             if rospy.is_shutdown():
                 return self.fail("第一次箭头异常悬停期间ROS关闭")
             self.attempt_final_timeout_target(
@@ -2508,19 +2647,23 @@ class Task3Final:
             if rospy.is_shutdown():
                 return self.fail("第一次箭头保护移动期间ROS关闭")
 
-        success, detail, target_color = self.run_subtask2()
+        success, detail, timed_out, target_color = self.run_subtask2()
         if rospy.is_shutdown():
             return self.fail("ArUco阶段期间ROS关闭")
         if not success:
             rospy.logwarn(
                 (
-                    "%s：ArUco阶段运行期异常：%s；不退出，先保持悬停，"
+                    "%s：ArUco阶段%s：%s；不退出，先保持悬停，"
                     "使用预设颜色并重新对准ArUco绝对航向"
                 ),
                 NODE_NAME,
+                "达到总超时" if timed_out else "运行期异常按总超时降级",
                 detail,
             )
-            self.request_safety_hover("ArUco异常交接")
+            self.request_safety_hover(
+                "ArUco异常/超时交接",
+                wait_for_hover=not timed_out,
+            )
             if rospy.is_shutdown():
                 return self.fail("ArUco异常悬停期间ROS关闭")
             self.align_current_position_to_yaw(
@@ -2575,7 +2718,10 @@ class Task3Final:
                     "达到最终超时" if timed_out else "运行期异常按超时降级",
                     detail,
                 )
-                self.request_safety_hover("第二次箭头异常/超时交接")
+                self.request_safety_hover(
+                    "第二次箭头异常/超时交接",
+                    wait_for_hover=not timed_out,
+                )
                 if rospy.is_shutdown():
                     return self.fail("第二次箭头异常悬停期间ROS关闭")
                 self.attempt_final_timeout_target(
@@ -2640,7 +2786,10 @@ class Task3Final:
             "是" if drop_action_started else "否",
             math.degrees(self.return_origin_target_yaw),
         )
-        self.request_safety_hover("彩色方框异常/超时交接")
+        self.request_safety_hover(
+            "彩色方框异常/超时交接",
+            wait_for_hover=not timed_out,
+        )
         if rospy.is_shutdown():
             return self.fail("方框异常悬停期间ROS关闭")
         return self.finish_with_return_protection(
