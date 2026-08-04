@@ -38,6 +38,10 @@ delivery_yaw_deg: 210.0
 surface_depth: -1.1
 # 返回起始 XY 后保持的最终 map 航向角，单位 deg。
 final_yaw_deg: 210
+# 送水和返航期间实时指向目标点；当水平距离不大于该阈值时，保持当前位置目标不变，
+# 直接切换至 delivery_yaw_deg（送水）或 final_yaw_deg（返航）并继续前进，不额外停稳。
+# 单位 m，必须为正数；默认 1.0 m。
+final_yaw_switch_distance: 1.0
 
 # ============================== 采水时序 ==============================
 
