@@ -3,6 +3,7 @@
 """
 名称：test_task3_3_inspect_and_drop.py
 功能：识别指定颜色方框，基于map位置完成camera粗对准、XY误差精对准、投放和离场
+功能：识别指定颜色方框，基于map位置完成camera粗对准、XY误差精对准、投放和离场
 作者：Tangzongle
 监听：/vision/rectangle/target_message (auv_control/TargetDetection)
       /vision/rectangle/detections (std_msgs/String，人工模式兼容)
@@ -15,10 +16,15 @@
 记录：
 2026.8.3
     自动模式改为使用带时间戳的三维方框map位置队列，按三帧稳定位置完成camera粗对准和XY误差精对准。
+    自动模式改为使用带时间戳的三维方框map位置队列，按三帧稳定位置完成camera粗对准和XY误差精对准。
 2026.8.3
     方框搜索接收阶段固定航向，投放后直接使用配置的原点绝对航向返航。
 2026.8.4
     将侧推自动恢复MotionState=10作为有效等待状态，不再误判为未知异常。
+2026.8.5
+    方框map细对准增加Y误差门槛，X、Y均进入容差后才允许投放。
+2026.8.5
+    删除无入口的旧二维自动跟踪和已被禁用的颜色布局搜索，保留当前map自动链路与人工联调链路。
 2026.8.5
     方框map细对准增加Y误差门槛，X、Y均进入容差后才允许投放。
 2026.8.5
@@ -139,6 +145,7 @@ DEFAULT_AUTO_VISUAL_MIN_STEP_M = 0.01
 DEFAULT_AUTO_VISUAL_MAX_STEP_M = 0.05
 DEFAULT_FINE_POSITION_X_TOLERANCE_M = 0.10
 DEFAULT_FINE_POSITION_Y_TOLERANCE_M = 0.10
+DEFAULT_FINE_POSITION_Y_TOLERANCE_M = 0.10
 DEFAULT_LOG_INTERVAL = 1.0
 DEFAULT_WARNING_LOG_INTERVAL = 2.0
 
@@ -192,6 +199,7 @@ class Task3InspectAndDropTest:
     STATE_NAMES = {
         WAIT_FOR_TARGET: "等待目标颜色方框",
         AUTO_HOVER_CONFIRM: "camera粗对准后等待HOVER复核方框",
+        AUTO_APPROACH: "方框map位置XY误差精对准并保持航向",
         AUTO_APPROACH: "方框map位置XY误差精对准并保持航向",
         HOLD_BEFORE_ACTION: "夹爪移动到中间",
         OPEN_CLAMP: "打开夹爪",
@@ -684,13 +692,13 @@ class Task3InspectAndDropTest:
                 self.auto_search_stable_detection_count,
                 self.fine_position_x_tolerance_m,
                 self.fine_position_y_tolerance_m,
+                self.fine_position_y_tolerance_m,
             )
             rospy.loginfo(
                 (
                     "%s：自动识别流程：首次三帧平均位置 -> camera粗对准并等待HOVER -> "
-                    "再次三帧平均位置；当前camera到复核点的XY实际误差任一超限时"
-                    "按XY小步靠近，航向保持不变；XY实际误差均通过后锁定中心点，"
-                    "通过TF让夹爪坐标系对准该点后执行投放"
+                    "再次三帧平均位置；XY任一误差超限时按XY小步靠近，航向保持不变；"
+                    "XY误差均通过后锁定中心点，通过TF让夹爪坐标系对准该点后执行投放"
                 ),
                 NODE_NAME,
             )
@@ -2587,37 +2595,26 @@ class Task3InspectAndDropTest:
 
         candidate = self.box_fine_candidate
         self.box_fine_candidate = None
-        coarse_x_error = candidate["map_x"] - self.box_coarse_map_x
-        coarse_y_error = candidate["map_y"] - self.box_coarse_map_y
-        camera_pose = self.get_camera_pose(
-            candidate["camera_frame"],
-            "方框三帧精确认camera实际误差计算",
-        )
-        if camera_pose is None:
-            self.box_fine_candidate = candidate
-            return
-        camera_x_error = candidate["map_x"] - camera_pose.pose.position.x
-        camera_y_error = candidate["map_y"] - camera_pose.pose.position.y
+        x_error = candidate["map_x"] - self.box_coarse_map_x
+        y_error = candidate["map_y"] - self.box_coarse_map_y
         rospy.loginfo(
             (
                 "%s：方框三帧精确认候选：map=(%.3f,%.3f)，"
                 "相对首次点误差=(X=%+.3f,Y=%+.3f)m，"
-                "camera实际对准误差=(X=%+.3f,Y=%+.3f)m，"
-                "完成门槛=(X=%.3f,Y=%.3f)m"
+                "门槛=(X=%.3f,Y=%.3f)m"
             ),
             NODE_NAME,
             candidate["map_x"],
             candidate["map_y"],
-            coarse_x_error,
-            coarse_y_error,
-            camera_x_error,
-            camera_y_error,
+            x_error,
+            y_error,
             self.fine_position_x_tolerance_m,
+            self.fine_position_y_tolerance_m,
             self.fine_position_y_tolerance_m,
         )
         if (
-            abs(camera_x_error) <= self.fine_position_x_tolerance_m
-            and abs(camera_y_error) <= self.fine_position_y_tolerance_m
+            abs(x_error) <= self.fine_position_x_tolerance_m
+            and abs(y_error) <= self.fine_position_y_tolerance_m
         ):
             if not self.finish_box_position_alignment(candidate):
                 self.finish_task(False, "无法生成方框最终固定位置目标")
@@ -2627,7 +2624,7 @@ class Task3InspectAndDropTest:
             candidate["map_y"],
             self.auto_hold_yaw,
             candidate["camera_frame"],
-            "方框相对camera的XY实际误差未全部进入门槛，保持航向按XY小步靠近",
+            "方框XY误差未全部进入门槛，保持航向按XY小步靠近",
         ):
             return
         self.box_precision_goal_pending = True
@@ -2635,7 +2632,7 @@ class Task3InspectAndDropTest:
         self.reset_box_position_queue()
         self.set_state(
             self.AUTO_APPROACH,
-            "方框相对camera的XY实际误差未全部进入门槛，已下发一个XY精对准小步",
+            "方框XY误差未全部进入门槛，已下发一个XY精对准小步",
         )
 
     def search_target_automatically(self, model_ready):
