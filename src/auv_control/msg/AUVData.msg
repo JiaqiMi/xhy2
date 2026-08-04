@@ -4,6 +4,6 @@ AUVPose         pose            # AUV位姿
 AUVPose         target          # 目标位姿 
 AUVTime         time            # AUV时间
 AUVMotor        motor_force     # AUV电机力矩
-float32[3]      linear_velocity # 线速度，来自debug报文，单位按下位机协议
-float32[3]      angular_velocity # 角速度，来自debug报文，单位按下位机协议
+float32[3]      linear_velocity # DVL对底速度，直接使用nav报文Vx/Vy/Vz，单位m/s
+float32[3]      angular_velocity # IMU角速度，直接使用nav报文Gx/Gy/Gz，单位deg/s
 AUVSensor       sensor          # AUV传感器数据

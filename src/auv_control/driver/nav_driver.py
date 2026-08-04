@@ -6,7 +6,7 @@
 功能：通过TCP接收导航设备140字节报文，解析完整导航数据并发布ROS消息
 作者：buyegaid
 监听：None
-发布：/nav (NavFull.msg)
+发布：/nav (NavData.msg)
 记录：
 2026.03.21
     初版：
@@ -21,18 +21,127 @@
     解析数据和原始报文分别按 nav_data、nav_raw 子目录保存。
 2026.7.31
     保存文件达到 50 MiB 后自动分卷，文件名追加下划线编号。
+2026.8.5
+    合并 nav 反馈辅助功能，提供 INS 有效位判断、DVL 对底速度锁存和 IMU 角速度转换。
 """
 
 import json
+import math
 import os
 import socket
 import struct
+from collections import namedtuple
 from datetime import datetime
 
 import rospy
 from genpy import Message
 from std_msgs.msg import Header
 from auv_control.msg import NavData
+
+
+INS_VALID_MASK = 0x4000
+DVL_BOTTOM_VALID_STATUSES = frozenset((2, 4))
+
+DvlBottomSample = namedtuple(
+    'DvlBottomSample', ('velocity', 'altitude', 'stamp', 'age')
+)
+
+
+def ins_data_valid(ins_status):
+    """返回 INS 状态字 bit14 是否置位。"""
+    try:
+        return bool(int(ins_status) & INS_VALID_MASK)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def nav_pose_and_imu_valid(message):
+    """校验用于上发的 INS 位姿和 IMU 角速度是否有限且范围合理。"""
+    try:
+        values = tuple(float(value) for value in (
+            message.latitude,
+            message.longitude,
+            message.depth,
+            message.roll,
+            message.pitch,
+            message.heading,
+            message.gyro_x,
+            message.gyro_y,
+            message.gyro_z,
+        ))
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+    latitude, longitude, unused_depth, roll, pitch, heading = values[:6]
+    del unused_depth
+    return (
+        all(math.isfinite(value) for value in values)
+        and -90.0 <= latitude <= 90.0
+        and -180.0 <= longitude <= 180.0
+        and -180.0 <= roll <= 180.0
+        and -180.0 <= pitch <= 180.0
+        and 0.0 <= heading < 360.0
+    )
+
+
+def imu_angular_velocity_deg(message):
+    """按 nav 报文字段顺序直接返回 IMU 三轴角速度，单位 deg/s。"""
+    return (
+        float(message.gyro_x),
+        float(message.gyro_y),
+        float(message.gyro_z),
+    )
+
+
+def angular_velocity_rad(angular_velocity_deg):
+    """将三轴角速度从 deg/s 转换为 rad/s，不改变轴顺序和符号。"""
+    return tuple(math.radians(float(value)) for value in angular_velocity_deg)
+
+
+class DvlBottomTracker:
+    """只锁存状态 2/4 的 DVL 对底速度与高度，并提供超时查询。"""
+
+    def __init__(self, timeout_sec=0.3):
+        timeout = float(timeout_sec)
+        self.timeout_sec = (
+            timeout if math.isfinite(timeout) and timeout > 0.0 else 0.3
+        )
+        self.velocity = None
+        self.altitude = None
+        self.stamp = None
+
+    def update(self, status, velocity, altitude, stamp):
+        """若状态及数值有效则更新锁存，返回本次是否更新。"""
+        try:
+            converted_status = int(status)
+            converted_velocity = tuple(float(value) for value in velocity)
+            converted_altitude = float(altitude)
+            converted_stamp = float(stamp)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if converted_status not in DVL_BOTTOM_VALID_STATUSES:
+            return False
+        values = converted_velocity + (converted_altitude, converted_stamp)
+        if len(converted_velocity) != 3 or not all(
+                math.isfinite(value) for value in values):
+            return False
+        self.velocity = converted_velocity
+        self.altitude = converted_altitude
+        self.stamp = converted_stamp
+        return True
+
+    def current(self, now):
+        """返回未超时的锁存值；无值或超时返回 None。"""
+        if self.stamp is None:
+            return None
+        age = max(0.0, float(now) - self.stamp)
+        if not math.isfinite(age) or age > self.timeout_sec:
+            return None
+        return DvlBottomSample(
+            self.velocity,
+            self.altitude,
+            self.stamp,
+            age,
+        )
 
 
 class NavDriver:

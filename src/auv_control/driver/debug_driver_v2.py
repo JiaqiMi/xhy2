@@ -1,4 +1,5 @@
 #! /home/xhy/xhy_env36/bin/python
+# -*- coding: utf-8 -*-
 """
 名称：debug_driver_v2.py
 功能：调试驱动V2，支持定深(02)/定深定向(03)/定点(04)三种模式
@@ -28,6 +29,10 @@
     原始报文文件达到 50 MiB 后自动分卷，文件名追加下划线编号。
 2026.7.31
     订阅旧版状态端口转发的 /dvl/altitude，优先填充上行状态的 DVL 高度字段。
+2026.8.5
+    使用 /nav 的有效 INS 位姿、DVL 对底速度和 IMU 角速度发布 20Hz 状态反馈。
+    debug 上行数据改为补充控制模式、目标、推力和设备状态，增加 nav/DVL/debug 超时保护。
+    控制下发循环改用单调时钟维持配置频率，默认 20Hz。
 """
 
 import json
@@ -40,16 +45,22 @@ import socket
 import struct
 import threading
 import time
-from auv_control.msg import AUVData, PoseLLAcmd
+from auv_control.msg import AUVData, NavData, PoseLLAcmd
 from functools import reduce
 from geometry_msgs.msg import TwistStamped
-from std_msgs.msg import Float32
 from debug_protocol import (
     DebugFrameBuffer,
     LowPassFilter,
     MovingAverageFilter,
     decode_status_words,
     require_finite,
+)
+from nav_driver import (
+    DvlBottomTracker,
+    angular_velocity_rad,
+    imu_angular_velocity_deg,
+    ins_data_valid,
+    nav_pose_and_imu_valid,
 )
 
 # 运行模式常量
@@ -124,9 +135,37 @@ class DebugDriverV2:
         ip = ip or rospy.get_param("~debug_ip", "192.168.1.115")
         port = port or rospy.get_param("~debug_port", 5063)
         self.send_rate_hz = float(rospy.get_param("~send_rate_hz", 20.0))
-        if self.send_rate_hz <= 0.0:
-            raise ValueError("send_rate_hz 必须大于 0")
+        if not math.isfinite(self.send_rate_hz) or self.send_rate_hz <= 0.0:
+            rospy.logerr(
+                "debug_driver_v2: send_rate_hz 无效，回退为 20Hz 后继续等待控制"
+            )
+            self.send_rate_hz = 20.0
         self.send_period_s = 1.0 / self.send_rate_hz
+
+        self.dvl_velocity_timeout_sec = float(rospy.get_param(
+            '~dvl_velocity_timeout_sec', 0.3
+        ))
+        if (
+                not math.isfinite(self.dvl_velocity_timeout_sec)
+                or self.dvl_velocity_timeout_sec <= 0.0):
+            rospy.logerr(
+                'debug_driver_v2: dvl_velocity_timeout_sec 无效，回退为 0.3s'
+            )
+            self.dvl_velocity_timeout_sec = 0.3
+        self.nav_timeout_sec = float(rospy.get_param('~nav_timeout_sec', 0.5))
+        if not math.isfinite(self.nav_timeout_sec) or self.nav_timeout_sec <= 0.0:
+            rospy.logerr('debug_driver_v2: nav_timeout_sec 无效，回退为 0.5s')
+            self.nav_timeout_sec = 0.5
+        self.debug_supplement_timeout_sec = float(rospy.get_param(
+            '~debug_supplement_timeout_sec', 0.5
+        ))
+        if (
+                not math.isfinite(self.debug_supplement_timeout_sec)
+                or self.debug_supplement_timeout_sec <= 0.0):
+            rospy.logerr(
+                'debug_driver_v2: debug_supplement_timeout_sec 无效，回退为 0.5s'
+            )
+            self.debug_supplement_timeout_sec = 0.5
 
         # 原始报文保存
         self.raw_saving_enable = rospy.get_param("~save_raw_data", False)
@@ -143,19 +182,11 @@ class DebugDriverV2:
         self.server_address = (ip, port)
         self.tcp_sock = None
         self.latest_debug_data = None
-        self.dvl_altitude_topic = rospy.get_param(
-            '~dvl_altitude_topic', '/dvl/altitude'
-        )
-        self.dvl_altitude_timeout_sec = float(
-            rospy.get_param('~dvl_altitude_timeout_sec', 0.5)
-        )
-        if self.dvl_altitude_timeout_sec <= 0.0:
-            raise ValueError('dvl_altitude_timeout_sec 必须大于 0')
-        self.latest_dvl_altitude = None
-        self.latest_dvl_altitude_received_at = None
+        self.latest_debug_received_at = None
+        self.latest_nav_received_at = None
+        self.dvl_tracker = DvlBottomTracker(self.dvl_velocity_timeout_sec)
 
-        self.lock = threading.Lock()
-        self.dvl_altitude_lock = threading.RLock()
+        self.lock = threading.RLock()
         self.socket_lock = threading.RLock()
         self.connect_lock = threading.Lock()
         self.target = ControlTarget()
@@ -172,48 +203,15 @@ class DebugDriverV2:
 
         # 接收由 auv_tf_handler 转换后的 LLA 整包控制指令。
         rospy.Subscriber('/cmd/pose/lla', PoseLLAcmd, self.control_cmd_callback)
-        rospy.Subscriber(
-            self.dvl_altitude_topic, Float32, self.dvl_altitude_callback,
-            queue_size=10,
-        )
+        rospy.Subscriber('/nav', NavData, self.nav_callback, queue_size=20)
         self.data_pub = rospy.Publisher('/status/auv', AUVData, queue_size=10)
         self.velocity_pub = rospy.Publisher('/status/vel', TwistStamped, queue_size=10)
+        self.nav_watchdog_timer = rospy.Timer(
+            rospy.Duration(0.1), self._nav_watchdog_callback
+        )
         rospy.loginfo(
-            "debug_driver_v2: 已启动，监听 /cmd/pose/lla 和 %s，下发频率 %.1f Hz",
-            self.dvl_altitude_topic, self.send_rate_hz)
-
-    def dvl_altitude_callback(self, msg):
-        """缓存旧版状态端口转发的最新有限 DVL 高度。"""
-        altitude = float(msg.data)
-        if not math.isfinite(altitude):
-            rospy.logwarn_throttle(
-                2.0, 'debug_driver_v2: 忽略非有限的 DVL 高度'
-            )
-            return
-        with self.dvl_altitude_lock:
-            self.latest_dvl_altitude = altitude
-            self.latest_dvl_altitude_received_at = rospy.Time.now()
-
-    def get_current_dvl_altitude(self):
-        """返回未超时的 DVL 高度；数据缺失或超时则返回空值。"""
-        with self.dvl_altitude_lock:
-            altitude = self.latest_dvl_altitude
-            received_at = self.latest_dvl_altitude_received_at
-
-        if altitude is None or received_at is None:
-            rospy.logwarn_throttle(
-                2.0, 'debug_driver_v2: 尚未收到旧版状态端口的 DVL 高度'
-            )
-            return None
-        age = (rospy.Time.now() - received_at).to_sec()
-        if age > self.dvl_altitude_timeout_sec:
-            rospy.logwarn_throttle(
-                2.0,
-                'debug_driver_v2: DVL 高度已超时 %.3fs（限制 %.3fs）',
-                age, self.dvl_altitude_timeout_sec,
-            )
-            return None
-        return altitude
+            "debug_driver_v2: 已启动，监听 /cmd/pose/lla 和 /nav，下发频率 %.1f Hz",
+            self.send_rate_hz)
 
     def open_raw_save_file(self):
         """打开原始报文保存文件"""
@@ -340,58 +338,170 @@ class DebugDriverV2:
             return None
         return data
 
-    def publish_auv_data(self, parsed):
-        """将解析后的数据发布为 AUVData 消息"""
+    def _fresh_debug_snapshot(self, now):
+        """返回未超时的 debug 补充数据；缺失或超时返回 None。"""
+        with self.lock:
+            parsed = self.latest_debug_data
+            received_at = self.latest_debug_received_at
+        if parsed is None or received_at is None:
+            rospy.logerr_throttle(
+                2.0, 'debug_driver_v2: 尚未收到 debug 补充数据，使用安全默认值'
+            )
+            return None
+        age = max(0.0, (now - received_at).to_sec())
+        if age > self.debug_supplement_timeout_sec:
+            rospy.logerr_throttle(
+                2.0,
+                'debug_driver_v2: debug 补充数据超时 %.3fs（限制 %.3fs），使用安全默认值',
+                age,
+                self.debug_supplement_timeout_sec,
+            )
+            return None
+        return parsed
+
+    def _build_auv_data(self, nav, debug, dvl_sample, stamp):
+        """以 nav 为主数据、debug 为补充组装 AUVData。"""
         msg = AUVData()
-        msg.header.stamp = rospy.Time.now()
-        msg.control_mode = parsed.mode
-        msg.pose.latitude = parsed.navigation_coords[1]
-        msg.pose.longitude = parsed.navigation_coords[0]
-        msg.pose.depth = parsed.depth_filtered
-        dvl_altitude = self.get_current_dvl_altitude()
-        msg.pose.altitude = (
-            parsed.altitude if dvl_altitude is None else dvl_altitude
+        msg.header.stamp = stamp
+        msg.header.frame_id = 'nav'
+        msg.pose.latitude = nav.latitude
+        msg.pose.longitude = nav.longitude
+        msg.pose.depth = nav.depth
+        msg.pose.roll = nav.roll
+        msg.pose.pitch = nav.pitch
+        msg.pose.yaw = nav.heading
+
+        dvl_velocity = (0.0, 0.0, 0.0)
+        if dvl_sample is not None:
+            dvl_velocity = dvl_sample.velocity
+            msg.pose.altitude = dvl_sample.altitude
+            msg.pose.speed = dvl_velocity[0]
+        msg.linear_velocity = list(dvl_velocity)
+        angular_velocity = imu_angular_velocity_deg(nav)
+        msg.angular_velocity = list(angular_velocity)
+
+        if debug is not None:
+            msg.control_mode = debug.mode
+            msg.target.longitude = debug.target_longitude
+            msg.target.latitude = debug.target_latitude
+            msg.target.depth = debug.target_depth
+            msg.target.roll = debug.target_roll
+            msg.target.pitch = debug.target_pitch
+            msg.target.yaw = debug.target_yaw
+            msg.target.altitude = debug.target_altitude
+            msg.target.speed = debug.target_speed
+            msg.motor_force.TX = debug.force_commands[0]
+            msg.motor_force.TY = debug.force_commands[1]
+            msg.motor_force.TZ = debug.force_commands[2]
+            msg.motor_force.MX = debug.force_commands[3]
+            msg.motor_force.MY = debug.force_commands[4]
+            msg.motor_force.MZ = debug.force_commands[5]
+            msg.sensor.temperature = debug.temperature
+            msg.sensor.voltage = debug.control_voltage
+            msg.sensor.current = debug.power_current
+            msg.sensor.battery = 0
+            msg.sensor.leak_alarm = bool(debug.water_leak)
+            msg.sensor.sensor_valid = debug.sensor_status
+            msg.sensor.sensor_updated = debug.sensor_update
+            msg.sensor.fault_status = debug.fault_status
+            msg.sensor.power_status = debug.power_status
+            msg.time.year = debug.utc_time[0]
+            msg.time.month = debug.utc_time[1]
+            msg.time.day = debug.utc_time[2]
+            msg.time.hour = debug.utc_time[3]
+            msg.time.minute = debug.utc_time[4]
+            msg.time.second = debug.utc_time[5]
+        return msg, angular_velocity
+
+    def nav_callback(self, nav):
+        """隔离单帧解析异常，避免 ROS 回调线程因坏帧中断。"""
+        try:
+            self._process_nav_callback(nav)
+        except Exception as error:
+            rospy.logerr_throttle(
+                1.0,
+                'debug_driver_v2: nav 帧处理异常：%s，等待后续有效帧',
+                error,
+            )
+
+    def _process_nav_callback(self, nav):
+        """以有效 nav 帧触发 AUV 位姿及速度状态发布。"""
+        now = rospy.Time.now()
+        if not ins_data_valid(nav.ins_status):
+            rospy.logerr_throttle(
+                1.0,
+                'debug_driver_v2: INS 数据无效，ins_status=0x%04X，等待恢复',
+                int(nav.ins_status),
+            )
+            return
+        if not nav_pose_and_imu_valid(nav):
+            rospy.logerr_throttle(
+                1.0, 'debug_driver_v2: nav 位姿或 IMU 角速度无效，等待恢复'
+            )
+            return
+
+        now_sec = now.to_sec()
+        with self.lock:
+            self.latest_nav_received_at = now
+            updated = self.dvl_tracker.update(
+                nav.dvl_status,
+                (nav.dvl_vx, nav.dvl_vy, nav.dvl_vz),
+                nav.dvl_altitude,
+                now_sec,
+            )
+            dvl_sample = self.dvl_tracker.current(now_sec)
+        if int(nav.dvl_status) in (2, 4) and not updated:
+            rospy.logerr_throttle(
+                1.0, 'debug_driver_v2: DVL 对底速度包含无效数值，保持上一有效值'
+            )
+
+        debug = self._fresh_debug_snapshot(now)
+        stamp = nav.header.stamp
+        if stamp == rospy.Time():
+            stamp = now
+        msg, angular_velocity_deg = self._build_auv_data(
+            nav, debug, dvl_sample, stamp
         )
-        msg.pose.roll = parsed.euler_angles[0]
-        msg.pose.pitch = parsed.euler_angles[1]
-        msg.pose.yaw = parsed.euler_angles[2]
-        msg.pose.speed = parsed.linear_velocity[0]
-        msg.motor_force.TX = parsed.force_commands[0]
-        msg.motor_force.TY = parsed.force_commands[1]
-        msg.motor_force.TZ = parsed.force_commands[2]
-        msg.motor_force.MX = parsed.force_commands[3]
-        msg.motor_force.MY = parsed.force_commands[4]
-        msg.motor_force.MZ = parsed.force_commands[5]
-        msg.linear_velocity = parsed.linear_velocity
-        msg.angular_velocity = parsed.angular_velocity
-        msg.sensor.temperature = parsed.temperature
-        msg.sensor.voltage = parsed.control_voltage
-        msg.sensor.current = parsed.power_current
-        msg.sensor.battery = 0
-        msg.sensor.leak_alarm = bool(parsed.water_leak)
-        msg.sensor.sensor_valid = parsed.sensor_status
-        msg.sensor.sensor_updated = parsed.sensor_update
-        msg.sensor.fault_status = parsed.fault_status
-        msg.sensor.power_status = parsed.power_status
-        msg.time.year = parsed.utc_time[0]
-        msg.time.month = parsed.utc_time[1]
-        msg.time.day = parsed.utc_time[2]
-        msg.time.hour = parsed.utc_time[3]
-        msg.time.minute = parsed.utc_time[4]
-        msg.time.second = parsed.utc_time[5]
         self.data_pub.publish(msg)
 
-        # TwistStamped 使用 m/s 和 rad/s；线速度参考点为 IMU/惯导原点。
+        if dvl_sample is None:
+            rospy.logerr_throttle(
+                1.0,
+                'debug_driver_v2: DVL 对底速度缺失或超时，停止发布 /status/vel',
+            )
+            return
+
+        # DVL 对底速度直接使用下位机轴顺序；IMU 角速度只做单位转换。
         velocity_msg = TwistStamped()
         velocity_msg.header.stamp = msg.header.stamp
         velocity_msg.header.frame_id = "imu"
-        velocity_msg.twist.linear.x = parsed.linear_velocity[0]
-        velocity_msg.twist.linear.y = parsed.linear_velocity[1]
-        velocity_msg.twist.linear.z = parsed.linear_velocity[2]
-        velocity_msg.twist.angular.x = math.radians(parsed.angular_velocity[0])
-        velocity_msg.twist.angular.y = math.radians(parsed.angular_velocity[1])
-        velocity_msg.twist.angular.z = math.radians(parsed.angular_velocity[2])
+        velocity_msg.twist.linear.x = dvl_sample.velocity[0]
+        velocity_msg.twist.linear.y = dvl_sample.velocity[1]
+        velocity_msg.twist.linear.z = dvl_sample.velocity[2]
+        angular_velocity = angular_velocity_rad(angular_velocity_deg)
+        velocity_msg.twist.angular.x = angular_velocity[0]
+        velocity_msg.twist.angular.y = angular_velocity[1]
+        velocity_msg.twist.angular.z = angular_velocity[2]
         self.velocity_pub.publish(velocity_msg)
+
+    def _nav_watchdog_callback(self, unused_event):
+        """nav 无有效帧超过阈值时持续告警，等待数据自行恢复。"""
+        del unused_event
+        with self.lock:
+            received_at = self.latest_nav_received_at
+        if received_at is None:
+            rospy.logerr_throttle(
+                2.0, 'debug_driver_v2: 尚未收到有效 nav 数据，等待恢复'
+            )
+            return
+        age = max(0.0, (rospy.Time.now() - received_at).to_sec())
+        if age > self.nav_timeout_sec:
+            rospy.logerr_throttle(
+                1.0,
+                'debug_driver_v2: nav 数据超时 %.3fs（限制 %.3fs），已停止状态更新',
+                age,
+                self.nav_timeout_sec,
+            )
 
     # ── 下行组包（严格遵循协议）─────────────────────────────────────
 
@@ -569,7 +679,7 @@ class DebugDriverV2:
                     if parsed is not None:
                         with self.lock:
                             self.latest_debug_data = parsed
-                        self.publish_auv_data(parsed)
+                            self.latest_debug_received_at = rospy.Time.now()
             except socket.timeout:
                 continue
             except Exception as e:
@@ -580,8 +690,16 @@ class DebugDriverV2:
                 self.connect()
 
     def send_loop(self):
-        """发送循环（子线程），5Hz"""
+        """按单调时钟以配置频率发送最新完整控制目标。"""
+        next_send = time.monotonic()
         while not rospy.is_shutdown():
+            monotonic_now = time.monotonic()
+            if monotonic_now < next_send:
+                time.sleep(min(next_send - monotonic_now, self.send_period_s))
+                continue
+            while next_send <= monotonic_now:
+                next_send += self.send_period_s
+
             now = time.time()
             packet = None
             target_snapshot = None
@@ -617,7 +735,6 @@ class DebugDriverV2:
                 with self.socket_lock:
                     sock = self.tcp_sock
                 if sock is None:
-                    time.sleep(self.send_period_s)
                     continue
                 try:
                     sock.sendall(packet)
@@ -637,8 +754,6 @@ class DebugDriverV2:
                 except Exception as e:
                     rospy.logerr(f"debug_driver_v2: 发送扩展指令包错误: {e}")
                     self._disconnect_socket(sock)
-            # 发送节拍由启动参数控制；每次发送时只取最新完整指令，避免积压旧指令。
-            time.sleep(self.send_period_s)
 
     # ── 回调 ─────────────────────────────────────────────
 
@@ -718,6 +833,7 @@ class DebugDriverV2:
                 time.sleep(2)
 
         # 先关闭套接字唤醒阻塞中的 recv，再等待线程退出。
+        self.nav_watchdog_timer.shutdown()
         self._disconnect_socket()
         if self.recv_thread and self.recv_thread.is_alive():
             rospy.loginfo("debug_driver_v2: 关闭接收线程")
