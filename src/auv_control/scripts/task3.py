@@ -2654,7 +2654,8 @@ class Task3Final:
             rospy.logwarn(
                 (
                     "%s：ArUco阶段%s：%s；不退出，先保持悬停，"
-                    "使用预设颜色并重新对准ArUco绝对航向"
+                    "保留已确认颜色，未确认时优先使用历史颜色，"
+                    "再重新对准ArUco绝对航向"
                 ),
                 NODE_NAME,
                 "达到总超时" if timed_out else "运行期异常按总超时降级",
@@ -2672,23 +2673,44 @@ class Task3Final:
             )
             if rospy.is_shutdown():
                 return self.fail("ArUco异常航向保护期间ROS关闭")
-            target_color = None
         if target_color is None:
-            target_color = str(
-                self.task2_params.get("recognition_fallback_color", "red")
-            ).strip().lower()
-            if target_color not in ("yellow", "green", "red"):
-                rospy.logerr(
+            history_marker_id, history_color = self.get_aruco_history_result()
+            if history_color is not None:
+                target_color = history_color
+                rospy.logwarn(
                     (
-                        "%s：recognition_fallback_color=%s无效，"
-                        "为保证流程继续，使用red"
+                        "%s：ArUco阶段未返回颜色；使用三帧一致历史结果："
+                        "ID=%d，颜色=%s"
+                    ),
+                    NODE_NAME,
+                    history_marker_id,
+                    target_color,
+                )
+            else:
+                target_color = str(
+                    self.task2_params.get("recognition_fallback_color", "red")
+                ).strip().lower()
+                if target_color not in ("yellow", "green", "red"):
+                    rospy.logerr(
+                        (
+                            "%s：recognition_fallback_color=%s无效，"
+                            "为保证流程继续，使用red"
+                        ),
+                        NODE_NAME,
+                        target_color,
+                    )
+                    target_color = "red"
+                rospy.logwarn(
+                    (
+                        "%s：ArUco阶段未返回颜色，且没有三帧一致历史结果；"
+                        "容错流程使用人工预设颜色%s"
                     ),
                     NODE_NAME,
                     target_color,
                 )
-                target_color = "red"
+        elif not success:
             rospy.logwarn(
-                "%s：ArUco未得到颜色，容错流程使用预设颜色%s",
+                "%s：ArUco阶段虽未完成，但保留已确认颜色%s用于方框搜索",
                 NODE_NAME,
                 target_color,
             )

@@ -224,12 +224,11 @@ test_task3_3_inspect_and_drop:
   auto_search_stable_detection_count: 3
   # 三帧map位置相对平均值的最大二维抖动，单位m。
   stable_map_position_tolerance_m: 0.20
-  # camera粗对准后，二次三帧平均位置与首次平均位置的X误差门槛，单位m。
+  # camera粗对准后，二次三帧平均位置与首次平均位置的XY误差门槛，单位m。
+  # X、Y必须同时进入各自门槛，才完成精确认并进入投放。
   fine_position_x_tolerance_m: 0.10
+  fine_position_y_tolerance_m: 0.10
   auto_hover_confirm_settle_seconds: 0.5
-  auto_hover_confirm_timeout: 4.0
-  # 细对准最终居中连续确认帧数。
-  auto_center_stable_detection_count: 3
   stable_center_tolerance_px: 40.0
   stable_area_tolerance_ratio: 0.35
   detection_timeout: 2.0
@@ -263,41 +262,10 @@ test_task3_3_inspect_and_drop:
   # 左移从当前搜索点计算；右移从左移结束位置计算。
   auto_search_left_distance: 0.70
   auto_search_right_distance: 1.4
-  # true：10帧内3帧确认颜色布局，优先直接找目标或推断左右方向。
-  # 只看到一个非目标颜色时仍按上面的原左移步长横移；
-  # 从左侧跨到右侧仍使用原右移步长。快速判定失败后自动接回原搜索。
-  # false：完全跳过颜色布局推断，直接执行原三段定步长搜索。
-  auto_color_fast_search_enabled: true
 
-  # map精对准小步参数：XY均可移动，但精确认只判断X误差；航向始终保持锁存值。
-  auto_visual_lateral_gain_m: 0.10
+  # map精对准小步参数：XY任一误差超限都会继续小步移动；航向始终保持锁存值。
   auto_visual_min_step_m: 0.05
   auto_visual_max_step_m: 0.20
-  auto_visual_goal_min_interval: 0.50
-  # 实际运动方向相反时改为-1.0。
-  auto_lateral_sign: 1.0
-
-  # 图像对准参考点、像素容差和图像尺寸回退值。
-  # 640宽图像下，方框水平中心进入画面中心左右各60px后才开始稳定确认；
-  # v方向只写日志，不参与对准。单侧贴住画面边缘时仍继续横向细对准。
-  auto_target_center_u_ratio: 0.5
-  auto_target_center_v_ratio: 0.5
-  auto_center_tolerance_u_px: 60.0
-  auto_image_width: 640.0
-  auto_image_height: 480.0
-
-  # 自动模式开灯、开夹爪前的动作放行门槛
-  auto_action_max_horizontal_speed: 0.03
-  auto_action_max_vertical_speed: 0.03
-  # 航向角速度门槛，单位rad/s。
-  auto_action_max_yaw_rate: 0.05
-  auto_action_max_depth_error: 0.08
-  auto_action_max_yaw_error_deg: 5.0
-
-  # 自动模式精确认通过、锁定位置和航向后，开灯和开爪前沿当前航向前进20厘米。
-  pre_drop_forward_distance: 0.20
-  # [HOVER超时-5] 子任务3投放前固定前进目标进入HOVER。
-  pre_drop_forward_timeout: 600.0
 
   # 动作时序
   # 以下时间均从/status/actuator反馈确认到位后开始计算，
