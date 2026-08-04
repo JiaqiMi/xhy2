@@ -29,6 +29,8 @@
     支持 9 键预热 task1 视觉节点，并在 task1 中复用。
 2026.8.3
     将任务正常退出与异常退出区分，task2 正常结束时保留 task3 视觉预热。
+2026.8.5
+    task3 未检测到预热时由自身 launch 启动视觉节点。
 """
 
 import errno
@@ -119,6 +121,8 @@ class StateControl:
         try:
             launch = str(config['launch'])
             active_modes = {int(mode) for mode in config['active_modes']}
+            start_modes = {int(mode) for mode in
+                           config.get('start_modes', active_modes)}
         except (KeyError, TypeError, ValueError) as error:
             rospy.logerr('%s %s 视觉预热配置无效：%s', NODE_NAME,
                          task_name, error)
@@ -135,6 +139,7 @@ class StateControl:
             'reuse_launch_args': [str(argument) for argument in
                                   config.get('reuse_launch_args', [])],
             'active_modes': active_modes,
+            'start_modes': start_modes,
         }
 
     def keyboard_callback(self, message):
@@ -181,9 +186,14 @@ class StateControl:
             else:
                 rospy.loginfo('%s 未检测到 task1 视觉预热，由 task1 启动视觉节点。',
                               NODE_NAME)
-        if (task['mode'] == 3 and self.vision_prewarm is not None and
-                self.vision_prewarm['enabled']):
-            launch_args += self.vision_prewarm['reuse_launch_args']
+        if task['mode'] == 3:
+            if self.vision_prewarm_running():
+                launch_args += self.vision_prewarm['reuse_launch_args']
+                rospy.loginfo('%s 检测到 task3 视觉预热，复用已有节点。',
+                              NODE_NAME)
+            else:
+                rospy.loginfo('%s 未检测到 task3 视觉预热，由 task3 启动视觉节点。',
+                              NODE_NAME)
         command = ['roslaunch', 'auv_control', task['launch']] + launch_args
         try:
             master_fd, slave_fd = pty.openpty()
@@ -274,7 +284,9 @@ class StateControl:
         if task_mode not in self.vision_prewarm['active_modes']:
             self.terminate_vision_prewarm('切换到非视觉预热任务')
             return
-        if self.vision_process is not None and self.vision_process.poll() is None:
+        if self.vision_prewarm_running():
+            return
+        if task_mode not in self.vision_prewarm['start_modes']:
             return
 
         self._close_vision_output()
@@ -308,6 +320,13 @@ class StateControl:
             self.vision_output_fd = None
             self.vision_output_thread = None
             rospy.logerr('%s 启动 task3 视觉预热失败：%s', NODE_NAME, error)
+
+    def vision_prewarm_running(self):
+        """判断 task3 视觉预热进程是否仍在运行。"""
+        return (self.vision_prewarm is not None and
+                self.vision_prewarm['enabled'] and
+                self.vision_process is not None and
+                self.vision_process.poll() is None)
 
     def task1_vision_prewarm_running(self):
         """判断 task1 视觉预热进程是否仍在运行。"""
