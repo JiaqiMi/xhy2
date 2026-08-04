@@ -21,7 +21,7 @@
     <arg name="exp_env" default="water" />
     <arg name="conf_thre" default="0.2" />
     <arg name="top_k" default="3" />
-    <arg name="rate" default="5.0" />
+    <arg name="rate" default="20.0" />
     <arg name="visualization" default="0" />
     <arg name="web_port" default="8081" />
 
@@ -51,10 +51,10 @@
     <arg name="block_size" default="7" />
 
     <node if="$(arg start_camera)"
-        name="usb_cam"
-        pkg="usb_cam"
-        type="usb_cam_node"
-        launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
+          name="usb_cam"
+          pkg="stereo_splitter"
+          type="mjpg_cam_node.py"
+          output="screen" />
 
     <!-- <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'"  /> -->
 

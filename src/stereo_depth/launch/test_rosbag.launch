@@ -51,16 +51,11 @@
             start_camera=true：
             本launch自己启动USB相机。
         -->
-        <node name="usb_cam"
-              pkg="usb_cam"
-              type="usb_cam_node"
-              if="$(arg start_camera)"
-              output="screen">
-            <param name="video_device" value="$(arg video_device)" />
-            <param name="pixel_format" value="$(arg pixel_format)" />
-            <param name="image_width" value="$(arg image_width)" />
-            <param name="image_height" value="$(arg image_height)" />
-        </node>
+        <node if="$(arg start_camera)"
+          name="usb_cam"
+          pkg="stereo_splitter"
+          type="mjpg_cam_node.py"
+          output="screen" />
 
         <!-- 对主程序发布的USB图像进行限频 -->
         <node pkg="topic_tools"

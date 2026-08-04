@@ -35,6 +35,8 @@ CONF_THRE=$(get_param conf_thre 0.2)
 DETC_TYPE=$(get_param detc_type center)
 OUTPUT_TYPE=$(get_param output_type quartiles)
 INFER_RATE=$(get_param infer_rate 5.0)
+IMGSZ=$(get_param imgsz 640)
+DEVICE=$(get_param device 0)
 
 INPUT_TOPIC=$(get_param input_topic /left/image_raw)
 ANNOTATED_TOPIC=$(get_param annotated_topic /yolo_unified/annotated_image)
@@ -52,6 +54,8 @@ ARGS=(
     --detc_type "${DETC_TYPE}"
     --output_type "${OUTPUT_TYPE}"
     --infer_rate "${INFER_RATE}"
+    --imgsz "${IMGSZ}"
+    --device "${DEVICE}"
     --input_topic "${INPUT_TOPIC}"
     --annotated_topic "${ANNOTATED_TOPIC}"
     --web_topic "${WEB_TOPIC}"

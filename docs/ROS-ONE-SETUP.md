@@ -127,3 +127,36 @@ roslaunch stereo_depth test_red_circle_detection.launch
 - 恢复 apt 源:`sudo cp /etc/apt/sources.list.bak_20260803 /etc/apt/sources.list`
 - 卸载 ROS-O:`sudo apt remove "ros-one-*" && sudo rm /etc/apt/sources.list.d/ros1.list`
 - 代码:切回 `main` 分支即可(本分支所有改动独立)。
+
+## 10. 相机采集与推理频率问题(2026-08-04 修复)
+
+**现象**:除 arrow 外所有检测模型输出仅 ~1Hz。
+
+**排查结论**(逐级实测):GPU 与模型无罪(4 个模型均 26-28ms ≈ 38FPS@cuda:0);
+软件管线无罪(合成 30fps 输入时输出精确顶到 launch 的 rate 上限);
+真凶是相机采集:ROS-O 的 **usb_cam 0.3.7** 与 melodic 时代 0.2.x 不兼容——
+`_pixel_format:=mjpeg` 直接段错误,`mjpeg2rgb/raw_mjpeg` 初始化失败,
+唯一能出图的 `yuyv` 受 USB2 带宽限制(1280x480 仅 ~6fps,大分辨率仅 1~3fps,
+本相机 Sunplus 1bcf:0b15 的 YUYV 3840x1080 恰好是 1fps = 你看到的 1Hz)。
+arrow"较快"是错觉:它的方向话题按 keypoint_timeout 连续发布,图像处理层同样慢。
+
+**修复**:
+1. 新增 `stereo_splitter/scripts/mjpg_cam_node.py`:V4L2+OpenCV 直读 MJPG 压缩流,
+   话题/参数与 usb_cam 兼容(默认 /usb_cam/image_raw, 1280x480@30)。
+   可选参数 `v4l2_ctl_args`(如 `-c auto_exposure=1 -c exposure_time_absolute=100` 锁曝光稳帧率)。
+   一键启动:`roslaunch stereo_splitter stereo_camera.launch`(相机+分流)。
+2. 全部 17 个引用 usb_cam 的 launch 已替换为 mjpg_cam_node.py,并去掉了吞报错的 `2>/dev/null`。
+3. `yolo.py` 与 `yolo_wrapper.sh` 补上 `--imgsz`(默认 640)与 `--device`(默认 0)显式传参,
+   与 yolo_pose_arrow.py 对齐(实测对性能无影响,属显式化)。
+
+**实测(夜间暗光,曝光自动)**:
+| 环节 | 修复前 | 修复后 |
+|---|---|---|
+| 相机 /usb_cam/image_raw | yuyv ~1-6 fps / mjpeg 崩溃 | MJPG **9.4-10.9 fps**(白天可到 30) |
+| red_circle 标注图 (rate=5) | ~1 Hz | **5.03 Hz(顶到上限)** |
+| shapes 标注图 (rate=20) | ~1 Hz | **11.1 Hz(受夜间相机帧率限制)** |
+
+**注意**:
+- 相机目前挂在 4 口 USB2 hub 后(`usb 1-2.1`),建议直插板子 USB 口减少等时带宽争抢(物理操作,待现场执行)。
+- 暗光/水下环境自动曝光会拉长积分时间限帧率;要稳帧率用 `v4l2_ctl_args` 锁定曝光。
+- 提高输出上限只需调 launch 的 `rate` 参数(shapes 已是 20);单模型 GPU 推理 ~26ms,理论上限 ~38FPS。
