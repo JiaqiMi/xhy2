@@ -35,9 +35,13 @@ delivery_xy: [0.0, 0.00]
 # 到达送水点、浮出和下潜阶段保持的 map 航向角，单位 deg。
 delivery_yaw_deg: 210.0
 # 送水点浮出水面时使用的 map z；默认 0.0。
-surface_depth: -1.1
+surface_depth: -1.25
 # 返回起始 XY 后保持的最终 map 航向角，单位 deg。
 final_yaw_deg: 210
+# 送水和返航期间实时指向目标点；当水平距离不大于该阈值时，保持当前位置目标不变，
+# 直接切换至 delivery_yaw_deg（送水）或 final_yaw_deg（返航）并继续前进，不额外停稳。
+# 单位 m，必须为正数；默认 1.0 m。
+final_yaw_switch_distance: 1.0
 
 # ============================== 采水时序 ==============================
 
@@ -79,9 +83,9 @@ goal_match_yaw_tolerance_deg: 2.0
 # ============================== TF、运动反馈与阶段超时 ==============================
 
 # 等待首帧 map_frame -> base_frame TF 的告警阈值；超时后继续等待且不发布导航目标。
-tf_initial_timeout: 30.0
+tf_initial_timeout: 100.0
 # 最新 /motion/state 允许的最大年龄；超过后视为控制器反馈失效。
-motion_state_timeout: 0.5
+motion_state_timeout: 10.0
 # motion 状态失效或 SAFE 持续达到该时长后，切换到最终安全定点。
 motion_recovery_timeout: 10.0
 # 起始锁存点等待 motion_supervisor 进入 HOVER 的最长时间。

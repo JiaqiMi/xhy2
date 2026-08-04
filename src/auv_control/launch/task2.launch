@@ -1,7 +1,7 @@
 <launch>
     <!--
       Task2：采水器定点采水、送水点浮出和返回起始点。
-      motion_supervisor 必须由基础控制系统预先启动，并作为 /cmd/pose/ned 的唯一发布者。
+      motion_supervisor 必须由基础控制系统预先启动，并作为 /cmd/motion/goal 的唯一消费者。
     -->
 
     <!-- Task2 运行参数统一由 config/task2.yaml 提供。 -->

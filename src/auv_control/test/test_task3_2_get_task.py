@@ -8,7 +8,7 @@
 识别采用最近10个模型消息组成的滑动窗口。任一合法 ArUco ID 在窗口内
 出现3次即立即确认，不要求连续，也不需要等待窗口填满。例如第1、3、7帧
 是同一个ID时，第7帧到达后立即成功。成功后等待对应颜色灯反馈到位并保持
-3秒，再按配置原地左转或右转；超过配置的兜底时间仍未确认ID时，优先使用
+3秒，再原地转到配置的绝对ArUco航向；超过配置的兜底时间仍未确认ID时，优先使用
 整合任务记录的三帧一致历史ID，没有历史ID时再按人工配置颜色继续执行。
 """
 
@@ -77,8 +77,7 @@ DEFAULT_INITIAL_HOVER_TIMEOUT = 30.0
 DEFAULT_HOLD_POSE_TIMEOUT = 5.0
 
 DEFAULT_TURN_ENABLED = True
-DEFAULT_TURN_DIRECTION = "right"
-DEFAULT_TURN_ANGLE_DEG = 90.0
+DEFAULT_ARUCO_YAW_DEG = 120.0
 DEFAULT_TURN_TIMEOUT = 90.0
 DEFAULT_TURN_STABLE_SECONDS = 1.0
 DEFAULT_TURN_HOLD_SECONDS = 1.0
@@ -178,11 +177,8 @@ class Task3GetTaskTest:
         self.turn_enabled = bool(rospy.get_param(
             "~turn_enabled", DEFAULT_TURN_ENABLED
         ))
-        self.turn_direction = str(rospy.get_param(
-            "~turn_direction", DEFAULT_TURN_DIRECTION
-        )).strip().lower()
-        self.turn_angle_deg = float(rospy.get_param(
-            "~turn_angle_deg", DEFAULT_TURN_ANGLE_DEG
+        self.aruco_yaw_deg = float(rospy.get_param(
+            "/task3_aruco_yaw_deg", DEFAULT_ARUCO_YAW_DEG
         ))
         self.turn_timeout = float(rospy.get_param(
             "~turn_timeout", DEFAULT_TURN_TIMEOUT
@@ -388,10 +384,12 @@ class Task3GetTaskTest:
                 self.motion_state_timeout,
                 self.turn_timeout) <= 0.0:
             raise ValueError("悬停、TF、运动状态和转向超时必须大于0")
-        if self.turn_direction not in ("left", "right"):
-            raise ValueError("turn_direction 必须是 left 或 right")
-        if self.turn_angle_deg <= 0.0 or self.turn_angle_deg >= 180.0:
-            raise ValueError("turn_angle_deg 必须在0到180度之间")
+        if (
+            not math.isfinite(self.aruco_yaw_deg)
+            or self.aruco_yaw_deg < 0.0
+            or self.aruco_yaw_deg >= 360.0
+        ):
+            raise ValueError("task3_aruco_yaw_deg必须在[0, 360)度范围内")
         if min(
                 self.turn_stable_seconds,
                 self.turn_hold_seconds,
@@ -449,7 +447,7 @@ class Task3GetTaskTest:
         rospy.loginfo(
             (
                 "%s：流程=motion_supervisor定点悬停%.1fs -> "
-                "最近%d帧内同ID达到%d帧 -> 亮灯%.1fs -> %s%.1f度；"
+                "最近%d帧内同ID达到%d帧 -> 亮灯%.1fs -> 绝对航向%.1f度；"
                 "识别%.1fs未成功则优先使用历史ID=%s，"
                 "无历史时使用人工颜色%s，识别最长%.1fs"
             ),
@@ -458,8 +456,7 @@ class Task3GetTaskTest:
             self.recognition_window_size,
             self.required_match_count,
             self.light_seconds,
-            "右转" if self.turn_direction == "right" else "左转",
-            self.turn_angle_deg,
+            self.aruco_yaw_deg,
             self.recognition_fallback_seconds,
             (
                 str(self.history_marker_id)
@@ -485,13 +482,12 @@ class Task3GetTaskTest:
         )
         rospy.loginfo(
             (
-                "%s：转向参数：启用=%s，方向=%s，角度=%.1fdeg，超时=%.1fs，"
+                "%s：转向参数：启用=%s，绝对ArUco航向=%.1fdeg，超时=%.1fs，"
                 "稳定确认=%.1fs，完成后保持=%.1fs"
             ),
             NODE_NAME,
             str(self.turn_enabled),
-            "右转" if self.turn_direction == "right" else "左转",
-            self.turn_angle_deg,
+            self.aruco_yaw_deg,
             self.turn_timeout,
             self.turn_stable_seconds,
             self.turn_hold_seconds,
@@ -849,10 +845,7 @@ class Task3GetTaskTest:
         start_yaw = self.yaw_from_pose(self.hold_goal.pose)
         if start_yaw is None:
             return None
-        signed_angle = self.turn_angle_deg
-        if self.turn_direction == "left":
-            signed_angle = -signed_angle
-        target_yaw = normalize_angle(start_yaw + math.radians(signed_angle))
+        target_yaw = normalize_angle(math.radians(self.aruco_yaw_deg))
         goal = PoseStamped()
         goal.header.frame_id = self.hold_goal.header.frame_id
         goal.pose.position.x = self.hold_goal.pose.position.x
@@ -865,12 +858,11 @@ class Task3GetTaskTest:
         goal.pose.orientation.w = quaternion[3]
         rospy.loginfo(
             (
-                "%s：[转向目标] %s%.1f度，保持位置=(%.3f,%.3f,%.3f)，"
+                "%s：[转向目标] 绝对ArUco航向%.1f度，保持位置=(%.3f,%.3f,%.3f)，"
                 "航向=%.1fdeg -> %.1fdeg"
             ),
             NODE_NAME,
-            "右转" if self.turn_direction == "right" else "左转",
-            self.turn_angle_deg,
+            self.aruco_yaw_deg,
             goal.pose.position.x,
             goal.pose.position.y,
             goal.pose.position.z,
@@ -1483,26 +1475,23 @@ class Task3GetTaskTest:
                 self.finalize_task(False, reason)
                 rospy.signal_shutdown(reason)
                 return
-            direction_text = (
-                "右转" if self.turn_direction == "right" else "左转")
             rospy.loginfo(
                 (
                     "%s：[子任务2阶段] 当前阶段=原地转向；"
-                    "前置条件=灯光和灭灯阶段完成；目标=%s%.1f度"
+                    "前置条件=灯光和灭灯阶段完成；目标=绝对航向%.1f度"
                 ),
                 NODE_NAME,
-                direction_text,
-                self.turn_angle_deg,
+                self.aruco_yaw_deg,
             )
             if not self.wait_for_goal(
                     rotation_goal,
                     self.turn_timeout,
                     self.turn_stable_seconds,
-                    "ArUco识别后原地{}{}".format(
-                        direction_text, self.turn_angle_deg),
+                    "ArUco识别后原地对准绝对航向{:.1f}度".format(
+                        self.aruco_yaw_deg),
             ):
-                reason = "ArUco识别成功，但原地{}{}度未稳定到达".format(
-                    direction_text, self.turn_angle_deg)
+                reason = "ArUco识别成功，但绝对航向{:.1f}度未稳定到达".format(
+                    self.aruco_yaw_deg)
                 self.finalize_task(False, reason)
                 rospy.signal_shutdown(reason)
                 return
@@ -1512,8 +1501,7 @@ class Task3GetTaskTest:
                 self.finalize_task(False, reason)
                 rospy.signal_shutdown(reason)
                 return
-            turn_text = "{}{:.1f}度".format(
-                direction_text, self.turn_angle_deg)
+            turn_text = "绝对航向{:.1f}度".format(self.aruco_yaw_deg)
             rospy.loginfo(
                 (
                     "%s：[子任务2阶段] 当前阶段=转向完成；"

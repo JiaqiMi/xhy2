@@ -30,6 +30,10 @@
     2026.7.31
         1. 推杆反向回收在送水点下潜确认后与返回起始点并行执行；前推采水仍保持起始点 HOVER。
         2. 最终悬停默认时长调整为 3 秒，缩短任务完成等待。
+    2026.8.4
+        1. 送水和返航阶段改为根据实时 map -> base_link TF 持续指向目标点。
+        2. 进入目标点 final_yaw_switch_distance 范围后，保持位置目标并直接切换至最终航向，不额外停稳。
+        3. CSV 与结构化日志新增实时路径航向、目标距离和航向切换判断，支持完整复盘。
 """
 
 from datetime import datetime
@@ -84,6 +88,9 @@ class Task2V2(object):
         'decision_name', 'decision_detail', 'active_goal_age_s',
         'active_goal_x', 'active_goal_y', 'active_goal_z',
         'active_goal_yaw_deg', 'motion_status_age_s',
+        'navigation_stage', 'navigation_yaw_mode',
+        'navigation_target_distance_m', 'navigation_path_yaw_deg',
+        'navigation_final_yaw_deg', 'navigation_tf_available',
         'motion_state', 'motion_startup_complete', 'motion_goal_active',
         'motion_goal_matches_active', 'motion_goal_x', 'motion_goal_y',
         'motion_goal_z', 'motion_goal_yaw_deg', 'motion_position_error',
@@ -164,6 +171,8 @@ class Task2V2(object):
             '~surface_hold_seconds', 10.0))
         self.final_hold_seconds = float(rospy.get_param(
             '~final_hold_seconds', 3.0))
+        self.final_yaw_switch_distance = float(rospy.get_param(
+            '~final_yaw_switch_distance', 1.0))
 
         self.heading_servo_right = int(rospy.get_param(
             '~heading_servo_right', 0))
@@ -252,6 +261,7 @@ class Task2V2(object):
         self.dive_goal = None
         self.return_home_goal = None
         self.final_safe_goal = None
+        self.navigation_yaw_context = None
         self.initial_tf_wait_warned = False
         self.motion_unhealthy_since = None
         self.sampling_started_at = None
@@ -284,6 +294,7 @@ class Task2V2(object):
             delivery_yaw_deg=self.delivery_yaw_deg,
             surface_depth=self.surface_depth,
             final_yaw_deg=self.final_yaw_deg,
+            final_yaw_switch_distance=self.final_yaw_switch_distance,
             pushrod_speed=self.pushrod_speed,
             pushrod_duration=self.pushrod_duration,
             pushrod_retract_duration=self.pushrod_retract_duration,
@@ -313,6 +324,7 @@ class Task2V2(object):
             'actuator_confirm_timeout': self.actuator_confirm_timeout,
             'goal_match_position_tolerance': self.goal_match_position_tolerance,
             'goal_match_yaw_tolerance_deg': self.goal_match_yaw_tolerance_deg,
+            'final_yaw_switch_distance': self.final_yaw_switch_distance,
         }
         for name, value in positive_values.items():
             if not math.isfinite(value) or value <= 0.0:
@@ -424,6 +436,7 @@ class Task2V2(object):
             'delivery_yaw_deg': self.delivery_yaw_deg,
             'surface_depth': self.surface_depth,
             'final_yaw_deg': self.final_yaw_deg,
+            'final_yaw_switch_distance': self.final_yaw_switch_distance,
             'pushrod_speed': self.pushrod_speed,
             'pushrod_duration': self.pushrod_duration,
             'pushrod_retract_duration': self.pushrod_retract_duration,
@@ -570,6 +583,25 @@ class Task2V2(object):
             'reason': status.reason,
         }
 
+    def _navigation_yaw_snapshot(self):
+        """返回送水或返航阶段的实时路径航向判断，供日志完整复盘。"""
+        context = self.navigation_yaw_context
+        if context is None:
+            return None
+        return {
+            'stage': context['stage'],
+            'yaw_mode': context['yaw_mode'],
+            'target_x': context['target_x'],
+            'target_y': context['target_y'],
+            'target_z': context['target_z'],
+            'target_distance_m': context['target_distance_m'],
+            'path_yaw_deg': math.degrees(context['path_yaw']),
+            'final_yaw_deg': math.degrees(context['final_yaw']),
+            'tf_available': context['tf_available'],
+            'current_x': context['current_x'],
+            'current_y': context['current_y'],
+        }
+
     def _runtime_snapshot(self):
         """汇总当前状态机、目标和最新反馈，作为每条数据记录的公共上下文。"""
         with self.lock:
@@ -591,6 +623,7 @@ class Task2V2(object):
             'actuator_status_sequence': actuator_sequence,
             'motion_status_age': None if motion_at is None else now - motion_at,
             'actuator_status_age': None if actuator_at is None else now - actuator_at,
+            'navigation_yaw': self._navigation_yaw_snapshot(),
             'motion_status': self._motion_snapshot(motion_state),
             'actuator_status': self._actuator_snapshot(actuator_status),
             'last_decision': getattr(self, 'last_decision', None),
@@ -627,6 +660,7 @@ class Task2V2(object):
                       self._yaw_from_quaternion(active_goal.pose.orientation))
         motion_goal_yaw = (None if motion_goal is None else
                            self._yaw_from_quaternion(motion_goal.pose.orientation))
+        navigation = self.navigation_yaw_context or {}
         goal_matches, _ = self._motion_goal_matches_active(motion_state)
         decision = self.last_decision or {}
         row = {
@@ -647,6 +681,16 @@ class Task2V2(object):
             'active_goal_z': '' if active_goal is None else active_goal.pose.position.z,
             'active_goal_yaw_deg': '' if active_yaw is None else math.degrees(active_yaw),
             'motion_status_age_s': self._elapsed_or_blank(motion_at, monotonic_now),
+            'navigation_stage': navigation.get('stage', ''),
+            'navigation_yaw_mode': navigation.get('yaw_mode', ''),
+            'navigation_target_distance_m': navigation.get(
+                'target_distance_m', ''),
+            'navigation_path_yaw_deg': '' if not navigation else math.degrees(
+                navigation['path_yaw']),
+            'navigation_final_yaw_deg': '' if not navigation else math.degrees(
+                navigation['final_yaw']),
+            'navigation_tf_available': '' if not navigation else int(
+                navigation['tf_available']),
             'motion_state': '' if motion_state is None else motion_state.state,
             'motion_startup_complete': '' if motion_state is None else int(motion_state.startup_complete),
             'motion_goal_active': '' if motion_state is None else int(motion_state.goal_active),
@@ -817,6 +861,217 @@ class Task2V2(object):
         if yaw is None:
             return 'yaw=invalid'
         return 'yaw={:.1f}deg'.format(math.degrees(yaw))
+
+    @staticmethod
+    def _angle_difference(first, second):
+        """返回两个偏航角的最短有符号差，范围为 [-pi, pi)。"""
+        return math.atan2(math.sin(first - second), math.cos(first - second))
+
+    @staticmethod
+    def _set_goal_yaw(goal, yaw):
+        """只更新既有绝对位置目标的航向，避免路径航向更新改变目标位置。"""
+        quaternion = quaternion_from_euler(0.0, 0.0, yaw)
+        goal.pose.orientation.x = quaternion[0]
+        goal.pose.orientation.y = quaternion[1]
+        goal.pose.orientation.z = quaternion[2]
+        goal.pose.orientation.w = quaternion[3]
+
+    def _lookup_current_map_position(self, stage_name):
+        """读取实时 map -> base_link TF；失败时由调用方保持上一帧航向。"""
+        try:
+            translation, rotation = self.tf_listener.lookupTransform(
+                self.map_frame, self.base_frame, rospy.Time(0))
+        except tf.Exception as error:
+            rospy.logwarn_throttle(
+                1.0, '%s: %s 无法读取实时 TF %s -> %s，保持上一帧航向：%s',
+                NODE_NAME, stage_name, self.map_frame, self.base_frame, error)
+            return None
+        values = list(translation) + list(rotation)
+        if not all(math.isfinite(float(value)) for value in values):
+            rospy.logwarn_throttle(
+                1.0, '%s: %s 实时 TF 含无效数值，保持上一帧航向',
+                NODE_NAME, stage_name)
+            return None
+        return float(translation[0]), float(translation[1])
+
+    def _start_path_navigation(self, stage_name, target_x, target_y, target_z,
+                               final_yaw, reason):
+        """以实时目标方位启动送水或返航，并锁存最终航向与位置目标。"""
+        current = self._lookup_current_map_position(stage_name)
+        if current is None:
+            self._set_last_decision(
+                'navigation_tf_wait', '等待实时 TF 后启动路径航向',
+                stage=stage_name)
+            self._write_data_record('navigation_tf_wait', stage=stage_name)
+            return False
+        current_x, current_y = current
+        distance = math.hypot(target_x - current_x, target_y - current_y)
+        path_yaw = (
+            final_yaw if distance <= self.final_yaw_switch_distance else
+            math.atan2(target_y - current_y, target_x - current_x))
+        yaw_mode = (
+            'FINAL_YAW' if distance <= self.final_yaw_switch_distance else
+            'PATH_YAW')
+        self.navigation_yaw_context = {
+            'stage': stage_name,
+            'target_x': float(target_x),
+            'target_y': float(target_y),
+            'target_z': float(target_z),
+            'final_yaw': float(final_yaw),
+            'path_yaw': float(path_yaw),
+            'yaw_mode': yaw_mode,
+            'target_distance_m': distance,
+            'tf_available': True,
+            'current_x': current_x,
+            'current_y': current_y,
+        }
+        self._set_active_goal(
+            self._make_goal(target_x, target_y, target_z, path_yaw), reason)
+        self._set_last_decision(
+            'navigation_path_started',
+            '{}：距离目标 {:.3f}m，{} {:.1f}deg'.format(
+                stage_name, distance,
+                '直接使用最终航向' if yaw_mode == 'FINAL_YAW' else '实时路径航向',
+                math.degrees(path_yaw)),
+            stage=stage_name, target_distance_m=distance,
+            yaw_mode=yaw_mode, path_yaw_deg=math.degrees(path_yaw),
+            final_yaw_deg=math.degrees(final_yaw))
+        self._write_data_record(
+            'navigation_path_started', stage=stage_name,
+            target_distance_m=distance, yaw_mode=yaw_mode,
+            path_yaw_deg=math.degrees(path_yaw),
+            final_yaw_deg=math.degrees(final_yaw))
+        return True
+
+    def _update_path_navigation_yaw(self, stage_name):
+        """按实时 TF 更新路径航向；进入阈值后仅一次切换最终航向。"""
+        context = self.navigation_yaw_context
+        if context is None or context['stage'] != stage_name:
+            rospy.logerr_throttle(
+                1.0, '%s: %s 缺少路径航向上下文，保持当前目标等待恢复',
+                NODE_NAME, stage_name)
+            self._set_last_decision(
+                'navigation_context_missing', '缺少路径航向上下文',
+                stage=stage_name)
+            return False
+        current = self._lookup_current_map_position(stage_name)
+        if current is None:
+            context['tf_available'] = False
+            self._set_last_decision(
+                'navigation_tf_wait', '实时 TF 不可用，保持上一帧航向',
+                stage=stage_name, yaw_mode=context['yaw_mode'])
+            return False
+
+        current_x, current_y = current
+        target_x, target_y = context['target_x'], context['target_y']
+        distance = math.hypot(target_x - current_x, target_y - current_y)
+        path_yaw = math.atan2(target_y - current_y, target_x - current_x)
+        context['tf_available'] = True
+        context['current_x'] = current_x
+        context['current_y'] = current_y
+        context['target_distance_m'] = distance
+        context['path_yaw'] = path_yaw
+
+        if context['yaw_mode'] != 'FINAL_YAW':
+            if distance <= self.final_yaw_switch_distance:
+                context['yaw_mode'] = 'FINAL_YAW'
+                final_goal = self._make_goal(
+                    context['target_x'], context['target_y'],
+                    context['target_z'], context['final_yaw'])
+                self._set_active_goal(
+                    final_goal, '{} 进入 {:.2f}m 范围，切换最终航向'.format(
+                        stage_name, self.final_yaw_switch_distance))
+                self._set_last_decision(
+                    'navigation_final_yaw_switch',
+                    '{} 距离目标 {:.3f}m，持续前进并切换最终航向 {:.1f}deg'.format(
+                        stage_name, distance,
+                        math.degrees(context['final_yaw'])),
+                    stage=stage_name, target_distance_m=distance,
+                    final_yaw_deg=math.degrees(context['final_yaw']))
+                self._write_data_record(
+                    'navigation_final_yaw_switch', stage=stage_name,
+                    target_distance_m=distance,
+                    final_yaw_deg=math.degrees(context['final_yaw']))
+                rospy.loginfo(
+                    '%s: %s 进入 %.2fm 范围，继续前进并切换最终航向 %.1fdeg',
+                    NODE_NAME, stage_name, self.final_yaw_switch_distance,
+                    math.degrees(context['final_yaw']))
+            elif self.active_goal is not None:
+                active_yaw = self._yaw_from_quaternion(
+                    self.active_goal.pose.orientation)
+                if active_yaw is None or abs(self._angle_difference(
+                        path_yaw, active_yaw)) >= math.radians(0.1):
+                    self._set_goal_yaw(self.active_goal, path_yaw)
+                self._set_last_decision(
+                    'navigation_path_yaw_update',
+                    '{} 距离目标 {:.3f}m，实时路径航向 {:.1f}deg'.format(
+                        stage_name, distance, math.degrees(path_yaw)),
+                    stage=stage_name, target_distance_m=distance,
+                    path_yaw_deg=math.degrees(path_yaw),
+                    final_yaw_deg=math.degrees(context['final_yaw']))
+                rospy.loginfo_throttle(
+                    1.0, '%s: %s 距离目标 %.2fm，实时指向 %.1fdeg',
+                    NODE_NAME, stage_name, distance, math.degrees(path_yaw))
+        else:
+            self._set_last_decision(
+                'navigation_final_yaw_tracking',
+                '{} 距离目标 {:.3f}m，保持最终航向 {:.1f}deg'.format(
+                    stage_name, distance, math.degrees(context['final_yaw'])),
+                stage=stage_name, target_distance_m=distance,
+                final_yaw_deg=math.degrees(context['final_yaw']))
+        return True
+
+    def _clear_path_navigation(self, stage_name):
+        """结束路径航向阶段，防止后续定点阶段继续修改航向。"""
+        context = self.navigation_yaw_context
+        if context is None or context['stage'] != stage_name:
+            return
+        self._write_data_record(
+            'navigation_path_finished', stage=stage_name,
+            target_distance_m=context['target_distance_m'],
+            yaw_mode=context['yaw_mode'])
+        self.navigation_yaw_context = None
+
+    def _path_navigation_step(self, stage_name, timeout, next_state,
+                              next_goal=None):
+        """执行实时路径航向导航；仅最终航向目标的 HOVER 可以转场。"""
+        safe_command = self._safe_actuator_command()
+        self._publish_goal()
+        if not self._actuator_gate(safe_command, stage_name):
+            self._pause_stage_timeout()
+            return
+        if not self._update_path_navigation_yaw(stage_name):
+            _, fallback, _ = self._check_motion_or_fallback(stage_name)
+            if fallback:
+                return
+            context = self.navigation_yaw_context or {}
+            self._set_last_decision(
+                'navigation_tf_wait', '实时 TF 不可用，保持上一帧航向并暂停转场',
+                stage=stage_name, yaw_mode=context.get('yaw_mode', ''))
+            self._pause_stage_timeout()
+            return
+        self._resume_stage_timeout()
+        self._publish_goal()
+        hovered, fallback, detail = self._check_motion_or_fallback(stage_name)
+        if fallback:
+            return
+        context = self.navigation_yaw_context
+        if context is None or context['yaw_mode'] != 'FINAL_YAW':
+            self._set_last_decision(
+                'navigation_wait_final_yaw',
+                '{} 尚未进入最终航向切换范围'.format(stage_name),
+                stage=stage_name)
+            return
+        if hovered:
+            self._clear_path_navigation(stage_name)
+            if next_goal is not None:
+                self._set_active_goal(next_goal, next_state)
+            self._set_state(next_state, '{} 已由最终航向 HOVER 确认'.format(stage_name))
+            return
+        if self._stage_elapsed() >= timeout:
+            self._enter_safe_final(
+                '{} 超过 {:.1f}s 未收到 HOVER：{}'.format(
+                    stage_name, timeout, detail))
 
     def _capture_initial_goals(self):
         """从 TF 锁存起始姿态，并一次性构造任务全程固定目标。"""
@@ -1164,6 +1419,7 @@ class Task2V2(object):
         if self.state == self.SAFE_FINAL:
             return
         self.failure_reason = reason
+        self.navigation_yaw_context = None
         self._set_active_goal(self.final_safe_goal, '最终安全定点')
         self.safe_final_started_at = time.monotonic()
         self.safe_final_warned = False
@@ -1370,16 +1626,19 @@ class Task2V2(object):
         if self.state == self.WAIT_PUSHROD_STOP:
             self._publish_goal()
             if self._actuator_gate(safe_command, '推杆停止'):
-                self._set_active_goal(
-                    self.delivery_at_task_depth_goal,
-                    '送水点水平移动（任务深度）')
+                if not self._start_path_navigation(
+                        '送水点水平移动（任务深度）',
+                        self.delivery_xy[0], self.delivery_xy[1],
+                        self.task_depth, math.radians(self.delivery_yaw_deg),
+                        '送水点水平移动（实时指向目标）'):
+                    return
                 self._set_state(
                     self.DELIVERY_AT_TASK_DEPTH,
-                    '推杆停止反馈确认，开始在任务深度水平前往送水点')
+                    '推杆停止反馈确认，开始在任务深度实时指向送水点')
             return
 
         if self.state == self.DELIVERY_AT_TASK_DEPTH:
-            self._navigation_step(
+            self._path_navigation_step(
                 '送水点水平移动（任务深度）', self.delivery_depth_timeout,
                 self.SURFACE, self.surface_goal)
             return
@@ -1408,12 +1667,21 @@ class Task2V2(object):
                 return
             if self._actuator_gate(
                     self._pushrod_reverse_command(), '推杆反向回收'):
+                if not self._start_path_navigation(
+                        '返回起始点', self.initial_goal.pose.position.x,
+                        self.initial_goal.pose.position.y, self.task_depth,
+                        math.radians(self.final_yaw_deg),
+                        '反向回收并实时指向起始点'):
+                    self._start_actuator_confirmation(safe_command)
+                    self._publish_actuator(safe_command)
+                    rospy.logwarn(
+                        '%s: 返航实时 TF 不可用，推杆保持停止并等待 TF 恢复',
+                        NODE_NAME)
+                    return
                 self.retraction_started_at = time.monotonic()
-                self._set_active_goal(
-                    self.return_home_goal, '反向回收并返回起始点')
                 self._set_state(
                     self.RETRACTING,
-                    '推杆反向回收反馈确认，开始返航并计时')
+                    '推杆反向回收反馈确认，开始实时指向起始点返航并计时')
             return
 
         if self.state == self.RETRACTING:
@@ -1422,9 +1690,16 @@ class Task2V2(object):
                     self._pushrod_reverse_command(), '返航中回收推杆'):
                 self.retraction_started_at = None
                 return
+            navigation_tf_ready = self._update_path_navigation_yaw('返回起始点')
+            self._publish_goal()
             _, fallback, detail = self._check_motion_or_fallback('返航中回收推杆')
             if fallback:
                 return
+            if not navigation_tf_ready:
+                context = self.navigation_yaw_context or {}
+                self._set_last_decision(
+                    'navigation_tf_wait', '返航回收期间实时 TF 不可用，保持上一帧航向',
+                    stage='返回起始点', yaw_mode=context.get('yaw_mode', ''))
             if self.retraction_started_at is None:
                 self.retraction_started_at = time.monotonic()
             elapsed = time.monotonic() - self.retraction_started_at
@@ -1440,12 +1715,14 @@ class Task2V2(object):
 
         if self.state == self.WAIT_PUSHROD_RETRACT_STOP:
             self._publish_goal()
+            self._update_path_navigation_yaw('返回起始点')
+            self._publish_goal()
             if self._actuator_gate(safe_command, '回收推杆停止'):
                 self._set_state(self.RETURN_HOME, '推杆回收停止反馈确认')
             return
 
         if self.state == self.RETURN_HOME:
-            self._navigation_step(
+            self._path_navigation_step(
                 '返回起始点', self.return_home_timeout,
                 self.FINAL_HOLD)
             return

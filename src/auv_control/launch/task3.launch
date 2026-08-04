@@ -15,13 +15,13 @@
     <arg name="start_down_camera" default="false" />
     <arg name="start_down_splitter" default="false" />
 
-    <!-- 三个模型由本launch一次性启动，任务阶段切换时不关闭。 -->
+    <!-- 三个模型由本launch一次性启动；进入子任务3时关闭箭头和ArUco检测进程。 -->
     <arg name="start_arrow_model" default="true" />
     <arg name="start_aruco_model" default="true" />
     <arg name="start_rectangle_model" default="true" />
-    <arg name="start_arrow_web" default="true" />
+    <arg name="start_arrow_web" default="false" />
     <arg name="start_aruco_web" default="false" />
-    <arg name="start_rectangle_web" default="true" />
+    <arg name="start_rectangle_web" default="false" />
     <arg name="arrow_web_port" default="8083" />
     <arg name="aruco_web_port" default="8082" />
     <arg name="rectangle_web_port" default="8080" />
