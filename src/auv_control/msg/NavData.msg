@@ -20,7 +20,7 @@ float32 vd
 float32 roll
 float32 pitch
 float32 heading
-uint16 ins_status
+uint16 ins_status  # bit14=1 表示INS数据有效
 
 # -------------------------
 # GPS
@@ -39,7 +39,7 @@ float32 dvl_vx
 float32 dvl_vy
 float32 dvl_vz
 float32 dvl_altitude
-uint8 dvl_status
+uint8 dvl_status   # 2=对底有效，4=对底和对水均有效
 
 # IMU推导/惯导采样后的速度深度
 float32 depth

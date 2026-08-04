@@ -30,6 +30,9 @@
     新增执行器命令与当前状态 JSONL 保存，默认写入 ~/.ros/auvlog/actuator_node。
 2026.7.31
     修正数据保存目录为 ~/.ros/auv_logs/actuator_node，与 sensor_status_node 同级。
+2026.8.5
+    mode2 完整执行器控制帧调整为 5Hz 持续下发。
+    停止响应和下发 mode1 补光灯控制，仅保留执行器反馈与状态发布。
 """
 
 import json
@@ -48,7 +51,7 @@ class SensorActuatorNode:
     """
     sensor 执行器控制与反馈节点：
     - 独立 TCP 连接到 sensor:5064
-    - 订阅 /cmd/actuator，下发 CAMERA_LIGHT_SET + ACTUATOR_SET
+    - 订阅 /cmd/actuator，仅下发 ACTUATOR_SET
     - 接收 ACK 和 ACTUATOR_FB 上行帧
     - 发布 /status/actuator 反馈执行机构实际状态
     - 忽略 STATUS 周期帧（由 sensor_status_node 处理）
@@ -71,8 +74,7 @@ class SensorActuatorNode:
     CMD_ACTUATOR = 0x30
     OP_SET = 0x00
     FLAG_NEED_ACK = 0x01
-    CONTROL_SEND_RATE_HZ = 2.0
-    ACTUATOR_SEND_OFFSET_S = 0.25
+    ACTUATOR_SEND_RATE_HZ = 5.0
     STATUS_PUBLISH_RATE_HZ = 5
     SEND_LOOP_RATE_HZ = 20
     # 协议 result=OK、ACCEPTED、EXEC_OK 均表示命令已成功处理。
@@ -459,9 +461,9 @@ class SensorActuatorNode:
             msg = ActuatorControl()
             # 状态消息不作为控制命令，mode 固定为 0。
             msg.mode = 0
-            # 补光灯：来自最后命令值（CAMERA_LIGHT 无硬件反馈）
-            msg.light1 = self.light1
-            msg.light2 = self.light2
+            # 补光灯控制已停用，状态固定为 0，避免旧命令被误认为实时反馈。
+            msg.light1 = 0
+            msg.light2 = 0
             # 执行机构：来自 ACTUATOR_FB 硬件反馈
             msg.heading_servo = self.fb_heading
             msg.clamp_servo = self.fb_clamp
@@ -503,16 +505,15 @@ class SensorActuatorNode:
     # ============================================================
 
     def actuator_callback(self, msg):
-        """按 mode 更新补光灯或执行器命令缓存。"""
+        """仅按 mode=2 更新完整执行器命令缓存。"""
         received_stamp = rospy.Time.now()
         self._save_command_record(msg, received_stamp)
         try:
             if msg.mode == 1:
-                new_light1 = max(0, min(100, msg.light1))
-                new_light2 = max(0, min(100, msg.light2))
-                with self.lock:
-                    self.light1 = new_light1
-                    self.light2 = new_light2
+                rospy.logwarn_throttle(
+                    5.0,
+                    "sensor_actuator: 补光灯控制已停用，忽略 mode=1 命令",
+                )
                 return
 
             if msg.mode == 2:
@@ -557,23 +558,6 @@ class SensorActuatorNode:
             xor ^= packet[i]
         return xor & 0xFF
 
-    def build_camera_light_frame(self, light1, light2):
-        """构造 CAMERA_LIGHT_SET 下行帧 (cmd=0x10, op=0x00)"""
-        packet = bytearray(self.DOWNLINK_LEN)
-        packet[0:2] = self.DOWNLINK_HEADER
-        packet[2] = self.PROTOCOL_VERSION
-        packet[3] = self._next_seq()
-        packet[4] = self.CMD_CAMERA_LIGHT
-        packet[5] = self.OP_SET
-        packet[6] = 0x00
-        packet[7] = 2
-        packet[8] = int(light1)
-        packet[9] = int(light2)
-        packet[40] = self.FLAG_NEED_ACK
-        packet[51] = self._calc_downlink_xor(packet)
-        packet[52:54] = self.DOWNLINK_TAIL
-        return packet
-
     def build_actuator_frame(
         self, heading_servo, clamp_servo, drive_cmd, drive_speed,
         red_light, yellow_light, green_light,
@@ -611,23 +595,13 @@ class SensorActuatorNode:
             )
 
     def send_loop(self):
-        """持续发送两类控制帧：各 2Hz，执行器帧固定滞后 0.25 秒。"""
+        """以 5Hz 持续发送最新完整 mode2 执行器控制帧。"""
         rate = rospy.Rate(self.SEND_LOOP_RATE_HZ)
-        interval = 1.0 / self.CONTROL_SEND_RATE_HZ
-        next_camera_send = time.monotonic()
-        next_actuator_send = next_camera_send + self.ACTUATOR_SEND_OFFSET_S
+        interval = 1.0 / self.ACTUATOR_SEND_RATE_HZ
+        next_actuator_send = time.monotonic()
         while not rospy.is_shutdown() and self.is_sending:
             try:
                 now = time.monotonic()
-                if now >= next_camera_send:
-                    with self.lock:
-                        command = (self.light1, self.light2)
-                    self._send_frame(
-                        self.build_camera_light_frame(*command), 'CAMERA_LIGHT'
-                    )
-                    while next_camera_send <= now:
-                        next_camera_send += interval
-
                 if now >= next_actuator_send:
                     with self.lock:
                         command = (

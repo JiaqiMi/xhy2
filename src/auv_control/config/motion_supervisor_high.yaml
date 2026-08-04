@@ -35,7 +35,7 @@
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
-control_rate_hz: 8.0       # 统一三轴速度闭环频率；目标可保持 5 Hz 发布
+control_rate_hz: 20.0      # 统一三轴速度闭环频率；与 nav 主反馈频率一致
 feedback_timeout: 0.5       # TF 或速度反馈最大允许间隔，单位 s，超时后进入 SAFE
 velocity_filter_alpha: 0.50 # 速度一阶低通新数据权重，范围 (0,1]，越大响应越快
 
@@ -127,7 +127,7 @@ control_center_hold_tolerance: 0.03   # 当前锁存控制中心的二维圆形�
 horizontal_speed_threshold: 0.008     # data6 中 0.01 m/s 仍持续漂移，收紧三轴停稳判定
 yaw_control_tolerance_deg: 1.0        # mode=2 上位机航向保持死区，与最终航向精度一致
 yaw_rate_threshold_deg_s: 0.3         # 判定转动停稳的角速度上限，单位 deg/s
-stable_frames: 2                      # 捕获或停稳条件需连续满足的控制帧数，8Hz下改为2帧
+stable_frames: 5                      # 捕获或停稳条件需连续满足的控制帧数，20Hz下约为0.25s
 
 # 退出hover的滞回阈值；与捕获阈值形成滞回，避免频繁进出 HOVER。
 hover_exit_position_error: 0.12       # 两种模式统一的 HOVER 水平退出阈值；与捕获阈值形成滞回

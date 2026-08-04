@@ -7,7 +7,7 @@
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
-control_rate_hz: 8.0       # 统一三轴速度闭环频率；目标可保持 5 Hz 发布
+control_rate_hz: 20.0      # 统一三轴速度闭环频率；与 nav 主反馈频率一致
 feedback_timeout: 0.5       # TF 或速度反馈最大允许间隔，单位 s，超时后进入 SAFE
 velocity_filter_alpha: 0.50 # 速度一阶低通新数据权重，范围 (0,1]，越大响应越快
 
