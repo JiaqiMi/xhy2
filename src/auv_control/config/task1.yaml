@@ -43,6 +43,8 @@ search_before_lock_max_cycles: 2
 search_after_lock_max_cycles: 1
 # 从首次进入 SEARCH_FORWARD 开始计时，默认最长执行 7 分钟
 task_timeout_seconds: 420.0
+# 正常确认终点时，实际推进小于此值则先前往绝对兜底点；达到此值则原地 FINISH
+normal_finish_min_completed_path_length: 5.0
 # 搜索耗尽或总超时后的统一兜底。false 时不移动，原地直接 FINISH
 fallback_move_enabled: true
 # true 时使用以下绝对 map 位姿，收到 HOVER 后 FINISH
@@ -69,7 +71,7 @@ endpoint_growth_tolerance: 0.08
 # 最后中点 HOVER 后，待固定尾段小于该值则不搜索、直接结束
 endpoint_pending_extension_tolerance: 0.20
 
-# LOS。控制端给出一次新鲜 HOVER 即认为当前目标到达。
+# FOLLOW_LINE 每周期按最新位置重算 LOS 中点，不等待 HOVER；定点阶段仍等待 HOVER。
 los_lookahead_distance: 0.6
 los_midpoint_ratio: 0.50
 los_target_update_min_distance: 0.08
@@ -92,6 +94,8 @@ black_min_confidence: 0.30
 max_camera_distance: 5.0
 marker_window_size: 10
 marker_required_valid: 5
+# 固定平均位置所需的聚类一致样本总数（包含确认图形的前5个样本）
+marker_position_required_valid: 15
 marker_sample_timeout: 10.0
 marker_cluster_distance: 0.25
 marker_duplicate_distance: 0.60
