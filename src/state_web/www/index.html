@@ -125,10 +125,8 @@
                             <div class="camera-placeholder">
                                 等待 /fisheye_camera/image_raw
                             </div>
-                            <img id="camera-fisheye-image"
-                                 src="/stream/fisheye"
-                                 alt="鱼眼相机原始画面"
-                                 aria-label="鱼眼相机画面，双击放大查看完整画面">
+                            <img id="camera-fisheye-image" src="/stream/fisheye" alt="鱼眼相机原始画面"
+                                aria-label="鱼眼相机画面，双击放大查看完整画面">
                             <div class="camera-zoom-hint">双击查看完整画面</div>
                         </div>
                         <div id="camera-fisheye-meta" class="camera-meta">--</div>
@@ -170,16 +168,24 @@
                                         <circle class="machine-joint" cx="35" cy="66" r="5"></circle>
                                         <circle class="machine-joint" cx="125" cy="66" r="5"></circle>
                                         <g class="actuator-command-shape">
-                                            <line id="gripper-command-left-arm" class="machine-line command" x1="35" y1="66" x2="54" y2="35"></line>
-                                            <line id="gripper-command-right-arm" class="machine-line command" x1="125" y1="66" x2="106" y2="35"></line>
-                                            <line id="gripper-command-left-finger" class="machine-line command jaw" x1="54" y1="35" x2="54" y2="12"></line>
-                                            <line id="gripper-command-right-finger" class="machine-line command jaw" x1="106" y1="35" x2="106" y2="12"></line>
+                                            <line id="gripper-command-left-arm" class="machine-line command" x1="35"
+                                                y1="66" x2="54" y2="35"></line>
+                                            <line id="gripper-command-right-arm" class="machine-line command" x1="125"
+                                                y1="66" x2="106" y2="35"></line>
+                                            <line id="gripper-command-left-finger" class="machine-line command jaw"
+                                                x1="54" y1="35" x2="54" y2="12"></line>
+                                            <line id="gripper-command-right-finger" class="machine-line command jaw"
+                                                x1="106" y1="35" x2="106" y2="12"></line>
                                         </g>
                                         <g class="actuator-feedback-shape">
-                                            <line id="gripper-feedback-left-arm" class="machine-line feedback" x1="35" y1="66" x2="54" y2="35"></line>
-                                            <line id="gripper-feedback-right-arm" class="machine-line feedback" x1="125" y1="66" x2="106" y2="35"></line>
-                                            <line id="gripper-feedback-left-finger" class="machine-line feedback jaw" x1="54" y1="35" x2="54" y2="12"></line>
-                                            <line id="gripper-feedback-right-finger" class="machine-line feedback jaw" x1="106" y1="35" x2="106" y2="12"></line>
+                                            <line id="gripper-feedback-left-arm" class="machine-line feedback" x1="35"
+                                                y1="66" x2="54" y2="35"></line>
+                                            <line id="gripper-feedback-right-arm" class="machine-line feedback" x1="125"
+                                                y1="66" x2="106" y2="35"></line>
+                                            <line id="gripper-feedback-left-finger" class="machine-line feedback jaw"
+                                                x1="54" y1="35" x2="54" y2="12"></line>
+                                            <line id="gripper-feedback-right-finger" class="machine-line feedback jaw"
+                                                x1="106" y1="35" x2="106" y2="12"></line>
                                         </g>
                                     </svg>
                                     <span id="gripper-state-text" class="actuator-state-text">未知</span>
@@ -190,23 +196,33 @@
                                     <span class="actuator-graphic-title">推杆</span>
                                     <svg class="actuator-svg" viewBox="0 0 160 104" aria-label="推杆指令与反馈方向和速度">
                                         <defs>
-                                            <marker id="pushrod-command-arrow-head" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                                            <marker id="pushrod-command-arrow-head" markerWidth="8" markerHeight="8"
+                                                refX="7" refY="4" orient="auto">
                                                 <path d="M0,0 L8,4 L0,8 Z"></path>
                                             </marker>
-                                            <marker id="pushrod-feedback-arrow-head" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                                            <marker id="pushrod-feedback-arrow-head" markerWidth="8" markerHeight="8"
+                                                refX="7" refY="4" orient="auto">
                                                 <path d="M0,0 L8,4 L0,8 Z"></path>
                                             </marker>
                                         </defs>
                                         <rect class="pushrod-body" x="18" y="22" width="87" height="25" rx="5"></rect>
                                         <line class="pushrod-rod" x1="105" y1="34.5" x2="143" y2="34.5"></line>
-                                        <line id="pushrod-command-motion-line" class="pushrod-motion command" x1="51" y1="63" x2="125" y2="63"></line>
-                                        <rect id="pushrod-command-stop-marker" class="pushrod-stop command" x="76" y="57" width="12" height="12" rx="2"></rect>
-                                        <line id="pushrod-feedback-motion-line" class="pushrod-motion feedback" x1="51" y1="79" x2="125" y2="79"></line>
-                                        <rect id="pushrod-feedback-stop-marker" class="pushrod-stop feedback" x="76" y="73" width="12" height="12" rx="2"></rect>
-                                        <rect class="pushrod-speed-track" x="18" y="91" width="124" height="4" rx="2"></rect>
-                                        <rect id="pushrod-command-speed-bar" class="pushrod-speed-bar command" x="18" y="91" width="0" height="4" rx="2"></rect>
-                                        <rect class="pushrod-speed-track" x="18" y="98" width="124" height="4" rx="2"></rect>
-                                        <rect id="pushrod-feedback-speed-bar" class="pushrod-speed-bar feedback" x="18" y="98" width="0" height="4" rx="2"></rect>
+                                        <line id="pushrod-command-motion-line" class="pushrod-motion command" x1="51"
+                                            y1="63" x2="125" y2="63"></line>
+                                        <rect id="pushrod-command-stop-marker" class="pushrod-stop command" x="76"
+                                            y="57" width="12" height="12" rx="2"></rect>
+                                        <line id="pushrod-feedback-motion-line" class="pushrod-motion feedback" x1="51"
+                                            y1="79" x2="125" y2="79"></line>
+                                        <rect id="pushrod-feedback-stop-marker" class="pushrod-stop feedback" x="76"
+                                            y="73" width="12" height="12" rx="2"></rect>
+                                        <rect class="pushrod-speed-track" x="18" y="91" width="124" height="4" rx="2">
+                                        </rect>
+                                        <rect id="pushrod-command-speed-bar" class="pushrod-speed-bar command" x="18"
+                                            y="91" width="0" height="4" rx="2"></rect>
+                                        <rect class="pushrod-speed-track" x="18" y="98" width="124" height="4" rx="2">
+                                        </rect>
+                                        <rect id="pushrod-feedback-speed-bar" class="pushrod-speed-bar feedback" x="18"
+                                            y="98" width="0" height="4" rx="2"></rect>
                                     </svg>
                                     <span id="pushrod-state-text" class="actuator-state-text">未知</span>
                                     <span id="pushrod-value" class="actuator-raw-value">--</span>
@@ -223,12 +239,18 @@
                                 <span id="power-summary-state" class="compact-state offline">无数据</span>
                             </div>
                             <div class="power-metric-grid">
-                                <div class="power-metric"><span>动力电压</span><strong id="power-battery-voltage">--</strong></div>
-                                <div class="power-metric"><span>控制电流</span><strong id="power-control-current">--</strong></div>
-                                <div class="power-metric"><span>控制功率</span><strong id="power-control-power">--</strong></div>
-                                <div class="power-metric"><span>动力电流</span><strong id="power-motive-current">--</strong></div>
-                                <div class="power-metric"><span>动力功率</span><strong id="power-motive-power">--</strong></div>
-                                <div class="power-metric total"><span>总功率</span><strong id="power-total-power">--</strong></div>
+                                <div class="power-metric"><span>动力电压</span><strong
+                                        id="power-battery-voltage">--</strong></div>
+                                <div class="power-metric"><span>控制电流</span><strong
+                                        id="power-control-current">--</strong></div>
+                                <div class="power-metric"><span>控制功率</span><strong id="power-control-power">--</strong>
+                                </div>
+                                <div class="power-metric"><span>动力电流</span><strong id="power-motive-current">--</strong>
+                                </div>
+                                <div class="power-metric"><span>动力功率</span><strong id="power-motive-power">--</strong>
+                                </div>
+                                <div class="power-metric total"><span>总功率</span><strong
+                                        id="power-total-power">--</strong></div>
                             </div>
                             <div class="battery-row">
                                 <div class="battery-track" aria-label="电池估算电量">
@@ -249,109 +271,77 @@
                         <span class="subtitle">XY 地图可指定向上航向，Z/Down 向下</span>
                     </div>
                     <div class="map-controls">
-                    <div class="map-control-group trajectory-control-group">
-                        <span class="map-control-group-title">轨迹与目标</span>
-                        <div class="map-control-group-items">
-                            <span class="map-legend actual"
-                                  title="实际 TF：base_link → camera">
-                                实TF
-                            </span>
-                            <span class="map-legend trajectory"
-                                  title="base_link 轨迹：1 Hz，最多 1000 个点">
-                                轨迹1k
-                            </span>
-                            <span class="map-legend target"
-                                  title="最新目标为深紫色，上一帧目标为浅紫色">
-                                目标
-                            </span>
-                            <button id="clear-base-trajectory"
-                                    type="button"
-                                    title="只清除 base_link 轨迹">
-                                清轨迹
-                            </button>
+                        <div class="map-control-group trajectory-control-group">
+                            <span class="map-control-group-title">轨迹与目标</span>
+                            <div class="map-control-group-items">
+                                <span class="map-legend actual" title="实际 TF：base_link → camera">
+                                    实TF
+                                </span>
+                                <span class="map-legend trajectory" title="base_link 轨迹：1 Hz，最多 1000 个点">
+                                    轨迹1k
+                                </span>
+                                <span class="map-legend target" title="最新目标为深紫色，上一帧目标为浅紫色">
+                                    目标
+                                </span>
+                                <button id="clear-base-trajectory" type="button" title="只清除 base_link 轨迹">
+                                    清轨迹
+                                </button>
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="map-control-group visual-control-group">
-                        <span class="map-control-group-title">视觉</span>
-                        <div class="map-control-group-items">
-                            <label class="visual-history-toggle"
-                                   for="show-visual-history">
-                                <input id="show-visual-history"
-                                       type="checkbox"
-                                       checked>
-                                <span>绘图</span>
-                            </label>
-                            <label class="visual-history-toggle"
-                                   for="show-visual-labels">
-                                <input id="show-visual-labels"
-                                       type="checkbox"
-                                       checked>
-                                <span>标注</span>
-                            </label>
-                            <button id="clear-visual-history"
-                                    type="button"
-                                    title="清除地图视觉绘图、鱼眼历史和期望颜色">
-                                清视觉
-                            </button>
+                        <div class="map-control-group visual-control-group">
+                            <span class="map-control-group-title">视觉</span>
+                            <div class="map-control-group-items">
+                                <label class="visual-history-toggle" for="show-visual-history">
+                                    <input id="show-visual-history" type="checkbox" checked>
+                                    <span>绘图</span>
+                                </label>
+                                <label class="visual-history-toggle" for="show-visual-labels">
+                                    <input id="show-visual-labels" type="checkbox" checked>
+                                    <span>标注</span>
+                                </label>
+                                <button id="clear-visual-history" type="button" title="清除地图视觉绘图、鱼眼历史和期望颜色">
+                                    清视觉
+                                </button>
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="map-control-group map-operation-group">
-                        <span class="map-control-group-title">地图</span>
-                        <div class="map-control-group-items">
-                            <label class="map-heading-control"
-                                   for="map-up-heading">
-                                <span>上</span>
-                                <input id="map-up-heading"
-                                       type="number"
-                                       min="0"
-                                       max="359"
-                                       step="1"
-                                       inputmode="decimal"
-                                       aria-label="地图向上航向">
-                                <span>°</span>
-                            </label>
-                            <button id="apply-map-heading"
-                                    type="button"
-                                    title="应用地图向上航向">
-                                应用
-                            </button>
-                            <button id="north-up-map"
-                                    type="button"
-                                    title="恢复 0° 北向上">
-                                北向
-                            </button>
-                            <button id="track-base-link"
-                                    type="button"
-                                    aria-pressed="false"
+                        <div class="map-control-group map-operation-group">
+                            <span class="map-control-group-title">地图</span>
+                            <div class="map-control-group-items">
+                                <label class="map-heading-control" for="map-up-heading">
+                                    <span>上</span>
+                                    <input id="map-up-heading" type="number" min="0" max="359" step="1"
+                                        inputmode="decimal" aria-label="地图向上航向">
+                                    <span>°</span>
+                                </label>
+                                <button id="apply-map-heading" type="button" title="应用地图向上航向">
+                                    应用
+                                </button>
+                                <button id="north-up-map" type="button" title="恢复 0° 北向上">
+                                    北向
+                                </button>
+                                <button id="track-base-link" type="button" aria-pressed="false"
                                     title="实时将 base_link 置于地图中心，不改变地图航向">
-                                跟踪
-                            </button>
-                            <button id="draw-pool-boundary"
-                                    type="button"
-                                    title="在地图上拖拽水池的两个对角点">
-                                画水池
-                            </button>
-                            <button id="clear-pool-boundary"
-                                    type="button"
-                                    title="清除已保存的水池范围">
-                                清水池
-                            </button>
-                            <button id="reset-map"
-                                    type="button"
-                                    title="重置 2D 位置图和深度图">
-                                原点
-                            </button>
+                                    跟踪
+                                </button>
+                                <button id="draw-pool-boundary" type="button" title="在地图上拖拽水池的两个对角点">
+                                    画水池
+                                </button>
+                                <button id="clear-pool-boundary" type="button" title="清除已保存的水池范围">
+                                    清水池
+                                </button>
+                                <button id="reset-map" type="button" title="重置 2D 位置图和深度图">
+                                    原点
+                                </button>
+                            </div>
                         </div>
-                    </div>
                     </div>
                 </div>
 
                 <div class="navigation-layout">
                     <div class="canvas-card xy-card">
-                        <canvas id="xy-canvas"
-                                aria-label="NED XY 位置图，双击放大查看"></canvas>
+                        <canvas id="xy-canvas" aria-label="NED XY 位置图，双击放大查看"></canvas>
                         <div id="map-hint" class="canvas-hint">
                             滚轮缩放 · 拖拽平移 · 双击放大 · 上方 0°
                         </div>

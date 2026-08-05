@@ -1,4 +1,4 @@
-#!/home/nvidia/venvs/xhy_ros2/bin/python
+#! /home/xhy/xhy_env/bin/python
 # -*- coding: utf-8 -*-
 """
 名称：test_task3_3_inspect_and_drop.py
@@ -688,8 +688,9 @@ class Task3InspectAndDropTest:
             rospy.loginfo(
                 (
                     "%s：自动识别流程：首次三帧平均位置 -> camera粗对准并等待HOVER -> "
-                    "再次三帧平均位置；XY任一误差超限时按XY小步靠近，航向保持不变；"
-                    "XY误差均通过后锁定中心点，通过TF让夹爪坐标系对准该点后执行投放"
+                    "再次三帧平均位置；当前camera到复核点的XY实际误差任一超限时"
+                    "按XY小步靠近，航向保持不变；XY实际误差均通过后锁定中心点，"
+                    "通过TF让夹爪坐标系对准该点后执行投放"
                 ),
                 NODE_NAME,
             )
@@ -2586,25 +2587,37 @@ class Task3InspectAndDropTest:
 
         candidate = self.box_fine_candidate
         self.box_fine_candidate = None
-        x_error = candidate["map_x"] - self.box_coarse_map_x
-        y_error = candidate["map_y"] - self.box_coarse_map_y
+        coarse_x_error = candidate["map_x"] - self.box_coarse_map_x
+        coarse_y_error = candidate["map_y"] - self.box_coarse_map_y
+        camera_pose = self.get_camera_pose(
+            candidate["camera_frame"],
+            "方框三帧精确认camera实际误差计算",
+        )
+        if camera_pose is None:
+            self.box_fine_candidate = candidate
+            return
+        camera_x_error = candidate["map_x"] - camera_pose.pose.position.x
+        camera_y_error = candidate["map_y"] - camera_pose.pose.position.y
         rospy.loginfo(
             (
                 "%s：方框三帧精确认候选：map=(%.3f,%.3f)，"
                 "相对首次点误差=(X=%+.3f,Y=%+.3f)m，"
-                "门槛=(X=%.3f,Y=%.3f)m"
+                "camera实际对准误差=(X=%+.3f,Y=%+.3f)m，"
+                "完成门槛=(X=%.3f,Y=%.3f)m"
             ),
             NODE_NAME,
             candidate["map_x"],
             candidate["map_y"],
-            x_error,
-            y_error,
+            coarse_x_error,
+            coarse_y_error,
+            camera_x_error,
+            camera_y_error,
             self.fine_position_x_tolerance_m,
             self.fine_position_y_tolerance_m,
         )
         if (
-            abs(x_error) <= self.fine_position_x_tolerance_m
-            and abs(y_error) <= self.fine_position_y_tolerance_m
+            abs(camera_x_error) <= self.fine_position_x_tolerance_m
+            and abs(camera_y_error) <= self.fine_position_y_tolerance_m
         ):
             if not self.finish_box_position_alignment(candidate):
                 self.finish_task(False, "无法生成方框最终固定位置目标")
@@ -2614,7 +2627,7 @@ class Task3InspectAndDropTest:
             candidate["map_y"],
             self.auto_hold_yaw,
             candidate["camera_frame"],
-            "方框XY误差未全部进入门槛，保持航向按XY小步靠近",
+            "方框相对camera的XY实际误差未全部进入门槛，保持航向按XY小步靠近",
         ):
             return
         self.box_precision_goal_pending = True
@@ -2622,7 +2635,7 @@ class Task3InspectAndDropTest:
         self.reset_box_position_queue()
         self.set_state(
             self.AUTO_APPROACH,
-            "方框XY误差未全部进入门槛，已下发一个XY精对准小步",
+            "方框相对camera的XY实际误差未全部进入门槛，已下发一个XY精对准小步",
         )
 
     def search_target_automatically(self, model_ready):

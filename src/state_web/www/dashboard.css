@@ -1049,7 +1049,7 @@ summary {
     margin-bottom: 6px;
 }
 
-.operations-title > div {
+.operations-title>div {
     display: flex;
     min-width: 0;
     flex: 1;
@@ -1161,7 +1161,7 @@ body.camera-image-expanded {
     font-size: 12px;
 }
 
-.status-card-heading > div {
+.status-card-heading>div {
     display: flex;
     min-width: 0;
     align-items: baseline;
