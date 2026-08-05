@@ -24,6 +24,8 @@
     将相机画面中的 Arrow 识别标注改为青蓝色。
     base_link 轨迹默认按 1Hz 保留最多 1000 个点。
     实际箭头终点改用 camera_center TF，地图文字仍显示 camera。
+2026.8.5
+    增加 6S4P 电池容量估算、动力电压平滑和控制/动力电源摘要。
 """
 
 import copy
@@ -58,6 +60,7 @@ from state_web_core import (
     MOTION_STATE_NAMES,
     NavigationHistoryState,
     OriginRevision,
+    PowerSummaryState,
     VisionHistoryState,
     extract_vision_pose_points,
     has_vision_detections,
@@ -541,6 +544,21 @@ class StateWebNode:
         self.target_heading_threshold_deg = float(
             rospy.get_param("~target_heading_threshold_deg", 1.0)
         )
+        self.battery_series_count = int(
+            rospy.get_param("~battery_series_count", 6)
+        )
+        self.battery_parallel_count = int(
+            rospy.get_param("~battery_parallel_count", 4)
+        )
+        self.battery_cell_capacity_ah = float(
+            rospy.get_param("~battery_cell_capacity_ah", 4.0)
+        )
+        self.battery_pack_capacity_ah = float(
+            rospy.get_param("~battery_pack_capacity_ah", 16.0)
+        )
+        self.battery_voltage_smoothing_sec = float(
+            rospy.get_param("~battery_voltage_smoothing_sec", 5.0)
+        )
 
         self.topics = {
             "left": rospy.get_param(
@@ -618,6 +636,13 @@ class StateWebNode:
             target_limit=2,
             target_position_threshold_m=self.target_position_threshold_m,
             target_heading_threshold_deg=self.target_heading_threshold_deg,
+        )
+        self.power_summary = PowerSummaryState(
+            series_count=self.battery_series_count,
+            parallel_count=self.battery_parallel_count,
+            cell_capacity_ah=self.battery_cell_capacity_ah,
+            pack_capacity_ah=self.battery_pack_capacity_ah,
+            smoothing_sec=self.battery_voltage_smoothing_sec,
         )
         self.origin_revision = OriginRevision()
         # 使用哨兵值，确保时间戳为 0 的首组 TF 也能被记录。
@@ -1324,6 +1349,7 @@ class StateWebNode:
 
     def _power_callback(self, message):
         """接收两路电源状态。"""
+        received_at = time.time()
         data = {
             "checksum_ok": bool(message.checksum_ok),
             "power1": {
@@ -1339,10 +1365,12 @@ class StateWebNode:
                 "power_w": float(message.power2_power),
             },
         }
+        data["summary"] = self.power_summary.update(data, received_at)
         self._store(
             "power",
             data,
             ros_stamp=ros_stamp_sec(message.header),
+            received_at=received_at,
         )
 
     def _motion_state_callback(self, message):
