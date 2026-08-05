@@ -10,7 +10,8 @@ Task1 比赛完整任务：连续巡线，并按巡线前向进度处理黄色�
     4. 黑色按 base_link、黄色按 hand 前向进度触发；黄色用 hand
        水平投影对准图形，灯光后按绝对深度下潜，再回到任务保持深度；
     5. 动作完成后继续向前巡线，绝不反向寻找已经错过的标志；
-    6. 红线任务正常到达终点后结束，并打印实际/要求动作次数。
+    6. 红线任务正常到达终点后，按配置原地结束或先前往绝对兜底点，
+       并打印实际/要求动作次数。
 """
 
 import copy
@@ -36,25 +37,52 @@ NODE_NAME = "task1"
 
 
 class MarkerObservationWindow:
-    """只保存有效识别；达到聚类数量后无需等待窗口装满。"""
+    """先确认同一图形，再用更多聚类样本固定其位置。"""
 
-    def __init__(self, max_size, required_count, max_age, cluster_distance):
+    def __init__(
+        self,
+        max_size,
+        required_count,
+        position_required_count,
+        max_age,
+        cluster_distance,
+    ):
         self.max_size = max(1, int(max_size))
         self.required_count = min(
             self.max_size, max(1, int(required_count))
         )
+        self.position_required_count = max(
+            self.required_count, int(position_required_count)
+        )
         self.max_age = max(0.1, float(max_age))
         self.cluster_distance = max(0.0, float(cluster_distance))
         self.samples = []
+        self.identity_confirmed = False
 
     def clear(self):
         self.samples = []
+        self.identity_confirmed = False
 
     def prune(self, now_seconds):
         self.samples = [
             item for item in self.samples
             if now_seconds - item[0] <= self.max_age
         ]
+        if not self.samples:
+            self.identity_confirmed = False
+
+    def best_cluster(self, samples):
+        best_cluster = []
+        for seed in samples:
+            cluster = [
+                item for item in samples
+                if xy_distance(
+                    item[1].pose.position, seed[1].pose.position
+                ) <= self.cluster_distance
+            ]
+            if len(cluster) > len(best_cluster):
+                best_cluster = cluster
+        return best_cluster
 
     def add(self, now_seconds, marker):
         self.prune(now_seconds)
@@ -64,30 +92,33 @@ class MarkerObservationWindow:
         ):
             return None, False
         self.samples.append((now_seconds, copy.deepcopy(marker)))
-        self.samples = self.samples[-self.max_size:]
 
-        poses = [item[1] for item in self.samples]
-        best_cluster = []
-        for seed in poses:
-            cluster = [
-                item for item in poses
-                if xy_distance(item.pose.position, seed.pose.position)
-                <= self.cluster_distance
-            ]
-            if len(cluster) > len(best_cluster):
-                best_cluster = cluster
-        if len(best_cluster) < self.required_count:
+        if not self.identity_confirmed:
+            self.samples = self.samples[-self.max_size:]
+            best_cluster = self.best_cluster(self.samples)
+            if len(best_cluster) < self.required_count:
+                return None, True
+            self.identity_confirmed = True
+            self.samples = best_cluster
+        else:
+            self.samples = self.samples[-self.position_required_count:]
+
+        if len(self.samples) < self.position_required_count:
+            return None, True
+        position_samples = self.samples[-self.position_required_count:]
+        best_cluster = self.best_cluster(position_samples)
+        if len(best_cluster) < self.position_required_count:
             return None, True
 
-        confirmed = copy.deepcopy(best_cluster[-1])
+        confirmed = copy.deepcopy(best_cluster[-1][1])
         confirmed.pose.position.x = sum(
-            item.pose.position.x for item in best_cluster
+            item[1].pose.position.x for item in best_cluster
         ) / len(best_cluster)
         confirmed.pose.position.y = sum(
-            item.pose.position.y for item in best_cluster
+            item[1].pose.position.y for item in best_cluster
         ) / len(best_cluster)
         confirmed.pose.position.z = sum(
-            item.pose.position.z for item in best_cluster
+            item[1].pose.position.z for item in best_cluster
         ) / len(best_cluster)
         return confirmed, True
 
@@ -153,6 +184,11 @@ class Task1(Task1LineFollow):
         self.fallback_move_enabled = bool(rospy.get_param(
             "~fallback_move_enabled", True
         ))
+        self.normal_finish_min_completed_path_length = max(0.0, float(
+            rospy.get_param(
+                "~normal_finish_min_completed_path_length", 5.0
+            )
+        ))
         self.fallback_target_x = float(rospy.get_param(
             "~fallback_target_x", 0.0
         ))
@@ -194,6 +230,10 @@ class Task1(Task1LineFollow):
         marker_required_valid = max(1, int(rospy.get_param(
             "~marker_required_valid", 5
         )))
+        marker_position_required_valid = max(
+            marker_required_valid,
+            int(rospy.get_param("~marker_position_required_valid", 15)),
+        )
         marker_sample_timeout = max(0.1, float(rospy.get_param(
             "~marker_sample_timeout", 10.0
         )))
@@ -204,6 +244,7 @@ class Task1(Task1LineFollow):
             kind: MarkerObservationWindow(
                 marker_window_size,
                 marker_required_valid,
+                marker_position_required_valid,
                 marker_sample_timeout,
                 marker_cluster_distance,
             )
@@ -317,13 +358,14 @@ class Task1(Task1LineFollow):
         rospy.on_shutdown(self.shutdown_actuators)
         rospy.loginfo(
             "%s: 完整任务启动；黄色要求=%d，黑色要求=%d，"
-            "有效识别=%d/%d，样本最长保存=%.1f s；"
+            "图形确认=%d/%d，位置固定=%d 帧，样本最长保存=%.1f s；"
             "黄色接触=%s，对准坐标系=%s，绝对目标深度=%.2f m",
             NODE_NAME,
             self.required_counts["yellow"],
             self.required_counts["black"],
             marker_required_valid,
             marker_window_size,
+            marker_position_required_valid,
             marker_sample_timeout,
             "开启" if self.yellow_contact_enabled else "关闭",
             self.yellow_alignment_frame,
@@ -350,6 +392,7 @@ class Task1(Task1LineFollow):
             required_counts=copy.deepcopy(self.required_counts),
             marker_window_size=marker_window_size,
             marker_required_valid=marker_required_valid,
+            marker_position_required_valid=marker_position_required_valid,
             marker_sample_timeout=marker_sample_timeout,
             marker_cluster_distance=marker_cluster_distance,
             marker_duplicate_distance=self.marker_duplicate_distance,
@@ -362,6 +405,9 @@ class Task1(Task1LineFollow):
                 self.search_after_lock_max_cycles
             ),
             task_timeout_seconds=self.task_timeout_seconds,
+            normal_finish_min_completed_path_length=(
+                self.normal_finish_min_completed_path_length
+            ),
             fallback_move_enabled=self.fallback_move_enabled,
             fallback_target={
                 "position": [
@@ -529,9 +575,45 @@ class Task1(Task1LineFollow):
         self.yellow_dive_start_depth = None
         self.marker_rotation_state = None
 
-    def enter_task_fallback(self, reason):
+    def enter_normal_finish(self):
+        move_to_fallback = (
+            self.completed_path_length
+            < self.normal_finish_min_completed_path_length
+        )
+        self.write_data_record(
+            "normal_finish_route",
+            completed_path=round(self.completed_path_length, 6),
+            direct_finish_min_completed_path=round(
+                self.normal_finish_min_completed_path_length, 6
+            ),
+            move_to_fallback=move_to_fallback,
+        )
+        if move_to_fallback:
+            rospy.logwarn(
+                "%s: 正常识别终点，但实际推进 %.2f < %.2f m；"
+                "先前往绝对兜底点再结束",
+                NODE_NAME,
+                self.completed_path_length,
+                self.normal_finish_min_completed_path_length,
+            )
+            self.enter_task_fallback("normal_endpoint", move_enabled=True)
+        else:
+            rospy.loginfo(
+                "%s: 正常识别终点，实际推进 %.2f >= %.2f m；"
+                "当前位置直接结束",
+                NODE_NAME,
+                self.completed_path_length,
+                self.normal_finish_min_completed_path_length,
+            )
+            self.set_state(self.FINISH)
+
+    def enter_task_fallback(self, reason, move_enabled=None):
         if self.state in (self.FALLBACK_TARGET, self.FINISH):
             return
+        should_move = (
+            self.fallback_move_enabled
+            if move_enabled is None else bool(move_enabled)
+        )
         trigger_state = self.state
         self.fallback_reason = reason
         self.fallback_triggered_at = rospy.Time.now()
@@ -547,7 +629,7 @@ class Task1(Task1LineFollow):
             "task_fallback_start",
             reason=reason,
             trigger_state=trigger_state,
-            move_enabled=self.fallback_move_enabled,
+            move_enabled=should_move,
             goal=self.pose_record(self.fallback_goal),
             task_elapsed_seconds=round(self.task_elapsed_seconds(), 6),
             task_timeout_seconds=self.task_timeout_seconds,
@@ -558,9 +640,13 @@ class Task1(Task1LineFollow):
                 self.search_after_lock_completed_cycles
             ),
         )
-        if self.fallback_move_enabled:
-            rospy.logwarn(
-                "%s: Task1 触发兜底（%s）；前往绝对目标 "
+        if should_move:
+            log_method = (
+                rospy.loginfo
+                if reason == "normal_endpoint" else rospy.logwarn
+            )
+            log_method(
+                "%s: Task1 进入结束流程（%s）；前往绝对兜底点 "
                 "(%.2f, %.2f, %.2f, %.1f deg)，等待 HOVER 后结束",
                 NODE_NAME,
                 reason,
@@ -708,6 +794,8 @@ class Task1(Task1LineFollow):
             windows = {
                 kind: {
                     "size": len(window.samples),
+                    "identity_confirmed": window.identity_confirmed,
+                    "position_required": window.position_required_count,
                     "samples": [
                         {
                             "arrival_ros_time": round(arrival_time, 6),
@@ -990,7 +1078,14 @@ class Task1(Task1LineFollow):
                 },
             },
             fallback={
-                "move_enabled": self.fallback_move_enabled,
+                "move_enabled": (
+                    True
+                    if self.fallback_reason == "normal_endpoint"
+                    else self.fallback_move_enabled
+                ),
+                "normal_finish_min_completed_path_length": (
+                    self.normal_finish_min_completed_path_length
+                ),
                 "reason": self.fallback_reason,
                 "triggered_at": (
                     round(self.fallback_triggered_at.to_sec(), 6)
@@ -1117,12 +1212,17 @@ class Task1(Task1LineFollow):
 
         now_seconds = rospy.Time.now().to_sec()
         with self.marker_lock:
-            confirmed, added = self.marker_windows[kind].add(
-                now_seconds, marker
+            window = self.marker_windows[kind]
+            identity_was_confirmed = window.identity_confirmed
+            confirmed, added = window.add(now_seconds, marker)
+            identity_confirmed = window.identity_confirmed
+            identity_just_confirmed = (
+                identity_confirmed and not identity_was_confirmed
             )
-            sample_count = len(self.marker_windows[kind].samples)
+            sample_count = len(window.samples)
+            position_required = window.position_required_count
             if confirmed is not None:
-                self.marker_windows[kind].clear()
+                window.clear()
         if not added:
             self.record_marker_frame(
                 message,
@@ -1135,18 +1235,26 @@ class Task1(Task1LineFollow):
             return
         rospy.loginfo_throttle(
             1.0,
-            "%s: %s有效识别=%d，位置=(%.2f, %.2f)",
+            "%s: %s有效识别=%d/%d，图形候选=%s，位置=(%.2f, %.2f)",
             NODE_NAME,
             kind,
             sample_count,
+            position_required,
+            "已确认" if identity_confirmed else "确认中",
             marker.pose.position.x,
             marker.pose.position.y,
         )
         if confirmed is None:
+            if identity_just_confirmed:
+                reason = "identity_confirmed_position_collecting"
+            elif identity_confirmed:
+                reason = "position_collecting"
+            else:
+                reason = "identity_collecting"
             self.record_marker_frame(
                 message,
                 "accepted",
-                "window_collecting",
+                reason,
                 kind=kind,
                 transformed=marker,
                 transform_mode=transform_mode,
@@ -1905,6 +2013,9 @@ class Task1(Task1LineFollow):
                 if self.use_known_line_length else None
             ),
             finish_reason=self.fallback_reason or "normal_endpoint",
+            normal_finish_min_completed_path_length=(
+                self.normal_finish_min_completed_path_length
+            ),
             fallback_move_enabled=self.fallback_move_enabled,
             fallback_goal=self.pose_record(self.fallback_goal),
             task_elapsed_seconds=round(self.task_elapsed_seconds(), 6),

@@ -9,8 +9,8 @@
     2. 未识别红线时，先定点向前移动，再依次左转、右转、回正后重复；
     3. 在短时间窗内选择置信度最高的第一条红线并锁定；
     4. conf >= 0.70 时 positions 中坐标有限的点全部进入拟合，后续高置信帧确认后立即冻结曲线段；
-    5. LOS 以 base_link 投影选择曲线前方目标，实际向 motion_supervisor
-       下发 base_link 与 LOS 目标之间的中点；新目标直接覆盖旧目标；
+    5. LOS 以 base_link 投影选择曲线前方目标，每个控制周期都向 motion_supervisor
+       下发 base_link 最新位置与 LOS 目标之间的中点，不等待 HOVER；
     6. 已知曲线没有新目标时保持最后中点；控制端给出一次 HOVER 后，
        若进度和待固定尾段满足终点条件则直接结束，否则固定 XY 搜索一轮；
     7. 搜索到向前增长的新固定曲线就恢复巡线；达到最小进度且完整一轮
@@ -108,6 +108,9 @@
 2026.7.25
     深度和启动航向分别改用布尔开关选择当前值或参考值；参考航向启用时，
     先原地旋转并等待 HOVER，再开始启动定点和识别节点等待计时。
+2026.8.5
+    FOLLOW_LINE 改为每周期更新 LOS 中点，不再使用 HOVER 推进锁存；
+    HOVER 只用于启动、搜索、图形动作和终点保持等定点阶段。
 """
 
 import copy
@@ -303,7 +306,7 @@ class Task1LineFollow:
             "~search_yaw_sign", 1.0
         )) >= 0.0 else -1.0
 
-        # 相机和任务阶段等待时间；静止与接管统一由 MotionState.HOVER 确认。
+        # 相机和定点阶段等待时间；静止与接管统一由 MotionState.HOVER 确认。
         self.camera_message_timeout = float(rospy.get_param(
             "~camera_message_timeout", 2.0
         ))
@@ -514,7 +517,6 @@ class Task1LineFollow:
         self.active_los_yaw = None
         self.active_los_phase = None
         self.active_los_curve_version = 0
-        self.los_hover_advance_latched = False
         self.latest_line_points = []
         self.latest_line_input_count = 0
         self.latest_line_valid_count = 0
@@ -755,8 +757,8 @@ class Task1LineFollow:
         """兼容原状态机函数名；v3 实际发布 motion_supervisor 目标。"""
         self.publish_motion_goal(target)
 
-    def publish_los_goal(self, los_point, desired_yaw):
-        """只在 LOS 产生新点时计算一次 base_link 到该点的中点目标。"""
+    def publish_los_goal(self, los_point, desired_yaw, record_update=True):
+        """按 base_link 最新位置计算并发布到 LOS 点的中点目标。"""
         current = self.get_current_pose()
         if current is None:
             return None
@@ -770,15 +772,16 @@ class Task1LineFollow:
         goal = self.make_pose(target_x, target_y, desired_yaw)
         self.last_los_goal = copy.deepcopy(goal)
         self.publish_motion_goal(goal)
-        self.write_data_record(
-            "los_goal_update",
-            base=self.pose_record(current),
-            los_target=self.point_record(los_point),
-            command_goal=self.pose_record(goal),
-            target_s=round(self.active_los_target_s, 6)
-            if self.active_los_target_s is not None else None,
-            curve_version=self.tracking_curve_version,
-        )
+        if record_update:
+            self.write_data_record(
+                "los_goal_update",
+                base=self.pose_record(current),
+                los_target=self.point_record(los_point),
+                command_goal=self.pose_record(goal),
+                target_s=round(self.active_los_target_s, 6)
+                if self.active_los_target_s is not None else None,
+                curve_version=self.tracking_curve_version,
+            )
         return goal
 
     def publish_position_target(self, point, yaw):
@@ -979,7 +982,6 @@ class Task1LineFollow:
         self.active_los_target = None
         self.active_los_yaw = None
         self.active_los_phase = None
-        self.los_hover_advance_latched = False
 
     def activate_latest_tracking_curve(self, current=None, reset_progress=False):
         """在一个 LOS 固定段走完时，原子地换入最新固定曲线快照。"""
@@ -1759,11 +1761,11 @@ class Task1LineFollow:
                     )
                     rospy.loginfo(
                         "%s: 终点固定位置搜索一轮完成，未发现新的固定红线；"
-                        "丢弃待固定尾段 %.2f m，结束任务",
+                        "丢弃待固定尾段 %.2f m，进入结束流程",
                         NODE_NAME,
                         self.endpoint_pending_extension(),
                     )
-                    self.set_state(self.FINISH)
+                    self.enter_normal_finish()
                 else:
                     rospy.loginfo(
                         "%s: 一轮搜索结束但终点条件尚未满足，继续固定位置搜索",
@@ -1937,40 +1939,16 @@ class Task1LineFollow:
             )
         )
 
-        motion_hover = self.motion_arrived()
-        if target_changed:
-            self.active_los_target_s = next_target_s
-            self.active_los_target = copy.deepcopy(next_target)
-            self.active_los_yaw = next_yaw
-            self.active_los_phase = "CONTINUOUS_TRANSLATION"
-            self.active_los_curve_version = self.tracking_curve_version
-            commanded_goal = self.publish_los_goal(next_target, next_yaw)
-            self.los_hover_advance_latched = motion_hover
-        else:
-            commanded_goal = self.last_los_goal
-            if (
-                commanded_goal is not None
-                and motion_hover
-                and not self.los_hover_advance_latched
-            ):
-                commanded_goal = self.publish_los_goal(
-                    self.active_los_target,
-                    self.active_los_yaw,
-                )
-                self.los_hover_advance_latched = True
-                self.write_data_record(
-                    "los_midpoint_advance",
-                    los_target=self.point_record(self.active_los_target),
-                    command_goal=self.pose_record(commanded_goal),
-                    target_s=round(self.active_los_target_s, 6),
-                    completed_path=round(
-                        self.completed_path_length, 6
-                    ),
-                )
-            elif commanded_goal is not None:
-                self.publish_motion_goal(commanded_goal)
-            if not motion_hover:
-                self.los_hover_advance_latched = False
+        self.active_los_target_s = next_target_s
+        self.active_los_target = copy.deepcopy(next_target)
+        self.active_los_yaw = next_yaw
+        self.active_los_phase = "CONTINUOUS_TRANSLATION"
+        self.active_los_curve_version = self.tracking_curve_version
+        commanded_goal = self.publish_los_goal(
+            next_target,
+            next_yaw,
+            record_update=target_changed,
+        )
         if commanded_goal is None:
             return
 
@@ -2061,6 +2039,9 @@ class Task1LineFollow:
             < self.endpoint_pending_extension_tolerance
         )
 
+    def enter_normal_finish(self):
+        self.set_state(self.FINISH)
+
     def run_hold_end(self):
         current = self.get_current_pose()
         tracking = self.get_tracking_pose()
@@ -2129,12 +2110,12 @@ class Task1LineFollow:
                 )
                 rospy.loginfo(
                     "%s: 最后中点收到 HOVER，终点进度已满足且待固定尾段"
-                    " %.2f < %.2f m，直接结束任务",
+                    " %.2f < %.2f m，进入结束流程",
                     NODE_NAME,
                     pending_extension,
                     self.endpoint_pending_extension_tolerance,
                 )
-                self.set_state(self.FINISH)
+                self.enter_normal_finish()
                 return
             self.search_base_yaw = yaw_from_quaternion(
                 self.hold_target.pose.orientation
