@@ -9,6 +9,7 @@
       /world_origin (NavSatFix.msg)
 发布：/cmd/pose/lla (PoseLLAcmd.msg)
       /tf (map -> base_link)
+      /tf_static (base_link -> sensors)
 记录：
 2025.7.19 10:56
     第一版完成
@@ -25,6 +26,9 @@
     增加 base_link 到 IMU/GNSS 定位点的杆臂补偿，同时修正状态 TF 和定点目标。
 2026.7.20
     动态导航 TF 固定为 map -> base_link；方向控制中心全部由静态 TF 派生。
+2026.8.5
+    /status/auv 订阅改为仅保留最新帧，动态 TF 沿用上游状态时间戳。
+    静态 TF 改用锁存广播器，仅在节点初始化时发布一次。
 """
 
 import threading
@@ -32,7 +36,9 @@ import threading
 import numpy as np
 import rospy
 import tf
+import tf2_ros
 from auv_control.msg import AUVData, PoseLLAcmd, PoseNEDcmd
+from geometry_msgs.msg import TransformStamped
 from sensor_msgs.msg import NavSatFix
 from tf import transformations
 import os
@@ -62,14 +68,22 @@ class AUVTfHandler:
         rospy.loginfo("auv_tf_handler: 初始世界坐标系已就绪: %s", self.origin_values)
 
         self.tf_broadcaster = tf.TransformBroadcaster()
+        self.static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster()
         self.static_transforms = self.load_static_transforms()
         self.base_to_imu = self.get_imu_translation(self.static_transforms)
+        self.publish_static_transforms()
         self.current_pose = None
         self.control_cmd_pub = rospy.Publisher(
             '/cmd/pose/lla', PoseLLAcmd, queue_size=10
         )
 
-        rospy.Subscriber('/status/auv', AUVData, self.debug_callback)
+        rospy.Subscriber(
+            '/status/auv',
+            AUVData,
+            self.debug_callback,
+            queue_size=1,
+            tcp_nodelay=True,
+        )
         rospy.Subscriber('/cmd/pose/ned', PoseNEDcmd, self.target_cmd_callback)
         # map_initer 是 /world_origin 的唯一发布者；锁存初始值会被安全忽略。
         rospy.Subscriber('/world_origin', NavSatFix, self.origin_callback, queue_size=1)
@@ -196,7 +210,14 @@ class AUVTfHandler:
             orientation[2],
             orientation[3],
         ]
-        self.publish_tf()
+        source_stamp = msg.header.stamp
+        if source_stamp == rospy.Time():
+            rospy.logwarn_throttle(
+                2.0,
+                'auv_tf_handler: /status/auv 时间戳为空，使用当前时间',
+            )
+            source_stamp = rospy.Time.now()
+        self.publish_tf(source_stamp)
         rospy.loginfo_throttle(10, "auv_tf_handler: TF 已发布")
 
     def target_cmd_callback(self, msg):
@@ -242,29 +263,38 @@ class AUVTfHandler:
         self.control_cmd_pub.publish(output)
         rospy.loginfo_throttle(5, "auv_tf_handler: 已发布 /cmd/pose/lla")
 
-    def publish_tf(self):
-        """使用同一时间戳同步发布动态和静态 TF。"""
-        current_time = rospy.Time.now()
+    def publish_tf(self, source_stamp):
+        """使用上游状态时间戳发布 map -> base_link 动态 TF。"""
         self.tf_broadcaster.sendTransform(
             tuple(self.current_pose[0:3]),
             tuple(self.current_pose[3:7]),
-            current_time,
+            source_stamp,
             'base_link',
             'map',
         )
-        self.publish_static_transforms(current_time)
 
-    def publish_static_transforms(self, current_time):
-        """使用 map -> base_link 的时间戳发布配置中的静态刚体变换。"""
+    def publish_static_transforms(self):
+        """通过 /tf_static 锁存发布配置中的全部静态刚体变换。"""
+        current_time = rospy.Time.now()
+        messages = []
         for transform_config in self.static_transforms:
-            self.tf_broadcaster.sendTransform(
-                transform_config['translation'],
-                transform_config['rotation'],
-                current_time,
-                transform_config['child_frame'],
-                transform_config['parent_frame'],
-            )
-        rospy.loginfo_throttle(10, 'auv_tf_handler: 静态 TF 已发布')
+            message = TransformStamped()
+            message.header.stamp = current_time
+            message.header.frame_id = transform_config['parent_frame']
+            message.child_frame_id = transform_config['child_frame']
+            message.transform.translation.x = transform_config['translation'][0]
+            message.transform.translation.y = transform_config['translation'][1]
+            message.transform.translation.z = transform_config['translation'][2]
+            message.transform.rotation.x = transform_config['rotation'][0]
+            message.transform.rotation.y = transform_config['rotation'][1]
+            message.transform.rotation.z = transform_config['rotation'][2]
+            message.transform.rotation.w = transform_config['rotation'][3]
+            messages.append(message)
+        self.static_tf_broadcaster.sendTransform(messages)
+        rospy.loginfo(
+            'auv_tf_handler: 已通过 /tf_static 锁存发布 %d 组静态 TF',
+            len(messages),
+        )
 
     def run(self):
         rospy.spin()
