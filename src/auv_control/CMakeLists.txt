@@ -202,7 +202,7 @@ catkin_install_python(PROGRAMS
   scripts/task2.py
   scripts/task3.py
   scripts/task1_line_follow.py
-  scripts/task1_yaml_logger.py
+  # scripts/task1_yaml_logger.py
   scripts/task_v2_common.py
   scripts/vo_nav_fusion.py
   test/motion_auto_sequence_core.py

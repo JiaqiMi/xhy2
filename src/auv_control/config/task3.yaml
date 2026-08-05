@@ -256,7 +256,7 @@ test_task3_3_inspect_and_drop:
 
   # 自动搜索：先完成悬停和第一段前进，再观察并排的三个颜色方框。
   auto_initial_hover_seconds: 3.0
-  auto_search_first_forward_distance: 2.25
+  auto_search_first_forward_distance: 2.0
 
   auto_search_second_forward_distance: 0.5
   auto_search_third_forward_distance: 0.30
