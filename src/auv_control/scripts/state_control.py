@@ -31,6 +31,8 @@
     将任务正常退出与异常退出区分，task2 正常结束时保留 task3 视觉预热。
 2026.8.5
     task3 未检测到预热时由自身 launch 启动视觉节点。
+2026.8.5
+    增加 M/N 控制 motion_supervisor 的保活与单次关闭。
 """
 
 import errno
@@ -41,6 +43,8 @@ import sys
 import threading
 import time
 
+import rosgraph
+import rosnode
 import rospy
 from auv_control.msg import Keyboard
 from std_msgs.msg import String
@@ -64,6 +68,8 @@ class StateControl:
             rospy.get_param('~task1_vision_prewarm', {}), 'task1')
         self.vision_prewarm = self._load_vision_prewarm(
             rospy.get_param('~task3_vision_prewarm', {}), 'task3')
+        self.motion_supervisor = self._load_motion_supervisor(
+            rospy.get_param('~motion_supervisor', {}))
 
         self.current_task = None
         self.task_process = None
@@ -76,6 +82,12 @@ class StateControl:
         self.vision_process = None
         self.vision_output_fd = None
         self.vision_output_thread = None
+        self.motion_supervisor_process = None
+        self.motion_supervisor_output_fd = None
+        self.motion_supervisor_output_thread = None
+        self.motion_supervisor_start_time = None
+        self.motion_supervisor_keepalive = False
+        self.motion_supervisor_stop_requested = False
         self.auto_mode = False
 
         rospy.Subscriber(self.keyboard_topic, Keyboard, self.keyboard_callback)
@@ -142,6 +154,31 @@ class StateControl:
             'start_modes': start_modes,
         }
 
+    @staticmethod
+    def _load_motion_supervisor(config):
+        """读取 motion_supervisor 启动、节点检测和保活配置。"""
+        if not config:
+            return None
+        try:
+            launch = str(config['launch'])
+            node_name = str(config['node_name'])
+            startup_timeout_seconds = float(
+                config.get('startup_timeout_seconds', 15.0))
+        except (KeyError, TypeError, ValueError) as error:
+            rospy.logerr('%s motion_supervisor 配置无效：%s', NODE_NAME, error)
+            return None
+        if (not launch or not node_name or startup_timeout_seconds <= 0):
+            rospy.logerr('%s motion_supervisor 配置为空或超时无效。', NODE_NAME)
+            return None
+        return {
+            'name': str(config.get('name', 'motion_supervisor')),
+            'launch': launch,
+            'launch_args': [str(argument) for argument in
+                            config.get('launch_args', [])],
+            'node_name': node_name,
+            'startup_timeout_seconds': startup_timeout_seconds,
+        }
+
     def keyboard_callback(self, message):
         """响应启动指定任务或停止当前任务的键盘指令。"""
         rospy.loginfo('%s 收到键盘指令：run=%s，mode=%s。', NODE_NAME,
@@ -151,6 +188,14 @@ class StateControl:
             self.terminate_current_task('收到停止指令')
             self.terminate_task1_vision_prewarm('收到停止指令')
             self.terminate_vision_prewarm('收到停止指令')
+            return
+
+        if message.run == 3:
+            self.enable_motion_supervisor_keepalive()
+            return
+
+        if message.run == 4:
+            self.disable_motion_supervisor_keepalive()
             return
 
         if message.run == 1:
@@ -327,6 +372,152 @@ class StateControl:
                 self.vision_prewarm['enabled'] and
                 self.vision_process is not None and
                 self.vision_process.poll() is None)
+
+    def motion_supervisor_node_running(self):
+        """通过 ROS Master 判断 motion_supervisor 节点是否已注册。"""
+        if self.motion_supervisor is None:
+            return False
+        try:
+            master = rosgraph.Master(rospy.get_name())
+            return bool(master.lookupNode(self.motion_supervisor['node_name']))
+        except Exception as error:
+            rospy.logerr_throttle(
+                5.0, '%s 查询 motion_supervisor 节点失败：%s',
+                NODE_NAME, error)
+            return False
+
+    def motion_supervisor_launch_running(self):
+        """判断本节点启动的 motion_supervisor launch 是否仍在运行。"""
+        return (self.motion_supervisor_process is not None and
+                self.motion_supervisor_process.poll() is None)
+
+    def enable_motion_supervisor_keepalive(self):
+        """开启 motion_supervisor 保活，并在缺失时立即启动。"""
+        if self.motion_supervisor is None:
+            rospy.logerr('%s 未配置 motion_supervisor，无法开启保活。', NODE_NAME)
+            return
+        self.motion_supervisor_keepalive = True
+        self.motion_supervisor_stop_requested = False
+        if self.motion_supervisor_node_running():
+            rospy.loginfo('%s motion_supervisor 已在运行，开始保活监控。',
+                          NODE_NAME)
+            return
+        rospy.logwarn('%s 未检测到 motion_supervisor，开始启动并保活。', NODE_NAME)
+        self.start_motion_supervisor()
+
+    def start_motion_supervisor(self):
+        """在控制器节点缺失时启动其 launch，避免重复创建进程。"""
+        if self.motion_supervisor is None:
+            return
+        if self.motion_supervisor_node_running():
+            return
+        if self.motion_supervisor_launch_running():
+            elapsed = time.monotonic() - self.motion_supervisor_start_time
+            timeout = self.motion_supervisor['startup_timeout_seconds']
+            if elapsed < timeout:
+                rospy.logwarn_throttle(
+                    2.0, '%s 等待 motion_supervisor 节点注册：%.1f/%.1fs。',
+                    NODE_NAME, elapsed, timeout)
+                return
+            rospy.logerr('%s motion_supervisor 启动超时，重启 launch。', NODE_NAME)
+            self.terminate_motion_supervisor_launch('节点注册超时')
+
+        self._close_motion_supervisor_output()
+        command = ['roslaunch', 'auv_control', self.motion_supervisor['launch']]
+        command += self.motion_supervisor['launch_args']
+        try:
+            master_fd, slave_fd = pty.openpty()
+            try:
+                self.motion_supervisor_process = subprocess.Popen(
+                    command,
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    close_fds=True)
+            except OSError:
+                os.close(master_fd)
+                raise
+            finally:
+                os.close(slave_fd)
+            self.motion_supervisor_start_time = time.monotonic()
+            self.motion_supervisor_output_fd = master_fd
+            self.motion_supervisor_output_thread = threading.Thread(
+                target=self._forward_task_output,
+                args=(self.motion_supervisor['name'], master_fd),
+                name='{}_output'.format(self.motion_supervisor['name']),
+                daemon=True)
+            self.motion_supervisor_output_thread.start()
+            rospy.loginfo('%s 已启动 motion_supervisor：%s。', NODE_NAME,
+                          ' '.join(command))
+        except OSError as error:
+            self.motion_supervisor_process = None
+            self.motion_supervisor_start_time = None
+            self.motion_supervisor_output_fd = None
+            self.motion_supervisor_output_thread = None
+            rospy.logerr('%s 启动 motion_supervisor 失败，将继续保活重试：%s',
+                         NODE_NAME, error)
+
+    def _close_motion_supervisor_output(self):
+        """关闭 motion_supervisor launch 的 PTY 输出。"""
+        if self.motion_supervisor_output_fd is not None:
+            try:
+                os.close(self.motion_supervisor_output_fd)
+            except OSError:
+                pass
+            self.motion_supervisor_output_fd = None
+        if self.motion_supervisor_output_thread is not None:
+            self.motion_supervisor_output_thread.join(timeout=1.0)
+            self.motion_supervisor_output_thread = None
+
+    def terminate_motion_supervisor_launch(self, reason):
+        """关闭本节点启动的 motion_supervisor launch。"""
+        if self.motion_supervisor_process is None:
+            return False
+        if self.motion_supervisor_process.poll() is None:
+            rospy.loginfo('%s 正在停止 motion_supervisor launch：%s。',
+                          NODE_NAME, reason)
+            self.motion_supervisor_process.terminate()
+            try:
+                self.motion_supervisor_process.wait(
+                    timeout=self.terminate_wait_seconds)
+            except subprocess.TimeoutExpired:
+                rospy.logwarn('%s motion_supervisor 未及时退出，强制结束。',
+                              NODE_NAME)
+                self.motion_supervisor_process.kill()
+                self.motion_supervisor_process.wait()
+        self.motion_supervisor_process = None
+        self.motion_supervisor_start_time = None
+        self._close_motion_supervisor_output()
+        return True
+
+    def disable_motion_supervisor_keepalive(self):
+        """关闭保活，并仅执行一次控制器关闭请求。"""
+        self.motion_supervisor_keepalive = False
+        if self.motion_supervisor_stop_requested:
+            rospy.loginfo('%s 已执行过 motion_supervisor 关闭请求。', NODE_NAME)
+            return
+        self.motion_supervisor_stop_requested = True
+
+        if self.terminate_motion_supervisor_launch('收到 N 键关闭指令'):
+            return
+        if self.motion_supervisor is None:
+            rospy.logerr('%s 未配置 motion_supervisor，无法发送关闭请求。', NODE_NAME)
+            return
+        if not self.motion_supervisor_node_running():
+            rospy.loginfo('%s motion_supervisor 当前未运行，无需关闭。', NODE_NAME)
+            return
+        try:
+            succeeded, failed = rosnode.kill_nodes(
+                [self.motion_supervisor['node_name']])
+        except Exception as error:
+            rospy.logerr('%s 关闭外部 motion_supervisor 失败：%s',
+                         NODE_NAME, error)
+            return
+        if failed:
+            rospy.logerr('%s motion_supervisor 关闭失败：%s', NODE_NAME, failed)
+        else:
+            rospy.loginfo('%s 已关闭外部 motion_supervisor：%s。', NODE_NAME,
+                          succeeded)
 
     def task1_vision_prewarm_running(self):
         """判断 task1 视觉预热进程是否仍在运行。"""
@@ -564,10 +755,21 @@ class StateControl:
                 if timed_out_mode == 1:
                     self.terminate_task1_vision_prewarm('task1 运行超时')
 
+    def monitor_motion_supervisor(self):
+        """保活开启后检测控制器节点，失效时继续尝试重启。"""
+        if not self.motion_supervisor_keepalive:
+            return
+        if self.motion_supervisor_node_running():
+            return
+        rospy.logerr_throttle(
+            5.0, '%s 未检测到 motion_supervisor，执行保活重启。', NODE_NAME)
+        self.start_motion_supervisor()
+
     def run(self):
         """以固定频率监控当前 launch 进程。"""
         while not rospy.is_shutdown():
             self.monitor_current_task()
+            self.monitor_motion_supervisor()
             self.rate.sleep()
 
 

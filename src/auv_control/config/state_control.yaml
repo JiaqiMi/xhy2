@@ -5,6 +5,14 @@ finished_keyword: finished
 monitor_rate_hz: 2.0
 terminate_wait_seconds: 5.0
 
+# M 键开启控制器保活；N 键关闭保活并仅发送一次关闭请求。
+motion_supervisor:
+  name: motion_supervisor
+  launch: motion_supervisor_prototype.launch
+  launch_args: []
+  node_name: /motion_supervisor
+  startup_timeout_seconds: 15.0
+
 # 按 9 键启动 task1 视觉预热；启动 task1 时会复用该组节点。
 task1_vision_prewarm:
   enabled: true
