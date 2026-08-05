@@ -26,6 +26,7 @@
     实际箭头终点改用 camera_center TF，地图文字仍显示 camera。
 2026.8.5
     增加 6S4P 电池容量估算、动力电压平滑和控制/动力电源摘要。
+    按模式合并执行器指令，并向网页提供机械指令的独立接收年龄。
 """
 
 import copy
@@ -64,6 +65,7 @@ from std_msgs.msg import String
 
 from state_web_core import (
     ACTUATOR_MODE_NAMES,
+    ActuatorCommandState,
     CONTROL_MODE_NAMES,
     MOTION_STATE_NAMES,
     NavigationHistoryState,
@@ -652,6 +654,7 @@ class StateWebNode:
             pack_capacity_ah=self.battery_pack_capacity_ah,
             smoothing_sec=self.battery_voltage_smoothing_sec,
         )
+        self.actuator_command_state = ActuatorCommandState()
         self.origin_revision = OriginRevision()
         # 使用哨兵值，确保时间戳为 0 的首组 TF 也能被记录。
         self.last_tf_signature = object()
@@ -1349,11 +1352,30 @@ class StateWebNode:
 
     def _actuator_command_callback(self, message):
         """接收执行器控制指令。"""
-        self._store("actuator_command", serialize_actuator(message))
+        received_at = time.time()
+        command = self.actuator_command_state.update(
+            serialize_actuator(message),
+            received_at,
+        )
+        self._store(
+            "actuator_command",
+            command,
+            received_at=received_at,
+        )
 
     def _actuator_feedback_callback(self, message):
         """接收执行器硬件反馈。"""
-        self._store("actuator_feedback", serialize_actuator(message))
+        received_at = time.time()
+        feedback = serialize_actuator(message)
+        self.actuator_command_state.observe_feedback(
+            feedback,
+            received_at,
+        )
+        self._store(
+            "actuator_feedback",
+            feedback,
+            received_at=received_at,
+        )
 
     def _power_callback(self, message):
         """接收两路电源状态。"""
@@ -1634,6 +1656,11 @@ class StateWebNode:
         actuator_command = self._snapshot(
             "actuator_command", self.command_timeout, now
         )
+        if actuator_command.get("data") is not None:
+            actuator_command["data"] = self.actuator_command_state.snapshot(
+                now,
+                self.command_timeout,
+            )
         actuator_feedback = self._snapshot(
             "actuator_feedback", self.state_timeout, now
         )
