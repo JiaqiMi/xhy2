@@ -35,7 +35,7 @@
     <arg name="conf_thre" default="0.10" />
     <arg name="keypoint_conf_thre" default="0.1" />
     <arg name="top_k" default="3" />
-    <arg name="rate" default="5.0" />
+    <arg name="rate" default="20.0" />
     <arg name="imgsz" default="640" />
     <arg name="device" default="0" />
     <arg name="visualization" default="0" />
