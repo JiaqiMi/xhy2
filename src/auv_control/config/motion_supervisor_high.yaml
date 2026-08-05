@@ -32,6 +32,8 @@
 #   更新两向有效制动减速度、计划减速度和停车余量，Y 轴及 X 轴跟踪增益保持不变。
 # 2026.8.2
 #   新增 TY/MZ 协议级侧推异常检测与自动恢复参数，不改变正常跟踪、限幅和刹车参数。
+# 2026.8.5
+#   新增 30/10 deg 航向优先迟滞，并让反向复位脉冲由 1.0 s 逐次延长至 5.0 s。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -150,6 +152,9 @@ yaw_position_gain: 0.22 # 仅在 120 deg 及以上动作达到 25 deg/s；短角
 yaw_max_acceleration_deg_s2: 20.0
 yaw_max_jerk_deg_s3: 35.0 # 5 Hz 前视目标跨过 5 deg 重规划阈值后，减小角速度参考恢复时的力矩阶跃；不影响刹转 jerk
 yaw_brake_jerk_deg_s3: 15.0 # 8 Hz 下缩短刹转加速度建立时间，避免计划减速度长期低于实际停车需求
+# 适配 90 deg 定角和 150 deg 步长连续旋转：大于 30 deg 先转向，小于 10 deg 再恢复 XY。
+yaw_priority_enter_error_deg: 30.0
+yaw_priority_exit_error_deg: 10.0
 
 # 航向刹停迟滞；高于 0.6 deg/s 才进入，低于 0.2 deg/s 才退出。
 yaw_brake_enter_rate_deg_s: 1.5 # data3 残余约 0.7 deg/s 不再触发重复刹转；主刹停速度仍远高于此阈值
@@ -191,6 +196,8 @@ thruster_power_baseline_window_seconds: 10.0
 thruster_power_baseline_min_seconds: 2.0
 thruster_recovery_zero_before_seconds: 1.5
 thruster_recovery_reverse_seconds: 1.0
+thruster_recovery_reverse_step_seconds: 0.5
+thruster_recovery_reverse_max_seconds: 5.0
 thruster_recovery_zero_after_seconds: 0.5
 thruster_recovery_reverse_ty_max: 2000.0
 thruster_recovery_reverse_mz_max: 1500.0
