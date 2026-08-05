@@ -18,7 +18,7 @@
     自动模式改为使用带时间戳的三维方框map位置队列，按三帧稳定位置完成camera粗对准和XY误差精对准。
     自动模式改为使用带时间戳的三维方框map位置队列，按三帧稳定位置完成camera粗对准和XY误差精对准。
 2026.8.3
-    方框搜索接收阶段固定航向，投放后直接使用配置的原点绝对航向返航。
+    方框搜索接收阶段固定航向，投放后使用配置的返航绝对航向前往预设返航点。
 2026.8.4
     将侧推自动恢复MotionState=10作为有效等待状态，不再误判为未知异常。
 2026.8.5
@@ -136,11 +136,6 @@ DEFAULT_ARRIVAL_YAW_TOLERANCE_DEG = 5.0
 DEFAULT_ARRIVAL_MAX_HORIZONTAL_SPEED = 0.02
 DEFAULT_ARRIVAL_MAX_YAW_RATE_DEG_S = 0.5
 DEFAULT_AUTO_INITIAL_HOVER_SECONDS = 10.0
-DEFAULT_AUTO_SEARCH_FIRST_FORWARD_DISTANCE = 0.30
-DEFAULT_AUTO_SEARCH_SECOND_FORWARD_DISTANCE = 0.20
-DEFAULT_AUTO_SEARCH_THIRD_FORWARD_DISTANCE = 0.10
-DEFAULT_AUTO_SEARCH_LEFT_DISTANCE = 0.20
-DEFAULT_AUTO_SEARCH_RIGHT_DISTANCE = 0.40
 DEFAULT_AUTO_VISUAL_MIN_STEP_M = 0.01
 DEFAULT_AUTO_VISUAL_MAX_STEP_M = 0.05
 DEFAULT_FINE_POSITION_X_TOLERANCE_M = 0.10
@@ -161,8 +156,6 @@ DEFAULT_RETURN_ORIGIN_YAW_DEG = 30.0
 DEFAULT_POST_DROP_STEP_TIMEOUT = 90.0
 DEFAULT_POST_DROP_ASCENT_SECONDS = 5.0
 DEFAULT_POST_DROP_ASCENT_TARGET_Z = -1.3
-POST_DROP_ORIGIN_X = 0.0
-POST_DROP_ORIGIN_Y = 0.0
 
 # 执行器参数。
 DEFAULT_ACTUATOR_TOPIC = "/cmd/actuator"
@@ -192,7 +185,7 @@ class Task3InspectAndDropTest:
     RETURN_GRIPPER_RIGHT = 5
     CLOSE_CLAMP = 6
     POST_DROP_TURN = 7
-    POST_DROP_RETURN_ORIGIN = 8
+    POST_DROP_RETURN_POINT = 8
     PRE_DROP_HAND_ALIGN = 9
     POST_DROP_ASCEND = 10
 
@@ -205,10 +198,10 @@ class Task3InspectAndDropTest:
         OPEN_CLAMP: "打开夹爪",
         RETURN_GRIPPER_RIGHT: "打开状态回到右侧",
         CLOSE_CLAMP: "关闭夹爪",
-        POST_DROP_TURN: "投放后原点航向对准",
-        POST_DROP_RETURN_ORIGIN: "投放后返回map原点",
+        POST_DROP_TURN: "投放后返航航向对准",
+        POST_DROP_RETURN_POINT: "投放后前往预设返航点",
         PRE_DROP_HAND_ALIGN: "投放前夹爪TF对准",
-        POST_DROP_ASCEND: "原点持续上浮",
+        POST_DROP_ASCEND: "预设返航点持续上浮",
     }
 
     SEARCH_STEP_NAMES = {
@@ -335,6 +328,17 @@ class Task3InspectAndDropTest:
             "/task3_return_origin_yaw_deg",
             DEFAULT_RETURN_ORIGIN_YAW_DEG,
         ))
+        fixed_points = rospy.get_param("/task3_fixed_points", {})
+        if not isinstance(fixed_points, dict):
+            raise ValueError("task3_fixed_points必须是字典")
+        return_point = fixed_points.get("return")
+        if not isinstance(return_point, dict):
+            raise ValueError("task3_fixed_points.return尚未配置")
+        try:
+            self.return_point_n = float(return_point["N"])
+            self.return_point_e = float(return_point["E"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("task3_fixed_points.return必须填写数字N、E")
         raw_search_yaw_deg = rospy.get_param("~search_yaw_deg", None)
         if raw_search_yaw_deg is None and self.fixed_heading_enabled:
             raw_search_yaw_deg = self.aruco_yaw_deg
@@ -416,23 +420,37 @@ class Task3InspectAndDropTest:
         self.auto_initial_hover_seconds = float(rospy.get_param(
             "~auto_initial_hover_seconds", DEFAULT_AUTO_INITIAL_HOVER_SECONDS
         ))
+        box_search_path = rospy.get_param("/task3_search_paths/box", {})
+        if not isinstance(box_search_path, dict):
+            raise ValueError("task3_search_paths.box必须是字典")
+        box_search_keys = (
+            "auto_search_first_forward_distance",
+            "auto_search_second_forward_distance",
+            "auto_search_third_forward_distance",
+            "auto_search_left_distance",
+            "auto_search_right_distance",
+        )
+        if any(key not in box_search_path for key in box_search_keys):
+            raise ValueError("task3_search_paths.box缺少搜索距离参数")
         self.auto_search_first_forward_distance = float(rospy.get_param(
             "~auto_search_first_forward_distance",
-            DEFAULT_AUTO_SEARCH_FIRST_FORWARD_DISTANCE,
+            box_search_path["auto_search_first_forward_distance"],
         ))
         self.auto_search_second_forward_distance = float(rospy.get_param(
             "~auto_search_second_forward_distance",
-            DEFAULT_AUTO_SEARCH_SECOND_FORWARD_DISTANCE,
+            box_search_path["auto_search_second_forward_distance"],
         ))
         self.auto_search_third_forward_distance = float(rospy.get_param(
             "~auto_search_third_forward_distance",
-            DEFAULT_AUTO_SEARCH_THIRD_FORWARD_DISTANCE,
+            box_search_path["auto_search_third_forward_distance"],
         ))
         self.auto_search_left_distance = float(rospy.get_param(
-            "~auto_search_left_distance", DEFAULT_AUTO_SEARCH_LEFT_DISTANCE
+            "~auto_search_left_distance",
+            box_search_path["auto_search_left_distance"],
         ))
         self.auto_search_right_distance = float(rospy.get_param(
-            "~auto_search_right_distance", DEFAULT_AUTO_SEARCH_RIGHT_DISTANCE
+            "~auto_search_right_distance",
+            box_search_path["auto_search_right_distance"],
         ))
         self.auto_search_center_return_distance = (
             self.auto_search_right_distance - self.auto_search_left_distance
@@ -697,8 +715,9 @@ class Task3InspectAndDropTest:
             rospy.loginfo(
                 (
                     "%s：自动识别流程：首次三帧平均位置 -> camera粗对准并等待HOVER -> "
-                    "再次三帧平均位置；XY任一误差超限时按XY小步靠近，航向保持不变；"
-                    "XY误差均通过后锁定中心点，通过TF让夹爪坐标系对准该点后执行投放"
+                    "再次三帧平均位置；当前camera到复核点的XY实际误差任一超限时"
+                    "按XY小步靠近，航向保持不变；XY实际误差均通过后锁定中心点，"
+                    "通过TF让夹爪坐标系对准该点后执行投放"
                 ),
                 NODE_NAME,
             )
@@ -718,13 +737,16 @@ class Task3InspectAndDropTest:
             )
             rospy.loginfo(
                 (
-                    "%s：投放后离场：启用=%s，返原点绝对航向=%.1fdeg；"
-                    "随后返回map原点(0,0)，局部HOVER超时%.1fs仅记录；"
-                    "到原点后向NED z=%.2f上浮、持续%.1fs并结束"
+                    "%s：投放后离场：启用=%s，返航绝对航向=%.1fdeg；"
+                    "随后前往预设返航点(N=%.3f,E=%.3f)，"
+                    "局部HOVER超时%.1fs仅记录；到点后向NED z=%.2f上浮、"
+                    "持续%.1fs并结束"
                 ),
                 NODE_NAME,
                 "是" if self.post_drop_motion_enabled else "否",
                 math.degrees(self.return_origin_target_yaw),
+                self.return_point_n,
+                self.return_point_e,
                 self.post_drop_step_timeout,
                 self.post_drop_ascent_target_z,
                 self.post_drop_ascent_seconds,
@@ -1134,6 +1156,10 @@ class Task3InspectAndDropTest:
         for name, value in heading_values.items():
             if not math.isfinite(value) or value < 0.0 or value >= 360.0:
                 raise ValueError("{}必须在[0, 360)度范围内".format(name))
+        if not all(math.isfinite(value) for value in (
+                self.return_point_n,
+                self.return_point_e)):
+            raise ValueError("task3_fixed_points.return包含非有限值")
 
         if not self.auto_enabled:
             return
@@ -1779,7 +1805,7 @@ class Task3InspectAndDropTest:
     def start_post_drop_turn(self):
         source_goal = self.active_goal
         if source_goal is None:
-            source_goal = self.get_current_pose("生成投放后原点航向对准目标")
+            source_goal = self.get_current_pose("生成投放后返航航向对准目标")
         if source_goal is None:
             return False
 
@@ -1790,13 +1816,13 @@ class Task3InspectAndDropTest:
             source_goal.pose.position.y,
             self.auto_hold_z,
             self.post_drop_target_yaw,
-            "投放完成后原地对准返原点绝对航向%.1f度"
+            "投放完成后原地对准返航绝对航向%.1f度"
             % math.degrees(self.post_drop_target_yaw),
         )
         rospy.loginfo(
             (
-                "%s：[投放后离场] 开始原地对准返原点绝对航向，"
-                "配置原点航向=%.1fdeg，"
+                "%s：[投放后离场] 开始原地对准返航绝对航向，"
+                "配置返航航向=%.1fdeg，"
                 "保持位置=(%.3f,%.3f,%.3f)，当前航向=%.1fdeg -> 目标航向=%.1fdeg"
             ),
             NODE_NAME,
@@ -1809,25 +1835,25 @@ class Task3InspectAndDropTest:
         )
         self.set_state(
             self.POST_DROP_TURN,
-            "夹爪关闭并熄灯后开始对准原点绝对航向",
+            "夹爪关闭并熄灯后开始对准返航绝对航向",
         )
         return True
 
-    def start_post_drop_return_origin(self):
+    def start_post_drop_return_point(self):
         if self.post_drop_target_yaw is None:
             return False
         self.auto_hold_yaw = self.post_drop_target_yaw
         self.set_active_goal(
-            POST_DROP_ORIGIN_X,
-            POST_DROP_ORIGIN_Y,
+            self.return_point_n,
+            self.return_point_e,
             self.auto_hold_z,
             self.post_drop_target_yaw,
-            "投放后原点航向对准完成，返回map原点(0,0)",
+            "投放后返航航向对准完成，前往预设返航点",
         )
         rospy.loginfo(
             (
-                "%s：[投放后离场] 原点航向已由HOVER确认，"
-                "开始返回map原点，目标=(%.3f,%.3f,%.3f)"
+                "%s：[投放后离场] 返航航向已由HOVER确认，"
+                "开始前往预设返航点，目标=(%.3f,%.3f,%.3f)"
             ),
             NODE_NAME,
             self.active_goal.pose.position.x,
@@ -1835,8 +1861,8 @@ class Task3InspectAndDropTest:
             self.active_goal.pose.position.z,
         )
         self.set_state(
-            self.POST_DROP_RETURN_ORIGIN,
-            "原点航向目标已到达，开始返回map原点",
+            self.POST_DROP_RETURN_POINT,
+            "返航航向目标已到达，开始前往预设返航点",
         )
         return True
 
@@ -1844,16 +1870,16 @@ class Task3InspectAndDropTest:
         if self.post_drop_target_yaw is None or self.auto_hold_z is None:
             return False
         self.set_active_goal(
-            POST_DROP_ORIGIN_X,
-            POST_DROP_ORIGIN_Y,
+            self.return_point_n,
+            self.return_point_e,
             self.post_drop_ascent_target_z,
             self.post_drop_target_yaw,
-            "到达map原点后向NED z=%.2f上浮"
+            "到达预设返航点后向NED z=%.2f上浮"
             % self.post_drop_ascent_target_z,
         )
         rospy.loginfo(
             (
-                "%s：[投放后离场] map原点已由HOVER确认，"
+                "%s：[投放后离场] 预设返航点已由HOVER确认，"
                 "NED z向下为正，从z=%.2f向目标z=%.2f上浮，"
                 "持续发布%.1fs"
             ),
@@ -1864,7 +1890,7 @@ class Task3InspectAndDropTest:
         )
         self.set_state(
             self.POST_DROP_ASCEND,
-            "已到达map原点，开始持续上浮",
+            "已到达预设返航点，开始持续上浮",
         )
         return True
 
@@ -1885,44 +1911,44 @@ class Task3InspectAndDropTest:
     def handle_post_drop_turn(self):
         self.publish_actuator(self.clamp_closed, "off")
         if self.motion_step_timed_out(
-            "投放后原点航向对准",
+            "投放后返航航向对准",
             self.post_drop_step_timeout,
         ):
             return
         if self.motion_arrived():
-            if not self.start_post_drop_return_origin():
-                self.finish_task(False, "无法生成投放后返回map原点目标")
+            if not self.start_post_drop_return_point():
+                self.finish_task(False, "无法生成投放后预设返航点目标")
             return
         rospy.loginfo_throttle(
             self.log_interval,
-            "%s：[投放后离场] 原点绝对航向对准中 %.1f/%.1fs，motion=%s",
+            "%s：[投放后离场] 返航绝对航向对准中 %.1f/%.1fs，motion=%s",
             NODE_NAME,
             self.state_elapsed(),
             self.post_drop_step_timeout,
             self.current_motion_state_name(),
         )
-        self.log_arrival_gate("投放后原点绝对航向到达判定")
+        self.log_arrival_gate("投放后返航绝对航向到达判定")
 
-    def handle_post_drop_return_origin(self):
+    def handle_post_drop_return_point(self):
         self.publish_actuator(self.clamp_closed, "off")
         if self.motion_step_timed_out(
-            "投放后返回map原点",
+            "投放后前往预设返航点",
             self.post_drop_step_timeout,
         ):
             return
         if self.motion_arrived():
             if not self.start_post_drop_ascent():
-                self.finish_task(False, "无法生成map原点上浮目标")
+                self.finish_task(False, "无法生成预设返航点上浮目标")
             return
         rospy.loginfo_throttle(
             self.log_interval,
-            "%s：[投放后离场] 返回map原点进行中 %.1f/%.1fs，motion=%s",
+            "%s：[投放后离场] 前往预设返航点进行中 %.1f/%.1fs，motion=%s",
             NODE_NAME,
             self.state_elapsed(),
             self.post_drop_step_timeout,
             self.current_motion_state_name(),
         )
-        self.log_arrival_gate("投放后返回map原点到达判定")
+        self.log_arrival_gate("投放后预设返航点到达判定")
 
     def handle_post_drop_ascent(self):
         self.publish_actuator(self.clamp_closed, "off")
@@ -1931,11 +1957,14 @@ class Task3InspectAndDropTest:
             self.finish_task(
                 True,
                 (
-                    "识别和投放完成，对准返原点绝对航向%.1f度、返回map原点(0,0)，"
+                    "识别和投放完成，对准返航绝对航向%.1f度、"
+                    "到达预设返航点(N=%.3f,E=%.3f)，"
                     "向NED z=%.2f上浮、持续%.1fs后结束"
                 )
                 % (
                     math.degrees(self.post_drop_target_yaw),
+                    self.return_point_n,
+                    self.return_point_e,
                     self.post_drop_ascent_target_z,
                     self.post_drop_ascent_seconds,
                 ),
@@ -1943,7 +1972,7 @@ class Task3InspectAndDropTest:
             return
         rospy.loginfo_throttle(
             self.log_interval,
-            "%s：[投放后离场] 原点上浮进行中 %.1f/%.1fs，目标z=%.2f",
+            "%s：[投放后离场] 预设返航点上浮进行中 %.1f/%.1fs，目标z=%.2f",
             NODE_NAME,
             elapsed,
             self.post_drop_ascent_seconds,
@@ -2595,26 +2624,38 @@ class Task3InspectAndDropTest:
 
         candidate = self.box_fine_candidate
         self.box_fine_candidate = None
-        x_error = candidate["map_x"] - self.box_coarse_map_x
-        y_error = candidate["map_y"] - self.box_coarse_map_y
+        coarse_x_error = candidate["map_x"] - self.box_coarse_map_x
+        coarse_y_error = candidate["map_y"] - self.box_coarse_map_y
+        camera_pose = self.get_camera_pose(
+            candidate["camera_frame"],
+            "方框三帧精确认camera实际误差计算",
+        )
+        if camera_pose is None:
+            self.box_fine_candidate = candidate
+            return
+        camera_x_error = candidate["map_x"] - camera_pose.pose.position.x
+        camera_y_error = candidate["map_y"] - camera_pose.pose.position.y
         rospy.loginfo(
             (
                 "%s：方框三帧精确认候选：map=(%.3f,%.3f)，"
                 "相对首次点误差=(X=%+.3f,Y=%+.3f)m，"
-                "门槛=(X=%.3f,Y=%.3f)m"
+                "camera实际对准误差=(X=%+.3f,Y=%+.3f)m，"
+                "完成门槛=(X=%.3f,Y=%.3f)m"
             ),
             NODE_NAME,
             candidate["map_x"],
             candidate["map_y"],
-            x_error,
-            y_error,
+            coarse_x_error,
+            coarse_y_error,
+            camera_x_error,
+            camera_y_error,
             self.fine_position_x_tolerance_m,
             self.fine_position_y_tolerance_m,
             self.fine_position_y_tolerance_m,
         )
         if (
-            abs(x_error) <= self.fine_position_x_tolerance_m
-            and abs(y_error) <= self.fine_position_y_tolerance_m
+            abs(camera_x_error) <= self.fine_position_x_tolerance_m
+            and abs(camera_y_error) <= self.fine_position_y_tolerance_m
         ):
             if not self.finish_box_position_alignment(candidate):
                 self.finish_task(False, "无法生成方框最终固定位置目标")
@@ -2624,7 +2665,7 @@ class Task3InspectAndDropTest:
             candidate["map_y"],
             self.auto_hold_yaw,
             candidate["camera_frame"],
-            "方框XY误差未全部进入门槛，保持航向按XY小步靠近",
+            "方框相对camera的XY实际误差未全部进入门槛，保持航向按XY小步靠近",
         ):
             return
         self.box_precision_goal_pending = True
@@ -2632,7 +2673,7 @@ class Task3InspectAndDropTest:
         self.reset_box_position_queue()
         self.set_state(
             self.AUTO_APPROACH,
-            "方框XY误差未全部进入门槛，已下发一个XY精对准小步",
+            "方框相对camera的XY实际误差未全部进入门槛，已下发一个XY精对准小步",
         )
 
     def search_target_automatically(self, model_ready):
@@ -3899,7 +3940,7 @@ class Task3InspectAndDropTest:
                         if not self.start_post_drop_turn():
                             self.finish_task(
                                 False,
-                                "投放完成，但无法生成投放后原点航向对准目标",
+                                "投放完成，但无法生成投放后返航航向对准目标",
                             )
                             return
                     else:
@@ -3914,8 +3955,8 @@ class Task3InspectAndDropTest:
             elif self.state == self.POST_DROP_TURN:
                 self.handle_post_drop_turn()
 
-            elif self.state == self.POST_DROP_RETURN_ORIGIN:
-                self.handle_post_drop_return_origin()
+            elif self.state == self.POST_DROP_RETURN_POINT:
+                self.handle_post_drop_return_point()
 
             elif self.state == self.POST_DROP_ASCEND:
                 self.handle_post_drop_ascent()

@@ -212,17 +212,34 @@ class Task3AcquireAreaTest(object):
         self.initial_hover_seconds = float(rospy.get_param(
             "~initial_hover_seconds", 10.0
         ))
+        arrow1_search_path = rospy.get_param(
+            "/task3_search_paths/arrow1", {}
+        )
+        if not isinstance(arrow1_search_path, dict):
+            raise ValueError("task3_search_paths.arrow1必须是字典")
+        arrow1_search_keys = (
+            "search_initial_forward_distance",
+            "search_lateral_distance",
+            "search_second_forward_distance",
+            "search_third_forward_distance",
+        )
+        if any(key not in arrow1_search_path for key in arrow1_search_keys):
+            raise ValueError("task3_search_paths.arrow1缺少搜索距离参数")
         self.search_initial_forward_distance = float(rospy.get_param(
-            "~search_initial_forward_distance", 0.40
+            "~search_initial_forward_distance",
+            arrow1_search_path["search_initial_forward_distance"],
         ))
         self.search_lateral_distance = float(rospy.get_param(
-            "~search_lateral_distance", 0.75
+            "~search_lateral_distance",
+            arrow1_search_path["search_lateral_distance"],
         ))
         self.search_second_forward_distance = float(rospy.get_param(
-            "~search_second_forward_distance", 0.65
+            "~search_second_forward_distance",
+            arrow1_search_path["search_second_forward_distance"],
         ))
         self.search_third_forward_distance = float(rospy.get_param(
-            "~search_third_forward_distance", 0.65
+            "~search_third_forward_distance",
+            arrow1_search_path["search_third_forward_distance"],
         ))
         self.final_hold_seconds = float(rospy.get_param(
             "~final_hold_seconds", 0.0

@@ -30,6 +30,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from collections import Counter, deque
 
 import rospkg
@@ -89,6 +90,29 @@ CONSOLE_PROGRESS_PHRASES = (
     "[执行器状态]",
     "[执行器硬件状态]",
 )
+
+
+def log_exception_safely(message, *args):
+    """记录当前异常堆栈；日志系统异常时不得中断后续保护。"""
+    try:
+        rendered_message = message % args if args else str(message)
+    except Exception:
+        rendered_message = "任务异常，且异常日志格式化失败"
+    try:
+        traceback_text = traceback.format_exc()
+    except Exception:
+        traceback_text = "原始异常堆栈获取失败"
+    try:
+        rospy.logerr("%s\n%s", rendered_message, traceback_text)
+    except Exception:
+        try:
+            sys.stderr.write("[ERROR] {}\n{}\n".format(
+                rendered_message,
+                traceback_text,
+            ))
+            sys.stderr.flush()
+        except Exception:
+            pass
 
 
 class Task3ConsoleFilter(logging.Filter):
@@ -387,9 +411,10 @@ class Task3Final:
         "aruco": TargetDetection,
         "rectangle": String,
     }
-    FINAL_TIMEOUT_TARGET_LABELS = {
+    FIXED_POINT_LABELS = {
         "aruco": "ArUco识别点",
         "box": "彩色方框点",
+        "return": "子任务3返航点",
     }
     SUBTASK3_UNUSED_MODEL_NODES = (
         "/yolo_arrow_pose_detector",
@@ -571,13 +596,10 @@ class Task3Final:
             "search_second_forward_distance",
             "search_third_forward_distance",
         )
-        self.arrow2_search_params = {
-            name: float(rospy.get_param(
-                "/task3_final/arrow2_{}".format(name),
-                self.task1_params.get(name),
-            ))
-            for name in arrow2_search_parameter_names
-        }
+        self.arrow2_search_params = self.load_search_path_params(
+            "arrow2",
+            arrow2_search_parameter_names,
+        )
         self.final_timeout_move_timeout = float(rospy.get_param(
             "/task3_final/final_timeout_move_timeout",
             120.0,
@@ -586,7 +608,7 @@ class Task3Final:
             "/task3_final/final_timeout_arrival_stable_seconds",
             2.0,
         ))
-        self.final_timeout_targets = self.load_final_timeout_targets()
+        self.fixed_points = self.load_fixed_points()
 
         if self.model_required_frames <= 0:
             raise ValueError("model_required_frames必须大于0")
@@ -794,7 +816,7 @@ class Task3Final:
                 "%s：%s 整合节点启动，参数来自统一config/task3.yaml："
                 "子任务1=%d项，子任务2=%d项，子任务3=%d项；"
                 "统一固定深度=%.3fm（map目标z=%.3f）；"
-                "航向模式=%d（%s），初始/ArUco/原点绝对航向=%.1f/%.1f/%.1fdeg"
+                "航向模式=%d（%s），初始/ArUco/返航绝对航向=%.1f/%.1f/%.1fdeg"
             ),
             NODE_NAME,
             KEY_LOG_MARKER,
@@ -836,8 +858,8 @@ class Task3Final:
             (
                 "%s：唯一子任务总超时（均从进入对应子任务开始计时）："
                 "箭头1=%.1fs后前往ArUco点；ArUco=%.1fs后按异常航向交接；"
-                "箭头2=%.1fs后前往方框点；方框=%.1fs后按原点绝对航向"
-                "返航并上浮；局部HOVER等待时限不触发阶段跳转"
+                "箭头2=%.1fs后前往方框点；方框=%.1fs后按返航绝对航向"
+                "前往预设返航点并上浮；局部HOVER等待时限不触发阶段跳转"
             ),
             NODE_NAME,
             self.arrow1_timeout_seconds,
@@ -845,40 +867,40 @@ class Task3Final:
             self.arrow2_timeout_seconds,
             self.box_timeout_seconds,
         )
-        for key, target in self.final_timeout_targets.items():
-            target_yaw = (
-                self.initial_yaw_deg
-                if key == "aruco"
-                else self.aruco_yaw_deg
-            )
+        fixed_point_yaws = {
+            "aruco": self.initial_yaw_deg,
+            "box": self.aruco_yaw_deg,
+            "return": self.return_origin_yaw_deg,
+        }
+        for key, target in self.fixed_points.items():
             rospy.logwarn(
                 (
-                    "%s：最终超时目标[%s] map/NED="
+                    "%s：固定位置点[%s] map/NED="
                     "(N=%.3f,E=%.3f,D=%.3f)，yaw=%.1fdeg"
                 ),
                 NODE_NAME,
-                self.FINAL_TIMEOUT_TARGET_LABELS[key],
+                self.FIXED_POINT_LABELS[key],
                 target["N"],
                 target["E"],
                 self.fixed_map_z,
-                target_yaw,
+                fixed_point_yaws[key],
             )
 
-    def load_final_timeout_targets(self):
-        """解析箭头最终超时后使用的下一阶段map绝对目标。"""
+    def load_fixed_points(self):
+        """解析任务3统一使用的三个map绝对位置点。"""
         raw_targets = rospy.get_param(
-            "/task3_final/final_timeout_targets",
+            "/task3_fixed_points",
             {},
         )
         if not isinstance(raw_targets, dict):
-            raise ValueError("final_timeout_targets必须是字典")
+            raise ValueError("task3_fixed_points必须是字典")
 
         targets = {}
-        for key in self.FINAL_TIMEOUT_TARGET_LABELS:
+        for key in self.FIXED_POINT_LABELS:
             raw_target = raw_targets.get(key)
             if not isinstance(raw_target, dict):
                 raise ValueError(
-                    "超时跳点目标{}尚未配置".format(key)
+                    "固定位置点{}尚未配置".format(key)
                 )
             fields = ("N", "E")
             try:
@@ -888,17 +910,39 @@ class Task3Final:
                 }
             except (KeyError, TypeError, ValueError):
                 raise ValueError(
-                    "超时跳点目标{}必须填写数字{}".format(
+                    "固定位置点{}必须填写数字{}".format(
                         key,
                         "、".join(fields),
                     )
                 )
             if not all(math.isfinite(value) for value in target.values()):
                 raise ValueError(
-                    "超时跳点目标{}包含非有限值".format(key)
+                    "固定位置点{}包含非有限值".format(key)
                 )
             targets[key] = target
         return targets
+
+    @staticmethod
+    def load_search_path_params(path_name, parameter_names):
+        """从统一搜索路径区读取一段移动几何参数。"""
+        raw_path = rospy.get_param(
+            "/task3_search_paths/{}".format(path_name),
+            {},
+        )
+        if not isinstance(raw_path, dict):
+            raise ValueError("搜索路径{}必须是字典".format(path_name))
+        try:
+            return {
+                name: float(raw_path[name])
+                for name in parameter_names
+            }
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(
+                "搜索路径{}必须填写数字{}".format(
+                    path_name,
+                    "、".join(parameter_names),
+                )
+            )
 
     def _make_embedded_task1(self):
         parent = self.task1_module.Task3AcquireAreaTest
@@ -1492,7 +1536,7 @@ class Task3Final:
 
     def make_final_timeout_goal(self, target_key):
         """把最终超时后的人工测量点转换为motion_supervisor绝对目标。"""
-        target = self.final_timeout_targets[target_key]
+        target = self.fixed_points[target_key]
         yaw = (
             self.initial_target_yaw
             if target_key == "aruco"
@@ -1583,7 +1627,8 @@ class Task3Final:
         return None
 
     def return_origin_and_ascend(self, context):
-        """方框最终超时收尾：对准原点绝对航向、返原点并安全上浮。"""
+        """方框阶段收尾：对准返航航向、前往预设点并安全上浮。"""
+        return_point = self.fixed_points["return"]
         current_goal = self.capture_current_map_goal(
             self.fixed_map_z,
             "{}生成返航目标".format(context),
@@ -1603,15 +1648,15 @@ class Task3Final:
                 )
             else:
                 current_goal = self.make_map_goal(
-                    0.0,
-                    0.0,
+                    return_point["N"],
+                    return_point["E"],
                     self.fixed_map_z,
                     self.return_origin_target_yaw,
                 )
                 rospy.logerr(
                     (
                         "%s：%s无法获得当前位姿和启动锁存点；"
-                        "不退出，直接发布map原点返航目标"
+                        "不退出，直接发布预设返航点目标"
                     ),
                     NODE_NAME,
                     context,
@@ -1627,8 +1672,8 @@ class Task3Final:
         )
         rospy.logwarn(
             (
-                "%s：%s开始原地对准返原点绝对航向："
-                "配置原点航向=%.1fdeg，"
+                "%s：%s开始原地对准返航绝对航向："
+                "配置返航航向=%.1fdeg，"
                 "保持位置=(%.3f,%.3f,%.3f)，当前航向=%.1fdeg -> 目标航向=%.1fdeg"
             ),
             NODE_NAME,
@@ -1644,7 +1689,7 @@ class Task3Final:
             turn_goal,
             self.post_drop_step_timeout,
             self.handoff_stable_seconds,
-            "{}原地对准返原点绝对航向{:.1f}度".format(
+            "{}原地对准返航绝对航向{:.1f}度".format(
                 context,
                 math.degrees(self.return_origin_target_yaw),
             ),
@@ -1652,23 +1697,27 @@ class Task3Final:
         yaw = turn_yaw
         if not turned:
             rospy.logwarn(
-                "%s：%s原地航向对准超时，返回原点时继续使用绝对航向%.1fdeg",
+                "%s：%s原地航向对准超时，前往预设返航点时继续使用绝对航向%.1fdeg",
                 NODE_NAME,
                 context,
                 math.degrees(yaw),
             )
 
-        origin_goal = self.make_map_goal(
-            0.0,
-            0.0,
+        return_goal = self.make_map_goal(
+            return_point["N"],
+            return_point["E"],
             self.fixed_map_z,
             yaw,
         )
         returned = self.wait_for_motion_goal(
-            origin_goal,
+            return_goal,
             self.post_drop_step_timeout,
             self.handoff_stable_seconds,
-            "{}返回map/NED原点".format(context),
+            "{}前往预设返航点(N={:.3f},E={:.3f})".format(
+                context,
+                return_point["N"],
+                return_point["E"],
+            ),
         )
         safe_ascent_goal = current_goal
         if not returned:
@@ -1680,7 +1729,7 @@ class Task3Final:
                 safe_ascent_goal = recovered_return_goal
 
         ascent_base_pose = (
-            origin_goal.pose if returned else safe_ascent_goal.pose
+            return_goal.pose if returned else safe_ascent_goal.pose
         )
         ascent_goal = self.make_map_goal(
             ascent_base_pose.position.x,
@@ -1718,16 +1767,21 @@ class Task3Final:
         if rospy.is_shutdown():
             return False, "ROS关闭，上浮保持被中止"
         turn_detail = (
-            "已原地对准返原点绝对航向%.1f度" % math.degrees(yaw)
+            "已原地对准返航绝对航向%.1f度" % math.degrees(yaw)
             if turned
-            else "原地航向对准超时，返原点时继续对准绝对航向%.1f度"
+            else "原地航向对准超时，返航时继续对准绝对航向%.1f度"
             % math.degrees(yaw)
         )
         return_detail = (
-            "已返回map原点并向z=%.2f上浮、持续%.1fs"
-            % (self.post_drop_ascent_target_z, ascent_seconds)
+            "已到达预设返航点(N=%.3f,E=%.3f)并向z=%.2f上浮、持续%.1fs"
+            % (
+                return_point["N"],
+                return_point["E"],
+                self.post_drop_ascent_target_z,
+                ascent_seconds,
+            )
             if returned
-            else "返回原点超时，已在安全锁存点向z=%.2f上浮、持续%.1fs"
+            else "前往预设返航点超时，已在安全锁存点向z=%.2f上浮、持续%.1fs"
             % (self.post_drop_ascent_target_z, ascent_seconds)
         )
         return (
@@ -1795,7 +1849,7 @@ class Task3Final:
         try:
             self.cancel_pub.publish(Empty())
         except Exception as error:
-            rospy.logexception(
+            log_exception_safely(
                 "%s：[%s] 发布motion cancel失败；不退出，继续固定点保护：%s",
                 NODE_NAME,
                 context,
@@ -1887,7 +1941,7 @@ class Task3Final:
                 timeout_seconds,
             )
         except Exception as error:
-            rospy.logexception(
+            log_exception_safely(
                 "%s：[%s] 异常后发布motion cancel失败；仍等待子任务总超时：%s",
                 NODE_NAME,
                 label,
@@ -1941,7 +1995,7 @@ class Task3Final:
         try:
             reached = self.move_to_final_timeout_target(target_key, context)
         except Exception as error:
-            rospy.logexception(
+            log_exception_safely(
                 "%s：[%s] 固定点保护发生异常，继续后续保护：%s",
                 NODE_NAME,
                 context,
@@ -1983,7 +2037,7 @@ class Task3Final:
                 context,
             )
         except Exception as error:
-            rospy.logexception(
+            log_exception_safely(
                 "%s：[%s] 阶段航向保护发生异常，继续后续任务：%s",
                 NODE_NAME,
                 context,
@@ -1994,7 +2048,7 @@ class Task3Final:
     def move_to_final_timeout_target(self, target_key, context):
         """阶段达到唯一最终超时后，移动到下一阶段人工测量点。"""
         goal = self.make_final_timeout_goal(target_key)
-        target_label = self.FINAL_TIMEOUT_TARGET_LABELS[target_key]
+        target_label = self.FIXED_POINT_LABELS[target_key]
         rospy.logwarn(
             (
                 "%s：[%s] 移动到%s：map=(%.3f,%.3f,%.3f)，"
@@ -2149,7 +2203,7 @@ class Task3Final:
             if success:
                 final_yaw = task.final_target_yaw
         except Exception as error:
-            rospy.logexception("%s：%s发生未处理异常", NODE_NAME, label)
+            log_exception_safely("%s：%s发生未处理异常", NODE_NAME, label)
             success = False
             detail = str(error)
         finally:
@@ -2249,7 +2303,7 @@ class Task3Final:
             if color is None and success and marker_id is not None:
                 color = task.color_for_marker(marker_id)
         except Exception as error:
-            rospy.logexception("%s：%s发生未处理异常", NODE_NAME, label)
+            log_exception_safely("%s：%s发生未处理异常", NODE_NAME, label)
             success = False
             detail = str(error)
             color = None
@@ -2303,7 +2357,7 @@ class Task3Final:
             "目标颜色={}，识别和运动反馈满足当前状态门槛".format(
                 target_color
             ),
-            "夹爪TF对准精确认中心、灯光夹爪动作、返回N/E原点并持续上浮",
+            "夹爪TF对准精确认中心、灯光夹爪动作、前往预设返航点并持续上浮",
         )
 
         self.task3_params["target_color"] = str(target_color)
@@ -2349,7 +2403,7 @@ class Task3Final:
                 detail = task.embedded_detail
             timed_out = bool(task.embedded_timed_out)
         except Exception as error:
-            rospy.logexception("%s：%s发生未处理异常", NODE_NAME, label)
+            log_exception_safely("%s：%s发生未处理异常", NODE_NAME, label)
             success = False
             detail = str(error)
         finally:
@@ -2474,15 +2528,15 @@ class Task3Final:
         return False
 
     def finish_with_return_protection(self, context, detail):
-        """任何方框阶段失败或未处理异常都收口到返原点上浮。"""
+        """任何方框阶段失败或未处理异常都收口到预设返航点上浮。"""
         try:
             unused_returned, return_detail = self.return_origin_and_ascend(
                 context
             )
             del unused_returned
         except Exception as error:
-            rospy.logexception(
-                "%s：%s标准返航保护异常，改为直接发布原点上浮目标：%s",
+            log_exception_safely(
+                "%s：%s标准返航保护异常，改为直接发布预设返航点上浮目标：%s",
                 NODE_NAME,
                 context,
                 str(error),
@@ -2490,9 +2544,10 @@ class Task3Final:
             ascent_seconds = float(
                 self.task3_params.get("post_drop_ascent_seconds", 5.0)
             )
+            return_point = self.fixed_points["return"]
             emergency_goal = self.make_map_goal(
-                0.0,
-                0.0,
+                return_point["N"],
+                return_point["E"],
                 self.post_drop_ascent_target_z,
                 self.return_origin_target_yaw,
             )
@@ -2505,7 +2560,7 @@ class Task3Final:
                 self.goal_pub.publish(emergency_goal)
                 self.rate.sleep()
             return_detail = (
-                "标准返航保护异常，已直接发布map原点、原点航向和上浮目标"
+                "标准返航保护异常，已直接发布预设返航点、返航航向和上浮目标"
             )
 
         if rospy.is_shutdown():
@@ -2800,7 +2855,7 @@ class Task3Final:
         rospy.logwarn(
             (
                 "%s：彩色方框%s：%s；投放动作已开始=%s；"
-                "不退出，先保持悬停，再按原点绝对航向%.1f度返航上浮"
+                "不退出，先保持悬停，再按返航绝对航向%.1f度前往预设点上浮"
             ),
             NODE_NAME,
             "达到最终超时" if timed_out else "运行期异常按超时收尾",
@@ -2829,7 +2884,7 @@ class Task3Final:
         except rospy.ROSInterruptException:
             raise
         except Exception as error:
-            rospy.logexception(
+            log_exception_safely(
                 "%s：整合任务出现未处理运行期异常，不退出并启动总保护：%s",
                 NODE_NAME,
                 str(error),
