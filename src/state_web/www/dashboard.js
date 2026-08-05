@@ -27,6 +27,7 @@
     增加执行器实际反馈图形、6S4P 电池摘要和鱼眼裁切/全图放大交互。
     航向仪表增加粉色目标指针，详细状态只保留执行器反馈。
     执行器改为浅色指令与深色反馈叠图，并显示接收年龄、接收差和同步状态。
+    执行器改为浅色指令与深色反馈叠图，并显示接收年龄、接收差和同步状态。
 */
 
 const MAP_UP_HEADING_KEY = "state_web.map_up_heading_deg";
@@ -846,104 +847,10 @@ function setPushrodLane(prefix, commandValue, speedValue, online) {
         "width",
         clampedSpeed === null ? "0" : (124 * clampedSpeed / 255).toFixed(1),
     );
-    return {
-        text: pushrodDescription(command),
-        speed: clampedSpeed,
-    };
-}
-
-
-function actuatorValuesMatch(command, feedback) {
-    const exactFields = ["drive_cmd", "red_light", "yellow_light", "green_light"];
-    const closeFields = ["clamp_servo", "drive_speed"];
-    return exactFields.every((field) => (
-        finiteNumber(command[field]) !== null
-        && finiteNumber(command[field]) === finiteNumber(feedback[field])
-    )) && closeFields.every((field) => {
-        const expected = finiteNumber(command[field]);
-        const actual = finiteNumber(feedback[field]);
-        return expected !== null && actual !== null && Math.abs(expected - actual) <= 2;
-    });
-}
-
-
-function renderActuatorStatus(data) {
-    const feedback = data.actuator_feedback?.data || {};
-    const commandOnline = Boolean(command.actuator_online);
-    const feedbackOnline = Boolean(
-        data.actuator_feedback?.online && data.actuator_feedback?.data,
-    );
-    const synchronized = commandOnline && feedbackOnline
-        ? actuatorValuesMatch(command, feedback)
-        : false;
-    const commandReceivedAt = finiteNumber(command.actuator_received_at);
-    const feedbackReceivedAt = finiteNumber(data.actuator_feedback?.received_at);
-    const receiveGap = commandReceivedAt === null || feedbackReceivedAt === null
-        ? null
-        : Math.abs(feedbackReceivedAt - commandReceivedAt);
-    const acknowledgedGap = finiteNumber(command.actuator_ack_delay_sec);
-    const displayedGap = synchronized && acknowledgedGap !== null
-        ? acknowledgedGap
-        : receiveGap;
-
-    const feedbackState = document.getElementById("actuator-feedback-state");
-    let stateText = "无数据";
-    let stateClass = "offline";
-    if (commandOnline && feedbackOnline) {
-        stateText = `${synchronized ? "已同步" : "等待执行"} · 接收差 ${ageText(displayedGap)}`;
-        stateClass = synchronized ? "online" : "warning";
-    } else if (commandOnline) {
-        stateText = "等待反馈";
-        stateClass = "warning";
-    } else if (feedbackOnline) {
-        stateText = "仅反馈在线";
-        stateClass = "warning";
-    }
-    feedbackState.textContent = stateText;
-    feedbackState.className = `compact-state ${stateClass}`;
-    feedbackState.title = "接收差为 Web 收到两类消息的时间差，不等同于硬件执行延迟";
-
-    ["red", "yellow", "green"].forEach((color) => {
-        const element = document.getElementById(`actuator-led-${color}`);
-        const commandValue = finiteNumber(command[`${color}_light`]);
-        const feedbackValue = finiteNumber(feedback[`${color}_light`]);
-        element.classList.toggle(
-            "command-on", commandOnline && commandValue === 1,
-        );
-        element.classList.toggle(
-            "feedback-on", feedbackOnline && feedbackValue === 1,
-        );
-        element.classList.toggle(
-            "is-unknown", !commandOnline && !feedbackOnline,
-        );
-        element.title = `指令 ${integerText(commandValue)} / 反馈 ${integerText(feedbackValue)}`;
-    });
-
-    const commandClamp = setGripperGeometry(
-        "command", command.clamp_servo, commandOnline,
-    );
-    const feedbackClamp = setGripperGeometry(
-        "feedback", feedback.clamp_servo, feedbackOnline,
-    );
-    document.getElementById("gripper-state-text").textContent = (
-        `令 ${gripperDescription(commandClamp)} · 馈 ${gripperDescription(feedbackClamp)}`
-    );
-    document.getElementById("gripper-value").textContent = (
-        `令 ${integerText(commandClamp)} / 馈 ${integerText(feedbackClamp)}`
-    );
-
-    const commandDrive = setPushrodLane(
-        "command", command.drive_cmd, command.drive_speed, commandOnline,
-    );
-    const feedbackDrive = setPushrodLane(
-        "feedback", feedback.drive_cmd, feedback.drive_speed, feedbackOnline,
-    );
-    document.getElementById("pushrod-state-text").textContent = (
-        `令 ${commandDrive.text} · 馈 ${feedbackDrive.text}`
-    );
-    document.getElementById("pushrod-value").textContent = (
-        `速度 令 ${integerText(commandDrive.speed)} / 馈 ${integerText(feedbackDrive.speed)}`
-    );
+    document.getElementById("pushrod-state-text").textContent = driveText;
+    document.getElementById("pushrod-value").textContent = clampedSpeed === null
+        ? "速度 --"
+        : `速度 ${Math.round(clampedSpeed)} / 255`;
 
     setRows("actuator-status", [
         {
