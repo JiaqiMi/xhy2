@@ -23,6 +23,7 @@
 2026.8.5
     增加鱼眼中心正方形裁切、执行器反馈图形、电源数字卡和电池电量条。
     增加相机全屏放大、目标航向指针图例及详细状态降级布局。
+    执行器增加浅色指令、深色反馈叠图和向上开合的夹爪样式。
 */
 
 :root {
@@ -1229,6 +1230,9 @@ body.camera-image-expanded {
 }
 
 .status-led {
+    --command-color: #d7e2ec;
+    --feedback-color: #526578;
+    position: relative;
     width: clamp(18px, 1.35vw, 25px);
     height: clamp(18px, 1.35vw, 25px);
     border: 2px solid #405165;
@@ -1238,22 +1242,48 @@ body.camera-image-expanded {
     transition: 150ms ease;
 }
 
-.status-led.is-on.red {
-    border-color: #ff93a0;
-    background: #ff4054;
-    box-shadow: 0 0 15px rgba(255, 64, 84, 0.82);
+.status-led.red {
+    --command-color: #ffadb8;
+    --feedback-color: #b91f36;
 }
 
-.status-led.is-on.yellow {
-    border-color: #fff1a0;
-    background: #ffd642;
-    box-shadow: 0 0 15px rgba(255, 214, 66, 0.82);
+.status-led.yellow {
+    --command-color: #ffefa0;
+    --feedback-color: #ad7900;
 }
 
-.status-led.is-on.green {
-    border-color: #9df4ce;
-    background: #38d996;
-    box-shadow: 0 0 15px rgba(56, 217, 150, 0.82);
+.status-led.green {
+    --command-color: #a9f4d2;
+    --feedback-color: #117d59;
+}
+
+.status-led::before,
+.status-led::after {
+    position: absolute;
+    border-radius: 50%;
+    content: "";
+    transition: 150ms ease;
+}
+
+.status-led::before {
+    inset: -3px;
+    border: 3px solid transparent;
+}
+
+.status-led::after {
+    inset: 23%;
+    background: transparent;
+}
+
+.status-led.command-on::before {
+    border-color: var(--command-color);
+    background: transparent;
+    box-shadow: 0 0 10px var(--command-color);
+}
+
+.status-led.feedback-on::after {
+    background: var(--feedback-color);
+    box-shadow: 0 0 8px var(--feedback-color);
 }
 
 .status-led.is-unknown {
@@ -1274,7 +1304,7 @@ body.camera-image-expanded {
 .pushrod-rod,
 .pushrod-motion {
     fill: none;
-    stroke: #4ee2b1;
+    stroke: #168c68;
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-width: 5;
@@ -1288,9 +1318,34 @@ body.camera-image-expanded {
     stroke-width: 7;
 }
 
+.machine-line.command {
+    stroke: #a9f4d2;
+    stroke-dasharray: 7 4;
+    stroke-width: 8;
+    opacity: 0.8;
+}
+
+.machine-line.feedback {
+    stroke: #0b7656;
+    stroke-width: 4;
+}
+
+.machine-line.command.jaw {
+    stroke-width: 10;
+}
+
+.machine-line.feedback.jaw {
+    stroke-width: 5;
+}
+
+.actuator-command-shape.is-unknown,
+.actuator-feedback-shape.is-unknown {
+    opacity: 0.18;
+}
+
 .machine-joint {
     fill: #173b3a;
-    stroke: #4ee2b1;
+    stroke: #168c68;
     stroke-width: 3;
 }
 
@@ -1305,26 +1360,44 @@ body.camera-image-expanded {
     stroke-width: 7;
 }
 
-.pushrod-motion {
-    marker-end: url(#pushrod-arrow-head);
-    stroke: #43c7ff;
+.pushrod-motion.command {
+    marker-end: url(#pushrod-command-arrow-head);
+    stroke: #a9e7ff;
     stroke-width: 4;
 }
 
-#pushrod-arrow-head path {
-    fill: #43c7ff;
+.pushrod-motion.feedback {
+    marker-end: url(#pushrod-feedback-arrow-head);
+    stroke: #087aa7;
+    stroke-width: 4;
 }
 
-.pushrod-stop {
-    fill: #ffbe45;
+#pushrod-command-arrow-head path {
+    fill: #a9e7ff;
+}
+
+#pushrod-feedback-arrow-head path {
+    fill: #087aa7;
+}
+
+.pushrod-stop.command {
+    fill: #ffe0a0;
+}
+
+.pushrod-stop.feedback {
+    fill: #aa6d00;
 }
 
 .pushrod-speed-track {
     fill: #263c4f;
 }
 
-.pushrod-speed-bar {
-    fill: #43c7ff;
+.pushrod-speed-bar.command {
+    fill: #a9e7ff;
+}
+
+.pushrod-speed-bar.feedback {
+    fill: #087aa7;
 }
 
 .actuator-state-text {

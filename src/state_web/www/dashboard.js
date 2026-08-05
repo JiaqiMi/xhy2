@@ -26,6 +26,7 @@
 2026.8.5
     增加执行器实际反馈图形、6S4P 电池摘要和鱼眼裁切/全图放大交互。
     航向仪表增加粉色目标指针，详细状态只保留执行器反馈。
+    执行器改为浅色指令与深色反馈叠图，并显示接收年龄、接收差和同步状态。
 */
 
 const MAP_UP_HEADING_KEY = "state_web.map_up_heading_deg";
@@ -774,69 +775,65 @@ function renderMotionState(data) {
 }
 
 
-function renderActuatorStatus(data) {
-    const feedback = data.actuator_feedback?.data || {};
-    const online = Boolean(data.actuator_feedback?.online && data.actuator_feedback?.data);
-    const feedbackState = document.getElementById("actuator-feedback-state");
-    feedbackState.textContent = online
-        ? `在线 · ${ageText(data.actuator_feedback?.age_sec)}`
-        : "反馈离线";
-    feedbackState.className = `compact-state ${online ? "online" : "offline"}`;
+function gripperDescription(value) {
+    const number = finiteNumber(value);
+    if (number === null) return "未知";
+    const clamped = Math.max(0, Math.min(255, number));
+    if (clamped <= 0) return "全开";
+    if (clamped >= 255) return "全闭";
+    return `开度 ${Math.round((255 - clamped) * 100 / 255)}%`;
+}
 
-    ["red", "yellow", "green"].forEach((color) => {
-        const element = document.getElementById(`actuator-led-${color}`);
-        const value = finiteNumber(feedback[`${color}_light`]);
-        element.classList.toggle("is-on", online && value === 1);
-        element.classList.toggle("is-unknown", !online || value === null);
-    });
 
-    const clampValue = online ? finiteNumber(feedback.clamp_servo) : null;
-    const clampedClamp = clampValue === null
-        ? null
-        : Math.max(0, Math.min(255, clampValue));
-    const openRatio = clampedClamp === null ? 0.5 : (255 - clampedClamp) / 255;
-    const jawGap = 8 + openRatio * 52;
+function setGripperGeometry(prefix, value, online) {
+    const number = online ? finiteNumber(value) : null;
+    const clamped = number === null ? 127.5 : Math.max(0, Math.min(255, number));
+    const jawGap = 8 + (255 - clamped) * 52 / 255;
     const leftJawX = 80 - jawGap / 2;
     const rightJawX = 80 + jawGap / 2;
-    ["gripper-left-arm", "gripper-left-finger"].forEach((id) => {
-        document.getElementById(id).setAttribute("x2", leftJawX.toFixed(1));
+    ["left-arm", "left-finger"].forEach((suffix) => {
+        document.getElementById(`gripper-${prefix}-${suffix}`).setAttribute(
+            "x2", leftJawX.toFixed(1),
+        );
     });
-    ["gripper-right-arm", "gripper-right-finger"].forEach((id) => {
-        document.getElementById(id).setAttribute("x2", rightJawX.toFixed(1));
+    ["right-arm", "right-finger"].forEach((suffix) => {
+        document.getElementById(`gripper-${prefix}-${suffix}`).setAttribute(
+            "x2", rightJawX.toFixed(1),
+        );
     });
-    document.getElementById("gripper-left-finger").setAttribute(
+    document.getElementById(`gripper-${prefix}-left-finger`).setAttribute(
         "x1", leftJawX.toFixed(1),
     );
-    document.getElementById("gripper-right-finger").setAttribute(
+    document.getElementById(`gripper-${prefix}-right-finger`).setAttribute(
         "x1", rightJawX.toFixed(1),
     );
-    const gripperState = clampedClamp === null
-        ? "未知"
-        : (clampedClamp <= 0
-            ? "全开"
-            : (clampedClamp >= 255
-                ? "全闭"
-                : `开度 ${Math.round(openRatio * 100)}%`));
-    document.getElementById("gripper-state-text").textContent = gripperState;
-    document.getElementById("gripper-value").textContent = clampedClamp === null
-        ? "反馈 --"
-        : `反馈 ${Math.round(clampedClamp)} / 255`;
+    document.querySelector(`.actuator-${prefix}-shape`).classList.toggle(
+        "is-unknown", !online,
+    );
+    return number === null ? null : clamped;
+}
 
-    const driveCommand = online ? finiteNumber(feedback.drive_cmd) : null;
-    const driveSpeed = online ? finiteNumber(feedback.drive_speed) : null;
-    const clampedSpeed = driveSpeed === null
-        ? null
-        : Math.max(0, Math.min(255, driveSpeed));
-    const motionLine = document.getElementById("pushrod-motion-line");
-    const stopMarker = document.getElementById("pushrod-stop-marker");
-    let driveText = "未知";
-    if (driveCommand === 0) {
-        driveText = "停止";
+
+function pushrodDescription(value) {
+    const command = finiteNumber(value);
+    if (command === 0) return "停止";
+    if (command === 1) return "前进";
+    if (command === 2) return "反转";
+    return "未知";
+}
+
+
+function setPushrodLane(prefix, commandValue, speedValue, online) {
+    const command = online ? finiteNumber(commandValue) : null;
+    const speed = online ? finiteNumber(speedValue) : null;
+    const clampedSpeed = speed === null ? null : Math.max(0, Math.min(255, speed));
+    const motionLine = document.getElementById(`pushrod-${prefix}-motion-line`);
+    const stopMarker = document.getElementById(`pushrod-${prefix}-stop-marker`);
+    if (command === 0) {
         motionLine.style.display = "none";
         stopMarker.style.display = "block";
-    } else if (driveCommand === 1 || driveCommand === 2) {
-        const forward = driveCommand === 1;
-        driveText = forward ? "前进" : "反转";
+    } else if (command === 1 || command === 2) {
+        const forward = command === 1;
         motionLine.setAttribute("x1", forward ? "51" : "125");
         motionLine.setAttribute("x2", forward ? "125" : "51");
         motionLine.style.display = "block";
@@ -845,29 +842,130 @@ function renderActuatorStatus(data) {
         motionLine.style.display = "none";
         stopMarker.style.display = "none";
     }
-    document.getElementById("pushrod-speed-bar").setAttribute(
+    document.getElementById(`pushrod-${prefix}-speed-bar`).setAttribute(
         "width",
         clampedSpeed === null ? "0" : (124 * clampedSpeed / 255).toFixed(1),
     );
-    document.getElementById("pushrod-state-text").textContent = driveText;
-    document.getElementById("pushrod-value").textContent = clampedSpeed === null
-        ? "速度 --"
-        : `速度 ${Math.round(clampedSpeed)} / 255`;
+    return {
+        text: pushrodDescription(command),
+        speed: clampedSpeed,
+    };
+}
+
+
+function actuatorValuesMatch(command, feedback) {
+    const exactFields = ["drive_cmd", "red_light", "yellow_light", "green_light"];
+    const closeFields = ["clamp_servo", "drive_speed"];
+    return exactFields.every((field) => (
+        finiteNumber(command[field]) !== null
+        && finiteNumber(command[field]) === finiteNumber(feedback[field])
+    )) && closeFields.every((field) => {
+        const expected = finiteNumber(command[field]);
+        const actual = finiteNumber(feedback[field]);
+        return expected !== null && actual !== null && Math.abs(expected - actual) <= 2;
+    });
+}
+
+
+function renderActuatorStatus(data) {
+    const command = data.actuator_command?.data || {};
+    const feedback = data.actuator_feedback?.data || {};
+    const commandOnline = Boolean(command.actuator_online);
+    const feedbackOnline = Boolean(
+        data.actuator_feedback?.online && data.actuator_feedback?.data,
+    );
+    const synchronized = commandOnline && feedbackOnline
+        ? actuatorValuesMatch(command, feedback)
+        : false;
+    const commandReceivedAt = finiteNumber(command.actuator_received_at);
+    const feedbackReceivedAt = finiteNumber(data.actuator_feedback?.received_at);
+    const receiveGap = commandReceivedAt === null || feedbackReceivedAt === null
+        ? null
+        : Math.abs(feedbackReceivedAt - commandReceivedAt);
+    const acknowledgedGap = finiteNumber(command.actuator_ack_delay_sec);
+    const displayedGap = synchronized && acknowledgedGap !== null
+        ? acknowledgedGap
+        : receiveGap;
+
+    const feedbackState = document.getElementById("actuator-feedback-state");
+    let stateText = "无数据";
+    let stateClass = "offline";
+    if (commandOnline && feedbackOnline) {
+        stateText = `${synchronized ? "已同步" : "等待执行"} · 接收差 ${ageText(displayedGap)}`;
+        stateClass = synchronized ? "online" : "warning";
+    } else if (commandOnline) {
+        stateText = "等待反馈";
+        stateClass = "warning";
+    } else if (feedbackOnline) {
+        stateText = "仅反馈在线";
+        stateClass = "warning";
+    }
+    feedbackState.textContent = stateText;
+    feedbackState.className = `compact-state ${stateClass}`;
+    feedbackState.title = "接收差为 Web 收到两类消息的时间差，不等同于硬件执行延迟";
+
+    ["red", "yellow", "green"].forEach((color) => {
+        const element = document.getElementById(`actuator-led-${color}`);
+        const commandValue = finiteNumber(command[`${color}_light`]);
+        const feedbackValue = finiteNumber(feedback[`${color}_light`]);
+        element.classList.toggle(
+            "command-on", commandOnline && commandValue === 1,
+        );
+        element.classList.toggle(
+            "feedback-on", feedbackOnline && feedbackValue === 1,
+        );
+        element.classList.toggle(
+            "is-unknown", !commandOnline && !feedbackOnline,
+        );
+        element.title = `指令 ${integerText(commandValue)} / 反馈 ${integerText(feedbackValue)}`;
+    });
+
+    const commandClamp = setGripperGeometry(
+        "command", command.clamp_servo, commandOnline,
+    );
+    const feedbackClamp = setGripperGeometry(
+        "feedback", feedback.clamp_servo, feedbackOnline,
+    );
+    document.getElementById("gripper-state-text").textContent = (
+        `令 ${gripperDescription(commandClamp)} · 馈 ${gripperDescription(feedbackClamp)}`
+    );
+    document.getElementById("gripper-value").textContent = (
+        `令 ${integerText(commandClamp)} / 馈 ${integerText(feedbackClamp)}`
+    );
+
+    const commandDrive = setPushrodLane(
+        "command", command.drive_cmd, command.drive_speed, commandOnline,
+    );
+    const feedbackDrive = setPushrodLane(
+        "feedback", feedback.drive_cmd, feedback.drive_speed, feedbackOnline,
+    );
+    document.getElementById("pushrod-state-text").textContent = (
+        `令 ${commandDrive.text} · 馈 ${feedbackDrive.text}`
+    );
+    document.getElementById("pushrod-value").textContent = (
+        `速度 令 ${integerText(commandDrive.speed)} / 馈 ${integerText(feedbackDrive.speed)}`
+    );
 
     setRows("actuator-status", [
         {
-            label: "反馈状态",
-            value: snapshotText(data.actuator_feedback),
-            className: snapshotClass(data.actuator_feedback),
+            label: "执行同步",
+            value: stateText,
+            className: synchronized ? "good" : (commandOnline || feedbackOnline ? "warning" : "bad"),
+            title: "接收差为 Web 收到两类消息的时间差，不等同于硬件执行延迟",
         },
+        { label: "指令年龄", value: ageText(command.actuator_age_sec) },
+        { label: "反馈年龄", value: ageText(data.actuator_feedback?.age_sec) },
+        { label: "当前接收差", value: ageText(receiveGap) },
+        { label: "首次匹配接收差", value: ageText(acknowledgedGap) },
+        { label: "最后指令模式", value: command.last_mode_name || "--" },
         { label: "反馈模式", value: feedback.mode_name || "--" },
-        { label: "补光灯1", value: integerText(feedback.light1) },
-        { label: "补光灯2", value: integerText(feedback.light2) },
-        { label: "航向舵机", value: integerText(feedback.heading_servo) },
-        { label: "夹爪", value: `${gripperState} · ${integerText(feedback.clamp_servo)}` },
-        { label: "推杆动作", value: driveText },
-        { label: "推杆速度", value: integerText(feedback.drive_speed) },
-        { label: "红 / 黄 / 绿灯", value: `${integerText(feedback.red_light)} / ${integerText(feedback.yellow_light)} / ${integerText(feedback.green_light)}` },
+        { label: "补光灯1 指/馈", value: `${integerText(command.light1)} / ${integerText(feedback.light1)}` },
+        { label: "补光灯2 指/馈", value: `${integerText(command.light2)} / ${integerText(feedback.light2)}` },
+        { label: "航向舵机 指/馈", value: `${integerText(command.heading_servo)} / ${integerText(feedback.heading_servo)}` },
+        { label: "夹爪 指/馈", value: `${integerText(commandClamp)} / ${integerText(feedbackClamp)}` },
+        { label: "推杆动作 指/馈", value: `${commandDrive.text} / ${feedbackDrive.text}` },
+        { label: "推杆速度 指/馈", value: `${integerText(commandDrive.speed)} / ${integerText(feedbackDrive.speed)}` },
+        { label: "红黄绿 指/馈", value: `${integerText(command.red_light)}${integerText(command.yellow_light)}${integerText(command.green_light)} / ${integerText(feedback.red_light)}${integerText(feedback.yellow_light)}${integerText(feedback.green_light)}` },
     ]);
 }
 

@@ -28,6 +28,7 @@
 2026.8.5
     将右上区域改为中心裁切鱼眼、执行器反馈图形和 6S4P 电源摘要。
     降低导航与控制诊断优先级，并在航向仪表增加目标航向。
+    执行器改为浅色指令与深色反馈叠加显示，夹爪调整为向上开合。
 -->
 <html lang="zh-CN">
 
@@ -42,7 +43,7 @@
             : "/assets";
         const dashboardStylesheet = document.createElement("link");
         dashboardStylesheet.rel = "stylesheet";
-        dashboardStylesheet.href = `${dashboardAssetRoot}/dashboard.css?v=20260805-actuator1`;
+        dashboardStylesheet.href = `${dashboardAssetRoot}/dashboard.css?v=20260805-actuator2`;
         document.head.appendChild(dashboardStylesheet);
     </script>
 </head>
@@ -137,16 +138,16 @@
                         <section class="actuator-visual-card">
                             <div class="status-card-heading">
                                 <div>
-                                    <strong>执行器实际反馈</strong>
-                                    <span class="status-card-subtitle">只显示硬件状态</span>
+                                    <strong>执行器指令与反馈</strong>
+                                    <span class="status-card-subtitle">浅色指令 · 深色反馈 · 时间为 Web 接收时间</span>
                                 </div>
-                                <span id="actuator-feedback-state" class="compact-state offline">无反馈</span>
+                                <span id="actuator-feedback-state" class="compact-state offline">无数据</span>
                             </div>
 
                             <div class="actuator-visual-grid">
                                 <div class="actuator-graphic indicator-graphic">
                                     <span class="actuator-graphic-title">指示灯</span>
-                                    <div class="indicator-lights" aria-label="红黄绿指示灯实际状态">
+                                    <div class="indicator-lights" aria-label="红黄绿指示灯指令与反馈状态">
                                         <div class="indicator-item">
                                             <span id="actuator-led-red" class="status-led red"></span>
                                             <span>红</span>
@@ -164,14 +165,22 @@
 
                                 <div class="actuator-graphic gripper-graphic">
                                     <span class="actuator-graphic-title">夹爪</span>
-                                    <svg class="actuator-svg" viewBox="0 0 160 96" aria-label="夹爪开合状态">
-                                        <line class="machine-line muted" x1="80" y1="10" x2="80" y2="31"></line>
-                                        <circle class="machine-joint" cx="35" cy="31" r="5"></circle>
-                                        <circle class="machine-joint" cx="125" cy="31" r="5"></circle>
-                                        <line id="gripper-left-arm" class="machine-line" x1="35" y1="31" x2="54" y2="69"></line>
-                                        <line id="gripper-right-arm" class="machine-line" x1="125" y1="31" x2="106" y2="69"></line>
-                                        <line id="gripper-left-finger" class="machine-line jaw" x1="54" y1="69" x2="54" y2="86"></line>
-                                        <line id="gripper-right-finger" class="machine-line jaw" x1="106" y1="69" x2="106" y2="86"></line>
+                                    <svg class="actuator-svg" viewBox="0 0 160 96" aria-label="夹爪指令与反馈开合状态">
+                                        <line class="machine-line muted" x1="80" y1="88" x2="80" y2="66"></line>
+                                        <circle class="machine-joint" cx="35" cy="66" r="5"></circle>
+                                        <circle class="machine-joint" cx="125" cy="66" r="5"></circle>
+                                        <g class="actuator-command-shape">
+                                            <line id="gripper-command-left-arm" class="machine-line command" x1="35" y1="66" x2="54" y2="35"></line>
+                                            <line id="gripper-command-right-arm" class="machine-line command" x1="125" y1="66" x2="106" y2="35"></line>
+                                            <line id="gripper-command-left-finger" class="machine-line command jaw" x1="54" y1="35" x2="54" y2="12"></line>
+                                            <line id="gripper-command-right-finger" class="machine-line command jaw" x1="106" y1="35" x2="106" y2="12"></line>
+                                        </g>
+                                        <g class="actuator-feedback-shape">
+                                            <line id="gripper-feedback-left-arm" class="machine-line feedback" x1="35" y1="66" x2="54" y2="35"></line>
+                                            <line id="gripper-feedback-right-arm" class="machine-line feedback" x1="125" y1="66" x2="106" y2="35"></line>
+                                            <line id="gripper-feedback-left-finger" class="machine-line feedback jaw" x1="54" y1="35" x2="54" y2="12"></line>
+                                            <line id="gripper-feedback-right-finger" class="machine-line feedback jaw" x1="106" y1="35" x2="106" y2="12"></line>
+                                        </g>
                                     </svg>
                                     <span id="gripper-state-text" class="actuator-state-text">未知</span>
                                     <span id="gripper-value" class="actuator-raw-value">--</span>
@@ -179,18 +188,25 @@
 
                                 <div class="actuator-graphic pushrod-graphic">
                                     <span class="actuator-graphic-title">推杆</span>
-                                    <svg class="actuator-svg" viewBox="0 0 160 96" aria-label="推杆方向和速度">
+                                    <svg class="actuator-svg" viewBox="0 0 160 104" aria-label="推杆指令与反馈方向和速度">
                                         <defs>
-                                            <marker id="pushrod-arrow-head" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                                            <marker id="pushrod-command-arrow-head" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                                                <path d="M0,0 L8,4 L0,8 Z"></path>
+                                            </marker>
+                                            <marker id="pushrod-feedback-arrow-head" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
                                                 <path d="M0,0 L8,4 L0,8 Z"></path>
                                             </marker>
                                         </defs>
-                                        <rect class="pushrod-body" x="18" y="29" width="87" height="28" rx="5"></rect>
-                                        <line class="pushrod-rod" x1="105" y1="43" x2="143" y2="43"></line>
-                                        <line id="pushrod-motion-line" class="pushrod-motion" x1="51" y1="75" x2="125" y2="75"></line>
-                                        <rect id="pushrod-stop-marker" class="pushrod-stop" x="75" y="68" width="14" height="14" rx="2"></rect>
-                                        <rect class="pushrod-speed-track" x="18" y="88" width="124" height="5" rx="2"></rect>
-                                        <rect id="pushrod-speed-bar" class="pushrod-speed-bar" x="18" y="88" width="0" height="5" rx="2"></rect>
+                                        <rect class="pushrod-body" x="18" y="22" width="87" height="25" rx="5"></rect>
+                                        <line class="pushrod-rod" x1="105" y1="34.5" x2="143" y2="34.5"></line>
+                                        <line id="pushrod-command-motion-line" class="pushrod-motion command" x1="51" y1="63" x2="125" y2="63"></line>
+                                        <rect id="pushrod-command-stop-marker" class="pushrod-stop command" x="76" y="57" width="12" height="12" rx="2"></rect>
+                                        <line id="pushrod-feedback-motion-line" class="pushrod-motion feedback" x1="51" y1="79" x2="125" y2="79"></line>
+                                        <rect id="pushrod-feedback-stop-marker" class="pushrod-stop feedback" x="76" y="73" width="12" height="12" rx="2"></rect>
+                                        <rect class="pushrod-speed-track" x="18" y="91" width="124" height="4" rx="2"></rect>
+                                        <rect id="pushrod-command-speed-bar" class="pushrod-speed-bar command" x="18" y="91" width="0" height="4" rx="2"></rect>
+                                        <rect class="pushrod-speed-track" x="18" y="98" width="124" height="4" rx="2"></rect>
+                                        <rect id="pushrod-feedback-speed-bar" class="pushrod-speed-bar feedback" x="18" y="98" width="0" height="4" rx="2"></rect>
                                     </svg>
                                     <span id="pushrod-state-text" class="actuator-state-text">未知</span>
                                     <span id="pushrod-value" class="actuator-raw-value">--</span>
@@ -414,7 +430,7 @@
 
     <script>
         const dashboardScript = document.createElement("script");
-        dashboardScript.src = `${dashboardAssetRoot}/dashboard.js?v=20260805-actuator1`;
+        dashboardScript.src = `${dashboardAssetRoot}/dashboard.js?v=20260805-actuator2`;
         dashboardScript.async = false;
         document.body.appendChild(dashboardScript);
     </script>
