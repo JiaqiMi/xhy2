@@ -15,6 +15,8 @@
         增加目标位置与航向变化阈值，过滤 5Hz 重复目标。
         将 base_link 轨迹上限调整为 1Hz 下的 1000 个点。
         箭头终点 TF 改为 camera_center，显示标签保持 camera。
+    2026.8.5
+        增加 6S4P、单节 4Ah、整包 16Ah 和动力电压平滑参数。
     -->
     <arg name="host" default="0.0.0.0" />
     <arg name="port" default="8088" />
@@ -68,6 +70,11 @@
     <arg name="trajectory_duration_sec" default="1000.0" />
     <arg name="target_position_threshold_m" default="0.01" />
     <arg name="target_heading_threshold_deg" default="1.0" />
+    <arg name="battery_series_count" default="6" />
+    <arg name="battery_parallel_count" default="4" />
+    <arg name="battery_cell_capacity_ah" default="4.0" />
+    <arg name="battery_pack_capacity_ah" default="16.0" />
+    <arg name="battery_voltage_smoothing_sec" default="5.0" />
     <arg name="state_timeout" default="2.0" />
     <arg name="command_timeout" default="2.0" />
     <arg name="tf_timeout" default="2.0" />
@@ -131,6 +138,11 @@
         <param name="trajectory_duration_sec" value="$(arg trajectory_duration_sec)" />
         <param name="target_position_threshold_m" value="$(arg target_position_threshold_m)" />
         <param name="target_heading_threshold_deg" value="$(arg target_heading_threshold_deg)" />
+        <param name="battery_series_count" value="$(arg battery_series_count)" />
+        <param name="battery_parallel_count" value="$(arg battery_parallel_count)" />
+        <param name="battery_cell_capacity_ah" value="$(arg battery_cell_capacity_ah)" />
+        <param name="battery_pack_capacity_ah" value="$(arg battery_pack_capacity_ah)" />
+        <param name="battery_voltage_smoothing_sec" value="$(arg battery_voltage_smoothing_sec)" />
         <param name="state_timeout" value="$(arg state_timeout)" />
         <param name="command_timeout" value="$(arg command_timeout)" />
         <param name="tf_timeout" value="$(arg tf_timeout)" />

@@ -1,8 +1,7 @@
 # state_web
 
-`state_web` 是 AUV 运行状态只读监控页面，显示三路原始相机、TF 实际
-NED 位姿、`/cmd/pose/ned` 目标位姿、Z/Down 深度、反馈、控制指令和
-设备健康状态。
+`state_web` 是 AUV 运行状态只读监控页面，显示三路原始相机、执行器
+实际反馈、6S4P 电池与功率、TF 实际 NED 位姿、目标位姿和设备健康状态。
 
 ## 启动
 
@@ -34,6 +33,14 @@ roslaunch auv_control begin.launch enable_state_web:=false
 
 - 页面只订阅 ROS 话题，不发布控制消息；清除按钮只修改 Web 内存历史。
 - 双目和鱼眼相机驱动需要独立启动；缺少图像时对应画面显示离线。
+- 鱼眼在普通布局中仅从 Web 端居中裁成正方形，双击放大恢复完整 16:9；
+  ROS 图像流和 ArUco 标注坐标不受影响。
+- 执行器主卡只显示 `/status/actuator` 实际反馈，以图形展示三色灯、夹爪
+  开合度和推杆方向/速度；补光灯与航向舵机位于折叠详情。
+- 电源1作为控制支路、电源2作为动力支路。页面只显示动力电压，并显示
+  两路电流/功率及总功率。
+- 电池按 6S4P 普通锂离子、单节 4 Ah、整包 16 Ah 估算；动力电压默认
+  平滑 5 秒后按单节电压曲线计算 SOC 和剩余 Ah。
 - 位置图按真实 TF 点位绘制 `base_link → camera` 箭头；`cmdned`
   目标位姿始终表示 `base_link`，不记录运行轨迹。
 - 2D 位置图和深度图使用独立比例尺；两者均支持滚轮缩放，2D 图支持
@@ -52,12 +59,12 @@ roslaunch auv_control begin.launch enable_state_web:=false
   ROS 话题或控制任务。
 - 位置图与任务节点一致，使用 `lookupTransform(map, child, Time(0))`
   获取三路最新 TF；公共时间戳获取失败不影响已经取得的位姿。页面按 1 Hz
-  绘制最近 60 秒轨迹，并同时显示深紫色最新目标与浅紫色上一帧目标。
+  最多绘制 1000 个轨迹点，并同时显示深粉色最新目标与浅粉色上一目标。
 - `POST /api/base-trajectory/clear` 只清除 Web 中的 `base_link` 轨迹，
   不影响目标、水池范围或视觉历史。
 - 核心状态按三轴紧凑排列，实际与目标数据上下对齐。
 - 核心状态同时显示 `debug_driver` 控制模式和 `/motion/state` 状态机；
   位置误差与 Yaw 误差均按“目标减实际 TF”实时计算。
 - `imu_frame`、`base_frame` 和 `camera_frame` 默认分别为 `imu`、
-  `base_link` 和 `camera`，可通过 launch 参数覆盖。
+  `base_link` 和 `camera_center`，可通过 launch 参数覆盖。
 - 默认端口为 `8088`，可通过 `state_web_port` 或 `port` 参数修改。

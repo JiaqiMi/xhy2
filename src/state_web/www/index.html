@@ -25,6 +25,9 @@
     更新脚本版本以区分粉色 target 与青蓝色视觉 arrow。
     将 base_link 轨迹图例更新为最多 1000 点。
     增加不旋转地图航向的 base_link 实时居中跟踪按钮。
+2026.8.5
+    将右上区域改为中心裁切鱼眼、执行器反馈图形和 6S4P 电源摘要。
+    降低导航与控制诊断优先级，并在航向仪表增加目标航向。
 -->
 <html lang="zh-CN">
 
@@ -39,7 +42,7 @@
             : "/assets";
         const dashboardStylesheet = document.createElement("link");
         dashboardStylesheet.rel = "stylesheet";
-        dashboardStylesheet.href = `${dashboardAssetRoot}/dashboard.css?v=20260803-map9`;
+        dashboardStylesheet.href = `${dashboardAssetRoot}/dashboard.css?v=20260805-actuator1`;
         document.head.appendChild(dashboardStylesheet);
     </script>
 </head>
@@ -94,8 +97,8 @@
                 </div>
             </section>
 
-            <section class="panel fisheye-panel">
-                <div class="panel-title">
+            <section class="panel operations-panel">
+                <div class="panel-title operations-title">
                     <div>
                         <h2 class="camera-heading-title">
                             <span>鱼眼相机原始画面</span>
@@ -114,13 +117,113 @@
                     </div>
                     <span id="camera-fisheye-state" class="camera-state offline">离线</span>
                 </div>
-                <div class="camera-viewport fisheye-viewport">
-                    <div class="camera-placeholder">
-                        等待 /fisheye_camera/image_raw
+
+                <div class="operations-layout">
+                    <article class="camera-card fisheye-card" data-camera="fisheye">
+                        <div class="camera-viewport fisheye-viewport">
+                            <div class="camera-placeholder">
+                                等待 /fisheye_camera/image_raw
+                            </div>
+                            <img id="camera-fisheye-image"
+                                 src="/stream/fisheye"
+                                 alt="鱼眼相机原始画面"
+                                 aria-label="鱼眼相机画面，双击放大查看完整画面">
+                            <div class="camera-zoom-hint">双击查看完整画面</div>
+                        </div>
+                        <div id="camera-fisheye-meta" class="camera-meta">--</div>
+                    </article>
+
+                    <div class="actuator-power-stack">
+                        <section class="actuator-visual-card">
+                            <div class="status-card-heading">
+                                <div>
+                                    <strong>执行器实际反馈</strong>
+                                    <span class="status-card-subtitle">只显示硬件状态</span>
+                                </div>
+                                <span id="actuator-feedback-state" class="compact-state offline">无反馈</span>
+                            </div>
+
+                            <div class="actuator-visual-grid">
+                                <div class="actuator-graphic indicator-graphic">
+                                    <span class="actuator-graphic-title">指示灯</span>
+                                    <div class="indicator-lights" aria-label="红黄绿指示灯实际状态">
+                                        <div class="indicator-item">
+                                            <span id="actuator-led-red" class="status-led red"></span>
+                                            <span>红</span>
+                                        </div>
+                                        <div class="indicator-item">
+                                            <span id="actuator-led-yellow" class="status-led yellow"></span>
+                                            <span>黄</span>
+                                        </div>
+                                        <div class="indicator-item">
+                                            <span id="actuator-led-green" class="status-led green"></span>
+                                            <span>绿</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="actuator-graphic gripper-graphic">
+                                    <span class="actuator-graphic-title">夹爪</span>
+                                    <svg class="actuator-svg" viewBox="0 0 160 96" aria-label="夹爪开合状态">
+                                        <line class="machine-line muted" x1="80" y1="10" x2="80" y2="31"></line>
+                                        <circle class="machine-joint" cx="35" cy="31" r="5"></circle>
+                                        <circle class="machine-joint" cx="125" cy="31" r="5"></circle>
+                                        <line id="gripper-left-arm" class="machine-line" x1="35" y1="31" x2="54" y2="69"></line>
+                                        <line id="gripper-right-arm" class="machine-line" x1="125" y1="31" x2="106" y2="69"></line>
+                                        <line id="gripper-left-finger" class="machine-line jaw" x1="54" y1="69" x2="54" y2="86"></line>
+                                        <line id="gripper-right-finger" class="machine-line jaw" x1="106" y1="69" x2="106" y2="86"></line>
+                                    </svg>
+                                    <span id="gripper-state-text" class="actuator-state-text">未知</span>
+                                    <span id="gripper-value" class="actuator-raw-value">--</span>
+                                </div>
+
+                                <div class="actuator-graphic pushrod-graphic">
+                                    <span class="actuator-graphic-title">推杆</span>
+                                    <svg class="actuator-svg" viewBox="0 0 160 96" aria-label="推杆方向和速度">
+                                        <defs>
+                                            <marker id="pushrod-arrow-head" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                                                <path d="M0,0 L8,4 L0,8 Z"></path>
+                                            </marker>
+                                        </defs>
+                                        <rect class="pushrod-body" x="18" y="29" width="87" height="28" rx="5"></rect>
+                                        <line class="pushrod-rod" x1="105" y1="43" x2="143" y2="43"></line>
+                                        <line id="pushrod-motion-line" class="pushrod-motion" x1="51" y1="75" x2="125" y2="75"></line>
+                                        <rect id="pushrod-stop-marker" class="pushrod-stop" x="75" y="68" width="14" height="14" rx="2"></rect>
+                                        <rect class="pushrod-speed-track" x="18" y="88" width="124" height="5" rx="2"></rect>
+                                        <rect id="pushrod-speed-bar" class="pushrod-speed-bar" x="18" y="88" width="0" height="5" rx="2"></rect>
+                                    </svg>
+                                    <span id="pushrod-state-text" class="actuator-state-text">未知</span>
+                                    <span id="pushrod-value" class="actuator-raw-value">--</span>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="power-summary-card">
+                            <div class="status-card-heading power-card-heading">
+                                <div>
+                                    <strong>6S4P 电池与功率</strong>
+                                    <span class="status-card-subtitle">动力电压 · 16Ah</span>
+                                </div>
+                                <span id="power-summary-state" class="compact-state offline">无数据</span>
+                            </div>
+                            <div class="power-metric-grid">
+                                <div class="power-metric"><span>动力电压</span><strong id="power-battery-voltage">--</strong></div>
+                                <div class="power-metric"><span>控制电流</span><strong id="power-control-current">--</strong></div>
+                                <div class="power-metric"><span>控制功率</span><strong id="power-control-power">--</strong></div>
+                                <div class="power-metric"><span>动力电流</span><strong id="power-motive-current">--</strong></div>
+                                <div class="power-metric"><span>动力功率</span><strong id="power-motive-power">--</strong></div>
+                                <div class="power-metric total"><span>总功率</span><strong id="power-total-power">--</strong></div>
+                            </div>
+                            <div class="battery-row">
+                                <div class="battery-track" aria-label="电池估算电量">
+                                    <div id="battery-level" class="battery-level unknown"></div>
+                                </div>
+                                <strong id="battery-percent">估算电量 --</strong>
+                                <span id="battery-capacity">-- / 16.00 Ah</span>
+                            </div>
+                        </section>
                     </div>
-                    <img id="camera-fisheye-image" src="/stream/fisheye" alt="鱼眼相机原始画面">
                 </div>
-                <div id="camera-fisheye-meta" class="camera-meta">--</div>
             </section>
 
             <section class="panel navigation-panel">
@@ -247,10 +350,10 @@
 
                     <div class="attitude-stack">
                         <div class="instrument-card">
-                            <div class="instrument-title">航向图</div>
+                            <div class="instrument-title">航向图 · 实际 / 目标</div>
                             <canvas id="heading-canvas"></canvas>
                             <div id="heading-readout" class="instrument-readout">
-                                TF Heading --
+                                实际 -- · 目标 --
                             </div>
                         </div>
 
@@ -268,14 +371,14 @@
             <section class="panel status-panel">
                 <div class="panel-title">
                     <div>
-                        <h2>运行、控制与设备状态</h2>
-                        <span class="subtitle">实际位姿取 TF，目标位姿取 cmdned；状态年龄按 Web 接收时间计算</span>
+                        <h2>详细状态与话题健康</h2>
+                        <span class="subtitle">低优先级诊断默认折叠，异常状态由顶栏徽标提示</span>
                     </div>
                     <span id="status-ready" class="ready-label offline">坐标系未就绪</span>
                 </div>
 
                 <div class="status-scroll">
-                    <details class="core-status-panel" open>
+                    <details class="core-status-panel">
                         <summary>核心运行状态</summary>
                         <div id="core-status" class="axis-status"></div>
                     </details>
@@ -285,22 +388,22 @@
                         <div id="motion-status" class="data-grid"></div>
                     </details>
 
-                    <details open>
+                    <details>
                         <summary>统一三轴控制诊断</summary>
                         <div id="motion-diagnostics" class="data-grid"></div>
                     </details>
 
                     <details>
-                        <summary>执行器指令与反馈</summary>
+                        <summary>执行器反馈详情</summary>
                         <div id="actuator-status" class="data-grid"></div>
                     </details>
 
                     <details>
-                        <summary>电源与舱内状态</summary>
+                        <summary>电源与安全详情</summary>
                         <div id="power-status" class="data-grid"></div>
                     </details>
 
-                    <details>
+                    <details class="health-status-panel" open>
                         <summary>坐标系与话题健康</summary>
                         <div id="system-status" class="data-grid"></div>
                     </details>
@@ -311,7 +414,7 @@
 
     <script>
         const dashboardScript = document.createElement("script");
-        dashboardScript.src = `${dashboardAssetRoot}/dashboard.js?v=20260803-map9`;
+        dashboardScript.src = `${dashboardAssetRoot}/dashboard.js?v=20260805-actuator1`;
         dashboardScript.async = false;
         document.body.appendChild(dashboardScript);
     </script>

@@ -23,6 +23,9 @@
     清除操作完成后恢复单行工具栏使用的短按钮名称。
     将视觉识别 arrow 改为青蓝色，与粉色 target 明确区分。
     增加只锁定 base_link 居中的实时跟踪，不自动旋转地图航向。
+2026.8.5
+    增加执行器实际反馈图形、6S4P 电池摘要和鱼眼裁切/全图放大交互。
+    航向仪表增加粉色目标指针，详细状态只保留执行器反馈。
 */
 
 const MAP_UP_HEADING_KEY = "state_web.map_up_heading_deg";
@@ -227,6 +230,7 @@ const dashboardState = {
     mapPanY: 0,
     mapTracking: false,
     mapUpHeading: loadMapUpHeading(),
+    expandedCamera: null,
     visualHistoryVisible: loadVisualHistoryVisible(),
     visualLabelsVisible: loadVisualLabelsVisible(),
     poolBounds: loadPoolBounds(),
@@ -771,30 +775,99 @@ function renderMotionState(data) {
 
 
 function renderActuatorStatus(data) {
-    const command = data.actuator_command?.data || {};
     const feedback = data.actuator_feedback?.data || {};
+    const online = Boolean(data.actuator_feedback?.online && data.actuator_feedback?.data);
+    const feedbackState = document.getElementById("actuator-feedback-state");
+    feedbackState.textContent = online
+        ? `在线 · ${ageText(data.actuator_feedback?.age_sec)}`
+        : "反馈离线";
+    feedbackState.className = `compact-state ${online ? "online" : "offline"}`;
+
+    ["red", "yellow", "green"].forEach((color) => {
+        const element = document.getElementById(`actuator-led-${color}`);
+        const value = finiteNumber(feedback[`${color}_light`]);
+        element.classList.toggle("is-on", online && value === 1);
+        element.classList.toggle("is-unknown", !online || value === null);
+    });
+
+    const clampValue = online ? finiteNumber(feedback.clamp_servo) : null;
+    const clampedClamp = clampValue === null
+        ? null
+        : Math.max(0, Math.min(255, clampValue));
+    const openRatio = clampedClamp === null ? 0.5 : (255 - clampedClamp) / 255;
+    const jawGap = 8 + openRatio * 52;
+    const leftJawX = 80 - jawGap / 2;
+    const rightJawX = 80 + jawGap / 2;
+    ["gripper-left-arm", "gripper-left-finger"].forEach((id) => {
+        document.getElementById(id).setAttribute("x2", leftJawX.toFixed(1));
+    });
+    ["gripper-right-arm", "gripper-right-finger"].forEach((id) => {
+        document.getElementById(id).setAttribute("x2", rightJawX.toFixed(1));
+    });
+    document.getElementById("gripper-left-finger").setAttribute(
+        "x1", leftJawX.toFixed(1),
+    );
+    document.getElementById("gripper-right-finger").setAttribute(
+        "x1", rightJawX.toFixed(1),
+    );
+    const gripperState = clampedClamp === null
+        ? "未知"
+        : (clampedClamp <= 0
+            ? "全开"
+            : (clampedClamp >= 255
+                ? "全闭"
+                : `开度 ${Math.round(openRatio * 100)}%`));
+    document.getElementById("gripper-state-text").textContent = gripperState;
+    document.getElementById("gripper-value").textContent = clampedClamp === null
+        ? "反馈 --"
+        : `反馈 ${Math.round(clampedClamp)} / 255`;
+
+    const driveCommand = online ? finiteNumber(feedback.drive_cmd) : null;
+    const driveSpeed = online ? finiteNumber(feedback.drive_speed) : null;
+    const clampedSpeed = driveSpeed === null
+        ? null
+        : Math.max(0, Math.min(255, driveSpeed));
+    const motionLine = document.getElementById("pushrod-motion-line");
+    const stopMarker = document.getElementById("pushrod-stop-marker");
+    let driveText = "未知";
+    if (driveCommand === 0) {
+        driveText = "停止";
+        motionLine.style.display = "none";
+        stopMarker.style.display = "block";
+    } else if (driveCommand === 1 || driveCommand === 2) {
+        const forward = driveCommand === 1;
+        driveText = forward ? "前进" : "反转";
+        motionLine.setAttribute("x1", forward ? "51" : "125");
+        motionLine.setAttribute("x2", forward ? "125" : "51");
+        motionLine.style.display = "block";
+        stopMarker.style.display = "none";
+    } else {
+        motionLine.style.display = "none";
+        stopMarker.style.display = "none";
+    }
+    document.getElementById("pushrod-speed-bar").setAttribute(
+        "width",
+        clampedSpeed === null ? "0" : (124 * clampedSpeed / 255).toFixed(1),
+    );
+    document.getElementById("pushrod-state-text").textContent = driveText;
+    document.getElementById("pushrod-value").textContent = clampedSpeed === null
+        ? "速度 --"
+        : `速度 ${Math.round(clampedSpeed)} / 255`;
 
     setRows("actuator-status", [
-        {
-            label: "指令状态",
-            value: snapshotText(data.actuator_command),
-            className: snapshotClass(data.actuator_command),
-        },
         {
             label: "反馈状态",
             value: snapshotText(data.actuator_feedback),
             className: snapshotClass(data.actuator_feedback),
         },
-        { label: "指令模式", value: command.mode_name || "--" },
-        { label: "补光灯1 指令/状态", value: `${integerText(command.light1)} / ${integerText(feedback.light1)}` },
-        { label: "补光灯2 指令/状态", value: `${integerText(command.light2)} / ${integerText(feedback.light2)}` },
-        { label: "航向舵机 指令/反馈", value: `${integerText(command.heading_servo)} / ${integerText(feedback.heading_servo)}` },
-        { label: "夹爪舵机 指令/反馈", value: `${integerText(command.clamp_servo)} / ${integerText(feedback.clamp_servo)}` },
-        { label: "推杆动作 指令/反馈", value: `${integerText(command.drive_cmd)} / ${integerText(feedback.drive_cmd)}` },
-        { label: "推杆速度 指令/反馈", value: `${integerText(command.drive_speed)} / ${integerText(feedback.drive_speed)}` },
-        { label: "红灯 指令/反馈", value: `${integerText(command.red_light)} / ${integerText(feedback.red_light)}` },
-        { label: "黄灯 指令/反馈", value: `${integerText(command.yellow_light)} / ${integerText(feedback.yellow_light)}` },
-        { label: "绿灯 指令/反馈", value: `${integerText(command.green_light)} / ${integerText(feedback.green_light)}` },
+        { label: "反馈模式", value: feedback.mode_name || "--" },
+        { label: "补光灯1", value: integerText(feedback.light1) },
+        { label: "补光灯2", value: integerText(feedback.light2) },
+        { label: "航向舵机", value: integerText(feedback.heading_servo) },
+        { label: "夹爪", value: `${gripperState} · ${integerText(feedback.clamp_servo)}` },
+        { label: "推杆动作", value: driveText },
+        { label: "推杆速度", value: integerText(feedback.drive_speed) },
+        { label: "红 / 黄 / 绿灯", value: `${integerText(feedback.red_light)} / ${integerText(feedback.yellow_light)} / ${integerText(feedback.green_light)}` },
     ]);
 }
 
@@ -877,11 +950,49 @@ function renderMotionDiagnostics(data) {
 
 function renderPowerStatus(data) {
     const power = data.power?.data || {};
-    const power1 = power.power1 || {};
-    const power2 = power.power2 || {};
+    const summary = power.summary || {};
+    const battery = summary.battery || {};
     const sensor = data.feedback?.data?.sensor || {};
     const leak = sensor.leak_alarm;
     const fault = finiteNumber(sensor.fault_status);
+    const online = Boolean(data.power?.online && summary.valid);
+    const powerState = document.getElementById("power-summary-state");
+    powerState.textContent = online
+        ? `在线 · ${ageText(data.power?.age_sec)}`
+        : "电源离线";
+    powerState.className = `compact-state ${online ? "online" : "offline"}`;
+
+    const setMetric = (id, value, digits, suffix) => {
+        document.getElementById(id).textContent = online
+            ? numberText(value, digits, suffix)
+            : "--";
+    };
+    setMetric("power-battery-voltage", summary.battery_voltage_v, 2, " V");
+    setMetric("power-control-current", summary.control_current_a, 2, " A");
+    setMetric("power-control-power", summary.control_power_w, 1, " W");
+    setMetric("power-motive-current", summary.motive_current_a, 2, " A");
+    setMetric("power-motive-power", summary.motive_power_w, 1, " W");
+    setMetric("power-total-power", summary.total_power_w, 1, " W");
+
+    const soc = online && battery.valid
+        ? finiteNumber(battery.soc_percent)
+        : null;
+    const remaining = online && battery.valid
+        ? finiteNumber(battery.remaining_ah)
+        : null;
+    const capacity = finiteNumber(battery.pack_capacity_ah) ?? 16.0;
+    const level = document.getElementById("battery-level");
+    const clampedSoc = soc === null ? 0 : Math.max(0, Math.min(100, soc));
+    level.style.width = `${clampedSoc.toFixed(1)}%`;
+    level.className = `battery-level ${soc === null
+        ? "unknown"
+        : (soc < 20 ? "low" : (soc < 40 ? "medium" : "good"))}`;
+    document.getElementById("battery-percent").textContent = soc === null
+        ? "估算电量 --"
+        : `估算电量 ${soc.toFixed(1)}%`;
+    document.getElementById("battery-capacity").textContent = remaining === null
+        ? `-- / ${capacity.toFixed(2)} Ah`
+        : `${remaining.toFixed(2)} / ${capacity.toFixed(2)} Ah`;
 
     setRows("power-status", [
         {
@@ -898,25 +1009,17 @@ function renderPowerStatus(data) {
                 ? ""
                 : (power.checksum_ok ? "good" : "bad"),
         },
-        {
-            label: "电源1 有效",
-            value: power1.valid === undefined ? "--" : (power1.valid ? "是" : "否"),
-            className: power1.valid === false ? "bad" : "",
-        },
-        { label: "电源1 电压", value: numberText(power1.voltage_v, 2, " V") },
-        { label: "电源1 电流", value: numberText(power1.current_a, 2, " A") },
-        { label: "电源1 功率", value: numberText(power1.power_w, 2, " W") },
-        {
-            label: "电源2 有效",
-            value: power2.valid === undefined ? "--" : (power2.valid ? "是" : "否"),
-            className: power2.valid === false ? "bad" : "",
-        },
-        { label: "电源2 电压", value: numberText(power2.voltage_v, 2, " V") },
-        { label: "电源2 电流", value: numberText(power2.current_a, 2, " A") },
-        { label: "电源2 功率", value: numberText(power2.power_w, 2, " W") },
+        { label: "动力电压", value: numberText(summary.battery_voltage_v, 2, " V") },
+        { label: "控制电流", value: numberText(summary.control_current_a, 2, " A") },
+        { label: "控制功率", value: numberText(summary.control_power_w, 2, " W") },
+        { label: "动力电流", value: numberText(summary.motive_current_a, 2, " A") },
+        { label: "动力功率", value: numberText(summary.motive_power_w, 2, " W") },
+        { label: "总功率", value: numberText(summary.total_power_w, 2, " W") },
+        { label: "5秒平滑电压", value: numberText(battery.smoothed_voltage_v, 2, " V") },
+        { label: "单节估算电压", value: numberText(battery.cell_voltage_v, 3, " V") },
+        { label: "估算电量", value: numberText(battery.soc_percent, 1, "%") },
+        { label: "剩余 / 总容量", value: `${numberText(battery.remaining_ah, 2)} / ${numberText(battery.pack_capacity_ah, 2, " Ah")}` },
         { label: "舱内温度", value: numberText(sensor.temperature_c, 1, " ℃") },
-        { label: "控制电压", value: numberText(sensor.voltage_v, 2, " V") },
-        { label: "系统电流", value: numberText(sensor.current_a, 2, " A") },
         {
             label: "漏水告警",
             value: leak === undefined ? "--" : (leak ? "告警" : "正常"),
@@ -2066,6 +2169,9 @@ function drawHeading(data) {
     const radius = Math.max(25, Math.min(width, height) * 0.39);
     const tfOrientation = data.tf?.data?.orientation_deg || {};
     const heading = finiteNumber(tfOrientation.heading_deg);
+    const targetHeading = data.attitude?.target?.valid
+        ? finiteNumber(data.attitude.target.heading_deg)
+        : null;
 
     ctx.strokeStyle = "#42617b";
     ctx.lineWidth = 2;
@@ -2108,6 +2214,31 @@ function drawHeading(data) {
         );
     });
 
+    if (targetHeading !== null) {
+        const radians = targetHeading * Math.PI / 180;
+        const tipX = centerX + Math.sin(radians) * (radius - 17);
+        const tipY = centerY - Math.cos(radians) * (radius - 17);
+        ctx.save();
+        ctx.strokeStyle = "#ff62cf";
+        ctx.fillStyle = "#ff62cf";
+        ctx.lineWidth = 3;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY);
+        ctx.lineTo(tipX, tipY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.translate(tipX, tipY);
+        ctx.rotate(targetHeading * Math.PI / 180);
+        ctx.beginPath();
+        ctx.moveTo(0, -7);
+        ctx.lineTo(6, 4);
+        ctx.lineTo(-6, 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+
     if (heading !== null) {
         const radians = heading * Math.PI / 180;
         const tipX = centerX + Math.sin(radians) * (radius - 13);
@@ -2128,6 +2259,16 @@ function drawHeading(data) {
     ctx.font = "bold 15px Consolas, monospace";
     ctx.fillText(numberText(heading, 1, "°"), centerX, centerY + radius * 0.48);
 
+    ctx.save();
+    ctx.font = "bold 9px Microsoft YaHei, sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#42e7a8";
+    ctx.fillText("实", 6, 5);
+    ctx.fillStyle = "#ff62cf";
+    ctx.fillText("目", 24, 5);
+    ctx.restore();
+
     if (!data.tf?.online) {
         ctx.fillStyle = "rgba(42, 48, 55, 0.68)";
         ctx.fillRect(0, 0, width, height);
@@ -2137,9 +2278,9 @@ function drawHeading(data) {
     }
 
     document.getElementById("heading-readout").textContent = [
-        `TF Heading ${numberText(heading, 1, "°")}`,
-        snapshotAnnotation(data.tf),
-    ].filter(Boolean).join(" · ");
+        `实际 ${numberText(heading, 1, "°")}`,
+        `目标 ${numberText(targetHeading, 1, "°")}`,
+    ].join(" · ");
 }
 
 
@@ -2732,7 +2873,47 @@ function configureMapInteraction() {
 }
 
 
+function configureCameraExpansion() {
+    const cards = Array.from(document.querySelectorAll(
+        ".camera-card[data-camera]",
+    ));
+    const collapseCurrent = () => {
+        if (!dashboardState.expandedCamera) return;
+        dashboardState.expandedCamera.classList.remove("is-expanded");
+        const hint = dashboardState.expandedCamera.querySelector(
+            ".camera-zoom-hint",
+        );
+        if (hint) hint.textContent = "双击查看完整画面";
+        dashboardState.expandedCamera = null;
+        document.body.classList.remove("camera-image-expanded");
+    };
+
+    cards.forEach((card) => {
+        const viewport = card.querySelector(".camera-viewport");
+        if (!viewport) return;
+        viewport.addEventListener("dblclick", (event) => {
+            event.preventDefault();
+            if (dashboardState.expandedCamera === card) {
+                collapseCurrent();
+                return;
+            }
+            collapseCurrent();
+            card.classList.add("is-expanded");
+            dashboardState.expandedCamera = card;
+            document.body.classList.add("camera-image-expanded");
+            const hint = card.querySelector(".camera-zoom-hint");
+            if (hint) hint.textContent = "双击恢复原位置";
+        });
+    });
+
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") collapseCurrent();
+    });
+}
+
+
 function initialize() {
+    configureCameraExpansion();
     configureMapHeading();
     configurePoolBoundary();
     configureVisualHistoryControls();

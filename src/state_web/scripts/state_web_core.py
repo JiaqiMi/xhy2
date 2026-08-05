@@ -16,6 +16,8 @@
     新增 base_link 定时轨迹与最近两帧目标位姿历史工具。
     目标历史仅在位置变化 0.01m 或航向变化 1° 时滚动。
     base_link 轨迹默认按 1Hz 保留最多 1000 个点。
+2026.8.5
+    新增 6S4P 锂离子电池电压平滑、SOC 插值和两路电源摘要工具。
 """
 
 import copy
@@ -71,6 +73,21 @@ ARUCO_COLOR_BY_ID = {
     6: "red",
 }
 
+BATTERY_SOC_CURVE = (
+    (3.20, 0.0),
+    (3.50, 5.0),
+    (3.68, 10.0),
+    (3.74, 20.0),
+    (3.77, 30.0),
+    (3.79, 40.0),
+    (3.82, 50.0),
+    (3.87, 60.0),
+    (3.92, 70.0),
+    (4.00, 80.0),
+    (4.10, 90.0),
+    (4.20, 100.0),
+)
+
 
 def safe_float(value):
     """将数值转换为有限浮点数，无效值返回 None。"""
@@ -79,6 +96,159 @@ def safe_float(value):
     except (TypeError, ValueError):
         return None
     return result if math.isfinite(result) else None
+
+
+def interpolate_battery_soc(cell_voltage, curve=BATTERY_SOC_CURVE):
+    """按单节开路电压曲线分段线性估算锂离子电池 SOC。"""
+    voltage = safe_float(cell_voltage)
+    points = tuple(curve or ())
+    if voltage is None or len(points) < 2:
+        return None
+    normalized = []
+    for point in points:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            return None
+        point_voltage = safe_float(point[0])
+        point_soc = safe_float(point[1])
+        if point_voltage is None or point_soc is None:
+            return None
+        normalized.append((point_voltage, point_soc))
+    normalized.sort(key=lambda item: item[0])
+    if voltage <= normalized[0][0]:
+        return max(0.0, min(100.0, normalized[0][1]))
+    if voltage >= normalized[-1][0]:
+        return max(0.0, min(100.0, normalized[-1][1]))
+    for lower, upper in zip(normalized, normalized[1:]):
+        if lower[0] <= voltage <= upper[0]:
+            span = upper[0] - lower[0]
+            if span <= 1e-12:
+                return max(0.0, min(100.0, upper[1]))
+            ratio = (voltage - lower[0]) / span
+            soc = lower[1] + ratio * (upper[1] - lower[1])
+            return max(0.0, min(100.0, soc))
+    return None
+
+
+class PowerSummaryState:
+    """维护动力电压滑动窗口并生成控制、动力和电池摘要。"""
+
+    def __init__(self, series_count=6, parallel_count=4,
+                 cell_capacity_ah=4.0, pack_capacity_ah=16.0,
+                 smoothing_sec=5.0):
+        self.series_count = max(1, int(series_count))
+        self.parallel_count = max(1, int(parallel_count))
+        self.cell_capacity_ah = max(0.0, float(cell_capacity_ah))
+        self.pack_capacity_ah = max(0.0, float(pack_capacity_ah))
+        self.smoothing_sec = max(0.0, float(smoothing_sec))
+        self.samples = deque()
+        self.lock = threading.RLock()
+
+    @staticmethod
+    def _branch(payload, name):
+        branch = payload.get(name) if isinstance(payload, dict) else None
+        if not isinstance(branch, dict) or branch.get("valid") is not True:
+            return None
+        voltage = safe_float(branch.get("voltage_v"))
+        current = safe_float(branch.get("current_a"))
+        power = safe_float(branch.get("power_w"))
+        if voltage is None or current is None or power is None:
+            return None
+        return {
+            "voltage_v": voltage,
+            "current_a": current,
+            "power_w": power,
+        }
+
+    def _trim(self, now):
+        cutoff = now - self.smoothing_sec
+        while self.samples and self.samples[0][0] < cutoff:
+            self.samples.popleft()
+
+    def update(self, payload, received_at):
+        """接收一帧两路电源反馈并返回不伪造部分数据的状态摘要。"""
+        timestamp = safe_float(received_at)
+        if timestamp is None:
+            return self.snapshot(payload, None)
+        checksum_ok = bool(
+            isinstance(payload, dict) and payload.get("checksum_ok") is True
+        )
+        control = self._branch(payload, "power1") if checksum_ok else None
+        motive = self._branch(payload, "power2") if checksum_ok else None
+        with self.lock:
+            if motive is not None and motive["voltage_v"] > 0.0:
+                self.samples.append((timestamp, motive["voltage_v"]))
+            self._trim(timestamp)
+            return self._snapshot_locked(control, motive, checksum_ok)
+
+    def snapshot(self, payload, now):
+        """不增加样本地读取当前电源摘要，供测试和诊断使用。"""
+        timestamp = safe_float(now)
+        checksum_ok = bool(
+            isinstance(payload, dict) and payload.get("checksum_ok") is True
+        )
+        control = self._branch(payload, "power1") if checksum_ok else None
+        motive = self._branch(payload, "power2") if checksum_ok else None
+        with self.lock:
+            if timestamp is not None:
+                self._trim(timestamp)
+            return self._snapshot_locked(control, motive, checksum_ok)
+
+    def _snapshot_locked(self, control, motive, checksum_ok):
+        voltages = [item[1] for item in self.samples]
+        average_voltage = (
+            sum(voltages) / len(voltages) if voltages else None
+        )
+        battery_valid = bool(
+            checksum_ok and motive is not None and average_voltage is not None
+        )
+        cell_voltage = (
+            average_voltage / self.series_count if battery_valid else None
+        )
+        soc = interpolate_battery_soc(cell_voltage) if battery_valid else None
+        remaining_ah = (
+            self.pack_capacity_ah * soc / 100.0 if soc is not None else None
+        )
+        both_valid = control is not None and motive is not None
+        return {
+            "valid": bool(checksum_ok and (control or motive)),
+            "checksum_ok": checksum_ok,
+            "control": copy.deepcopy(control),
+            "motive": copy.deepcopy(motive),
+            "battery_voltage_v": (
+                motive["voltage_v"] if motive is not None else None
+            ),
+            "control_current_a": (
+                control["current_a"] if control is not None else None
+            ),
+            "control_power_w": (
+                control["power_w"] if control is not None else None
+            ),
+            "motive_current_a": (
+                motive["current_a"] if motive is not None else None
+            ),
+            "motive_power_w": (
+                motive["power_w"] if motive is not None else None
+            ),
+            "total_power_w": (
+                control["power_w"] + motive["power_w"]
+                if both_valid else None
+            ),
+            "battery": {
+                "valid": battery_valid and soc is not None,
+                "chemistry": "li_ion",
+                "series_count": self.series_count,
+                "parallel_count": self.parallel_count,
+                "cell_capacity_ah": self.cell_capacity_ah,
+                "pack_capacity_ah": self.pack_capacity_ah,
+                "smoothing_sec": self.smoothing_sec,
+                "sample_count": len(voltages),
+                "smoothed_voltage_v": average_voltage,
+                "cell_voltage_v": cell_voltage,
+                "soc_percent": soc,
+                "remaining_ah": remaining_ah,
+                "estimated": True,
+            },
+        }
 
 
 def map_pixel_to_frame(point, frame_width, frame_height,

@@ -20,6 +20,9 @@
     1920×1080 下将地图工具压缩为单行统一尺寸，扩大绘图区。
     将目标图例由紫色调整为高对比粉色。
     为 base_link 实时居中跟踪按钮和跟踪画布增加状态样式。
+2026.8.5
+    增加鱼眼中心正方形裁切、执行器反馈图形、电源数字卡和电池电量条。
+    增加相机全屏放大、目标航向指针图例及详细状态降级布局。
 */
 
 :root {
@@ -270,7 +273,14 @@ input {
 
 .fisheye-viewport {
     min-height: 0;
-    flex: 1;
+    width: min(100%, 325px);
+    flex: 0 1 auto;
+    aspect-ratio: 1 / 1;
+}
+
+.fisheye-viewport img {
+    object-fit: cover;
+    object-position: center center;
 }
 
 .camera-meta {
@@ -830,6 +840,10 @@ summary {
         min-height: 430px;
     }
 
+    .operations-layout {
+        grid-template-columns: minmax(285px, 0.8fr) minmax(400px, 1.2fr);
+    }
+
 }
 
 @media (max-width: 760px) {
@@ -862,6 +876,33 @@ summary {
     .stereo-grid {
         grid-template-columns: 1fr;
         grid-template-rows: repeat(2, minmax(220px, 1fr));
+    }
+
+    .operations-layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto minmax(380px, auto);
+    }
+
+    .fisheye-card {
+        width: min(100%, 520px);
+        justify-self: center;
+    }
+
+    .actuator-visual-grid {
+        grid-template-columns: 1fr;
+        grid-template-rows: repeat(3, minmax(130px, 1fr));
+    }
+
+    .actuator-power-stack {
+        grid-template-rows: auto auto;
+    }
+
+    .power-metric-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .battery-row {
+        grid-template-columns: 1fr;
     }
 
     .navigation-layout {
@@ -1000,4 +1041,393 @@ summary {
         max-width: 100%;
         order: 5;
     }
+}
+
+.operations-title {
+    min-height: 34px;
+    margin-bottom: 6px;
+}
+
+.operations-title > div {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: baseline;
+    gap: 9px;
+}
+
+.operations-title .subtitle {
+    flex: 0 0 auto;
+}
+
+.operations-layout {
+    display: grid;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+    grid-template-columns: minmax(285px, 0.78fr) minmax(420px, 1.22fr);
+    gap: 8px;
+}
+
+.fisheye-card {
+    min-height: 0;
+    align-items: center;
+    padding: 5px;
+}
+
+.fisheye-card .camera-meta {
+    width: 100%;
+    margin-top: 4px;
+}
+
+.camera-zoom-hint {
+    position: absolute;
+    z-index: 2;
+    right: 7px;
+    bottom: 6px;
+    padding: 3px 6px;
+    border-radius: 5px;
+    background: rgba(3, 10, 18, 0.72);
+    color: #89a7bd;
+    font-size: 9px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 160ms ease;
+}
+
+.camera-viewport:hover .camera-zoom-hint {
+    opacity: 1;
+}
+
+.camera-card.is-expanded {
+    position: fixed;
+    z-index: 1100;
+    inset: 10px;
+    padding: 12px;
+    border-color: rgba(67, 199, 255, 0.72);
+    border-radius: 12px;
+    background: #06111e;
+    box-shadow:
+        0 0 0 1px rgba(67, 199, 255, 0.18),
+        0 24px 80px rgba(0, 0, 0, 0.72);
+}
+
+.camera-card.is-expanded .camera-viewport {
+    width: 100%;
+    flex: 1;
+    aspect-ratio: auto;
+}
+
+.camera-card.is-expanded .camera-viewport img {
+    object-fit: contain;
+}
+
+.camera-card.is-expanded .camera-zoom-hint {
+    opacity: 1;
+}
+
+body.camera-image-expanded {
+    overflow: hidden;
+}
+
+.actuator-power-stack {
+    display: grid;
+    min-width: 0;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr);
+    gap: 7px;
+}
+
+.actuator-visual-card,
+.power-summary-card {
+    min-width: 0;
+    min-height: 0;
+    padding: 7px;
+    overflow: hidden;
+    border: 1px solid #294059;
+    border-radius: 9px;
+    background: rgba(7, 19, 31, 0.9);
+}
+
+.status-card-heading {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-bottom: 5px;
+    color: #d9e9f4;
+    font-size: 12px;
+}
+
+.status-card-heading > div {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: 7px;
+}
+
+.status-card-subtitle {
+    overflow: hidden;
+    color: #6f879d;
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.compact-state {
+    flex: 0 0 auto;
+    padding: 2px 6px;
+    border: 1px solid #3b536a;
+    border-radius: 999px;
+    font-size: 9px;
+    white-space: nowrap;
+}
+
+.actuator-visual-grid {
+    display: grid;
+    min-height: 0;
+    height: calc(100% - 24px);
+    grid-template-columns: 0.72fr 1fr 1fr;
+    gap: 5px;
+}
+
+.actuator-graphic {
+    position: relative;
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    align-items: center;
+    flex-direction: column;
+    padding: 5px 4px 3px;
+    border: 1px solid rgba(47, 72, 96, 0.74);
+    border-radius: 7px;
+    background: rgba(17, 36, 54, 0.72);
+}
+
+.actuator-graphic-title {
+    color: #a9c8dc;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.indicator-lights {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    gap: clamp(7px, 1.1vw, 15px);
+}
+
+.indicator-item {
+    display: flex;
+    align-items: center;
+    flex-direction: column;
+    gap: 5px;
+    color: #8198ad;
+    font-size: 9px;
+}
+
+.status-led {
+    width: clamp(18px, 1.35vw, 25px);
+    height: clamp(18px, 1.35vw, 25px);
+    border: 2px solid #405165;
+    border-radius: 50%;
+    background: #202c39;
+    box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.72);
+    transition: 150ms ease;
+}
+
+.status-led.is-on.red {
+    border-color: #ff93a0;
+    background: #ff4054;
+    box-shadow: 0 0 15px rgba(255, 64, 84, 0.82);
+}
+
+.status-led.is-on.yellow {
+    border-color: #fff1a0;
+    background: #ffd642;
+    box-shadow: 0 0 15px rgba(255, 214, 66, 0.82);
+}
+
+.status-led.is-on.green {
+    border-color: #9df4ce;
+    background: #38d996;
+    box-shadow: 0 0 15px rgba(56, 217, 150, 0.82);
+}
+
+.status-led.is-unknown {
+    border-color: #384553;
+    background: #171f28;
+    opacity: 0.56;
+}
+
+.actuator-svg {
+    display: block;
+    width: 100%;
+    min-height: 54px;
+    flex: 1;
+    overflow: visible;
+}
+
+.machine-line,
+.pushrod-rod,
+.pushrod-motion {
+    fill: none;
+    stroke: #4ee2b1;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 5;
+}
+
+.machine-line.muted {
+    stroke: #53728a;
+}
+
+.machine-line.jaw {
+    stroke-width: 7;
+}
+
+.machine-joint {
+    fill: #173b3a;
+    stroke: #4ee2b1;
+    stroke-width: 3;
+}
+
+.pushrod-body {
+    fill: #18334a;
+    stroke: #5a809a;
+    stroke-width: 3;
+}
+
+.pushrod-rod {
+    stroke: #a9d5e9;
+    stroke-width: 7;
+}
+
+.pushrod-motion {
+    marker-end: url(#pushrod-arrow-head);
+    stroke: #43c7ff;
+    stroke-width: 4;
+}
+
+#pushrod-arrow-head path {
+    fill: #43c7ff;
+}
+
+.pushrod-stop {
+    fill: #ffbe45;
+}
+
+.pushrod-speed-track {
+    fill: #263c4f;
+}
+
+.pushrod-speed-bar {
+    fill: #43c7ff;
+}
+
+.actuator-state-text {
+    color: #dcf7ef;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.actuator-raw-value {
+    margin-top: 1px;
+    color: #6f879d;
+    font-family: Consolas, monospace;
+    font-size: 8px;
+}
+
+.power-card-heading {
+    margin-bottom: 4px;
+}
+
+.power-metric-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+}
+
+.power-metric {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 4px 5px;
+    border: 1px solid rgba(45, 70, 92, 0.68);
+    border-radius: 5px;
+    background: rgba(18, 37, 55, 0.74);
+}
+
+.power-metric span {
+    overflow: hidden;
+    color: #7890a6;
+    font-size: 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.power-metric strong {
+    color: #e7f4fc;
+    font-family: Consolas, monospace;
+    font-size: 10px;
+    white-space: nowrap;
+}
+
+.power-metric.total {
+    border-color: rgba(67, 199, 255, 0.48);
+}
+
+.power-metric.total strong {
+    color: var(--accent);
+}
+
+.battery-row {
+    display: grid;
+    grid-template-columns: minmax(70px, 1fr) auto auto;
+    align-items: center;
+    gap: 7px;
+    margin-top: 5px;
+    color: #91a9bc;
+    font-size: 9px;
+}
+
+.battery-track {
+    height: 11px;
+    overflow: hidden;
+    border: 1px solid #40566a;
+    border-radius: 4px;
+    background: #131f2b;
+}
+
+.battery-level {
+    width: 0;
+    height: 100%;
+    background: var(--good);
+    transition: width 220ms ease, background-color 220ms ease;
+}
+
+.battery-level.medium {
+    background: var(--warn);
+}
+
+.battery-level.low {
+    background: var(--bad);
+}
+
+.battery-level.unknown {
+    background: #536170;
+}
+
+#battery-percent {
+    color: #dfeef7;
+    white-space: nowrap;
+}
+
+#battery-capacity {
+    font-family: Consolas, monospace;
+    white-space: nowrap;
 }
