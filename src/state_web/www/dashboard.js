@@ -868,7 +868,6 @@ function actuatorValuesMatch(command, feedback) {
 
 
 function renderActuatorStatus(data) {
-    const command = data.actuator_command?.data || {};
     const feedback = data.actuator_feedback?.data || {};
     const commandOnline = Boolean(command.actuator_online);
     const feedbackOnline = Boolean(
