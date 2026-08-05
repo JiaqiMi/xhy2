@@ -105,18 +105,18 @@ brake_acceleration_ty_negative: 0.043 # -6000 跨零速实测中位数约 0.043 
 
 # 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
 brake_reference_acceleration_tx_positive: 0.09 # data8 正 TX 有效减速度下的首轮计划值，保留制动余量
-brake_reference_acceleration_tx_negative: 0.10 # data8 负 TX 有效减速度下的首轮计划值，保留制动余量
-brake_reference_acceleration_ty_positive: 0.06 # 正 TY 制动已使用约 66% 限幅，保留耦合补偿余量
-brake_reference_acceleration_ty_negative: 0.03 # 两向统一计划减速度，方向差异仍由有效值保留
+brake_reference_acceleration_tx_negative: 0.08 # 2026.8.5 降低负 TX 计划减速度，按速度平方项提前 X 正向高速制动
+brake_reference_acceleration_ty_positive: 0.045 # 2026.8.5 降低正 TY 计划减速度，按速度平方项提前 Y 负向高速制动
+brake_reference_acceleration_ty_negative: 0.025 # 2026.8.5 小幅降低负 TY 计划减速度，改善 Y 正向高速超调
 angular_brake_acceleration_mz_positive: 0.242   # +3000 跨零速实测约 15.39 deg/s^2，保留 10% 后换算为 rad/s^2
 angular_brake_acceleration_mz_negative: 0.262   #TODO 参数快照值；待 -3500 下独立反向刹停标定后再更新有效减速度模型
 angular_brake_reference_acceleration_mz_positive_deg_s2: 3.50 # 计划值仍显著低于 +MZ 标定有效减速度，减少长时间低力矩刹转
 angular_brake_reference_acceleration_mz_negative_deg_s2: 3.50 # 计划值仍显著低于 -MZ 标定有效减速度，正反向使用同一首轮轨迹
 control_delay: 0.2                 # 反馈、计算、通信和执行的综合延迟估计，单位 s
 brake_margin_tx_positive: 0.1      # X 回退使用正 TX 制动，按 data7 最大超调加 data8 制动延迟余量设置
-brake_margin_tx_negative: 0.12      # X 正向使用负 TX 制动，按 data7 最大超调加 data8 制动延迟余量设置
-brake_margin_ty_positive: 0.03      # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
-brake_margin_ty_negative: 0.03      # 与三轴内部位置死区统一，给 Y 轴保留无超调余量
+brake_margin_tx_negative: 0.12      # X 正向使用负 TX 制动，固定余量保持原值，避免过度影响低速刹停
+brake_margin_ty_positive: 0.03      # 与三轴内部位置死区统一，固定余量保持原值
+brake_margin_ty_negative: 0.03      # 与三轴内部位置死区统一，固定余量保持原值
 yaw_brake_margin_positive_deg: 0.8  # 航向捕获标准收紧为 1 deg；由低位置增益提前降速，余量须小于捕获容差
 yaw_brake_margin_negative_deg: 0.8  # 与正向一致，满足核心参数校验并保留 0.2 deg 捕获裕量
 
@@ -140,7 +140,7 @@ xy_max_speed: 0.35 # xy的最大参考速度，暂定为0.3m/s
 xy_position_gain: 1.20
 xy_max_acceleration: 0.40
 xy_max_jerk: 0.40
-xy_brake_jerk: 0.20  #TODO 定点制动速度参考的最大 jerk，单位 m/s^3，搞懂这个参数的意义
+xy_brake_jerk: 0.30  # 2026.8.5 缩短制动减速度建立时间，减少刹停后越点和重复回追
 
 # 预测停车距离内且合速度达到进入阈值时锁存刹停；低于退出阈值才恢复跟踪。
 xy_brake_enter_speed: 0.020
