@@ -18,6 +18,7 @@
     base_link 轨迹默认按 1Hz 保留最多 1000 个点。
 2026.8.5
     新增 6S4P 锂离子电池电压平滑、SOC 插值和两路电源摘要工具。
+    新增按控制模式合并的执行器指令缓存，独立计算灯光与机械指令年龄。
 """
 
 import copy
@@ -127,6 +128,136 @@ def interpolate_battery_soc(cell_voltage, curve=BATTERY_SOC_CURVE):
             soc = lower[1] + ratio * (upper[1] - lower[1])
             return max(0.0, min(100.0, soc))
     return None
+
+
+class ActuatorCommandState:
+    """按消息模式保存执行器指令，避免不同模式的零值互相覆盖。"""
+
+    LIGHT_FIELDS = ("light1", "light2")
+    ACTUATOR_FIELDS = (
+        "heading_servo",
+        "clamp_servo",
+        "drive_cmd",
+        "drive_speed",
+        "red_light",
+        "yellow_light",
+        "green_light",
+    )
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.values = {}
+        self.feedback_values = {}
+
+    def update(self, payload, received_at):
+        """合并一帧指令；模式 1 和模式 2 只更新各自负责的字段。"""
+        if not isinstance(payload, dict):
+            return self.snapshot(received_at, 0.0)
+        timestamp = safe_float(received_at)
+        with self.lock:
+            mode = int(payload.get("mode", 0))
+            self.values["mode"] = mode
+            self.values["mode_name"] = payload.get("mode_name", "未知")
+            self.values["last_mode"] = mode
+            self.values["last_mode_name"] = payload.get("mode_name", "未知")
+            if timestamp is not None:
+                self.values["received_at"] = timestamp
+
+            if mode == 1:
+                self._copy_fields(payload, self.LIGHT_FIELDS)
+                if timestamp is not None:
+                    self.values["light_received_at"] = timestamp
+            elif mode == 2:
+                previous = tuple(
+                    self.values.get(field) for field in self.ACTUATOR_FIELDS
+                )
+                self._copy_fields(payload, self.ACTUATOR_FIELDS)
+                current = tuple(
+                    self.values.get(field) for field in self.ACTUATOR_FIELDS
+                )
+                if timestamp is not None:
+                    self.values["actuator_received_at"] = timestamp
+                    if previous != current:
+                        self.values["actuator_changed_at"] = timestamp
+                        self.values["actuator_ack_received_at"] = None
+                        self.values["actuator_ack_delay_sec"] = None
+            else:
+                self._copy_fields(
+                    payload,
+                    self.LIGHT_FIELDS + self.ACTUATOR_FIELDS,
+                )
+                if timestamp is not None:
+                    self.values["light_received_at"] = timestamp
+                    self.values["actuator_received_at"] = timestamp
+            return copy.deepcopy(self.values)
+
+    def observe_feedback(self, payload, received_at):
+        """记录反馈，并锁存指令变化后首次匹配反馈的 Web 接收差。"""
+        if not isinstance(payload, dict):
+            return
+        timestamp = safe_float(received_at)
+        with self.lock:
+            self.feedback_values = copy.deepcopy(payload)
+            if (
+                    timestamp is None
+                    or self.values.get("actuator_ack_received_at") is not None
+                    or not self._matches_locked(payload)):
+                return
+            changed_at = safe_float(self.values.get("actuator_changed_at"))
+            if changed_at is None:
+                return
+            self.values["actuator_ack_received_at"] = timestamp
+            self.values["actuator_ack_delay_sec"] = max(
+                0.0,
+                timestamp - changed_at,
+            )
+
+    def _matches_locked(self, feedback):
+        exact_fields = (
+            "drive_cmd",
+            "red_light",
+            "yellow_light",
+            "green_light",
+        )
+        close_fields = ("clamp_servo", "drive_speed")
+        for field in exact_fields:
+            expected = safe_float(self.values.get(field))
+            actual = safe_float(feedback.get(field))
+            if expected is None or actual is None or expected != actual:
+                return False
+        for field in close_fields:
+            expected = safe_float(self.values.get(field))
+            actual = safe_float(feedback.get(field))
+            if (
+                    expected is None
+                    or actual is None
+                    or abs(expected - actual) > 2.0):
+                return False
+        return True
+
+    def _copy_fields(self, payload, fields):
+        for field in fields:
+            if field in payload:
+                self.values[field] = payload[field]
+
+    def snapshot(self, now, timeout):
+        """返回合并结果及两个模式各自的年龄和在线状态。"""
+        timestamp = safe_float(now)
+        limit = max(0.0, safe_float(timeout) or 0.0)
+        with self.lock:
+            result = copy.deepcopy(self.values)
+        for prefix in ("light", "actuator"):
+            received_at = safe_float(result.get(prefix + "_received_at"))
+            age = (
+                max(0.0, timestamp - received_at)
+                if timestamp is not None and received_at is not None
+                else None
+            )
+            result[prefix + "_age_sec"] = age
+            result[prefix + "_online"] = bool(
+                age is not None and age <= limit
+            )
+        return result
 
 
 class PowerSummaryState:

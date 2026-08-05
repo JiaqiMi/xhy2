@@ -19,6 +19,8 @@
     改为 select 非阻塞轮询，避免等待键盘输入时阻塞节点输出。
 2026.7.31
     增加 9 键触发 task1 视觉模型预热。
+2026.8.5
+    增加 M/N 键控制 motion_supervisor 的保活与单次关闭。
 """
 
 import atexit
@@ -50,7 +52,8 @@ class KeyboardControlNode:
 
         rospy.loginfo(
             '键盘任务控制已启动：1=task1，2=task2，3=task3，'
-            '9=task1视觉预热，g=自动串联，0/l=停止当前任务。')
+            '9=task1视觉预热，M=启动控制器保活，N=关闭控制器，'
+            'g=自动串联，0/l=停止当前任务。')
 
     def get_key(self):
         """非阻塞读取一个按键；没有输入时返回 None。"""
@@ -107,6 +110,22 @@ class KeyboardControlNode:
         self.publisher.publish(message)
         rospy.loginfo('请求预热 task1 视觉模型。')
 
+    def enable_motion_supervisor(self):
+        """发布启动 motion_supervisor 保活指令。"""
+        message = Keyboard()
+        message.run = 3
+        message.mode = 0
+        self.publisher.publish(message)
+        rospy.loginfo('请求启动 motion_supervisor 保活。')
+
+    def disable_motion_supervisor(self):
+        """发布单次关闭 motion_supervisor 指令。"""
+        message = Keyboard()
+        message.run = 4
+        message.mode = 0
+        self.publisher.publish(message)
+        rospy.loginfo('请求关闭 motion_supervisor。')
+
     def run(self):
         """持续轮询键盘输入，不阻塞 ROS 日志输出。"""
         try:
@@ -121,13 +140,18 @@ class KeyboardControlNode:
                     self.start_automatic_tasks()
                 elif key == '9':
                     self.start_task1_vision_prewarm()
+                elif key == 'M':
+                    self.enable_motion_supervisor()
+                elif key == 'N':
+                    self.disable_motion_supervisor()
                 elif key in '0l':
                     self.stop_task()
                 elif key == '\x03':
                     break
                 else:
                     rospy.logwarn(
-                        '无效按键 %r；可用按键：1、2、3、9、g、0、l。', key)
+                        '无效按键 %r；可用按键：1、2、3、9、M、N、g、0、l。',
+                        key)
                 self.rate.sleep()
         finally:
             self.restore_terminal()

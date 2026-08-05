@@ -58,6 +58,8 @@
     CSV 增加两路推进电源电压、电流、功率及反馈新鲜度，并按 50 MiB 自动分卷。
 2026.8.2
     接入 TY/MZ 协议级侧推异常检测与自动恢复，记录功率基线、判据和恢复全过程。
+2026.8.5
+    加载并记录大航向误差优先迟滞，以及逐次延长的侧推复位反向时长。
 """
 
 from __future__ import division
@@ -148,6 +150,9 @@ class MotionSupervisorNode(object):
         'position_error',
         'base_position_error',
         'yaw_error_deg',
+        'yaw_priority_active',
+        'yaw_priority_entered',
+        'yaw_priority_released',
         'x_axis_state',
         'y_axis_state',
         'yaw_axis_state',
@@ -235,6 +240,7 @@ class MotionSupervisorNode(object):
         'thruster_reverse_actual_mz',
         'thruster_recovery_phase',
         'thruster_recovery_count',
+        'thruster_recovery_reverse_duration_s',
         'thruster_recovery_power_baseline_w',
         'thruster_recovery_power_increment_w',
         'thruster_recovery_power_response',
@@ -518,6 +524,8 @@ class MotionSupervisorNode(object):
             'yaw_max_acceleration': 'yaw_max_acceleration_deg_s2',
             'yaw_max_jerk': 'yaw_max_jerk_deg_s3',
             'yaw_brake_jerk': 'yaw_brake_jerk_deg_s3',
+            'yaw_priority_enter_error': 'yaw_priority_enter_error_deg',
+            'yaw_priority_exit_error': 'yaw_priority_exit_error_deg',
             'yaw_brake_enter_rate': 'yaw_brake_enter_rate_deg_s',
             'yaw_brake_exit_rate': 'yaw_brake_exit_rate_deg_s',
             'goal_replan_yaw_threshold': 'goal_replan_yaw_threshold_deg',
@@ -842,6 +850,12 @@ class MotionSupervisorNode(object):
             'base_position_error': base_position_error,
             'yaw_error_deg': math.degrees(
                 wrap_angle(target.yaw - vehicle.yaw)),
+            'yaw_priority_active': int(bool(
+                output.diagnostics.get('yaw_priority_active', False))),
+            'yaw_priority_entered': int(bool(
+                output.diagnostics.get('yaw_priority_entered', False))),
+            'yaw_priority_released': int(bool(
+                output.diagnostics.get('yaw_priority_released', False))),
             'x_axis_state': AXIS_STATE_NAMES.get(
                 output.x_axis_state, str(output.x_axis_state)),
             'y_axis_state': AXIS_STATE_NAMES.get(
@@ -1001,6 +1015,8 @@ class MotionSupervisorNode(object):
                 'thruster_recovery_phase', ''),
             'thruster_recovery_count': diagnostics.get(
                 'thruster_recovery_count', ''),
+            'thruster_recovery_reverse_duration_s': diagnostics.get(
+                'thruster_recovery_reverse_duration_s', ''),
             'thruster_recovery_power_baseline_w': diagnostics.get(
                 'thruster_recovery_power_baseline_w', ''),
             'thruster_recovery_power_increment_w': diagnostics.get(
