@@ -17,22 +17,19 @@ Task1 比赛完整任务：连续巡线，并按巡线前向进度处理黄色�
 import copy
 import math
 import threading
-import rospy
-import tf
-from auv_control.msg import ActuatorControl, TargetDetection
-from std_msgs.msg import String
 import os
 import sys
-
 # catkin_install_python 会从 devel_isolated 中启动中继脚本。
 # 显式将当前源码目录放到模块搜索路径最前面，
 # 确保导入真正的辅助模块，而不是 catkin 生成的中继脚本。
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
-
+import rospy
+import tf
+from auv_control.msg import ActuatorControl, TargetDetection
+from std_msgs.msg import String
 from task1_yaml_logger import TimestampedYamlLogger
-
 
 from task1_line_follow import (
     Task1LineFollow,
@@ -414,6 +411,9 @@ class Task1(Task1LineFollow):
             search_after_lock_max_cycles=(
                 self.search_after_lock_max_cycles
             ),
+            initial_line_freeze_timeout_seconds=(
+                self.initial_line_freeze_timeout_seconds
+            ),
             task_timeout_seconds=self.task_timeout_seconds,
             normal_finish_min_completed_path_length=(
                 self.normal_finish_min_completed_path_length
@@ -530,6 +530,29 @@ class Task1(Task1LineFollow):
         )
 
     def handle_completed_search_cycle(self, search_phase):
+        if (
+            search_phase == "before_lock"
+            and self.initial_line_freeze_recovery_active
+        ):
+            self.initial_line_freeze_recovery_active = False
+            self.write_data_record(
+                "search_cycle_complete",
+                search_phase="initial_line_freeze_recovery",
+                completed_cycles=1,
+                max_cycles=1,
+                line_locked=self.line_locked,
+                completed_path=round(self.completed_path_length, 6),
+            )
+            rospy.logwarn(
+                "%s: 首段固定失败后的原地搜索已完成，"
+                "仍未固定红线，进入绝对点兜底",
+                NODE_NAME,
+            )
+            self.enter_task_fallback(
+                "initial_line_freeze_search_exhausted"
+            )
+            return True
+
         if search_phase == "before_lock":
             self.search_before_lock_completed_cycles += 1
             completed_cycles = self.search_before_lock_completed_cycles
@@ -562,6 +585,16 @@ class Task1(Task1LineFollow):
             )
         else:
             self.set_search_state(next_state)
+        return True
+
+    def handle_repeated_initial_line_freeze_timeout(self):
+        self.initial_line_freeze_recovery_active = False
+        rospy.logwarn(
+            "%s: 原地搜索期间的新红线候选再次固定失败，"
+            "不重启搜索，直接进入绝对点兜底",
+            NODE_NAME,
+        )
+        self.enter_task_fallback("initial_line_freeze_retry_failed")
         return True
 
     def make_fallback_goal(self):

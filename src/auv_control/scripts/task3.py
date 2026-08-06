@@ -1,4 +1,4 @@
-#!/home/nvidia/venvs/xhy_ros2/bin/python
+#! /home/xhy/xhy_env/bin/python
 # -*- coding: utf-8 -*-
 """
 名称：task3.py
@@ -30,7 +30,6 @@ import os
 import sys
 import threading
 import time
-import traceback
 from collections import Counter, deque
 
 import rospkg
@@ -92,27 +91,12 @@ CONSOLE_PROGRESS_PHRASES = (
 )
 
 
-def log_exception_safely(message, *args):
-    """记录当前异常堆栈；日志系统异常时不得中断后续保护。"""
+def log_exception_safely():
+    """只记录统一任务异常；日志失败时不得中断后续保护。"""
     try:
-        rendered_message = message % args if args else str(message)
+        rospy.logerr("%s：任务异常，继续执行保护流程", NODE_NAME)
     except Exception:
-        rendered_message = "任务异常，且异常日志格式化失败"
-    try:
-        traceback_text = traceback.format_exc()
-    except Exception:
-        traceback_text = "原始异常堆栈获取失败"
-    try:
-        rospy.logerr("%s\n%s", rendered_message, traceback_text)
-    except Exception:
-        try:
-            sys.stderr.write("[ERROR] {}\n{}\n".format(
-                rendered_message,
-                traceback_text,
-            ))
-            sys.stderr.flush()
-        except Exception:
-            pass
+        pass
 
 
 class Task3ConsoleFilter(logging.Filter):
@@ -1848,13 +1832,8 @@ class Task3Final:
         requested_at = time.monotonic()
         try:
             self.cancel_pub.publish(Empty())
-        except Exception as error:
-            log_exception_safely(
-                "%s：[%s] 发布motion cancel失败；不退出，继续固定点保护：%s",
-                NODE_NAME,
-                context,
-                str(error),
-            )
+        except Exception:
+            log_exception_safely()
             return False
         if not wait_for_hover:
             rospy.logwarn(
@@ -1940,13 +1919,8 @@ class Task3Final:
                 detail,
                 timeout_seconds,
             )
-        except Exception as error:
-            log_exception_safely(
-                "%s：[%s] 异常后发布motion cancel失败；仍等待子任务总超时：%s",
-                NODE_NAME,
-                label,
-                str(error),
-            )
+        except Exception:
+            log_exception_safely()
 
         while not rospy.is_shutdown():
             elapsed = max(0.0, time.monotonic() - stage_started_at)
@@ -1994,13 +1968,8 @@ class Task3Final:
         """固定点移动失败或内部抛错时只记录，不终止后续保护链。"""
         try:
             reached = self.move_to_final_timeout_target(target_key, context)
-        except Exception as error:
-            log_exception_safely(
-                "%s：[%s] 固定点保护发生异常，继续后续保护：%s",
-                NODE_NAME,
-                context,
-                str(error),
-            )
+        except Exception:
+            log_exception_safely()
             return False
         if not reached and not rospy.is_shutdown():
             rospy.logwarn(
@@ -2036,13 +2005,8 @@ class Task3Final:
                 self.final_timeout_arrival_stable_seconds,
                 context,
             )
-        except Exception as error:
-            log_exception_safely(
-                "%s：[%s] 阶段航向保护发生异常，继续后续任务：%s",
-                NODE_NAME,
-                context,
-                str(error),
-            )
+        except Exception:
+            log_exception_safely()
             return False
 
     def move_to_final_timeout_target(self, target_key, context):
@@ -2202,10 +2166,10 @@ class Task3Final:
             timed_out = bool(task.embedded_timed_out)
             if success:
                 final_yaw = task.final_target_yaw
-        except Exception as error:
-            log_exception_safely("%s：%s发生未处理异常", NODE_NAME, label)
+        except Exception:
+            log_exception_safely()
             success = False
-            detail = str(error)
+            detail = "任务异常"
         finally:
             if task is not None:
                 self.deactivate_task(task)
@@ -2302,10 +2266,10 @@ class Task3Final:
             timed_out = bool(task.embedded_timed_out)
             if color is None and success and marker_id is not None:
                 color = task.color_for_marker(marker_id)
-        except Exception as error:
-            log_exception_safely("%s：%s发生未处理异常", NODE_NAME, label)
+        except Exception:
+            log_exception_safely()
             success = False
-            detail = str(error)
+            detail = "任务异常"
             color = None
         finally:
             if task is not None:
@@ -2402,10 +2366,10 @@ class Task3Final:
                 success = bool(task.embedded_success)
                 detail = task.embedded_detail
             timed_out = bool(task.embedded_timed_out)
-        except Exception as error:
-            log_exception_safely("%s：%s发生未处理异常", NODE_NAME, label)
+        except Exception:
+            log_exception_safely()
             success = False
-            detail = str(error)
+            detail = "任务异常"
         finally:
             if task is not None:
                 self.deactivate_task(task)
@@ -2534,13 +2498,8 @@ class Task3Final:
                 context
             )
             del unused_returned
-        except Exception as error:
-            log_exception_safely(
-                "%s：%s标准返航保护异常，改为直接发布预设返航点上浮目标：%s",
-                NODE_NAME,
-                context,
-                str(error),
-            )
+        except Exception:
+            log_exception_safely()
             ascent_seconds = float(
                 self.task3_params.get("post_drop_ascent_seconds", 5.0)
             )
@@ -2883,20 +2842,16 @@ class Task3Final:
             return self.run_mission()
         except rospy.ROSInterruptException:
             raise
-        except Exception as error:
-            log_exception_safely(
-                "%s：整合任务出现未处理运行期异常，不退出并启动总保护：%s",
-                NODE_NAME,
-                str(error),
-            )
+        except Exception:
+            log_exception_safely()
             if rospy.is_shutdown():
-                return self.fail("未处理异常后ROS已关闭：{}".format(error))
+                return self.fail("任务异常后ROS已关闭")
             self.request_safety_hover("整合任务未处理异常")
             if rospy.is_shutdown():
                 return self.fail("未处理异常悬停期间ROS关闭")
             return self.finish_with_return_protection(
                 "整合任务未处理异常",
-                "未处理异常={}，已转入返航保护".format(error),
+                "任务异常，已转入返航保护",
             )
 
     def on_shutdown(self):

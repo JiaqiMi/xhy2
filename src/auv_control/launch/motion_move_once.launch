@@ -26,8 +26,8 @@
     <arg name="yaw_offset_deg" default="0.0" />
 
     <!-- absolute 模式下 map 坐标系的绝对 x、y 位置，单位 m。 -->
-    <arg name="target_x" default="-2.74" />
-    <arg name="target_y" default="-5.63" />
+    <arg name="target_x" default="-0.03" />
+    <arg name="target_y" default="-5.33" />
 
     <!-- absolute 模式下 map 坐标系的绝对航向，单位 deg。 -->
     <arg name="target_yaw_deg" default="210.0" />
