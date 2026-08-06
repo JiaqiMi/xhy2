@@ -74,6 +74,7 @@
 2026.8.5
     新增大航向误差优先迟滞，转向期间暂停 XY 位置修正；
     侧推复位反向脉冲按失败次数逐次延长，并在上限处持续重试。
+    TF或速度反馈真实失效时立即安全回中，不再使用最后一帧旧速度持续主动刹车。
 """
 
 from __future__ import division
@@ -2113,7 +2114,15 @@ class MotionSupervisorCore(object):
                 self._reset_motion_references(vehicle.now)
             self.recovery_brake_requested = self.goal_active
             self._transition(SAFE, 'TF 或速度反馈超时')
-            return self._brake_output(vehicle)
+            self.x_axis_state = AXIS_HOLD
+            self.y_axis_state = AXIS_HOLD
+            self.yaw_axis_state = AXIS_HOLD
+            return self._output(
+                vehicle,
+                MODE_DEPTH,
+                immediate_zero=True,
+                diagnostics={'feedback_lost_safe_zero': True},
+            )
 
         if self.state == SAFE:
             if self.goal_active or self.cancel_requested:

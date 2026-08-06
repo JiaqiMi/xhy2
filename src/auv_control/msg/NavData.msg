@@ -39,7 +39,7 @@ float32 dvl_vx
 float32 dvl_vy
 float32 dvl_vz
 float32 dvl_altitude
-uint8 dvl_status   # 2=对底有效，4=对底和对水均有效
+uint8 dvl_status   # 1=本nav帧无新DVL样本，2=对底有效，4=对底和对水均有效；状态1不清空锁存值
 
 # IMU推导/惯导采样后的速度深度
 float32 depth

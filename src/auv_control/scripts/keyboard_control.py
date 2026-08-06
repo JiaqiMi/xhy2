@@ -21,6 +21,8 @@
     增加 9 键触发 task1 视觉模型预热。
 2026.8.5
     增加 M/N 键控制 motion_supervisor 的保活与单次关闭。
+2026.8.5
+    字母按键统一兼容大小写输入。
 """
 
 import atexit
@@ -134,17 +136,18 @@ class KeyboardControlNode:
                 if key is None:
                     self.rate.sleep()
                     continue
+                normalized_key = key.lower()
                 if key in '123':
                     self.publish_task(int(key))
-                elif key == 'g':
+                elif normalized_key == 'g':
                     self.start_automatic_tasks()
                 elif key == '9':
                     self.start_task1_vision_prewarm()
-                elif key == 'M':
+                elif normalized_key == 'm':
                     self.enable_motion_supervisor()
-                elif key == 'N':
+                elif normalized_key == 'n':
                     self.disable_motion_supervisor()
-                elif key in '0l':
+                elif key == '0' or normalized_key == 'l':
                     self.stop_task()
                 elif key == '\x03':
                     break

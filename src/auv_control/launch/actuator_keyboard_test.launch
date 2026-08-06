@@ -1,0 +1,28 @@
+<launch>
+    <!--
+    名称：actuator_keyboard_test.launch
+    功能：启动5Hz保持式键盘执行器测试节点
+    作者：buyegaid
+    监听：键盘终端输入
+    发布：/cmd/actuator
+    记录：
+    2026.8.5
+        新增执行器键盘测试启动配置。
+    -->
+    <arg name="command_topic" default="/cmd/actuator" />
+    <arg name="drive_speed" default="250" />
+    <arg name="heading_servo" default="128" />
+    <arg name="clamp_open" default="0" />
+    <arg name="clamp_closed" default="255" />
+
+    <node pkg="auv_control"
+          type="actuator_keyboard_test.py"
+          name="actuator_keyboard_test"
+          output="screen">
+        <param name="command_topic" type="string" value="$(arg command_topic)" />
+        <param name="drive_speed" type="int" value="$(arg drive_speed)" />
+        <param name="heading_servo" type="int" value="$(arg heading_servo)" />
+        <param name="clamp_open" type="int" value="$(arg clamp_open)" />
+        <param name="clamp_closed" type="int" value="$(arg clamp_closed)" />
+    </node>
+</launch>

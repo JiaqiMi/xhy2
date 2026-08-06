@@ -23,6 +23,7 @@
     保存文件达到 50 MiB 后自动分卷，文件名追加下划线编号。
 2026.8.5
     合并 nav 反馈辅助功能，提供 INS 有效位判断、DVL 对底速度锁存和 IMU 角速度转换。
+    区分 DVL 状态1无新样本与状态0硬无效，增加软保持、硬无效去抖和状态查询。
 """
 
 import json
@@ -41,6 +42,12 @@ from auv_control.msg import NavData
 
 INS_VALID_MASK = 0x4000
 DVL_BOTTOM_VALID_STATUSES = frozenset((2, 4))
+DVL_NO_UPDATE_STATUS = 1
+DVL_AVAILABILITY_WAITING = 'waiting'
+DVL_AVAILABILITY_FRESH = 'fresh'
+DVL_AVAILABILITY_HOLDING = 'holding'
+DVL_AVAILABILITY_STALE = 'stale'
+DVL_AVAILABILITY_HARD_INVALID = 'hard_invalid'
 
 DvlBottomSample = namedtuple(
     'DvlBottomSample', ('velocity', 'altitude', 'stamp', 'age')
@@ -98,27 +105,51 @@ def angular_velocity_rad(angular_velocity_deg):
 
 
 class DvlBottomTracker:
-    """只锁存状态 2/4 的 DVL 对底速度与高度，并提供超时查询。"""
+    """锁存低频 DVL 对底数据，并区分无更新帧与硬无效状态。"""
 
-    def __init__(self, timeout_sec=0.3):
+    def __init__(self, timeout_sec=2.5, hard_invalid_timeout_sec=0.15):
         timeout = float(timeout_sec)
         self.timeout_sec = (
-            timeout if math.isfinite(timeout) and timeout > 0.0 else 0.3
+            timeout if math.isfinite(timeout) and timeout > 0.0 else 2.5
+        )
+        hard_invalid_timeout = float(hard_invalid_timeout_sec)
+        self.hard_invalid_timeout_sec = (
+            hard_invalid_timeout
+            if math.isfinite(hard_invalid_timeout)
+            and hard_invalid_timeout > 0.0
+            else 0.15
         )
         self.velocity = None
         self.altitude = None
         self.stamp = None
+        self.last_status = None
+        self.last_update_succeeded = False
+        self.hard_invalid_since = None
 
     def update(self, status, velocity, altitude, stamp):
-        """若状态及数值有效则更新锁存，返回本次是否更新。"""
+        """状态2/4更新数据；状态1只保持；状态0或未知值启动硬无效去抖。"""
         try:
             converted_status = int(status)
-            converted_velocity = tuple(float(value) for value in velocity)
-            converted_altitude = float(altitude)
             converted_stamp = float(stamp)
         except (TypeError, ValueError, OverflowError):
             return False
+        if not math.isfinite(converted_stamp):
+            return False
+
+        self.last_status = converted_status
+        self.last_update_succeeded = False
         if converted_status not in DVL_BOTTOM_VALID_STATUSES:
+            # 状态1只是当前20Hz nav帧没有新的低频DVL样本，不使旧样本失效。
+            if (
+                    converted_status != DVL_NO_UPDATE_STATUS
+                    and self.hard_invalid_since is None):
+                self.hard_invalid_since = converted_stamp
+            return False
+
+        try:
+            converted_velocity = tuple(float(value) for value in velocity)
+            converted_altitude = float(altitude)
+        except (TypeError, ValueError, OverflowError):
             return False
         values = converted_velocity + (converted_altitude, converted_stamp)
         if len(converted_velocity) != 3 or not all(
@@ -127,14 +158,46 @@ class DvlBottomTracker:
         self.velocity = converted_velocity
         self.altitude = converted_altitude
         self.stamp = converted_stamp
+        self.hard_invalid_since = None
+        self.last_update_succeeded = True
         return True
+
+    def _sample_age(self, now):
+        """返回最近一次有效对底样本年龄；无有效样本时返回 None。"""
+        if self.stamp is None:
+            return None
+        try:
+            age = max(0.0, float(now) - self.stamp)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return age if math.isfinite(age) else None
+
+    def availability(self, now):
+        """返回 waiting/fresh/holding/stale/hard_invalid 状态。"""
+        age = self._sample_age(now)
+        if age is None:
+            return DVL_AVAILABILITY_WAITING
+        if self.hard_invalid_since is not None:
+            hard_invalid_age = max(0.0, float(now) - self.hard_invalid_since)
+            if hard_invalid_age >= self.hard_invalid_timeout_sec:
+                return DVL_AVAILABILITY_HARD_INVALID
+        if age > self.timeout_sec:
+            return DVL_AVAILABILITY_STALE
+        if (
+                self.last_status in DVL_BOTTOM_VALID_STATUSES
+                and self.last_update_succeeded):
+            return DVL_AVAILABILITY_FRESH
+        return DVL_AVAILABILITY_HOLDING
 
     def current(self, now):
         """返回未超时的锁存值；无值或超时返回 None。"""
-        if self.stamp is None:
+        age = self._sample_age(now)
+        if age is None:
             return None
-        age = max(0.0, float(now) - self.stamp)
-        if not math.isfinite(age) or age > self.timeout_sec:
+        if self.availability(now) in (
+                DVL_AVAILABILITY_WAITING,
+                DVL_AVAILABILITY_STALE,
+                DVL_AVAILABILITY_HARD_INVALID):
             return None
         return DvlBottomSample(
             self.velocity,

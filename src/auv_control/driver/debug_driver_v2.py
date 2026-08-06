@@ -32,6 +32,7 @@
     使用 /nav 的有效 INS 位姿、DVL 对底速度和 IMU 角速度发布 20Hz 状态反馈。
     debug 上行数据改为补充控制模式、目标、推力和设备状态，增加 nav/DVL/debug 超时保护。
     控制下发循环改用单调时钟维持配置频率，默认 20Hz。
+    DVL 状态1改为低频样本软保持，状态0增加硬无效去抖，并仅在失效状态迁移时告警。
 """
 
 import json
@@ -63,6 +64,11 @@ from debug_protocol import (
     require_finite,
 )
 from nav_driver import (
+    DVL_AVAILABILITY_FRESH,
+    DVL_AVAILABILITY_HARD_INVALID,
+    DVL_AVAILABILITY_HOLDING,
+    DVL_AVAILABILITY_STALE,
+    DVL_AVAILABILITY_WAITING,
     DvlBottomTracker,
     angular_velocity_rad,
     imu_angular_velocity_deg,
@@ -150,15 +156,25 @@ class DebugDriverV2:
         self.send_period_s = 1.0 / self.send_rate_hz
 
         self.dvl_velocity_timeout_sec = float(rospy.get_param(
-            '~dvl_velocity_timeout_sec', 0.3
+            '~dvl_velocity_timeout_sec', 2.5
         ))
         if (
                 not math.isfinite(self.dvl_velocity_timeout_sec)
                 or self.dvl_velocity_timeout_sec <= 0.0):
             rospy.logerr(
-                'debug_driver_v2: dvl_velocity_timeout_sec 无效，回退为 0.3s'
+                'debug_driver_v2: dvl_velocity_timeout_sec 无效，回退为 2.5s'
             )
-            self.dvl_velocity_timeout_sec = 0.3
+            self.dvl_velocity_timeout_sec = 2.5
+        self.dvl_hard_invalid_timeout_sec = float(rospy.get_param(
+            '~dvl_hard_invalid_timeout_sec', 0.15
+        ))
+        if (
+                not math.isfinite(self.dvl_hard_invalid_timeout_sec)
+                or self.dvl_hard_invalid_timeout_sec <= 0.0):
+            rospy.logerr(
+                'debug_driver_v2: dvl_hard_invalid_timeout_sec 无效，回退为 0.15s'
+            )
+            self.dvl_hard_invalid_timeout_sec = 0.15
         self.nav_timeout_sec = float(rospy.get_param('~nav_timeout_sec', 0.5))
         if not math.isfinite(self.nav_timeout_sec) or self.nav_timeout_sec <= 0.0:
             rospy.logerr('debug_driver_v2: nav_timeout_sec 无效，回退为 0.5s')
@@ -191,7 +207,11 @@ class DebugDriverV2:
         self.latest_debug_data = None
         self.latest_debug_received_at = None
         self.latest_nav_received_at = None
-        self.dvl_tracker = DvlBottomTracker(self.dvl_velocity_timeout_sec)
+        self.dvl_tracker = DvlBottomTracker(
+            self.dvl_velocity_timeout_sec,
+            self.dvl_hard_invalid_timeout_sec,
+        )
+        self.last_dvl_availability = None
 
         self.lock = threading.RLock()
         self.socket_lock = threading.RLock()
@@ -431,6 +451,39 @@ class DebugDriverV2:
                 error,
             )
 
+    def _report_dvl_availability(self, availability):
+        """只在真正失效或恢复时记录状态，避免状态1/2切换刷屏。"""
+        previous = self.last_dvl_availability
+        self.last_dvl_availability = availability
+        if availability == previous:
+            return
+        if availability == DVL_AVAILABILITY_WAITING:
+            if previous is None:
+                rospy.logwarn('debug_driver_v2: 等待首个有效 DVL 对底速度')
+            return
+        if availability == DVL_AVAILABILITY_HARD_INVALID:
+            rospy.logerr(
+                'debug_driver_v2: DVL 持续硬无效，停止发布 /status/vel'
+            )
+            return
+        if availability == DVL_AVAILABILITY_STALE:
+            rospy.logerr(
+                'debug_driver_v2: DVL 未获得有效新样本超过 %.2fs，停止发布 /status/vel',
+                self.dvl_velocity_timeout_sec,
+            )
+            return
+        if availability == DVL_AVAILABILITY_HOLDING:
+            # 状态1是正常的低频采样间隔，不记录 warning/error。
+            return
+        if (
+                availability == DVL_AVAILABILITY_FRESH
+                and previous in (
+                    DVL_AVAILABILITY_HARD_INVALID,
+                    DVL_AVAILABILITY_STALE,
+                    DVL_AVAILABILITY_WAITING,
+                )):
+            rospy.loginfo('debug_driver_v2: DVL 对底速度已恢复')
+
     def _process_nav_callback(self, nav):
         """以有效 nav 帧触发 AUV 位姿及速度状态发布。"""
         now = rospy.Time.now()
@@ -457,10 +510,12 @@ class DebugDriverV2:
                 now_sec,
             )
             dvl_sample = self.dvl_tracker.current(now_sec)
+            dvl_availability = self.dvl_tracker.availability(now_sec)
         if int(nav.dvl_status) in (2, 4) and not updated:
             rospy.logerr_throttle(
                 1.0, 'debug_driver_v2: DVL 对底速度包含无效数值，保持上一有效值'
             )
+        self._report_dvl_availability(dvl_availability)
 
         debug = self._fresh_debug_snapshot(now)
         stamp = nav.header.stamp
@@ -472,10 +527,6 @@ class DebugDriverV2:
         self.data_pub.publish(msg)
 
         if dvl_sample is None:
-            rospy.logerr_throttle(
-                1.0,
-                'debug_driver_v2: DVL 对底速度缺失或超时，停止发布 /status/vel',
-            )
             return
 
         # DVL 对底速度直接使用下位机轴顺序；IMU 角速度只做单位转换。
