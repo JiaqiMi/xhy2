@@ -325,6 +325,9 @@ class Task1LineFollow:
         self.line_lock_window_seconds = float(rospy.get_param(
             "~line_lock_window_seconds", 0.3
         ))
+        self.initial_line_freeze_timeout_seconds = max(0.1, float(
+            rospy.get_param("~initial_line_freeze_timeout_seconds", 1.0)
+        ))
         self.line_min_confidence = clamp(float(rospy.get_param(
             "~line_min_confidence", 0.70
         )), 0.0, 1.0)
@@ -500,6 +503,8 @@ class Task1LineFollow:
         self.confirmed_end_distance = -1.0
         self.line_version = 0
         self.initial_line_hold_pose = None
+        self.initial_line_freeze_started_at = None
+        self.initial_line_freeze_recovery_active = False
 
         self.hold_target = None
         self.stable_since = None
@@ -1651,6 +1656,8 @@ class Task1LineFollow:
             distance,
         )
         if self.activate_latest_tracking_curve(reset_progress=True):
+            self.initial_line_freeze_started_at = None
+            self.initial_line_freeze_recovery_active = False
             rospy.loginfo(
                 "%s: 首段固定曲线已就绪，直接开始 base_link 中点连续巡线",
                 NODE_NAME,
@@ -1660,14 +1667,29 @@ class Task1LineFollow:
             self.clear_active_los_target()
             self.set_state(self.FOLLOW_LINE)
         else:
+            self.initial_line_freeze_started_at = rospy.Time.now()
             self.set_state(self.WAIT_FIXED_LINE)
             rospy.loginfo(
-                "%s: 首条红线已拟合，等待后续高置信帧确认固定（%d/%d）",
+                "%s: 首条红线已拟合，最多等待 %.1f s 确认固定（%d/%d）",
                 NODE_NAME,
+                self.initial_line_freeze_timeout_seconds,
                 self.freeze_confirmation_count,
                 self.curve_freeze_required_frames,
             )
         return True
+
+    def abandon_initial_line_lock(self):
+        """首段曲线未冻结时放弃本次锁线，允许搜索新候选。"""
+        self.line_locked = False
+        self.line_lock_candidate = None
+        self.line_lock_confidence = 0.0
+        self.initial_line_hold_pose = None
+        self.initial_line_freeze_started_at = None
+        self.reset_tentative_line_state()
+
+    def handle_repeated_initial_line_freeze_timeout(self):
+        """完整 Task1 可在搜索期间的新候选再次失败后接管。"""
+        return False
 
     def run_wait_fixed_line(self):
         """首段拟合尚未确认时保持原位；固定后才允许机器人开始 LOS。"""
@@ -1685,6 +1707,8 @@ class Task1LineFollow:
             self.curve_freeze_required_frames,
         )
         if self.activate_latest_tracking_curve(reset_progress=True):
+            self.initial_line_freeze_started_at = None
+            self.initial_line_freeze_recovery_active = False
             rospy.loginfo(
                 "%s: 首段曲线已固定，固定长度=%.2f m，开始连续巡线",
                 NODE_NAME,
@@ -1694,6 +1718,61 @@ class Task1LineFollow:
             self.last_los_goal = None
             self.clear_active_los_target()
             self.set_state(self.FOLLOW_LINE)
+            return
+
+        now = rospy.Time.now()
+        if self.initial_line_freeze_started_at is None:
+            self.initial_line_freeze_started_at = now
+        elapsed = (
+            now - self.initial_line_freeze_started_at
+        ).to_sec()
+        if elapsed < self.initial_line_freeze_timeout_seconds:
+            return
+
+        fitted_length = self.line_curve_s[-1] if self.line_curve_s else 0.0
+        retry_already_active = self.initial_line_freeze_recovery_active
+        self.write_data_record(
+            "initial_line_freeze_timeout",
+            elapsed_seconds=round(elapsed, 6),
+            timeout_seconds=self.initial_line_freeze_timeout_seconds,
+            fitted_curve_length=round(fitted_length, 6),
+            freeze_confirmation_count=self.freeze_confirmation_count,
+            freeze_required_frames=self.curve_freeze_required_frames,
+            recovery_search_active=retry_already_active,
+        )
+        rospy.logwarn(
+            "%s: 首段曲线 %.1f s 内未固定，拟合长度=%.2f m；"
+            "放弃本次候选",
+            NODE_NAME,
+            elapsed,
+            fitted_length,
+        )
+        self.abandon_initial_line_lock()
+
+        if (
+            retry_already_active
+            and self.handle_repeated_initial_line_freeze_timeout()
+        ):
+            return
+
+        self.initial_line_freeze_recovery_active = True
+        self.extension_search_active = False
+        self.search_base_yaw = yaw_from_quaternion(
+            current.pose.orientation
+        )
+        self.search_cycle_anchor = copy.deepcopy(current.pose.position)
+        self.search_target = None
+        self.write_data_record(
+            "initial_line_freeze_search_start",
+            anchor=self.point_record(self.search_cycle_anchor),
+            base_yaw_deg=round(math.degrees(self.search_base_yaw), 6),
+        )
+        rospy.logwarn(
+            "%s: 固定当前 XY 只执行一轮左转、右转、回正搜索，"
+            "不再向前搜索",
+            NODE_NAME,
+        )
+        self.set_search_state(self.SEARCH_LEFT)
 
     def set_search_state(self, state):
         self.set_state(state)

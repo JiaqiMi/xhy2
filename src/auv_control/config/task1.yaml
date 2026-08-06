@@ -56,6 +56,8 @@ fallback_target_yaw_deg: 210.0
 # 红线锁定与拟合
 line_classes: line
 line_lock_window_seconds: 0.3
+# 首次锁线后等待曲线冻结的最长时间；超时后只原地搜索一轮
+initial_line_freeze_timeout_seconds: 1.0
 line_min_confidence: 0.65  # line 置信度下限
 line_point_merge_distance: 0.0
 line_point_update_alpha: 0.20
