@@ -1,4 +1,4 @@
-#!/home/xhy/xhy_env/bin/python3.8
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 # -*- coding: utf-8 -*-
 """
 名称：state_web_node.py
@@ -34,6 +34,14 @@ import json
 import logging
 import math
 import os
+import sys
+
+# catkin_install_python 会从 devel_isolated 中启动中继脚本。
+# 显式将当前源码目录放到模块搜索路径最前面，
+# 确保导入真正的辅助模块，而不是 catkin 生成的中继脚本。
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
 import threading
 import time
 

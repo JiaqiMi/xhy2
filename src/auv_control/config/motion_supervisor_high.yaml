@@ -34,6 +34,11 @@
 #   新增 TY/MZ 协议级侧推异常检测与自动恢复参数，不改变正常跟踪、限幅和刹车参数。
 # 2026.8.5
 #   新增 30/10 deg 航向优先迟滞，并让反向复位脉冲由 1.0 s 逐次延长至 5.0 s。
+# 2026.8.6
+#   根据 260805 data2 远距离直航回放，仅提高 XY 速度上限至 0.425 m/s；
+#   保持位置增益、加速度、jerk 和 X 速度环增益不变，使 1 m 内制动段的 TX 尽量维持原状。
+# 2026.8.6
+#   撤回航向优先暂停 XY；改为 80/40 deg 迟滞下仅把 TY 输出降至 30%。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -138,7 +143,7 @@ hover_exit_hold_seconds: 0.50         # HOVER 或 Yaw 制动误差连续超限�
 mode_ack_timeout: 1.0                 # 接管确认及 HOVER 模式反馈最大允许间隔，单位 s
 
 # 统一三轴位置-速度-力控制。
-xy_max_speed: 0.35 # xy的最大参考速度，暂定为0.3m/s
+xy_max_speed: 0.425 # 260805 data2：远距离 TX 目标约 2.8k；受制动距离约束，0.886 m 内参考速度不变
 xy_position_gain: 1.20
 xy_max_acceleration: 0.40
 xy_max_jerk: 0.40
@@ -152,9 +157,10 @@ yaw_position_gain: 0.22 # 仅在 120 deg 及以上动作达到 25 deg/s；短角
 yaw_max_acceleration_deg_s2: 20.0
 yaw_max_jerk_deg_s3: 35.0 # 5 Hz 前视目标跨过 5 deg 重规划阈值后，减小角速度参考恢复时的力矩阶跃；不影响刹转 jerk
 yaw_brake_jerk_deg_s3: 15.0 # 8 Hz 下缩短刹转加速度建立时间，避免计划减速度长期低于实际停车需求
-# 适配 90 deg 定角和 150 deg 步长连续旋转：大于 30 deg 先转向，小于 10 deg 再恢复 XY。
-yaw_priority_enter_error_deg: 30.0
-yaw_priority_exit_error_deg: 10.0
+# 保留原 XY+Yaw 联合轨迹；大航向误差仅降低 TY，减轻下位机侧推单侧过载。
+yaw_ty_limit_enter_error_deg: 80.0
+yaw_ty_limit_exit_error_deg: 40.0
+yaw_ty_limit_scale: 0.30
 
 # 航向刹停迟滞；高于 0.6 deg/s 才进入，低于 0.2 deg/s 才退出。
 yaw_brake_enter_rate_deg_s: 1.5 # data3 残余约 0.7 deg/s 不再触发重复刹转；主刹停速度仍远高于此阈值

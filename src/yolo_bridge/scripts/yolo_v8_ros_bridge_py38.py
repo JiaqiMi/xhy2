@@ -1,4 +1,4 @@
-# #!/home/xhy/xhy_env/bin/python
+# #!/home/nvidia/venvs/xhy_ros2/bin/python
 # import rospy
 # import cv2
 # import numpy as np
@@ -14,14 +14,14 @@
 #     def __init__(self):
 #         rospy.init_node("yolov8_detector", anonymous=True)
 #         if DetectMode == 1:
-#             self.model = YOLO("/home/xhy/catkin_ws/models/shapes_model0719.pt")
+#             self.model = YOLO("/home/nvidia/catkin_ws/models/shapes_model0719.pt")
 #         elif DetectMode == 2:
-#             self.model = YOLO("/home/xhy/catkin_ws/models/holes_model0719.pt")
+#             self.model = YOLO("/home/nvidia/catkin_ws/models/holes_model0719.pt")
 #         elif DetectMode == 3:
-#             self.model = YOLO("/home/xhy/catkin_ws/models/balls_model0719.pt")
+#             self.model = YOLO("/home/nvidia/catkin_ws/models/balls_model0719.pt")
 #         else:
 #             rospy.logwarn("DetectMode error: %s, select the shapes model by default", str(DetectMode))
-#             self.model = YOLO("/home/xhy/catkin_ws/models/shapes_model0719.pt")
+#             self.model = YOLO("/home/nvidia/catkin_ws/models/shapes_model0719.pt")
             
 #         self.bridge = CvBridge()
 

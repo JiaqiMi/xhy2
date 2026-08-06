@@ -6,7 +6,7 @@
     <arg name="start_web" default="false" />
 
     <!-- <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/rectangle0710.pt" /> -->
+         default="/home/nvidia/catkin_ws/models/rectangle0710.pt" /> -->
     <arg name="task_mode" default="segment3" />
     <arg name="detect_mode" default="4" />   
     <arg name="model_path" default="" />
@@ -18,10 +18,10 @@
     <arg name="web_port" default="8080" />
 
     <node if="$(arg start_camera)"
-        name="usb_cam"
-        pkg="usb_cam"
-        type="usb_cam_node"
-        launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
+          name="usb_cam"
+          pkg="stereo_splitter"
+          type="mjpg_cam_node.py"
+          output="screen" />
 
     <node if="$(arg start_splitter)"
           pkg="stereo_splitter"

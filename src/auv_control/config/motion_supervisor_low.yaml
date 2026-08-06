@@ -6,6 +6,8 @@
 #   新增 TY/MZ 协议级侧推异常检测与自动恢复参数，不改变正常跟踪、限幅和刹车参数。
 # 2026.8.5
 #   新增 30/10 deg 航向优先迟滞，并让反向复位脉冲由 1.0 s 逐次延长至 5.0 s。
+# 2026.8.6
+#   撤回航向优先暂停 XY；改为 80/40 deg 迟滞下仅把 TY 输出降至 30%。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -131,9 +133,10 @@ yaw_position_gain: 1.50
 yaw_max_acceleration_deg_s2: 20.0
 yaw_max_jerk_deg_s3: 60.0
 yaw_brake_jerk_deg_s3: 5.0 # 定点刹转角速度参考的最大 jerk，单位 deg/s^3
-# 适配 90 deg 定角和 150 deg 步长连续旋转：大于 30 deg 先转向，小于 10 deg 再恢复 XY。
-yaw_priority_enter_error_deg: 30.0
-yaw_priority_exit_error_deg: 10.0
+# 保留原 XY+Yaw 联合轨迹；大航向误差仅降低 TY，减轻下位机侧推单侧过载。
+yaw_ty_limit_enter_error_deg: 80.0
+yaw_ty_limit_exit_error_deg: 40.0
+yaw_ty_limit_scale: 0.30
 
 # 航向刹停迟滞；高于 0.6 deg/s 才进入，低于 0.2 deg/s 才退出。
 yaw_brake_enter_rate_deg_s: 0.6

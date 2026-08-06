@@ -15,9 +15,9 @@
 
     <!-- 请将训练得到的best.pt复制并重命名到该位置 -->
     <!-- <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/arrow_pose0720.pt" /> -->
+         default="/home/nvidia/catkin_ws/models/arrow_pose0720.pt" /> -->
     <!-- <arg name="model_path"
-         default="/home/xhy/catkin_ws/models/model_arrow_260726.pt" /> -->
+         default="/home/nvidia/catkin_ws/models/model_arrow_260726.pt" /> -->
 
     <!-- ==================== 模型选择 ==================== -->
     <!--
@@ -27,15 +27,15 @@
     <arg name="model_flag" default="true" />
 
     <arg name="new_model_path"
-         default="/home/xhy/catkin_ws/models/model_arrow_260726.pt" />
+         default="/home/nvidia/catkin_ws/models/model_arrow_260726.pt" />
 
     <arg name="old_model_path"
-         default="/home/xhy/catkin_ws/models/arrow_pose0720.pt" />
+         default="/home/nvidia/catkin_ws/models/arrow_pose0720.pt" />
 
     <arg name="conf_thre" default="0.10" />
     <arg name="keypoint_conf_thre" default="0.1" />
     <arg name="top_k" default="3" />
-    <arg name="rate" default="5.0" />
+    <arg name="rate" default="20.0" />
     <arg name="imgsz" default="640" />
     <arg name="device" default="0" />
     <arg name="visualization" default="0" />
@@ -102,17 +102,9 @@
 
     <node if="$(arg start_camera)"
           name="usb_cam"
-          pkg="usb_cam"
-          type="usb_cam_node"
-          output="$(arg node_output)"
-          launch-prefix="bash -c 'exec &quot;$0&quot; &quot;$@&quot; 2>/dev/null'">
-
-        <param name="video_device" value="/dev/video0" />
-        <param name="pixel_format" value="mjpeg" />
-        <param name="image_width" value="1280" />
-        <param name="image_height" value="480" />
-        <param name="framerate" value="30" />
-    </node>
+          pkg="stereo_splitter"
+          type="mjpg_cam_node.py"
+          output="screen" />
 
     <node if="$(arg start_splitter)"
           pkg="stereo_splitter"

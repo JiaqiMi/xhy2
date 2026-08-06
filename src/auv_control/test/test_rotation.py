@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env36/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称: test_rotation.py
 功能: 测试航向角旋转控制

@@ -9,7 +9,7 @@
         <param name="task_mode" value="segment3"/>
 
         <param name="model_path"
-               value="/home/xhy/catkin_ws/models/line0709.pt"/>
+               value="/home/nvidia/catkin_ws/models/line0709.pt"/>
 
         <param name="detect_mode" value="4"/>
         <param name="top_k" value="3"/>

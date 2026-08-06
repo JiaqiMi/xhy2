@@ -9,7 +9,7 @@
         <param name="task_mode" value="detect"/>
 
         <param name="model_path"
-               value="/home/xhy/catkin_ws/models/shapes0709.pt"/>
+               value="/home/nvidia/catkin_ws/models/shapes0709.pt"/>
 
         <param name="detect_mode" value="1"/>
         <param name="top_k" value="3"/>

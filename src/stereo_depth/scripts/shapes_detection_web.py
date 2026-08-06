@@ -1,4 +1,4 @@
-#!/home/xhy/xhy_env/bin/python3.8
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 # -*- coding: utf-8 -*-
 
 # 基于中心像素点的目标位姿计算，并同步发布Web端JSON结果

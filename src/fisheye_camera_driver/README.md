@@ -3,7 +3,7 @@
 适用于 ROS1 Melodic，通过 RTSP 读取鱼眼相机未经校正的画面，并发布标准
 `sensor_msgs/Image`。
 
-Python 节点固定使用 `/home/xhy/xhy_env/bin/python3.8`。虚拟环境需已安装
+Python 节点固定使用 `/home/nvidia/venvs/xhy_ros2/bin/python`。虚拟环境需已安装
 `opencv-python` 和 `Flask`；若缺少依赖，可执行：
 
 ```bash
