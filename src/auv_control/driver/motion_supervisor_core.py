@@ -1783,9 +1783,10 @@ class MotionSupervisorCore(object):
         desired_vy = desired_speed * direction_y
         brake_feedforward_tx = 0.0
         brake_feedforward_ty = 0.0
-        if braking_xy:
+        if braking_xy or self.yaw_priority_active:
             # 锁存刹停期间按方向有效减速度把速度参考收敛到零；该轨迹
             # 与停车距离模型使用同一组参数，保持类似 PX4 的定点减速链路。
+            # 大航向误差期间也暂停 XY 位置修正，先把平移速度收敛到零。
             desired_vx = 0.0
             desired_vy = 0.0
         reference_vx, reference_vy = self._slew_velocity_reference(
@@ -2032,7 +2033,9 @@ class MotionSupervisorCore(object):
             self._transition(
                 TRANSLATE_BRAKE if brake_axes else TRANSLATE,
                 ('统一三轴制动跟踪（{}）'.format('+'.join(brake_axes))
-                 if brake_axes else '统一三轴位姿跟踪'),
+                 if brake_axes else (
+                     '航向优先跟踪，暂缓 XY 位置修正'
+                     if self.yaw_priority_active else '统一三轴位姿跟踪')),
             )
         return self._output(
             vehicle,

@@ -1,5 +1,4 @@
-#! /home/xhy/xhy_env36/bin/python
-# -*- coding: utf-8 -*-
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称：debug_driver_v2.py
 功能：调试驱动V2，支持定深(02)/定深定向(03)/定点(04)三种模式
@@ -39,6 +38,14 @@
 import json
 import math
 import os
+import sys
+
+# catkin_install_python 会从 devel_isolated 中启动中继脚本。
+# 显式将当前源码目录放到模块搜索路径最前面，
+# 确保导入真正的辅助模块，而不是 catkin 生成的中继脚本。
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
 from datetime import datetime
 
 import rospy

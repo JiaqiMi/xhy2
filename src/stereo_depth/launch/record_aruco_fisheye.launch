@@ -20,7 +20,7 @@
     <arg name="start_record" default="true" />
 
     <!-- rosbag 保存目录 -->
-    <arg name="bag_dir" default="/home/xhy/xhy_records" />
+    <arg name="bag_dir" default="/home/nvidia/xhy_records" />
 
     <!-- rosbag 文件名前缀 -->
     <arg name="bag_name" default="fisheye_aruco" />

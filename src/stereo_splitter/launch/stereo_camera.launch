@@ -1,0 +1,19 @@
+<launch>
+    <!-- MJPG 相机采集 + 左右分流 一键启动 -->
+    <arg name="video_device" default="/dev/video0" />
+    <arg name="image_width" default="1280" />
+    <arg name="image_height" default="480" />
+    <arg name="framerate" default="30" />
+    <!-- 例: "-c auto_exposure=1 -c exposure_time_absolute=100" 锁曝光稳帧率 -->
+    <arg name="v4l2_ctl_args" default="" />
+
+    <node name="usb_cam" pkg="stereo_splitter" type="mjpg_cam_node.py" output="screen">
+        <param name="video_device" value="$(arg video_device)" />
+        <param name="image_width" value="$(arg image_width)" />
+        <param name="image_height" value="$(arg image_height)" />
+        <param name="framerate" value="$(arg framerate)" />
+        <param name="v4l2_ctl_args" value="$(arg v4l2_ctl_args)" />
+    </node>
+
+    <node pkg="stereo_splitter" type="split_stereo_image.py" name="split_stereo_image" output="screen" />
+</launch>

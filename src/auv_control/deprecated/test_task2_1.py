@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env36/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称: test_task2_1.py
 功能: 接收目标检测结果，转换到map坐标系并存入优先队列

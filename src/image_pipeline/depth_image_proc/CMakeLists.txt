@@ -4,7 +4,7 @@ project(depth_image_proc)
 find_package(catkin REQUIRED cmake_modules cv_bridge eigen_conversions image_geometry image_transport message_filters nodelet sensor_msgs stereo_msgs tf2 tf2_ros)
 
 if(cv_bridge_VERSION VERSION_GREATER "1.12.0")
-  add_compile_options(-std=c++11)
+  add_compile_options(-std=c++17)
 endif()
 
 catkin_package(

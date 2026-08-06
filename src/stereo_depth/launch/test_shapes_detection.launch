@@ -13,10 +13,10 @@
     <arg name="model_flag" default="true" />
 
     <arg name="new_model_path"
-         default="/home/xhy/catkin_ws/models/model_shapes_260726.pt" />
+         default="/home/nvidia/catkin_ws/models/model_shapes_260726.pt" />
 
     <arg name="old_model_path"
-         default="/home/xhy/catkin_ws/models/shapes0714.pt" />
+         default="/home/nvidia/catkin_ws/models/shapes0714.pt" />
 
     <arg name="exp_env" default="water" />
     <arg name="conf_thre" default="0.2" />
@@ -26,10 +26,10 @@
     <arg name="web_port" default="8080" />
 
     <node if="$(arg start_camera)"
-        name="usb_cam"
-        pkg="usb_cam"
-        type="usb_cam_node"
-        launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'" />
+          name="usb_cam"
+          pkg="stereo_splitter"
+          type="mjpg_cam_node.py"
+          output="screen" />
 
     <!-- <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" launch-prefix="bash -c 'rosrun usb_cam usb_cam_node _video_device:=/dev/video0 _pixel_format:=mjpeg _image_width:=1280 _image_height:=480 2>/dev/null; $0 $@'"  /> -->
 

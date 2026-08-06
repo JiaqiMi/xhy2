@@ -1,4 +1,4 @@
-#!/home/xhy/xhy_env/bin/python3.8
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 # -*- coding: utf-8 -*-
 
 import argparse
@@ -70,17 +70,17 @@ def resolve_model_path(task_mode, detect_mode, model_path):
         return model_path
 
     detect_models = {
-        1: "/home/xhy/catkin_ws/models/shapes0709.pt",
-        2: "/home/xhy/catkin_ws/models/rectangle0710.pt",
-        3: "/home/xhy/catkin_ws/models/line0709.pt",
-        4: "/home/xhy/catkin_ws/models/arrow0709.pt"
+        1: "/home/nvidia/catkin_ws/models/shapes0709.pt",
+        2: "/home/nvidia/catkin_ws/models/rectangle0710.pt",
+        3: "/home/nvidia/catkin_ws/models/line0709.pt",
+        4: "/home/nvidia/catkin_ws/models/arrow0709.pt"
     }
 
     segment_models = {
-        1: "/home/xhy/catkin_ws/models/shapes_model0719.pt",
-        2: "/home/xhy/catkin_ws/models/holes_model0719.pt",
-        3: "/home/xhy/catkin_ws/models/balls_model0725.pt",
-        4: "/home/xhy/catkin_ws/models/line0709.pt",
+        1: "/home/nvidia/catkin_ws/models/shapes_model0719.pt",
+        2: "/home/nvidia/catkin_ws/models/holes_model0719.pt",
+        3: "/home/nvidia/catkin_ws/models/balls_model0725.pt",
+        4: "/home/nvidia/catkin_ws/models/line0709.pt",
     }
 
     if task_mode == "detect":
@@ -128,6 +128,8 @@ class UnifiedYOLODetector:
         self.top_k = max(1, int(args.top_k))
         self.visualization = int(args.visualization)
         self.conf_thre = float(args.conf_thre)
+        self.imgsz = max(32, int(args.imgsz))
+        self.device = str(args.device).strip()
         self.detc_type = str(args.detc_type).strip().lower()
         self.output_type = str(args.output_type).strip().lower()
         self.rate = rospy.Rate(max(0.5, float(args.infer_rate)))
@@ -545,6 +547,8 @@ class UnifiedYOLODetector:
                     image,
                     conf=self.conf_thre,
                     max_det=self.top_k,
+                    imgsz=self.imgsz,
+                    device=self.device,
                     verbose=False,
                 )
             except Exception as exc:
@@ -693,6 +697,17 @@ def build_parser():
         "--top_k",
         type=int,
         default=3,
+    )
+
+    parser.add_argument(
+        "--imgsz",
+        type=int,
+        default=640,
+    )
+
+    parser.add_argument(
+        "--device",
+        default="0",
     )
 
     parser.add_argument(

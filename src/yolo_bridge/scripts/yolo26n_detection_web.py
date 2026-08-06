@@ -1,4 +1,4 @@
-#!/home/xhy/xhy_env/bin/python3.8
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 # -*- coding: utf-8 -*-
 
 import argparse
@@ -39,9 +39,9 @@ class YOLO26nDetector:
         self.left_header = Header()
 
         model_list = [
-            "/home/xhy/catkin_ws/models/shapes0709.pt",
-            "/home/xhy/catkin_ws/models/rectangle0710.pt",
-            "/home/xhy/catkin_ws/models/line0709.pt",
+            "/home/nvidia/catkin_ws/models/shapes0709.pt",
+            "/home/nvidia/catkin_ws/models/rectangle0710.pt",
+            "/home/nvidia/catkin_ws/models/line0709.pt",
         ]
 
         if not 1 <= self.DetectMode <= len(model_list):

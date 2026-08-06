@@ -2,9 +2,9 @@
 set -euo pipefail
 
 NODE_NAME="${NODE_NAME:-/yolo_unified_detector}"
-SCRIPT="/home/xhy/catkin_ws/src/yolo_bridge/scripts/yolo_lineN.py"
-PYTHON_BIN="/home/xhy/xhy_env/bin/python3.8"
-CV_BRIDGE_PY3="/home/xhy/catkin_ws/devel_isolated/cv_bridge/lib/python3/dist-packages"
+SCRIPT="/home/nvidia/catkin_ws/src/yolo_bridge/scripts/yolo_lineN.py"
+PYTHON_BIN="/home/nvidia/venvs/xhy_ros2/bin/python"
+CV_BRIDGE_PY3="/home/nvidia/catkin_ws/devel_isolated/cv_bridge/lib/python3/dist-packages"
 
 if [ ! -x "${PYTHON_BIN}" ]; then
     echo "[yolo_wrapper] Python not executable: ${PYTHON_BIN}" >&2

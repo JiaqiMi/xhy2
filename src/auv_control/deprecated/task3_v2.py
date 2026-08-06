@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称：task3_v2.py
 功能：2026 Task 3——识别指定管段并投放信标

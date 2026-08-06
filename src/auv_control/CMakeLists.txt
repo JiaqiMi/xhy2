@@ -11,7 +11,7 @@ cmake_minimum_required(VERSION 3.5)
 project(auv_control)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
-# add_compile_options(-std=c++11)
+# add_compile_options(-std=c++17)
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
@@ -211,7 +211,7 @@ catkin_install_python(PROGRAMS
   scripts/task2.py
   scripts/task3.py
   scripts/task1_line_follow.py
-  scripts/task1_yaml_logger.py
+  # scripts/task1_yaml_logger.py
   scripts/task_v2_common.py
   scripts/vo_nav_fusion.py
   test/motion_auto_sequence_core.py

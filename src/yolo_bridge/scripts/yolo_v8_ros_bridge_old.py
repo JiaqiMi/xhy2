@@ -1,4 +1,4 @@
-# #!/home/xhy/xhy_env/bin/python
+# #!/home/nvidia/venvs/xhy_ros2/bin/python
 # import tensorrt as trt
 # import pycuda.driver as cuda
 # # import pycuda.autoinit  # 会自动初始化 CUDA 上下文
@@ -119,7 +119,7 @@
 #     def __init__(self):
 #         rospy.init_node("yolov8_tensorrt", anonymous=True)
 #         engine_path = rospy.get_param('~engine_path',
-#                                     "/home/xhy/catkin_ws/models/shapes_model0719_fp16.trt")
+#                                     "/home/nvidia/catkin_ws/models/shapes_model0719_fp16.trt")
 #         self.detector = TRT_YOLOv8(engine_path)
 #         self.bridge = CvBridge()
 #         self.pub = rospy.Publisher("/yolov8/target_center",
