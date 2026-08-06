@@ -1,3 +1,12 @@
+# 名称：CMakeLists.txt
+# 功能：配置 auv_control 消息生成、节点安装与资源安装
+# 作者：buyegaid
+# 监听：无
+# 发布：无
+# 记录：
+# 2026.8.5
+#   安装5Hz保持式键盘执行器测试节点。
+
 cmake_minimum_required(VERSION 3.5)
 project(auv_control)
 
@@ -212,6 +221,7 @@ catkin_install_python(PROGRAMS
   test/motion_effectiveness_calibration_test.py
   test/motion_goal_test.py
   test/motion_yaw_continuous_test.py
+  test/actuator_keyboard_test.py
   test/test_task3_1_acquire_area.py
   test/test_task3_1_2_3_sequence.py
   test/test_task3_2_get_task.py
