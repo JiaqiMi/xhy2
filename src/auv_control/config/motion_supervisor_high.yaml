@@ -40,6 +40,9 @@
 # 2026.8.6
 #   撤回航向优先暂停 XY；改为 80/40 deg 迟滞下仅把 TY 输出降至 30%。
 
+# 2026.8.6
+#   高速档侧推卡死检测的 TX 允许上限由 500 提高到 1000，低速档保持不变。
+
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
 control_rate_hz: 20.0      # 统一三轴速度闭环频率；与 nav 主反馈频率一致
@@ -192,7 +195,7 @@ effectiveness_min_determinant: 0.05
 thruster_recovery_enabled: true
 thruster_fault_combined_effort_min: 0.75
 thruster_fault_axis_effort_min: 0.40
-thruster_fault_tx_max: 500.0
+thruster_fault_tx_max: 1000.0 # 高速档允许中等 TX 下继续检测 TY/MZ 卡死；不改变 TX 输出限幅
 thruster_fault_power_increment_max: 15.0
 thruster_fault_lateral_speed_max: 0.010
 thruster_fault_yaw_rate_max_deg_s: 0.3
