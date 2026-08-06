@@ -60,6 +60,8 @@
     接入 TY/MZ 协议级侧推异常检测与自动恢复，记录功率基线、判据和恢复全过程。
 2026.8.5
     加载并记录大航向误差优先迟滞，以及逐次延长的侧推复位反向时长。
+2026.8.6
+    撤回航向优先暂停 XY，改为加载并记录 80/40 deg 迟滞 TY 比例限制。
 """
 
 from __future__ import division
@@ -150,9 +152,11 @@ class MotionSupervisorNode(object):
         'position_error',
         'base_position_error',
         'yaw_error_deg',
-        'yaw_priority_active',
-        'yaw_priority_entered',
-        'yaw_priority_released',
+        'yaw_ty_limit_active',
+        'yaw_ty_limit_entered',
+        'yaw_ty_limit_released',
+        'yaw_ty_limit_scale',
+        'ty_before_yaw_limit',
         'x_axis_state',
         'y_axis_state',
         'yaw_axis_state',
@@ -524,8 +528,8 @@ class MotionSupervisorNode(object):
             'yaw_max_acceleration': 'yaw_max_acceleration_deg_s2',
             'yaw_max_jerk': 'yaw_max_jerk_deg_s3',
             'yaw_brake_jerk': 'yaw_brake_jerk_deg_s3',
-            'yaw_priority_enter_error': 'yaw_priority_enter_error_deg',
-            'yaw_priority_exit_error': 'yaw_priority_exit_error_deg',
+            'yaw_ty_limit_enter_error': 'yaw_ty_limit_enter_error_deg',
+            'yaw_ty_limit_exit_error': 'yaw_ty_limit_exit_error_deg',
             'yaw_brake_enter_rate': 'yaw_brake_enter_rate_deg_s',
             'yaw_brake_exit_rate': 'yaw_brake_exit_rate_deg_s',
             'goal_replan_yaw_threshold': 'goal_replan_yaw_threshold_deg',
@@ -850,12 +854,16 @@ class MotionSupervisorNode(object):
             'base_position_error': base_position_error,
             'yaw_error_deg': math.degrees(
                 wrap_angle(target.yaw - vehicle.yaw)),
-            'yaw_priority_active': int(bool(
-                output.diagnostics.get('yaw_priority_active', False))),
-            'yaw_priority_entered': int(bool(
-                output.diagnostics.get('yaw_priority_entered', False))),
-            'yaw_priority_released': int(bool(
-                output.diagnostics.get('yaw_priority_released', False))),
+            'yaw_ty_limit_active': int(bool(
+                output.diagnostics.get('yaw_ty_limit_active', False))),
+            'yaw_ty_limit_entered': int(bool(
+                output.diagnostics.get('yaw_ty_limit_entered', False))),
+            'yaw_ty_limit_released': int(bool(
+                output.diagnostics.get('yaw_ty_limit_released', False))),
+            'yaw_ty_limit_scale': output.diagnostics.get(
+                'yaw_ty_limit_scale', ''),
+            'ty_before_yaw_limit': output.diagnostics.get(
+                'ty_before_yaw_limit', ''),
             'x_axis_state': AXIS_STATE_NAMES.get(
                 output.x_axis_state, str(output.x_axis_state)),
             'y_axis_state': AXIS_STATE_NAMES.get(

@@ -75,6 +75,8 @@
     新增大航向误差优先迟滞，转向期间暂停 XY 位置修正；
     侧推复位反向脉冲按失败次数逐次延长，并在上限处持续重试。
     TF或速度反馈真实失效时立即安全回中，不再使用最后一帧旧速度持续主动刹车。
+2026.8.6
+    撤回航向优先暂停 XY；保持原三轴联合跟踪，仅在大航向误差下迟滞限制 TY 输出。
 """
 
 from __future__ import division
@@ -365,9 +367,10 @@ DEFAULT_PARAMETERS = {
     'yaw_max_acceleration': math.radians(20.0),
     'yaw_max_jerk': math.radians(60.0),
     'yaw_brake_jerk': math.radians(5.0),
-    # 大角度转向优先：超过进入阈值暂停 XY，低于退出阈值后恢复位置修正。
-    'yaw_priority_enter_error': math.radians(30.0),
-    'yaw_priority_exit_error': math.radians(10.0),
+    # 大角度转向时降低 TY，减轻 TY/MZ 在下位机分配后形成的单侧过载。
+    'yaw_ty_limit_enter_error': math.radians(80.0),
+    'yaw_ty_limit_exit_error': math.radians(40.0),
+    'yaw_ty_limit_scale': 0.30,
     # 航向刹停使用独立迟滞，避免 r 在停稳阈值附近抖动。
     'yaw_brake_enter_rate': math.radians(0.6),
     'yaw_brake_exit_rate': math.radians(0.2),
@@ -461,7 +464,7 @@ class MotionSupervisorCore(object):
         self.xy_brake_exit_count = 0
         self.yaw_brake_entry_count = 0
         self.yaw_brake_exit_count = 0
-        self.yaw_priority_active = False
+        self.yaw_ty_limit_active = False
         self.reference_reset_pending = True
         self.goal_changed_pending = False
         self.goal_changed_at = None
@@ -528,7 +531,8 @@ class MotionSupervisorCore(object):
             'yaw_max_rate', 'yaw_position_gain',
             'yaw_max_acceleration', 'yaw_max_jerk',
             'yaw_brake_jerk',
-            'yaw_priority_enter_error', 'yaw_priority_exit_error',
+            'yaw_ty_limit_enter_error', 'yaw_ty_limit_exit_error',
+            'yaw_ty_limit_scale',
             'yaw_brake_enter_rate', 'yaw_brake_exit_rate',
             'brake_release_hold_seconds',
             'goal_static_capture_seconds',
@@ -572,10 +576,12 @@ class MotionSupervisorCore(object):
         if (self.parameters['yaw_brake_exit_rate'] >=
                 self.parameters['yaw_brake_enter_rate']):
             raise ValueError('yaw_brake_exit_rate 必须小于 yaw_brake_enter_rate')
-        if (self.parameters['yaw_priority_exit_error'] >=
-                self.parameters['yaw_priority_enter_error']):
+        if (self.parameters['yaw_ty_limit_exit_error'] >=
+                self.parameters['yaw_ty_limit_enter_error']):
             raise ValueError(
-                'yaw_priority_exit_error 必须小于 yaw_priority_enter_error')
+                'yaw_ty_limit_exit_error 必须小于 yaw_ty_limit_enter_error')
+        if self.parameters['yaw_ty_limit_scale'] > 1.0:
+            raise ValueError('yaw_ty_limit_scale 不能大于 1')
         if (self.parameters['yaw_brake_margin_positive'] >=
                 self.parameters['yaw_tolerance'] or
                 self.parameters['yaw_brake_margin_negative'] >=
@@ -971,9 +977,12 @@ class MotionSupervisorCore(object):
             'thruster_fault_requested': requested,
             'thruster_fault_wait_s': wait_seconds,
             'thruster_fault_triggered': self.state == THRUSTER_RECOVERY,
-            'yaw_priority_active': self.yaw_priority_active,
-            'yaw_priority_entered': False,
-            'yaw_priority_released': False,
+            'yaw_ty_limit_active': self.yaw_ty_limit_active,
+            'yaw_ty_limit_entered': False,
+            'yaw_ty_limit_released': False,
+            'yaw_ty_limit_scale': (
+                self.parameters['yaw_ty_limit_scale']
+                if self.yaw_ty_limit_active else 1.0),
             'thruster_recovery_phase': self.thruster_recovery_phase,
             'thruster_recovery_count': self.thruster_recovery_count,
             'thruster_recovery_reverse_duration_s': (
@@ -1065,7 +1074,7 @@ class MotionSupervisorCore(object):
         self.xy_brake_exit_count = 0
         self.yaw_brake_entry_count = 0
         self.yaw_brake_exit_count = 0
-        self.yaw_priority_active = False
+        self.yaw_ty_limit_active = False
         self.reference_reset_pending = True
 
     def _initialize_xy_reference_for_brake(self, map_vx, map_vy):
@@ -1681,18 +1690,18 @@ class MotionSupervisorCore(object):
         if self.reference_reset_pending:
             self._initialize_motion_references(vehicle, map_vx, map_vy)
         dt = self._control_dt(vehicle.now)
-        yaw_priority_entered = False
-        yaw_priority_released = False
-        if (not self.yaw_priority_active
+        yaw_ty_limit_entered = False
+        yaw_ty_limit_released = False
+        if (not self.yaw_ty_limit_active
                 and abs(yaw_error)
-                >= self.parameters['yaw_priority_enter_error']):
-            self.yaw_priority_active = True
-            yaw_priority_entered = True
-        elif (self.yaw_priority_active
+                > self.parameters['yaw_ty_limit_enter_error']):
+            self.yaw_ty_limit_active = True
+            yaw_ty_limit_entered = True
+        elif (self.yaw_ty_limit_active
               and abs(yaw_error)
-              <= self.parameters['yaw_priority_exit_error']):
-            self.yaw_priority_active = False
-            yaw_priority_released = True
+              < self.parameters['yaw_ty_limit_exit_error']):
+            self.yaw_ty_limit_active = False
+            yaw_ty_limit_released = True
         if distance > 1e-6:
             direction_x = dx / distance
             direction_y = dy / distance
@@ -1774,10 +1783,9 @@ class MotionSupervisorCore(object):
         desired_vy = desired_speed * direction_y
         brake_feedforward_tx = 0.0
         brake_feedforward_ty = 0.0
-        if braking_xy or self.yaw_priority_active:
+        if braking_xy:
             # 锁存刹停期间按方向有效减速度把速度参考收敛到零；该轨迹
             # 与停车距离模型使用同一组参数，保持类似 PX4 的定点减速链路。
-            # 大航向误差期间也暂停 XY 位置修正，先把平移速度收敛到零。
             desired_vx = 0.0
             desired_vy = 0.0
         reference_vx, reference_vy = self._slew_velocity_reference(
@@ -1993,6 +2001,11 @@ class MotionSupervisorCore(object):
 
         tx, ty, mz = self._compensate_effectiveness(tx, ty, mz)
         tx, ty = self._limit_xy_force_vector(tx, ty)
+        ty_before_yaw_limit = ty
+        yaw_ty_scale = (
+            self.parameters['yaw_ty_limit_scale']
+            if self.yaw_ty_limit_active else 1.0)
+        ty *= yaw_ty_scale
         if distance <= self.parameters['control_center_hold_tolerance'] and (
                 math.hypot(map_vx, map_vy)
                 <= self.parameters['horizontal_speed_threshold']):
@@ -2019,9 +2032,7 @@ class MotionSupervisorCore(object):
             self._transition(
                 TRANSLATE_BRAKE if brake_axes else TRANSLATE,
                 ('统一三轴制动跟踪（{}）'.format('+'.join(brake_axes))
-                 if brake_axes else (
-                     '航向优先跟踪，暂缓 XY 位置修正'
-                     if self.yaw_priority_active else '统一三轴位姿跟踪')),
+                 if brake_axes else '统一三轴位姿跟踪'),
             )
         return self._output(
             vehicle,
@@ -2087,9 +2098,11 @@ class MotionSupervisorCore(object):
                 'yaw_brake_rate_reversed': yaw_brake_rate_reversed,
                 'yaw_brake_reversal_detected': (
                     self.yaw_brake_reversal_detected),
-                'yaw_priority_active': self.yaw_priority_active,
-                'yaw_priority_entered': yaw_priority_entered,
-                'yaw_priority_released': yaw_priority_released,
+                'yaw_ty_limit_active': self.yaw_ty_limit_active,
+                'yaw_ty_limit_entered': yaw_ty_limit_entered,
+                'yaw_ty_limit_released': yaw_ty_limit_released,
+                'yaw_ty_limit_scale': yaw_ty_scale,
+                'ty_before_yaw_limit': ty_before_yaw_limit,
                 'brake_axes': '+'.join(brake_axes),
                 'goal_static_seconds': self._goal_static_seconds(vehicle.now),
                 'goal_static_for_capture': (
