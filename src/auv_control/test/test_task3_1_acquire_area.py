@@ -23,7 +23,7 @@
 2026.8.3
     启动悬停和搜索路径锁存固定下发目标航向，不再使用机器人瞬时实际航向。
 2026.8.3
-    增加固定航向模式：只使用箭头稳定位置完成最终对准，方向帧不参与判定。
+    增加固定航向模式：只使用箭头稳定位置完成最终对准，方向有效性仅用于误识别恢复。
 2026.8.4
     将侧推自动恢复MotionState=10作为有效等待状态，不再误判为未知异常。
 """
@@ -212,17 +212,34 @@ class Task3AcquireAreaTest(object):
         self.initial_hover_seconds = float(rospy.get_param(
             "~initial_hover_seconds", 10.0
         ))
+        arrow1_search_path = rospy.get_param(
+            "/task3_search_paths/arrow1", {}
+        )
+        if not isinstance(arrow1_search_path, dict):
+            raise ValueError("task3_search_paths.arrow1必须是字典")
+        arrow1_search_keys = (
+            "search_initial_forward_distance",
+            "search_lateral_distance",
+            "search_second_forward_distance",
+            "search_third_forward_distance",
+        )
+        if any(key not in arrow1_search_path for key in arrow1_search_keys):
+            raise ValueError("task3_search_paths.arrow1缺少搜索距离参数")
         self.search_initial_forward_distance = float(rospy.get_param(
-            "~search_initial_forward_distance", 0.40
+            "~search_initial_forward_distance",
+            arrow1_search_path["search_initial_forward_distance"],
         ))
         self.search_lateral_distance = float(rospy.get_param(
-            "~search_lateral_distance", 0.75
+            "~search_lateral_distance",
+            arrow1_search_path["search_lateral_distance"],
         ))
         self.search_second_forward_distance = float(rospy.get_param(
-            "~search_second_forward_distance", 0.65
+            "~search_second_forward_distance",
+            arrow1_search_path["search_second_forward_distance"],
         ))
         self.search_third_forward_distance = float(rospy.get_param(
-            "~search_third_forward_distance", 0.65
+            "~search_third_forward_distance",
+            arrow1_search_path["search_third_forward_distance"],
         ))
         self.final_hold_seconds = float(rospy.get_param(
             "~final_hold_seconds", 0.0
@@ -728,7 +745,10 @@ class Task3AcquireAreaTest(object):
     def record_fine_invalid_evidence(self, source_key, reason):
         if (
             self.state != self.COLLECT_DIRECTION
-            or not self.direction_collection_active
+            or (
+                not self.direction_collection_active
+                and not self.fixed_heading_enabled
+            )
             or self.false_positive_recovery_pending
         ):
             return
@@ -1091,15 +1111,6 @@ class Task3AcquireAreaTest(object):
             return
         if self.state in (self.FINAL_BASE_LINK_APPROACH, self.FINAL_HOLD):
             return
-        if self.fixed_heading_enabled:
-            rospy.loginfo_throttle(
-                self.log_interval,
-                "%s：[箭头唯一推理帧#%d] 固定航向模式只记录方向话题存活；"
-                "本帧不参与通过条件、误识别恢复或航向目标计算",
-                NODE_NAME,
-                frame_index,
-            )
-            return
         if not bool(payload.get("valid", False)):
             self.record_fine_invalid_evidence(
                 source_key,
@@ -1142,6 +1153,20 @@ class Task3AcquireAreaTest(object):
                     confidence,
                     self.direction_start_confidence,
                 ),
+            )
+            return
+        if self.fixed_heading_enabled:
+            if (
+                self.state == self.COLLECT_DIRECTION
+                and not self.false_positive_recovery_pending
+            ):
+                self.reset_fine_invalid_evidence()
+            rospy.loginfo_throttle(
+                self.log_interval,
+                "%s：[箭头唯一推理帧#%d] 固定航向模式仅使用本帧确认箭头仍有效；"
+                "本帧不参与通过条件或航向目标计算",
+                NODE_NAME,
+                frame_index,
             )
             return
         if not isinstance(center, dict):
@@ -2599,7 +2624,8 @@ class Task3AcquireAreaTest(object):
             self.log_interval,
             (
                 "%s：固定航向模式位置精确认中：有效位置=%d/%d，"
-                "二次稳定位置与首次位置差=%s/<=%.3fm；箭头方向完全忽略"
+                "二次稳定位置与首次位置差=%s/<=%.3fm；"
+                "箭头方向仅用于误识别恢复，不参与位置通过条件"
             ),
             NODE_NAME,
             len(self.detection_samples),
@@ -2613,11 +2639,11 @@ class Task3AcquireAreaTest(object):
         )
 
     def control_collect_direction(self):
-        if self.fixed_heading_enabled:
-            self.control_collect_fixed_position()
-            return
         if self.false_positive_recovery_pending:
             self.begin_false_positive_recovery()
+            return
+        if self.fixed_heading_enabled:
+            self.control_collect_fixed_position()
             return
         candidate = self.fine_confirmation_candidate()
         if candidate is not None:
