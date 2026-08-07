@@ -40,6 +40,12 @@
 # 2026.8.6
 #   撤回航向优先暂停 XY；改为 80/40 deg 迟滞下仅把 TY 输出降至 30%。
 
+# 2026.8.6
+#   高速档侧推卡死检测的 TX 允许上限由 500 提高到 1000，低速档保持不变。
+# 2026.8.7
+#   提高航向位置增益与计划刹转减速度，使约 34 deg 航向误差即可达到 30 deg/s 参考上限；
+#   计划减速度仍低于高速档已标定的两向有效刹转减速度，保留制动余量。
+
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
 control_rate_hz: 20.0      # 统一三轴速度闭环频率；与 nav 主反馈频率一致
@@ -117,8 +123,8 @@ brake_reference_acceleration_ty_positive: 0.045 # 2026.8.5 降低正 TY 计划�
 brake_reference_acceleration_ty_negative: 0.025 # 2026.8.5 小幅降低负 TY 计划减速度，改善 Y 正向高速超调
 angular_brake_acceleration_mz_positive: 0.242   # +3000 跨零速实测约 15.39 deg/s^2，保留 10% 后换算为 rad/s^2
 angular_brake_acceleration_mz_negative: 0.262   #TODO 参数快照值；待 -3500 下独立反向刹停标定后再更新有效减速度模型
-angular_brake_reference_acceleration_mz_positive_deg_s2: 3.50 # 计划值仍显著低于 +MZ 标定有效减速度，减少长时间低力矩刹转
-angular_brake_reference_acceleration_mz_negative_deg_s2: 3.50 # 计划值仍显著低于 -MZ 标定有效减速度，正反向使用同一首轮轨迹
+angular_brake_reference_acceleration_mz_positive_deg_s2: 13.50 # 约 34 deg 误差放开 30 deg/s；低于 +MZ 有效减速度 13.87 deg/s^2
+angular_brake_reference_acceleration_mz_negative_deg_s2: 13.50 # 两向使用同一轨迹；低于 -MZ 有效减速度 15.01 deg/s^2
 control_delay: 0.2                 # 反馈、计算、通信和执行的综合延迟估计，单位 s
 brake_margin_tx_positive: 0.1      # X 回退使用正 TX 制动，按 data7 最大超调加 data8 制动延迟余量设置
 brake_margin_tx_negative: 0.12      # X 正向使用负 TX 制动，固定余量保持原值，避免过度影响低速刹停
@@ -153,7 +159,7 @@ xy_brake_jerk: 0.30  # 2026.8.5 缩短制动减速度建立时间，减少刹停
 xy_brake_enter_speed: 0.020
 xy_brake_exit_speed: 0.012
 yaw_max_rate_deg_s: 30.0  # 高速任务目标角速度调整为 30 deg/s，避免以更高参考持续驱动推进器
-yaw_position_gain: 0.22 # 仅在 120 deg 及以上动作达到 25 deg/s；短角度动作提前收敛，避免反复刹转
+yaw_position_gain: 1.04 # 扣除 1 deg 控制死区后，约 30 deg 航向误差即可放开 30 deg/s 参考上限
 yaw_max_acceleration_deg_s2: 20.0
 yaw_max_jerk_deg_s3: 35.0 # 5 Hz 前视目标跨过 5 deg 重规划阈值后，减小角速度参考恢复时的力矩阶跃；不影响刹转 jerk
 yaw_brake_jerk_deg_s3: 15.0 # 8 Hz 下缩短刹转加速度建立时间，避免计划减速度长期低于实际停车需求
@@ -192,7 +198,7 @@ effectiveness_min_determinant: 0.05
 thruster_recovery_enabled: true
 thruster_fault_combined_effort_min: 0.75
 thruster_fault_axis_effort_min: 0.40
-thruster_fault_tx_max: 500.0
+thruster_fault_tx_max: 1000.0 # 高速档允许中等 TX 下继续检测 TY/MZ 卡死；不改变 TX 输出限幅
 thruster_fault_power_increment_max: 15.0
 thruster_fault_lateral_speed_max: 0.010
 thruster_fault_yaw_rate_max_deg_s: 0.3
