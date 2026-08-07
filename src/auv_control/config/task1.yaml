@@ -48,8 +48,8 @@ normal_finish_min_completed_path_length: 5.0
 # 搜索耗尽或总超时后的统一兜底。false 时不移动，原地直接 FINISH
 fallback_move_enabled: true
 # true 时使用以下绝对 map 位姿，收到 HOVER 后 FINISH
-fallback_target_x: -2.55
-fallback_target_y: -5.96
+fallback_target_x: -0.33
+fallback_target_y: -6.56
 fallback_target_z: -0.6
 fallback_target_yaw_deg: 210.0
 
