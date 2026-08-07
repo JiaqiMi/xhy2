@@ -4,6 +4,8 @@
       2026.7.31
         增加 low/high 完整参数档位，默认 low；按 motion_profile 直接选择
         motion_supervisor_low.yaml 或 motion_supervisor_high.yaml。
+      2026.8.7
+        原 high 档迁移为新的 low 基线，启动默认档由 high 切换为 low。
     -->
     <!--
       原型节点必须是 /cmd/pose/ned 的唯一发布者。
@@ -18,7 +20,7 @@
       high：加载完整高速参数；
       其他值会在解析 selected_config_file 时直接报错，防止使用控制器默认值启动。
     -->
-    <arg name="motion_profile" default="high" />
+    <arg name="motion_profile" default="low" />
     <arg name="low_config_file"
          default="$(find auv_control)/config/motion_supervisor_low.yaml" />
     <arg name="high_config_file"
