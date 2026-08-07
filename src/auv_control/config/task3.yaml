@@ -29,9 +29,9 @@ task3_target_depth_m: 0.6
 task3_heading_mode: 2
 # 三个阶段使用的map绝对航向，单位deg，取值范围[0, 360)。
 # 第一次箭头使用初始航向；ArUco结束后绝对转到ArUco航向；离场使用返航航向。
-task3_initial_yaw_deg: 210
-task3_aruco_yaw_deg: 120
-task3_return_origin_yaw_deg: 30
+task3_initial_yaw_deg: 212
+task3_aruco_yaw_deg: 122
+task3_return_origin_yaw_deg: 33
 
 # 三个固定位置点，均为reset_world_origin.launch成功后的map绝对坐标。
 # N（北向）、E（东向）单位m；深度和航向分别使用上面的统一固定参数。

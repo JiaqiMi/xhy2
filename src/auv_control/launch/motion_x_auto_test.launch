@@ -4,7 +4,7 @@
       运行前必须单独启动 motion_supervisor，只需保证前方有足够空间。
     -->
     <arg name="pure_depth_control" default="true" />
-    <arg name="target_z" default="0" />
+    <arg name="target_z" default="-0.6" />
     <!-- 旧名称 repetitions 保留兼容；新调用使用 cycle_count。 -->
     <arg name="repetitions" default="2" />
     <arg name="cycle_count" default="$(arg repetitions)" />
