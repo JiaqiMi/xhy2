@@ -24,6 +24,8 @@
     增加鱼眼中心正方形裁切、执行器反馈图形、电源数字卡和电池电量条。
     增加相机全屏放大、目标航向指针图例及详细状态降级布局。
     执行器增加浅色指令、深色反馈叠图和向上开合的夹爪样式。
+2026.8.7
+    增加地图手动标点与测距控件、十字标绘光标和1920双行工具布局。
 */
 
 :root {
@@ -365,6 +367,10 @@ input {
     grid-template-columns: 112px repeat(6, minmax(0, 1fr));
 }
 
+.annotation-control-group .map-control-group-items {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .map-controls button,
 .map-legend {
     width: 100%;
@@ -501,18 +507,37 @@ input {
     .map-operation-group {
         grid-column: 1 / -1;
     }
+
+    .annotation-control-group {
+        grid-column: 1 / -1;
+    }
 }
 
 @media (min-width: 1800px) {
     .navigation-title {
+        display: grid;
+        grid-template-columns: 165px minmax(0, 1fr);
+        align-items: center;
         gap: 4px;
         margin-bottom: 6px;
+    }
+
+    .navigation-intro {
+        display: block;
+    }
+
+    .navigation-intro .subtitle {
+        display: block;
+        margin-top: 2px;
+        white-space: normal;
     }
 
     .map-controls {
         display: flex;
         flex: 0 0 auto;
         align-items: center;
+        flex-wrap: wrap;
+        align-content: center;
         gap: 5px;
     }
 
@@ -528,6 +553,7 @@ input {
 
     .trajectory-control-group .map-control-group-items,
     .visual-control-group .map-control-group-items,
+    .annotation-control-group .map-control-group-items,
     .map-operation-group .map-control-group-items {
         display: flex;
         align-items: center;
@@ -602,6 +628,10 @@ input {
 }
 
 .xy-card canvas.is-drawing {
+    cursor: crosshair;
+}
+
+.xy-card canvas.is-annotating {
     cursor: crosshair;
 }
 
@@ -870,6 +900,7 @@ summary {
 
     .trajectory-control-group .map-control-group-items,
     .visual-control-group .map-control-group-items,
+    .annotation-control-group .map-control-group-items,
     .map-operation-group .map-control-group-items {
         grid-template-columns: 1fr 1fr;
     }

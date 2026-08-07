@@ -45,6 +45,9 @@
 # 2026.8.7
 #   提高航向位置增益与计划刹转减速度，使约 34 deg 航向误差即可达到 30 deg/s 参考上限；
 #   计划减速度仍低于高速档已标定的两向有效刹转减速度，保留制动余量。
+# 2026.8.7
+#   根据 260807 data1 单轴测试，提高 X 正向刹停所用负 TX 速度环增益与 XY 刹车 jerk，
+#   并小幅扩大控制中心保持死区，缩短低速漂移和末段回追至 HOVER 的时间。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -93,7 +96,7 @@ kp_yaw_negative: 18000.0            # data4 反转同增益仍在 -17～-21 deg/
 
 # 定点模式锁存制动时的速度环增益；仍按最终 TX/TY 输出符号区分正反车效率。
 brake_kv_x_positive: 20000.0
-brake_kv_x_negative: 24000.0        # 降低负 TX 制动速度误差放大，抑制执行滞后后的反向加速
+brake_kv_x_negative: 30000.0        # 260807 data1：提高负 TX 低速制动，缩短 X 正向刹停长尾
 brake_kv_y_positive: 40000.0
 brake_kv_y_negative: 60000.0
 # 定点模式锁存刹转时的角速度环增益；按最终 MZ 输出符号区分正反转效率。
@@ -136,7 +139,7 @@ yaw_brake_margin_negative_deg: 0.8  # 与正向一致，满足核心参数校验
 # 进入hover阈值,也就是代表着定位精度
 capture_radius: 0.05                  # 两种模式到达 HOVER 的外层水平位置误差，满足旋转时位置精度 4 cm
 yaw_tolerance_deg: 4.0                # 最终航向允许误差，单位 deg
-control_center_hold_tolerance: 0.03   # 当前锁存控制中心的二维圆形位置死区，单位 m
+control_center_hold_tolerance: 0.035  # 260807 data1：减少 3～5 cm 区间回追，保留 0.05 m HOVER 捕获余量
 horizontal_speed_threshold: 0.008     # data6 中 0.01 m/s 仍持续漂移，收紧三轴停稳判定
 yaw_control_tolerance_deg: 1.0        # mode=2 上位机航向保持死区，与最终航向精度一致
 yaw_rate_threshold_deg_s: 0.3         # 判定转动停稳的角速度上限，单位 deg/s
@@ -153,7 +156,7 @@ xy_max_speed: 0.425 # 260805 data2：远距离 TX 目标约 2.8k；受制动距�
 xy_position_gain: 1.20
 xy_max_acceleration: 0.40
 xy_max_jerk: 0.40
-xy_brake_jerk: 0.30  # 2026.8.5 缩短制动减速度建立时间，减少刹停后越点和重复回追
+xy_brake_jerk: 0.35  # 260807 data1：小幅缩短制动减速度建立时间，减少刹停长尾
 
 # 预测停车距离内且合速度达到进入阈值时锁存刹停；低于退出阈值才恢复跟踪。
 xy_brake_enter_speed: 0.020
