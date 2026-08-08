@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env36/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称：test_debug_v2.py
 功能：测试 debug_driver_v2 的三种控制模式

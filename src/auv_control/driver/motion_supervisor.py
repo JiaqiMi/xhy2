@@ -70,10 +70,16 @@ import csv
 import io
 import json
 import math
-import os
 import threading
 from datetime import datetime
-
+import os
+import sys
+# catkin_install_python 会从 devel_isolated 中启动中继脚本。
+# 显式将当前源码目录放到模块搜索路径最前面，
+# 确保导入真正的辅助模块，而不是 catkin 生成的中继脚本。
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
 import rospy
 import tf
 from auv_control.msg import AUVData, MotionState, PoseNEDcmd, SensorStatus

@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称：task_v2_common.py
 功能：任务节点的公共驱动模块

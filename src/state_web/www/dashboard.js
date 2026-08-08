@@ -5,7 +5,7 @@
 功能：state_web 状态渲染、相机状态与导航地图交互
 作者：xhy
 监听：Web 状态接口与用户交互
-发布：仪表盘绘制及浏览器地图朝向、水池范围设置
+发布：仪表盘绘制及浏览器地图朝向、水池范围和手动标绘设置
 记录：
 2026.7.30
     增加可持久化的手动地图旋转，支持指定航向为上。
@@ -27,12 +27,16 @@
     增加执行器实际反馈图形、6S4P 电池摘要和鱼眼裁切/全图放大交互。
     航向仪表增加粉色目标指针，详细状态只保留执行器反馈。
     执行器改为浅色指令与深色反馈叠图，并显示接收年龄、接收差和同步状态。
+2026.8.7
+    增加可持久化的地图手动标点和 N/E 平面两点测距工具。
 */
 
 const MAP_UP_HEADING_KEY = "state_web.map_up_heading_deg";
 const POOL_BOUNDARY_KEY = "state_web.pool_boundary_ned";
 const VISUAL_HISTORY_VISIBLE_KEY = "state_web.visual_history_visible";
 const VISUAL_LABELS_VISIBLE_KEY = "state_web.visual_labels_visible";
+const MANUAL_ANNOTATIONS_KEY = "state_web.manual_map_annotations";
+const MANUAL_POINT_LIMIT = 20;
 
 
 function loadVisualHistoryVisible() {
@@ -223,6 +227,90 @@ function savePoolBounds(bounds) {
 }
 
 
+function normalizeManualPoint(value) {
+    const north = finiteNumber(value?.north);
+    const east = finiteNumber(value?.east);
+    if (north === null || east === null) return null;
+    return {
+        north,
+        east,
+        createdAt: finiteNumber(value?.createdAt),
+    };
+}
+
+
+function horizontalDistance(first, second) {
+    if (!first || !second) return null;
+    const firstNorth = finiteNumber(first.north);
+    const firstEast = finiteNumber(first.east);
+    const secondNorth = finiteNumber(second.north);
+    const secondEast = finiteNumber(second.east);
+    if ([firstNorth, firstEast, secondNorth, secondEast].includes(null)) {
+        return null;
+    }
+    const northDelta = secondNorth - firstNorth;
+    const eastDelta = secondEast - firstEast;
+    return Number.isFinite(northDelta) && Number.isFinite(eastDelta)
+        ? Math.hypot(northDelta, eastDelta)
+        : null;
+}
+
+
+function normalizeManualMeasurement(value) {
+    if (!value || typeof value !== "object") return null;
+    const first = normalizeManualPoint(value.first);
+    const second = normalizeManualPoint(value.second);
+    const distanceM = horizontalDistance(first, second);
+    if (!first || !second || distanceM === null) return null;
+    return { first, second, distanceM };
+}
+
+
+function normalizeManualAnnotations(value) {
+    if (!value || typeof value !== "object") {
+        return { originRevision: null, points: [], measurement: null };
+    }
+    const revision = finiteNumber(value.originRevision);
+    const points = Array.isArray(value.points)
+        ? value.points.map(normalizeManualPoint).filter(Boolean).slice(-MANUAL_POINT_LIMIT)
+        : [];
+    return {
+        originRevision: revision === null ? null : Math.trunc(revision),
+        points,
+        measurement: normalizeManualMeasurement(value.measurement),
+    };
+}
+
+
+function loadManualAnnotations() {
+    try {
+        const saved = window.localStorage.getItem(MANUAL_ANNOTATIONS_KEY);
+        return normalizeManualAnnotations(saved ? JSON.parse(saved) : null);
+    } catch (error) {
+        return normalizeManualAnnotations(null);
+    }
+}
+
+
+function saveManualAnnotations() {
+    try {
+        window.localStorage.setItem(
+            MANUAL_ANNOTATIONS_KEY,
+            JSON.stringify({
+                originRevision: dashboardState.manualOriginRevision,
+                points: dashboardState.manualPoints,
+                measurement: dashboardState.manualMeasurement,
+            }),
+        );
+    } catch (error) {
+        // 浏览器禁用本地存储时，本次页面内标绘仍然有效。
+    }
+}
+
+
+const loadedManualAnnotations = loadManualAnnotations();
+
+
 const dashboardState = {
     status: null,
     connected: false,
@@ -241,6 +329,12 @@ const dashboardState = {
     poolDrawHeading: 0,
     poolDrawStartClientX: 0,
     poolDrawStartClientY: 0,
+    manualTool: null,
+    manualPoints: loadedManualAnnotations.points,
+    manualMeasurement: loadedManualAnnotations.measurement,
+    manualMeasureStart: null,
+    manualMeasurePreview: null,
+    manualOriginRevision: loadedManualAnnotations.originRevision,
     zScale: 20,
     zPanY: 0,
     xyMapExpanded: false,
@@ -253,6 +347,47 @@ const dashboardState = {
     zDragStartY: 0,
     zDragPanY: 0,
 };
+
+
+function appendManualPoint(point) {
+    const normalized = normalizeManualPoint(point);
+    if (!normalized) return false;
+    dashboardState.manualPoints.push(normalized);
+    dashboardState.manualPoints = dashboardState.manualPoints.slice(
+        -MANUAL_POINT_LIMIT,
+    );
+    saveManualAnnotations();
+    return true;
+}
+
+
+function resetManualToolDraft() {
+    dashboardState.manualTool = null;
+    dashboardState.manualMeasureStart = null;
+    dashboardState.manualMeasurePreview = null;
+}
+
+
+function syncManualAnnotationOrigin(data) {
+    const revision = finiteNumber(data?.origin?.data?.revision);
+    if (revision === null) return false;
+    const normalizedRevision = Math.trunc(revision);
+    if (dashboardState.manualOriginRevision === null) {
+        dashboardState.manualOriginRevision = normalizedRevision;
+        saveManualAnnotations();
+        return false;
+    }
+    if (dashboardState.manualOriginRevision === normalizedRevision) {
+        return false;
+    }
+    dashboardState.manualOriginRevision = normalizedRevision;
+    dashboardState.manualPoints = [];
+    dashboardState.manualMeasurement = null;
+    resetManualToolDraft();
+    saveManualAnnotations();
+    updateManualAnnotationControls();
+    return true;
+}
 
 
 function finiteNumber(value) {
@@ -1650,14 +1785,14 @@ function targetHistoryItems(data) {
 
 
 const VISUAL_MAP_STYLES = {
-    red_circle: {color: "#ff3f50", marker: "circle"},
-    black_square: {color: "#080b10", outline: "#e8f0fa", marker: "square"},
-    yellow_circle: {color: "#ffd642", marker: "circle"},
-    red_line: {color: "#ff5364", marker: "line"},
-    arrow: {color: "#22d3ee", marker: "arrow"},
-    rectangle_red: {color: "#ff5364", marker: "circle"},
-    rectangle_yellow: {color: "#ffd642", marker: "circle"},
-    rectangle_green: {color: "#38d996", marker: "circle"},
+    red_circle: { color: "#ff3f50", marker: "circle" },
+    black_square: { color: "#080b10", outline: "#e8f0fa", marker: "square" },
+    yellow_circle: { color: "#ffd642", marker: "circle" },
+    red_line: { color: "#ff5364", marker: "line" },
+    arrow: { color: "#22d3ee", marker: "arrow" },
+    rectangle_red: { color: "#ff5364", marker: "circle" },
+    rectangle_yellow: { color: "#ffd642", marker: "circle" },
+    rectangle_green: { color: "#38d996", marker: "circle" },
 };
 
 
@@ -1862,6 +1997,137 @@ function drawVisualMapHistory(ctx, worldToScreen, visionMap, width, height) {
 }
 
 
+function drawManualPointMarker(ctx, screen, color, radius = 6) {
+    ctx.save();
+    ctx.fillStyle = "rgba(7, 17, 29, 0.92)";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(screen.x - radius - 4, screen.y);
+    ctx.lineTo(screen.x + radius + 4, screen.y);
+    ctx.moveTo(screen.x, screen.y - radius - 4);
+    ctx.lineTo(screen.x, screen.y + radius + 4);
+    ctx.stroke();
+    ctx.restore();
+}
+
+
+function drawManualMeasurement(
+    ctx,
+    worldToScreen,
+    measurement,
+    draft,
+    occupied,
+    width,
+    height,
+) {
+    if (!measurement?.first || !measurement?.second) return;
+    const first = normalizeManualPoint(measurement.first);
+    const second = normalizeManualPoint(measurement.second);
+    const distanceM = horizontalDistance(first, second);
+    if (!first || !second || distanceM === null) return;
+    const firstScreen = worldToScreen(first.north, first.east);
+    const secondScreen = worldToScreen(second.north, second.east);
+    const center = {
+        x: (firstScreen.x + secondScreen.x) / 2,
+        y: (firstScreen.y + secondScreen.y) / 2,
+    };
+    const color = draft ? "#ffe596" : "#ffd24a";
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = draft ? 1.8 : 2.4;
+    ctx.setLineDash(draft ? [7, 5] : []);
+    ctx.beginPath();
+    ctx.moveTo(firstScreen.x, firstScreen.y);
+    ctx.lineTo(secondScreen.x, secondScreen.y);
+    ctx.stroke();
+    ctx.restore();
+    drawManualPointMarker(ctx, firstScreen, color, 5);
+    drawManualPointMarker(ctx, secondScreen, color, 5);
+
+    drawVisualMapLabel(
+        ctx,
+        center,
+        `${draft ? "预览" : "水平"} ${distanceM.toFixed(2)} m`,
+        color,
+        occupied,
+        width,
+        height,
+    );
+    drawVisualMapLabel(
+        ctx,
+        firstScreen,
+        `A · N ${first.north.toFixed(2)} E ${first.east.toFixed(2)}`,
+        color,
+        occupied,
+        width,
+        height,
+    );
+    if (!draft) {
+        drawVisualMapLabel(
+            ctx,
+            secondScreen,
+            `B · N ${second.north.toFixed(2)} E ${second.east.toFixed(2)}`,
+            color,
+            occupied,
+            width,
+            height,
+        );
+    }
+}
+
+
+function drawManualAnnotations(ctx, worldToScreen, width, height) {
+    const occupied = [];
+    drawManualMeasurement(
+        ctx,
+        worldToScreen,
+        dashboardState.manualMeasurement,
+        false,
+        occupied,
+        width,
+        height,
+    );
+    if (
+        dashboardState.manualMeasureStart
+        && dashboardState.manualMeasurePreview
+    ) {
+        drawManualMeasurement(
+            ctx,
+            worldToScreen,
+            {
+                first: dashboardState.manualMeasureStart,
+                second: dashboardState.manualMeasurePreview,
+            },
+            true,
+            occupied,
+            width,
+            height,
+        );
+    }
+
+    dashboardState.manualPoints.forEach((point, index) => {
+        const screen = worldToScreen(point.north, point.east);
+        const color = "#ff9f43";
+        drawManualPointMarker(ctx, screen, color);
+        drawVisualMapLabel(
+            ctx,
+            screen,
+            `P${String(index + 1).padStart(2, "0")} · N ${point.north.toFixed(2)} E ${point.east.toFixed(2)}`,
+            color,
+            occupied,
+            width,
+            height,
+        );
+    });
+}
+
+
 function drawXYMap(data) {
     const canvas = document.getElementById("xy-canvas");
     const { context: ctx, width, height } = resizeCanvas(canvas);
@@ -1961,6 +2227,7 @@ function drawXYMap(data) {
         width,
         height,
     );
+    drawManualAnnotations(ctx, worldToScreen, width, height);
 
     const tfData = data.tf?.data || {};
     const position = tfData.position_m;
@@ -2491,6 +2758,7 @@ function drawNavigation(data) {
 
 function renderDashboard(data) {
     dashboardState.status = data;
+    syncManualAnnotationOrigin(data);
     document.getElementById("server-time").textContent =
         `服务器时间 ${new Date(data.server_time * 1000).toLocaleString()}`;
 
@@ -2541,12 +2809,41 @@ function mapHeadingText() {
 }
 
 
+function updateMapTrackingControl() {
+    const canvas = document.getElementById("xy-canvas");
+    const trackingButton = document.getElementById("track-base-link");
+    if (!canvas || !trackingButton) return;
+    trackingButton.classList.toggle(
+        "is-active",
+        dashboardState.mapTracking,
+    );
+    trackingButton.textContent = dashboardState.mapTracking
+        ? "跟踪中"
+        : "跟踪";
+    trackingButton.setAttribute(
+        "aria-pressed",
+        String(dashboardState.mapTracking),
+    );
+    canvas.classList.toggle(
+        "is-tracking",
+        dashboardState.mapTracking,
+    );
+}
+
+
 function updateMapHint() {
     const hint = document.getElementById("map-hint");
     if (dashboardState.poolDrawing) {
         hint.textContent = dashboardState.poolDrawStartMap
             ? `松开完成水池矩形 · 上方 ${mapHeadingText()}°`
             : `按住并拖拽水池两个对角点 · 上方 ${mapHeadingText()}°`;
+    } else if (dashboardState.manualTool === "point") {
+        hint.textContent =
+            `点击添加标点（${dashboardState.manualPoints.length}/${MANUAL_POINT_LIMIT}） · 上方 ${mapHeadingText()}°`;
+    } else if (dashboardState.manualTool === "measure") {
+        hint.textContent = dashboardState.manualMeasureStart
+            ? `点击测距终点 B · 上方 ${mapHeadingText()}°`
+            : `点击测距起点 A · 上方 ${mapHeadingText()}°`;
     } else {
         const expansionText = dashboardState.xyMapExpanded
             ? "双击恢复"
@@ -2625,6 +2922,100 @@ function updatePoolBoundaryControls() {
 }
 
 
+function updateManualAnnotationControls() {
+    const canvas = document.getElementById("xy-canvas");
+    const pointButton = document.getElementById("mark-map-point");
+    const undoButton = document.getElementById("undo-map-point");
+    const clearButton = document.getElementById("clear-map-points");
+    const measureButton = document.getElementById("measure-map-distance");
+    if (!canvas || !pointButton || !undoButton || !clearButton || !measureButton) {
+        return;
+    }
+    const marking = dashboardState.manualTool === "point";
+    const measuring = dashboardState.manualTool === "measure";
+    pointButton.textContent = marking ? "结束标点" : "标点";
+    pointButton.classList.toggle("is-active", marking);
+    pointButton.setAttribute("aria-pressed", String(marking));
+    undoButton.disabled = dashboardState.manualPoints.length === 0;
+    clearButton.disabled = dashboardState.manualPoints.length === 0;
+    if (measuring) {
+        measureButton.textContent = "取消测距";
+    } else if (dashboardState.manualMeasurement) {
+        measureButton.textContent = "清测距";
+    } else {
+        measureButton.textContent = "测距";
+    }
+    measureButton.classList.toggle("is-active", measuring);
+    measureButton.setAttribute("aria-pressed", String(measuring));
+    canvas.classList.toggle("is-annotating", marking || measuring);
+    updateMapHint();
+}
+
+
+function configureManualAnnotationControls() {
+    const pointButton = document.getElementById("mark-map-point");
+    const undoButton = document.getElementById("undo-map-point");
+    const clearButton = document.getElementById("clear-map-points");
+    const measureButton = document.getElementById("measure-map-distance");
+    const redraw = () => drawXYMap(dashboardState.status || {});
+    const enterTool = (tool) => {
+        dashboardState.manualTool = tool;
+        dashboardState.manualMeasureStart = null;
+        dashboardState.manualMeasurePreview = null;
+        dashboardState.poolDrawing = false;
+        dashboardState.poolDraftBounds = null;
+        dashboardState.poolDrawStartMap = null;
+        dashboardState.mapTracking = false;
+        dashboardState.dragging = false;
+        document.getElementById("xy-canvas").classList.remove("is-dragging");
+        updatePoolBoundaryControls();
+        updateMapTrackingControl();
+        updateManualAnnotationControls();
+        redraw();
+    };
+
+    pointButton.addEventListener("click", () => {
+        if (dashboardState.manualTool === "point") {
+            resetManualToolDraft();
+            updateManualAnnotationControls();
+            redraw();
+            return;
+        }
+        enterTool("point");
+    });
+    undoButton.addEventListener("click", () => {
+        if (!dashboardState.manualPoints.length) return;
+        dashboardState.manualPoints.pop();
+        saveManualAnnotations();
+        updateManualAnnotationControls();
+        redraw();
+    });
+    clearButton.addEventListener("click", () => {
+        dashboardState.manualPoints = [];
+        saveManualAnnotations();
+        updateManualAnnotationControls();
+        redraw();
+    });
+    measureButton.addEventListener("click", () => {
+        if (dashboardState.manualTool === "measure") {
+            resetManualToolDraft();
+            updateManualAnnotationControls();
+            redraw();
+            return;
+        }
+        if (dashboardState.manualMeasurement) {
+            dashboardState.manualMeasurement = null;
+            saveManualAnnotations();
+            updateManualAnnotationControls();
+            redraw();
+            return;
+        }
+        enterTool("measure");
+    });
+    updateManualAnnotationControls();
+}
+
+
 function configurePoolBoundary() {
     const drawButton = document.getElementById("draw-pool-boundary");
     const clearButton = document.getElementById("clear-pool-boundary");
@@ -2633,6 +3024,12 @@ function configurePoolBoundary() {
         dashboardState.poolDrawing = !dashboardState.poolDrawing;
         dashboardState.poolDraftBounds = null;
         dashboardState.poolDrawStartMap = null;
+        if (dashboardState.poolDrawing) {
+            resetManualToolDraft();
+            dashboardState.mapTracking = false;
+            updateManualAnnotationControls();
+            updateMapTrackingControl();
+        }
         updatePoolBoundaryControls();
         if (dashboardState.status) drawXYMap(dashboardState.status);
     });
@@ -2727,43 +3124,36 @@ function configureMapInteraction() {
     const card = canvas.closest(".xy-card");
     const zCanvas = document.getElementById("z-canvas");
     const trackingButton = document.getElementById("track-base-link");
-    const pointerMap = (event) => {
+    const pointerPosition = (event, world = false) => {
         const rect = canvas.getBoundingClientRect();
         const transform = createMapTransform(rect.width, rect.height);
-        return transform.screenToMap(
+        const method = world ? transform.screenToWorld : transform.screenToMap;
+        return method(
             event.clientX - rect.left,
             event.clientY - rect.top,
         );
     };
+    const pointerMap = (event) => pointerPosition(event, false);
+    const pointerWorld = (event) => pointerPosition(event, true);
     const redrawXYMap = () => {
         drawXYMap(dashboardState.status || {});
     };
-    const updateTrackingControl = () => {
-        trackingButton.classList.toggle(
-            "is-active",
-            dashboardState.mapTracking,
-        );
-        trackingButton.textContent = dashboardState.mapTracking
-            ? "跟踪中"
-            : "跟踪";
-        trackingButton.setAttribute(
-            "aria-pressed",
-            String(dashboardState.mapTracking),
-        );
-        canvas.classList.toggle(
-            "is-tracking",
-            dashboardState.mapTracking,
-        );
-    };
-
     trackingButton.addEventListener("click", () => {
         dashboardState.mapTracking = !dashboardState.mapTracking;
         dashboardState.dragging = false;
         canvas.classList.remove("is-dragging");
-        updateTrackingControl();
+        if (dashboardState.mapTracking) {
+            resetManualToolDraft();
+            dashboardState.poolDrawing = false;
+            dashboardState.poolDraftBounds = null;
+            dashboardState.poolDrawStartMap = null;
+            updateManualAnnotationControls();
+            updatePoolBoundaryControls();
+        }
+        updateMapTrackingControl();
         redrawXYMap();
     });
-    updateTrackingControl();
+    updateMapTrackingControl();
     const setMapExpanded = (expanded) => {
         dashboardState.xyMapExpanded = Boolean(expanded);
         card.classList.toggle(
@@ -2788,11 +3178,17 @@ function configureMapInteraction() {
 
     canvas.addEventListener("dblclick", (event) => {
         event.preventDefault();
-        if (dashboardState.poolDrawing) return;
+        if (dashboardState.poolDrawing || dashboardState.manualTool) return;
         setMapExpanded(!dashboardState.xyMapExpanded);
     });
 
     document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && dashboardState.manualTool) {
+            resetManualToolDraft();
+            updateManualAnnotationControls();
+            redrawXYMap();
+            return;
+        }
         if (event.key === "Escape" && dashboardState.xyMapExpanded) {
             setMapExpanded(false);
         }
@@ -2810,6 +3206,35 @@ function configureMapInteraction() {
     }, { passive: false });
 
     canvas.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        if (dashboardState.manualTool === "point") {
+            const point = pointerWorld(event);
+            appendManualPoint({
+                north: point.north,
+                east: point.east,
+                createdAt: Date.now() / 1000,
+            });
+            updateManualAnnotationControls();
+            redrawXYMap();
+            return;
+        }
+        if (dashboardState.manualTool === "measure") {
+            const point = pointerWorld(event);
+            if (!dashboardState.manualMeasureStart) {
+                dashboardState.manualMeasureStart = point;
+                dashboardState.manualMeasurePreview = point;
+            } else {
+                dashboardState.manualMeasurement = normalizeManualMeasurement({
+                    first: dashboardState.manualMeasureStart,
+                    second: point,
+                });
+                resetManualToolDraft();
+                saveManualAnnotations();
+            }
+            updateManualAnnotationControls();
+            redrawXYMap();
+            return;
+        }
         if (dashboardState.poolDrawing) {
             dashboardState.poolDrawStartMap = pointerMap(event);
             dashboardState.poolDrawHeading = dashboardState.mapUpHeading;
@@ -2836,6 +3261,14 @@ function configureMapInteraction() {
     });
 
     canvas.addEventListener("pointermove", (event) => {
+        if (
+            dashboardState.manualTool === "measure"
+            && dashboardState.manualMeasureStart
+        ) {
+            dashboardState.manualMeasurePreview = pointerWorld(event);
+            redrawXYMap();
+            return;
+        }
         if (
             dashboardState.poolDrawing
             && dashboardState.poolDrawStartMap
@@ -3014,6 +3447,7 @@ function initialize() {
     configureCameraExpansion();
     configureMapHeading();
     configurePoolBoundary();
+    configureManualAnnotationControls();
     configureVisualHistoryControls();
     configureBaseTrajectoryControl();
     configureMapInteraction();

@@ -1,0 +1,209 @@
+<launch>
+    <!-- Shapes识别：检测框中心 -> 单点三维坐标 -> Web -->
+
+    <arg name="start_camera" default="false" />
+    <arg name="start_splitter" default="false" />
+    <arg name="start_web" default="true" />
+    <arg name="node_output" default="screen" />
+
+    <!-- Add these args near the top of the launch file. -->
+    <arg name="multi_class_targets" default="true" />
+    <arg name="target_batch_wait_sec" default="0.03" />
+    <arg name="target_group_tolerance" default="0.01" />
+    <arg name="max_pending_target_batches" default="10" />
+    <arg name="target_sub_queue_size" default="20" />
+    <arg name="publisher_queue_size" default="10" />
+
+    <!-- auto / combined / per_target -->
+    <arg name="multi_target_depth_mode" default="auto" />
+    <arg name="combined_roi_cost_ratio" default="1.20" />
+
+    <!-- Empty means all classes are accepted. Use actual model label spelling. -->
+    <arg name="class_whitelist" default="" />
+    <arg name="class_priority" default="" />
+
+    <!-- ==================== 模型选择 ==================== -->
+    <!--
+        true：使用 model_rectangles_260726.pt
+        false：使用 red_circle0713.pt
+    -->
+    <arg name="model_flag" default="true" />
+
+    <arg name="new_model_path"
+         default="/home/nvidia/catkin_ws/models/model_rectangles_260806.pt" />
+
+    <arg name="old_model_path"
+         default="/home/nvidia/catkin_ws/models/rectangles0720.pt" />
+
+    <arg name="task_mode" default="detect" />
+    <arg name="detect_mode" default="2" />   
+    <!-- <arg name="model_path" default="" /> -->
+    <arg name="exp_env" default="water" />
+    <arg name="conf_thre" default="0.2" />
+    <arg name="top_k" default="3" />
+    <arg name="rate" default="20.0" />
+    <arg name="visualization" default="0" />
+    <arg name="web_port" default="8080" />
+
+    <!-- 深度计算配置：
+         roi：只在目标点附近运行SGBM；
+         full：保持原来的全图SGBM。 -->
+    <arg name="depth_compute_mode" default="roi" />
+    <arg name="use_sgbm_3way" default="true" />
+
+    <!-- ROI额外边界，通常保持0即可。 -->
+    <arg name="roi_extra_margin_x" default="0" />
+    <arg name="roi_extra_margin_y" default="0" />
+
+    <!-- 0表示宽度由num_disparities和block_size自动确定。 -->
+    <arg name="roi_min_width" default="0" />
+    <arg name="roi_min_height" default="64" />
+
+    <!-- ROI面积达到全图的该比例后，自动改用全图计算。 -->
+    <arg name="roi_full_frame_threshold" default="0.90" />
+    <arg name="roi_fallback_full_frame" default="true" />
+    <arg name="log_depth_timing" default="true" />
+
+    <!-- SGBM与局部深度统计参数 -->
+    <arg name="window_size" default="25" />
+    <arg name="min_disparity" default="0" />
+    <arg name="num_disparities" default="96" />
+    <arg name="block_size" default="7" />
+
+    <node if="$(arg start_camera)"
+          name="usb_cam"
+          pkg="stereo_splitter"
+          type="mjpg_cam_node.py"
+          output="screen" />
+
+    <node if="$(arg start_splitter)"
+          pkg="stereo_splitter"
+          type="split_stereo_image.py"
+          name="split_stereo_image"
+          output="$(arg node_output)" />
+
+    <node pkg="yolo_bridge"
+          type="yolo_wrapper.sh"
+          name="yolo_rectangle_detector"
+          output="$(arg node_output)"
+          launch-prefix="bash">
+        <env name="NODE_NAME" value="/yolo_rectangle_detector" />
+        
+        <!-- <param name="task_mode" value="detect" />
+        <param name="detect_mode" value="2" />
+        <param name="model_path" value="$(arg model_path)" /> -->
+        <param name="task_mode" value="$(arg task_mode)" />
+        <param name="detect_mode" value="$(arg detect_mode)" />
+        <!-- <param name="model_path" value="$(arg model_path)" /> -->
+        <!-- 根据model_flag选择模型 -->
+        <param if="$(arg model_flag)"
+               name="model_path"
+               value="$(arg new_model_path)" />
+
+        <param unless="$(arg model_flag)"
+               name="model_path"
+               value="$(arg old_model_path)" />
+               
+        <param name="top_k" value="$(arg top_k)" />
+        <param name="visualization" value="$(arg visualization)" />
+        <param name="conf_thre" value="$(arg conf_thre)" />
+        <param name="detc_type" value="center" />
+        <param name="output_type" value="quartiles" />
+        <param name="infer_rate" value="$(arg rate)" />
+
+        <param name="input_topic" value="/left/image_raw" />
+        <param name="annotated_topic"
+               value="/vision/rectangle/annotated_image" />
+        <param name="web_topic" value="/vision/rectangle/detections" />
+        <param name="center_topic"
+               value="/vision/rectangle/target_center" />
+        <param name="bbox_topic"
+               value="/vision/rectangle/target_bbox" />
+        <param name="line_topic"
+               value="/vision/rectangle/line_bbox" />
+    </node>
+
+    <node pkg="stereo_depth"
+          type="stereo_depth_node_multiclass.py"
+          name="stereo_depth_rectangle"
+          output="$(arg node_output)">
+        <param name="task_mode" value="center" />
+        <param name="exp_env" value="$(arg exp_env)" />
+        <param name="visualization" value="$(arg visualization)" />
+        <param name="conf_thre" value="$(arg conf_thre)" />
+        <param name="rate" value="$(arg rate)" />
+
+        <param name="left_topic" value="/left/image_raw" />
+        <param name="right_topic" value="/right/image_raw" />
+        <param name="center_topic"
+               value="/vision/rectangle/target_center" />
+        <param name="bbox_topic"
+               value="/vision/rectangle/target_bbox" />
+        <param name="line_topic"
+               value="/vision/rectangle/line_bbox" />
+
+        <param name="target_output_topic"
+               value="/vision/rectangle/target_message" />
+        <param name="line_output_topic"
+               value="/vision/rectangle/line_message" />
+        <param name="web_pose_topic" value="/vision/rectangle/pose" />
+
+        <param name="max_sync_dt" value="0.15" />
+        <param name="frame_buffer_size" value="20" />
+        <param name="depth_statistic" value="mean" />
+
+        <param name="multi_class_targets" value="$(arg multi_class_targets)" />
+        <param name="target_batch_wait_sec" value="$(arg target_batch_wait_sec)" />
+        <param name="target_group_tolerance" value="$(arg target_group_tolerance)" />
+        <param name="max_pending_target_batches" value="$(arg max_pending_target_batches)" />
+        <param name="target_sub_queue_size" value="$(arg target_sub_queue_size)" />
+        <param name="publisher_queue_size" value="$(arg publisher_queue_size)" />
+        <param name="multi_target_depth_mode" value="$(arg multi_target_depth_mode)" />
+        <param name="combined_roi_cost_ratio" value="$(arg combined_roi_cost_ratio)" />
+
+        <!-- ROI / 全图深度计算切换 -->
+        <param name="window_size" value="$(arg window_size)" />
+        <param name="depth_compute_mode"
+               value="$(arg depth_compute_mode)" />
+        <param name="use_sgbm_3way"
+               value="$(arg use_sgbm_3way)" />
+        <param name="roi_extra_margin_x"
+               value="$(arg roi_extra_margin_x)" />
+        <param name="roi_extra_margin_y"
+               value="$(arg roi_extra_margin_y)" />
+        <param name="roi_min_width"
+               value="$(arg roi_min_width)" />
+        <param name="roi_min_height"
+               value="$(arg roi_min_height)" />
+        <param name="roi_full_frame_threshold"
+               value="$(arg roi_full_frame_threshold)" />
+        <param name="roi_fallback_full_frame"
+               value="$(arg roi_fallback_full_frame)" />
+        <param name="log_depth_timing"
+               value="$(arg log_depth_timing)" />
+
+        <!-- SGBM搜索参数 -->
+        <param name="min_disparity"
+               value="$(arg min_disparity)" />
+        <param name="num_disparities"
+               value="$(arg num_disparities)" />
+        <param name="block_size"
+               value="$(arg block_size)" />
+    </node>
+
+    <include if="$(arg start_web)"
+             ns="rectangle_web"
+             file="$(find vision_web)/launch/vision_web.launch">
+        <arg name="port" value="$(arg web_port)" />
+        <arg name="image_topic"
+             value="/vision/rectangle/annotated_image" />
+        <arg name="detection_topic"
+             value="/vision/rectangle/detections" />
+        <arg name="pose_topic" value="/vision/rectangle/pose" />
+        <arg name="stream_fps" value="$(arg rate)" />
+        <arg name="jpeg_quality" value="75" />
+        <arg name="web_width" value="960" />
+        <arg name="detection_timeout" value="2.0" />
+        <arg name="pose_timeout" value="2.0" />
+    </include>
+</launch>

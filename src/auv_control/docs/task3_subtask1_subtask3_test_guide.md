@@ -164,7 +164,7 @@ goal_y = current_y + sin(yaw) * forward + cos(yaw) * right
 catkin_make_isolated \
   --cmake-args \
   -DCMAKE_BUILD_TYPE=Release \
-  -DPYTHON_EXECUTABLE=/home/xhy/xhy_env/bin/python3.8
+  -DPYTHON_EXECUTABLE=/home/nvidia/venvs/xhy_ros2/bin/python
 
 source devel_isolated/setup.bash
 ```

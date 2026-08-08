@@ -1,4 +1,4 @@
-#!/home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 import rospy
 import cv2
 import numpy as np
@@ -24,9 +24,9 @@ class YOLO26nDetector:
         self.left_img = None                           # 初始化左眼相机画面
         
         model_list = [
-            "/home/xhy/catkin_ws/models/shapes0709.pt",
-            "/home/xhy/catkin_ws/models/rectangle_model260708.pt",
-            "/home/xhy/catkin_ws/models/line0709.pt" 
+            "/home/nvidia/catkin_ws/models/shapes0709.pt",
+            "/home/nvidia/catkin_ws/models/rectangle_model260708.pt",
+            "/home/nvidia/catkin_ws/models/line0709.pt" 
         ]
         if self.DetectMode == 1:
             self.model = YOLO(model_list[0])

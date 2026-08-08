@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 # -*- coding: utf-8 -*-
 """
 名称：state_control.py
@@ -33,6 +33,9 @@
     task3 未检测到预热时由自身 launch 启动视觉节点。
 2026.8.5
     增加 M/N 控制 motion_supervisor 的保活与单次关闭。
+2026.8.7
+    通过 ROS 节点 API 确认 motion_supervisor 存活，避免残留注册阻止保活重启。
+    默认不向任务控制终端转发 motion_supervisor 日志。
 """
 
 import errno
@@ -46,11 +49,29 @@ import time
 import rosgraph
 import rosnode
 import rospy
+try:
+    from xmlrpc import client as xmlrpc_client
+except ImportError:
+    import xmlrpclib as xmlrpc_client
 from auv_control.msg import Keyboard
 from std_msgs.msg import String
 
 
 NODE_NAME = 'state_control'
+
+
+class TimeoutTransport(xmlrpc_client.Transport):
+    """为 ROS 节点 XML-RPC 存活检测设置连接超时。"""
+
+    def __init__(self, timeout_seconds):
+        xmlrpc_client.Transport.__init__(self)
+        self.timeout_seconds = timeout_seconds
+
+    def make_connection(self, host):
+        """创建带超时的 HTTP 连接，防止失效节点阻塞状态监控。"""
+        connection = xmlrpc_client.Transport.make_connection(self, host)
+        connection.timeout = self.timeout_seconds
+        return connection
 
 
 class StateControl:
@@ -164,10 +185,13 @@ class StateControl:
             node_name = str(config['node_name'])
             startup_timeout_seconds = float(
                 config.get('startup_timeout_seconds', 15.0))
+            health_check_timeout_seconds = float(
+                config.get('health_check_timeout_seconds', 1.0))
         except (KeyError, TypeError, ValueError) as error:
             rospy.logerr('%s motion_supervisor 配置无效：%s', NODE_NAME, error)
             return None
-        if (not launch or not node_name or startup_timeout_seconds <= 0):
+        if (not launch or not node_name or startup_timeout_seconds <= 0 or
+                health_check_timeout_seconds <= 0):
             rospy.logerr('%s motion_supervisor 配置为空或超时无效。', NODE_NAME)
             return None
         return {
@@ -177,6 +201,8 @@ class StateControl:
                             config.get('launch_args', [])],
             'node_name': node_name,
             'startup_timeout_seconds': startup_timeout_seconds,
+            'health_check_timeout_seconds': health_check_timeout_seconds,
+            'forward_output': bool(config.get('forward_output', False)),
         }
 
     def keyboard_callback(self, message):
@@ -373,16 +399,40 @@ class StateControl:
                 self.vision_process is not None and
                 self.vision_process.poll() is None)
 
-    def motion_supervisor_node_running(self):
-        """通过 ROS Master 判断 motion_supervisor 节点是否已注册。"""
+    def motion_supervisor_node_uri(self):
+        """从 ROS Master 查询控制器节点 URI，未知节点视为未运行。"""
         if self.motion_supervisor is None:
-            return False
+            return None
         try:
             master = rosgraph.Master(rospy.get_name())
-            return bool(master.lookupNode(self.motion_supervisor['node_name']))
+            return master.lookupNode(self.motion_supervisor['node_name'])
         except Exception as error:
+            if 'unknown node' in str(error).lower():
+                return None
             rospy.logerr_throttle(
                 5.0, '%s 查询 motion_supervisor 节点失败：%s',
+                NODE_NAME, error)
+            return None
+
+    def motion_supervisor_node_running(self):
+        """确认控制器已注册且节点 API 可响应，排除 Master 残留注册。"""
+        node_uri = self.motion_supervisor_node_uri()
+        if not node_uri:
+            return False
+        try:
+            transport = TimeoutTransport(
+                self.motion_supervisor['health_check_timeout_seconds'])
+            node_api = xmlrpc_client.ServerProxy(node_uri, transport=transport)
+            response = node_api.getPid(rospy.get_name())
+            if len(response) != 3 or response[0] != 1 or int(response[2]) <= 0:
+                rospy.logwarn_throttle(
+                    5.0, '%s motion_supervisor 节点响应无效：%s。',
+                    NODE_NAME, response)
+                return False
+            return True
+        except Exception as error:
+            rospy.logwarn_throttle(
+                5.0, '%s motion_supervisor 注册存在但无法通信，将执行保活重启：%s。',
                 NODE_NAME, error)
             return False
 
@@ -426,29 +476,42 @@ class StateControl:
         command = ['roslaunch', 'auv_control', self.motion_supervisor['launch']]
         command += self.motion_supervisor['launch_args']
         try:
-            master_fd, slave_fd = pty.openpty()
-            try:
-                self.motion_supervisor_process = subprocess.Popen(
-                    command,
-                    stdin=slave_fd,
-                    stdout=slave_fd,
-                    stderr=slave_fd,
-                    close_fds=True)
-            except OSError:
-                os.close(master_fd)
-                raise
-            finally:
-                os.close(slave_fd)
+            if self.motion_supervisor['forward_output']:
+                master_fd, slave_fd = pty.openpty()
+                try:
+                    self.motion_supervisor_process = subprocess.Popen(
+                        command,
+                        stdin=slave_fd,
+                        stdout=slave_fd,
+                        stderr=slave_fd,
+                        close_fds=True)
+                except OSError:
+                    os.close(master_fd)
+                    raise
+                finally:
+                    os.close(slave_fd)
+                self.motion_supervisor_output_fd = master_fd
+                self.motion_supervisor_output_thread = threading.Thread(
+                    target=self._forward_task_output,
+                    args=(self.motion_supervisor['name'], master_fd),
+                    name='{}_output'.format(self.motion_supervisor['name']),
+                    daemon=True)
+                self.motion_supervisor_output_thread.start()
+            else:
+                with open(os.devnull, 'wb') as devnull:
+                    self.motion_supervisor_process = subprocess.Popen(
+                        command,
+                        stdin=devnull,
+                        stdout=devnull,
+                        stderr=devnull,
+                        close_fds=True)
             self.motion_supervisor_start_time = time.monotonic()
-            self.motion_supervisor_output_fd = master_fd
-            self.motion_supervisor_output_thread = threading.Thread(
-                target=self._forward_task_output,
-                args=(self.motion_supervisor['name'], master_fd),
-                name='{}_output'.format(self.motion_supervisor['name']),
-                daemon=True)
-            self.motion_supervisor_output_thread.start()
-            rospy.loginfo('%s 已启动 motion_supervisor：%s。', NODE_NAME,
-                          ' '.join(command))
+            if self.motion_supervisor['forward_output']:
+                rospy.loginfo('%s 已启动 motion_supervisor：%s。', NODE_NAME,
+                              ' '.join(command))
+            else:
+                rospy.loginfo('%s 已启动 motion_supervisor，日志不转发到当前终端。',
+                              NODE_NAME)
         except OSError as error:
             self.motion_supervisor_process = None
             self.motion_supervisor_start_time = None
@@ -761,6 +824,17 @@ class StateControl:
             return
         if self.motion_supervisor_node_running():
             return
+        if self.motion_supervisor_launch_running():
+            self.start_motion_supervisor()
+            return
+        if self.motion_supervisor_process is not None:
+            exit_code = self.motion_supervisor_process.poll()
+            self.motion_supervisor_process = None
+            self.motion_supervisor_start_time = None
+            self._close_motion_supervisor_output()
+            rospy.logerr_throttle(
+                5.0, '%s motion_supervisor launch 已退出，退出码=%s，将重启。',
+                NODE_NAME, exit_code)
         rospy.logerr_throttle(
             5.0, '%s 未检测到 motion_supervisor，执行保活重启。', NODE_NAME)
         self.start_motion_supervisor()

@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 # -*- coding: utf-8 -*-
 """
 名称：task2.py
@@ -34,6 +34,12 @@
         1. 送水和返航阶段改为根据实时 map -> base_link TF 持续指向目标点。
         2. 进入目标点 final_yaw_switch_distance 范围后，保持位置目标并直接切换至最终航向，不额外停稳。
         3. CSV 与结构化日志新增实时路径航向、目标距离和航向切换判断，支持完整复盘。
+    2026.8.8
+        1. 保持阶段在入场 HOVER 已确认后按实际时间计时，短时退出 HOVER 不再清零计时而导致任务永久卡死。
+        2. 保持期间仍持续校验当前目标、motion 新鲜度和执行器闭环；反馈失效时保持原有最终安全定点回退。
+        3. 水面送水结束后，下潜目标首次发布起固定等待 2 秒，不再以深度或 HOVER 作为推杆回收、返航的转场条件。
+        4. 送水点水平移动超过配置时限时直接浮出，避免抵墙或无法进入最终航向范围时永久等待。
+        5. 实时路径 TF 丢失时改用锁存的固定最终航向目标，阶段超时继续计时，不再冻结送水或返航流程。
 """
 
 from datetime import datetime
@@ -112,7 +118,7 @@ class Task2V2(object):
         'feedback_light2', 'feedback_heading_servo',
         'feedback_clamp_servo', 'feedback_drive_cmd', 'feedback_drive_speed',
         'feedback_red_light', 'feedback_yellow_light', 'feedback_green_light',
-        'sampling_elapsed_s', 'surface_hold_elapsed_s',
+        'sampling_elapsed_s', 'surface_hold_elapsed_s', 'dive_elapsed_s',
         'retraction_elapsed_s', 'final_hold_elapsed_s',
     )
 
@@ -200,7 +206,8 @@ class Task2V2(object):
             '~delivery_depth_timeout', 180.0))
         self.surface_timeout = float(rospy.get_param(
             '~surface_timeout', 120.0))
-        self.dive_timeout = float(rospy.get_param('~dive_timeout', 120.0))
+        self.dive_delay_seconds = float(rospy.get_param(
+            '~dive_delay_seconds', 2.0))
         self.return_home_timeout = float(rospy.get_param(
             '~return_home_timeout', 180.0))
         self.final_safe_warning_timeout = float(rospy.get_param(
@@ -265,6 +272,7 @@ class Task2V2(object):
         self.initial_tf_wait_warned = False
         self.motion_unhealthy_since = None
         self.sampling_started_at = None
+        self.dive_started_at = None
         self.retraction_started_at = None
         self.surface_hold_started_at = None
         self.final_hold_started_at = None
@@ -299,6 +307,7 @@ class Task2V2(object):
             pushrod_duration=self.pushrod_duration,
             pushrod_retract_duration=self.pushrod_retract_duration,
             surface_hold_seconds=self.surface_hold_seconds,
+            dive_delay_seconds=self.dive_delay_seconds,
             final_hold_seconds=self.final_hold_seconds,
             feedback_confirm_frames=self.feedback_confirm_frames,
         )
@@ -317,7 +326,7 @@ class Task2V2(object):
             'initial_hover_timeout': self.initial_hover_timeout,
             'delivery_depth_timeout': self.delivery_depth_timeout,
             'surface_timeout': self.surface_timeout,
-            'dive_timeout': self.dive_timeout,
+            'dive_delay_seconds': self.dive_delay_seconds,
             'return_home_timeout': self.return_home_timeout,
             'final_safe_warning_timeout': self.final_safe_warning_timeout,
             'actuator_status_timeout': self.actuator_status_timeout,
@@ -457,7 +466,7 @@ class Task2V2(object):
             'initial_hover_timeout': self.initial_hover_timeout,
             'delivery_depth_timeout': self.delivery_depth_timeout,
             'surface_timeout': self.surface_timeout,
-            'dive_timeout': self.dive_timeout,
+            'dive_delay_seconds': self.dive_delay_seconds,
             'return_home_timeout': self.return_home_timeout,
             'final_safe_warning_timeout': self.final_safe_warning_timeout,
             'log_enabled': self.log_enabled,
@@ -750,6 +759,7 @@ class Task2V2(object):
             'feedback_green_light': '' if actuator_status is None else actuator_status.green_light,
             'sampling_elapsed_s': self._elapsed_or_blank(self.sampling_started_at, monotonic_now),
             'surface_hold_elapsed_s': self._elapsed_or_blank(self.surface_hold_started_at, monotonic_now),
+            'dive_elapsed_s': self._elapsed_or_blank(self.dive_started_at, monotonic_now),
             'retraction_elapsed_s': self._elapsed_or_blank(self.retraction_started_at, monotonic_now),
             'final_hold_elapsed_s': self._elapsed_or_blank(self.final_hold_started_at, monotonic_now),
         }
@@ -895,15 +905,33 @@ class Task2V2(object):
         return float(translation[0]), float(translation[1])
 
     def _start_path_navigation(self, stage_name, target_x, target_y, target_z,
-                               final_yaw, reason):
-        """以实时目标方位启动送水或返航，并锁存最终航向与位置目标。"""
+                               final_yaw, reason, fallback_goal):
+        """以实时目标方位启动送水或返航；实时 TF 丢失时使用固定最终航向。"""
         current = self._lookup_current_map_position(stage_name)
         if current is None:
+            self.navigation_yaw_context = {
+                'stage': stage_name,
+                'target_x': float(target_x),
+                'target_y': float(target_y),
+                'target_z': float(target_z),
+                'final_yaw': float(final_yaw),
+                'path_yaw': float(final_yaw),
+                'yaw_mode': 'FINAL_YAW',
+                'target_distance_m': None,
+                'tf_available': False,
+                'current_x': None,
+                'current_y': None,
+            }
+            self._set_active_goal(
+                fallback_goal, '{} 实时 TF 不可用，改用固定最终航向'.format(stage_name))
             self._set_last_decision(
-                'navigation_tf_wait', '等待实时 TF 后启动路径航向',
+                'navigation_tf_fallback', '实时 TF 不可用，使用固定最终航向启动',
                 stage=stage_name)
-            self._write_data_record('navigation_tf_wait', stage=stage_name)
-            return False
+            self._write_data_record('navigation_tf_fallback', stage=stage_name)
+            rospy.logwarn(
+                '%s: %s 启动时实时 TF 不可用，使用固定最终航向目标继续',
+                NODE_NAME, stage_name)
+            return True
         current_x, current_y = current
         distance = math.hypot(target_x - current_x, target_y - current_y)
         path_yaw = (
@@ -1033,29 +1061,44 @@ class Task2V2(object):
         self.navigation_yaw_context = None
 
     def _path_navigation_step(self, stage_name, timeout, next_state,
-                              next_goal=None):
-        """执行实时路径航向导航；仅最终航向目标的 HOVER 可以转场。"""
+                              next_goal=None, timeout_to_next=False,
+                              timeout_next_state=None):
+        """执行实时路径航向导航；可在送水超时后直接转入下一阶段。"""
         safe_command = self._safe_actuator_command()
         self._publish_goal()
         if not self._actuator_gate(safe_command, stage_name):
             self._pause_stage_timeout()
             return
-        if not self._update_path_navigation_yaw(stage_name):
-            _, fallback, _ = self._check_motion_or_fallback(stage_name)
-            if fallback:
-                return
-            context = self.navigation_yaw_context or {}
-            self._set_last_decision(
-                'navigation_tf_wait', '实时 TF 不可用，保持上一帧航向并暂停转场',
-                stage=stage_name, yaw_mode=context.get('yaw_mode', ''))
-            self._pause_stage_timeout()
-            return
         self._resume_stage_timeout()
-        self._publish_goal()
+        navigation_tf_ready = self._update_path_navigation_yaw(stage_name)
         hovered, fallback, detail = self._check_motion_or_fallback(stage_name)
         if fallback:
             return
         context = self.navigation_yaw_context
+        if self._stage_elapsed() >= timeout:
+            if timeout_to_next and next_goal is not None:
+                timeout_state = (
+                    next_state if timeout_next_state is None else
+                    timeout_next_state)
+                self._clear_path_navigation(stage_name)
+                self._set_active_goal(
+                    next_goal, '{} 超过 {:.1f}s，直接转入下一阶段'.format(
+                        stage_name, timeout))
+                self._set_state(
+                    timeout_state, '{} 超过 {:.1f}s 未收到 HOVER，按送水超时策略继续'.format(
+                        stage_name, timeout))
+                return
+            self._enter_safe_final(
+                '{} 超过 {:.1f}s 未收到 HOVER：{}'.format(
+                    stage_name, timeout, detail))
+            return
+        if not navigation_tf_ready:
+            context = self.navigation_yaw_context or {}
+            self._set_last_decision(
+                'navigation_tf_wait', '实时 TF 不可用，保持上一帧航向并继续阶段计时',
+                stage=stage_name, yaw_mode=context.get('yaw_mode', ''))
+            return
+        self._publish_goal()
         if context is None or context['yaw_mode'] != 'FINAL_YAW':
             self._set_last_decision(
                 'navigation_wait_final_yaw',
@@ -1068,10 +1111,6 @@ class Task2V2(object):
                 self._set_active_goal(next_goal, next_state)
             self._set_state(next_state, '{} 已由最终航向 HOVER 确认'.format(stage_name))
             return
-        if self._stage_elapsed() >= timeout:
-            self._enter_safe_final(
-                '{} 超过 {:.1f}s 未收到 HOVER：{}'.format(
-                    stage_name, timeout, detail))
 
     def _capture_initial_goals(self):
         """从 TF 锁存起始姿态，并一次性构造任务全程固定目标。"""
@@ -1434,8 +1473,9 @@ class Task2V2(object):
             self._pause_stage_timeout()
             return
         self._resume_stage_timeout()
+        healthy, _, _ = self._motion_health()
         hovered, fallback, detail = self._check_motion_or_fallback(stage_name)
-        if fallback:
+        if fallback or not healthy:
             return
         if hovered:
             if next_goal is not None:
@@ -1448,22 +1488,24 @@ class Task2V2(object):
                     stage_name, timeout, detail))
 
     def _hold_step(self, stage_name, hold_seconds, next_state):
-        """保持当前目标，只有连续 HOVER 反馈期间才累计保持时长。"""
+        """保持当前目标；入场 HOVER 已确认后按实际时间完成保持阶段。
+
+        正常情况下 SURFACE_HOLD 和 FINAL_HOLD 由前一导航阶段的当前目标
+        HOVER 转入；送水抵墙超时时，SURFACE_HOLD 会直接从浮出目标进入。
+        水面扰动或抵墙可能使控制器持续处于非 HOVER；此时若将计时清零，会
+        永久卡住而无法下潜或返航。
+        因此保持期间继续发布同一锁存目标并按实际时间计时，但 motion 反馈
+        失效、进入 SAFE 或执行器闭环异常仍按原安全流程暂停或回退。
+        """
         safe_command = self._safe_actuator_command()
         self._publish_goal()
         if not self._actuator_gate(safe_command, stage_name):
             self._pause_stage_timeout()
             return
         self._resume_stage_timeout()
+        healthy, _, _ = self._motion_health()
         hovered, fallback, detail = self._check_motion_or_fallback(stage_name)
-        if fallback:
-            return
-        if not hovered:
-            if self.state == self.SURFACE_HOLD:
-                self.surface_hold_started_at = None
-            else:
-                self.final_hold_started_at = None
-            rospy.loginfo_throttle(1.0, '%s: %s，保持计时等待 HOVER', NODE_NAME, detail)
+        if fallback or not healthy:
             return
 
         now = time.monotonic()
@@ -1475,13 +1517,59 @@ class Task2V2(object):
             if self.final_hold_started_at is None:
                 self.final_hold_started_at = now
             elapsed = now - self.final_hold_started_at
+
+        if not hovered:
+            self._set_last_decision(
+                'hold_continue_without_hover',
+                '{}；保持计时继续'.format(detail),
+                stage=stage_name, elapsed=elapsed, hold_seconds=hold_seconds)
+            rospy.logwarn_throttle(
+                1.0, '%s: %s；保持计时继续 %.1f/%.1fs',
+                NODE_NAME, detail, elapsed, hold_seconds)
         if elapsed >= hold_seconds:
             self._set_state(next_state, '{} 保持 {:.1f}s 完成'.format(
                 stage_name, hold_seconds))
-        else:
+        elif hovered:
             rospy.loginfo_throttle(
                 1.0, '%s: %s 保持 %.1f/%.1fs', NODE_NAME,
                 stage_name, elapsed, hold_seconds)
+
+    def _dive_delay_step(self):
+        """下潜目标首次发布后固定等待，再启动回收，不判断深度或 HOVER。"""
+        self._publish_goal()
+        if self.dive_started_at is None:
+            self.dive_started_at = time.monotonic()
+            self._set_last_decision(
+                'dive_delay_started', '下潜目标首次发布，固定等待 {:.1f}s'.format(
+                    self.dive_delay_seconds),
+                delay_seconds=self.dive_delay_seconds)
+            self._write_data_record(
+                'dive_delay_started', delay_seconds=self.dive_delay_seconds)
+            rospy.loginfo(
+                '%s: 下潜目标首次发布，固定等待 %.1fs，不判断深度或 HOVER',
+                NODE_NAME, self.dive_delay_seconds)
+
+        healthy, _, _ = self._motion_health()
+        _, fallback, detail = self._check_motion_or_fallback('下潜固定等待')
+        if fallback or not healthy:
+            return
+        if not self._actuator_gate(self._safe_actuator_command(), '下潜等待推杆停止'):
+            return
+
+        elapsed = time.monotonic() - self.dive_started_at
+        if elapsed >= self.dive_delay_seconds:
+            self._set_state(
+                self.WAIT_PUSHROD_RETRACT_START,
+                '下潜目标发布后固定等待 {:.1f}s 完成'.format(
+                    self.dive_delay_seconds))
+            return
+        self._set_last_decision(
+            'dive_delay_running', '下潜固定等待 {:.1f}/{:.1f}s，不判断深度或 HOVER'.format(
+                elapsed, self.dive_delay_seconds),
+            elapsed=elapsed, delay_seconds=self.dive_delay_seconds)
+        rospy.loginfo_throttle(
+            1.0, '%s: 下潜固定等待 %.1f/%.1fs，不判断深度或 HOVER',
+            NODE_NAME, elapsed, self.dive_delay_seconds)
 
     def _safe_final_step(self):
         """持续前往最终安全目标，直至控制器重新确认 HOVER。"""
@@ -1513,19 +1601,6 @@ class Task2V2(object):
             return True
         self.sampling_started_at = None
         self._actuator_gate(self._safe_actuator_command(), '采水暂停推杆')
-        rospy.loginfo_throttle(
-            1.0, '%s: %s，推杆保持停止并等待 HOVER', NODE_NAME, detail)
-        return False
-
-    def _retraction_start_position_ready(self):
-        """仅在送水点下潜 HOVER 后启动回收；启动后允许与返航并行。"""
-        self._publish_goal()
-        hovered, fallback, detail = self._check_motion_or_fallback('送水点下潜后推杆回收定点')
-        if fallback:
-            return False
-        if hovered:
-            return True
-        self._actuator_gate(self._safe_actuator_command(), '回收推杆暂停')
         rospy.loginfo_throttle(
             1.0, '%s: %s，推杆保持停止并等待 HOVER', NODE_NAME, detail)
         return False
@@ -1630,7 +1705,8 @@ class Task2V2(object):
                         '送水点水平移动（任务深度）',
                         self.delivery_xy[0], self.delivery_xy[1],
                         self.task_depth, math.radians(self.delivery_yaw_deg),
-                        '送水点水平移动（实时指向目标）'):
+                        '送水点水平移动（实时指向目标）',
+                        self.delivery_at_task_depth_goal):
                     return
                 self._set_state(
                     self.DELIVERY_AT_TASK_DEPTH,
@@ -1640,7 +1716,8 @@ class Task2V2(object):
         if self.state == self.DELIVERY_AT_TASK_DEPTH:
             self._path_navigation_step(
                 '送水点水平移动（任务深度）', self.delivery_depth_timeout,
-                self.SURFACE, self.surface_goal)
+                self.SURFACE, self.surface_goal, timeout_to_next=True,
+                timeout_next_state=self.SURFACE_HOLD)
             return
 
         if self.state == self.SURFACE:
@@ -1653,17 +1730,19 @@ class Task2V2(object):
             self._hold_step(
                 '水面送水', self.surface_hold_seconds, self.DIVE)
             if self.state == self.DIVE:
+                self.dive_started_at = None
                 self._set_active_goal(self.dive_goal, '送水点下潜')
             return
 
         if self.state == self.DIVE:
-            self._navigation_step(
-                '送水点下潜', self.dive_timeout,
-                self.WAIT_PUSHROD_RETRACT_START)
+            self._dive_delay_step()
             return
 
         if self.state == self.WAIT_PUSHROD_RETRACT_START:
-            if not self._retraction_start_position_ready():
+            self._publish_goal()
+            healthy, _, _ = self._motion_health()
+            _, fallback, _ = self._check_motion_or_fallback('下潜后启动推杆回收')
+            if fallback or not healthy:
                 return
             if self._actuator_gate(
                     self._pushrod_reverse_command(), '推杆反向回收'):
@@ -1671,7 +1750,7 @@ class Task2V2(object):
                         '返回起始点', self.initial_goal.pose.position.x,
                         self.initial_goal.pose.position.y, self.task_depth,
                         math.radians(self.final_yaw_deg),
-                        '反向回收并实时指向起始点'):
+                        '反向回收并实时指向起始点', self.return_home_goal):
                     self._start_actuator_confirmation(safe_command)
                     self._publish_actuator(safe_command)
                     rospy.logwarn(

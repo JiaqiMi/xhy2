@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称: test_pose_control.py
 功能: 通过UI输入目标位姿 (在map坐标系下), 发布到/target话题

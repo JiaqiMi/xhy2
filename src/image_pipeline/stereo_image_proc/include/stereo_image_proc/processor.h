@@ -34,6 +34,7 @@
 #ifndef STEREO_IMAGE_PROC_PROCESSOR_H
 #define STEREO_IMAGE_PROC_PROCESSOR_H
 
+#include <opencv2/calib3d.hpp>
 #include <image_proc/processor.h>
 #include <image_geometry/stereo_camera_model.h>
 #include <stereo_msgs/DisparityImage.h>

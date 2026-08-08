@@ -1,4 +1,4 @@
-#! /home/xhy/xhy_env36/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 """
 名称：sensor_node.py
 功能：通过TCP发送控制报文（红色LED、绿色LED、舵机角度、补光灯亮度）

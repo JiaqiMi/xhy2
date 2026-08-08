@@ -24,13 +24,13 @@
     <!-- ArUco -->
     <arg name="marker_length" default="0.20" />
     <arg name="dictionary" default="DICT_4X4_1000" />
-    <arg name="infer_rate" default="5.0" />
+    <arg name="infer_rate" default="20.0" />
     <arg name="processing_width" default="1280" />
     <arg name="visualization" default="0" />
 
     <!-- 相机模型与标定 -->
     <arg name="calibration_file"
-         default="/home/xhy/catkin_ws/camera/fisheye.yaml" />
+         default="/home/nvidia/catkin_ws/camera/fisheye.yaml" />
 
     <!-- 标定参数填写正确后改成 true -->
     <arg name="enable_pose" default="false" />

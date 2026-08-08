@@ -1,4 +1,4 @@
-#!/home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 
 # 检测aruco并正确的将其航向转换为map下的航向
 """

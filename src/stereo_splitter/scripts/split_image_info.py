@@ -1,4 +1,4 @@
-#!/home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 # -*- coding: utf-8 -*-
 
 import rospy
@@ -14,8 +14,8 @@ class StereoSplitter:
         rospy.init_node('split_stereo_image')
 
         # 参数加载
-        self.left_yaml = rospy.get_param("~left_camera_yaml", "/home/xhy/catkin_ws/camera/left_nc_water_0727.yaml")
-        self.right_yaml = rospy.get_param("~right_camera_yaml", "/home/xhy/catkin_ws/camera/left_nc_water_0727.yaml")
+        self.left_yaml = rospy.get_param("~left_camera_yaml", "/home/nvidia/catkin_ws/camera/left_nc_water_0727.yaml")
+        self.right_yaml = rospy.get_param("~right_camera_yaml", "/home/nvidia/catkin_ws/camera/left_nc_water_0727.yaml")
         self.image_topic = rospy.get_param("~input_image_topic", "/usb_cam/image_raw")
 
         # 加载 CameraInfo

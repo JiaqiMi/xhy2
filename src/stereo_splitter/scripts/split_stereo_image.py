@@ -1,4 +1,4 @@
-#!/home/xhy/xhy_env/bin/python3.8
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 
 import rospy
 from sensor_msgs.msg import Image
@@ -6,7 +6,7 @@ from cv_bridge import CvBridge
 import cv2
 
 """
-#!/home/xhy/xhy_env/bin/python
+#!/home/nvidia/venvs/xhy_ros2/bin/python
 #!/usr/bin/env python
 """
 

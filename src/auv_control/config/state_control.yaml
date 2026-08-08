@@ -12,6 +12,10 @@ motion_supervisor:
   launch_args: []
   node_name: /motion_supervisor
   startup_timeout_seconds: 15.0
+  # 节点注册后通过 XML-RPC getPid 确认可通信，避免残留注册误判为运行中。
+  health_check_timeout_seconds: 1.0
+  # 控制器日志由自身 ROS/CSV 日志目录记录，不转发到 task_control 终端。
+  forward_output: false
 
 # 按 9 键启动 task1 视觉预热；启动 task1 时会复用该组节点。
 task1_vision_prewarm:

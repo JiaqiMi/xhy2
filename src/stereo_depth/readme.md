@@ -9,7 +9,7 @@ roslaunch stereo_depth test_shapes_detection.launch
 默认模型：
 
 ```text
-/home/xhy/catkin_ws/models/shapes0709.pt
+/home/nvidia/catkin_ws/models/shapes0709.pt
 ```
 
 模型类别由权重文件内部 `names` 决定。
@@ -59,7 +59,7 @@ model_path=""
 因此 `yolo.py` 自动加载：
 
 ```text
-/home/xhy/catkin_ws/models/rectangle0710.pt
+/home/nvidia/catkin_ws/models/rectangle0710.pt
 ```
 
 ### 8.2 核心话题
@@ -99,7 +99,7 @@ roslaunch stereo_depth test_arrow_detection.launch
 默认模型：
 
 ```text
-/home/xhy/catkin_ws/models/arrow0709.pt
+/home/nvidia/catkin_ws/models/arrow0709.pt
 ```
 
 注意：当前 launch 显式设置了模型路径，因此 `detect_mode` 不负责模型选择。为了语义一致，后续可以把 `detect_mode` 改为 `4`。
@@ -504,7 +504,7 @@ rosparam get /yolo_unified_detector/model_path
 source /opt/ros/melodic/setup.bash
 source ~/catkin_ws/devel_isolated/setup.bash
 source /home/xhy/xhy_env/bin/activate
-export PYTHONPATH=/home/xhy/catkin_ws/devel_isolated/cv_bridge/lib/python3/dist-packages:$PYTHONPATH
+export PYTHONPATH=/home/nvidia/catkin_ws/devel_isolated/cv_bridge/lib/python3/dist-packages:$PYTHONPATH
 
 # 2. 检查模型
 ls -lh \
@@ -536,5 +536,5 @@ roslaunch stereo_depth test_rosbag.launch \
 
 roslaunch stereo_depth test_rosbag.launch \
   mode:=play \
-  bag_file:=/home/xhy/xhy_records/stereo_input_0.bag
+  bag_file:=/home/nvidia/xhy_records/stereo_input_0.bag
 ```

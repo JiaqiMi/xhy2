@@ -3,6 +3,7 @@
 """
 名称：test_task3_3_inspect_and_drop.py
 功能：识别指定颜色方框，基于map位置完成camera粗对准、XY误差精对准、投放和离场
+功能：识别指定颜色方框，基于map位置完成camera粗对准、XY误差精对准、投放和离场
 作者：Tangzongle
 监听：/vision/rectangle/target_message (auv_control/TargetDetection)
       /vision/rectangle/detections (std_msgs/String，人工模式兼容)
@@ -15,10 +16,15 @@
 记录：
 2026.8.3
     自动模式改为使用带时间戳的三维方框map位置队列，按三帧稳定位置完成camera粗对准和XY误差精对准。
+    自动模式改为使用带时间戳的三维方框map位置队列，按三帧稳定位置完成camera粗对准和XY误差精对准。
 2026.8.3
     方框搜索接收阶段固定航向，投放后使用配置的返航绝对航向前往预设返航点。
 2026.8.4
     将侧推自动恢复MotionState=10作为有效等待状态，不再误判为未知异常。
+2026.8.5
+    方框map细对准增加Y误差门槛，X、Y均进入容差后才允许投放。
+2026.8.5
+    删除无入口的旧二维自动跟踪和已被禁用的颜色布局搜索，保留当前map自动链路与人工联调链路。
 2026.8.5
     方框map细对准增加Y误差门槛，X、Y均进入容差后才允许投放。
 2026.8.5
@@ -134,6 +140,7 @@ DEFAULT_AUTO_VISUAL_MIN_STEP_M = 0.01
 DEFAULT_AUTO_VISUAL_MAX_STEP_M = 0.05
 DEFAULT_FINE_POSITION_X_TOLERANCE_M = 0.10
 DEFAULT_FINE_POSITION_Y_TOLERANCE_M = 0.10
+DEFAULT_FINE_POSITION_Y_TOLERANCE_M = 0.10
 DEFAULT_LOG_INTERVAL = 1.0
 DEFAULT_WARNING_LOG_INTERVAL = 2.0
 
@@ -185,6 +192,7 @@ class Task3InspectAndDropTest:
     STATE_NAMES = {
         WAIT_FOR_TARGET: "等待目标颜色方框",
         AUTO_HOVER_CONFIRM: "camera粗对准后等待HOVER复核方框",
+        AUTO_APPROACH: "方框map位置XY误差精对准并保持航向",
         AUTO_APPROACH: "方框map位置XY误差精对准并保持航向",
         HOLD_BEFORE_ACTION: "夹爪移动到中间",
         OPEN_CLAMP: "打开夹爪",
@@ -701,6 +709,7 @@ class Task3InspectAndDropTest:
                 self.stable_detection_window_size,
                 self.auto_search_stable_detection_count,
                 self.fine_position_x_tolerance_m,
+                self.fine_position_y_tolerance_m,
                 self.fine_position_y_tolerance_m,
             )
             rospy.loginfo(
@@ -2641,6 +2650,7 @@ class Task3InspectAndDropTest:
             camera_x_error,
             camera_y_error,
             self.fine_position_x_tolerance_m,
+            self.fine_position_y_tolerance_m,
             self.fine_position_y_tolerance_m,
         )
         if (
