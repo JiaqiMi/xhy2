@@ -175,7 +175,7 @@ test_task3_1_acquire_area:
 
 
 # ============================================================
-# 子任务2：ArUco识别、亮灯和原地转向
+# 子任务2：ArUco识别、亮灯和固定点转向
 # ROS私有参数命名空间：/test_task3_2_get_task
 # ============================================================
 test_task3_2_get_task:
@@ -192,9 +192,10 @@ test_task3_2_get_task:
   hold_pose_timeout: 5.0
   # 运行期运动反馈保护统一读取文件顶部task3_protection。
 
-  # ArUco识别和亮灯完成后，原地转到文件顶部task3_aruco_yaw_deg绝对航向。
+  # ArUco识别和亮灯完成后，整合任务在上一个箭头冻结点转到顶部配置的绝对航向；
+  # 子任务2独立运行时仍使用启动锁存点。
   turn_enabled: true
-  # [HOVER超时-4] 子任务2识别完成后的原地转向目标进入HOVER。
+  # [HOVER超时-4] 子任务2识别完成后的固定点转向目标进入HOVER。
   turn_timeout: 600.0
   turn_stable_seconds: 1.0
   turn_hold_seconds: 1.0
@@ -258,8 +259,12 @@ test_task3_3_inspect_and_drop:
 
   # [第二类] 方框识别置信度与误差范围
   target_color: "green"
-  min_confidence: 0.35
-  # 自动模式订阅带三维位置和原始时间戳的TargetDetection；人工模式仍可使用JSON检测话题。
+  min_confidence: 0.3
+  # 进入camera粗对准后的细确认阶段，目标颜色帧必须达到该置信度；
+  # 低于该值立即判定本次粗锁定为误识别，并恢复未完成的搜索路线。
+  fine_min_confidence: 0.5
+  # 整合节点把YOLO JSON中的全部候选中心转发给multiclass深度节点；子任务3接收其
+  # TargetDetection并缓存红、黄、绿三种颜色帧，稳定判别时只取target_color对应颜色。
   model_target_topic: "/vision/rectangle/target_message"
   # 人工模式稳定候选组要求。
   stable_detection_count: 6
@@ -268,6 +273,11 @@ test_task3_3_inspect_and_drop:
   auto_search_stable_detection_count: 6
   # 三帧map位置相对平均值的最大二维抖动，单位m。
   stable_map_position_tolerance_m: 0.20
+  # 细确认三帧平均位置与首次粗锁定位置允许的最大二维距离。
+  # 超过该值判定不是同一个方框，并恢复未完成的搜索路线。
+  fine_position_match_tolerance_m: 0.20
+  # 已确认误识别的方框map点忽略半径，防止恢复搜索后立即锁回同一点。
+  false_positive_ignore_radius_m: 0.30
   # camera粗对准后，当前camera与二次三帧平均map位置的XY实际误差门槛，单位m。
   # 相对首次平均位置的误差只用于诊断；camera实际X、Y误差必须同时进入门槛，才完成精确认并进入投放。
   fine_position_x_tolerance_m: 0.12
@@ -279,7 +289,7 @@ test_task3_3_inspect_and_drop:
   # 子任务3独立运行时的默认最终超时，从首次实际运动目标开始计时；
   # 完整任务使用task3_final.box_timeout_seconds覆盖该值。
   # 预设搜索路径走完后保持末点继续识别。
-  # 超时后不再恢复或重试，整合任务先原地对准返航绝对航向，再前往顶部预设返航点并上浮结束。
+  # 超时后不再恢复或重试；整合任务先开爪亮灯，再边返航边转向，最后上浮结束。
   max_wait_seconds: 120.0
 
   # motion_supervisor首次反馈等待；运行期反馈和取消保护统一读取
@@ -326,12 +336,16 @@ test_task3_3_inspect_and_drop:
   # 每个机械动作等待反馈到位的最长时间，超时则任务失败并安全收爪。
   actuator_stage_timeout: 15.0
 
+  # 方框最终超时触发返航保护时，返航前夹爪打开且目标颜色灯点亮的时间。
+  # 结束后关闭夹爪并熄灯，再开始返航；设为0可跳过该动作。
+  timeout_return_clamp_light_seconds: 5.0
+
   # 投放完成后的自动离场，仅operation_mode=auto时执行；
   # 方框识别超时后的统一收尾也复用下面的返航和上浮参数。
-  # 离场时先原地对准文件顶部配置的绝对返航航向，不继承中间识别航向误差。
+  # 正常和超时返航都不先原地转向，而是前往固定点时同时对准顶部配置的绝对返航航向。
   post_drop_motion_enabled: true
-  # [HOVER超时-6] 子任务3投放后对准返航绝对航向、前往预设返航点分别等待HOVER。
-  post_drop_step_timeout: 600.0
+  # 边返航边转向的最长时间；超过后锁存当前位置并直接上浮等待结束。
+  post_drop_step_timeout: 30.0
   # 到达预设返航点后的绝对NED/map上浮目标z；NED z向下为正，值越小表示越向上。
   post_drop_ascent_target_z: -1.3
   # 上浮目标持续发布时间，到时结束全部流程。

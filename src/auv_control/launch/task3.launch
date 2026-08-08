@@ -44,6 +44,8 @@
          default="/vision/rectangle/target_message" />
     <arg name="rectangle_detection_topic"
          default="/vision/rectangle/detections" />
+    <arg name="rectangle_center_topic"
+         default="/vision/rectangle/target_center" />
     <arg name="rectangle_pose_topic"
          default="/vision/rectangle/pose" />
     <arg name="motion_goal_topic" default="/cmd/motion/goal" />
@@ -93,20 +95,23 @@
         </include>
     </group>
 
-    <!-- 彩色方框模型。 -->
+    <!-- 彩色方框多分类模型：同一图像帧为每种颜色分别发布三维目标。 -->
     <group if="$(arg start_rectangle_model)">
         <remap from="/vision/rectangle/target_message"
                to="$(arg rectangle_target_topic)" />
         <remap from="/vision/rectangle/detections"
                to="$(arg rectangle_detection_topic)" />
+        <remap from="/vision/rectangle/target_center"
+               to="$(arg rectangle_center_topic)" />
         <remap from="/vision/rectangle/pose"
                to="$(arg rectangle_pose_topic)" />
-        <include file="$(find stereo_depth)/launch/test_rectangles_detection_speed.launch">
+        <include file="$(find stereo_depth)/launch/test_rectangles_detection_multiclass.launch">
             <arg name="start_camera" value="$(arg start_down_camera)" />
             <arg name="start_splitter" value="$(arg start_down_splitter)" />
             <arg name="start_web" value="$(arg start_rectangle_web)" />
             <arg name="web_port" value="$(arg rectangle_web_port)" />
             <arg name="node_output" value="$(arg model_node_output)" />
+            <arg name="multi_class_targets" value="true" />
         </include>
     </group>
 
@@ -130,6 +135,8 @@
                value="$(arg aruco_topic)" />
         <param name="rectangle_topic" type="string"
                value="$(arg rectangle_detection_topic)" />
+        <param name="rectangle_center_topic" type="string"
+               value="$(arg rectangle_center_topic)" />
         <param name="rectangle_target_topic" type="string"
                value="$(arg rectangle_target_topic)" />
         <param name="motion_goal_topic" type="string"

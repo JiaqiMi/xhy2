@@ -7,7 +7,7 @@
 监听：/vision/arrow/direction、/vision/arrow/target_message
       /vision/aruco/target_message、/vision/rectangle/detections
       /vision/rectangle/target_message、/motion/state、/status/auv
-发布：/cmd/motion/goal、/cmd/motion/cancel、/cmd/actuator
+发布：/vision/rectangle/target_center、/cmd/motion/goal、/cmd/motion/cancel、/cmd/actuator
       /task3_final/finished
 记录：
 2026.8.3
@@ -38,7 +38,7 @@ import rosnode
 import rospy
 import tf
 from auv_control.msg import MotionState, TargetDetection
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PointStamped, PoseStamped
 from std_msgs.msg import Empty, String
 
 
@@ -467,7 +467,13 @@ class Task3Final:
             "/test_task3_3_inspect_and_drop"
         )
         self.post_drop_step_timeout = float(
-            self.task3_params.get("post_drop_step_timeout", 90.0)
+            self.task3_params.get("post_drop_step_timeout", 30.0)
+        )
+        self.timeout_return_clamp_light_seconds = float(
+            self.task3_params.get(
+                "timeout_return_clamp_light_seconds",
+                5.0,
+            )
         )
         self.post_drop_ascent_target_z = float(
             self.task3_params.get("post_drop_ascent_target_z", -1.3)
@@ -477,6 +483,13 @@ class Task3Final:
             or self.post_drop_step_timeout <= 0.0
         ):
             raise ValueError("post_drop_step_timeout必须是大于0的有限数")
+        if (
+            not math.isfinite(self.timeout_return_clamp_light_seconds)
+            or self.timeout_return_clamp_light_seconds < 0.0
+        ):
+            raise ValueError(
+                "timeout_return_clamp_light_seconds必须是大于等于0的有限数"
+            )
         if (
             not math.isfinite(self.post_drop_ascent_target_z)
             or self.post_drop_ascent_target_z >= self.fixed_map_z
@@ -500,6 +513,10 @@ class Task3Final:
         self.rectangle_topic = str(rospy.get_param(
             "~rectangle_topic",
             "/vision/rectangle/detections",
+        )).strip()
+        self.rectangle_center_topic = str(rospy.get_param(
+            "~rectangle_center_topic",
+            "/vision/rectangle/target_center",
         )).strip()
         self.rectangle_target_topic = str(rospy.get_param(
             "~rectangle_target_topic",
@@ -708,6 +725,11 @@ class Task3Final:
             String,
             queue_size=10,
         )
+        self.rectangle_center_pub = rospy.Publisher(
+            self.rectangle_center_topic,
+            PointStamped,
+            queue_size=20,
+        )
 
         self.motion_lock = threading.Lock()
         self.latest_motion_state = None
@@ -818,7 +840,8 @@ class Task3Final:
         )
         rospy.loginfo(
             (
-                "%s：模型话题：箭头方向=%s，箭头三维位置=%s，ArUco=%s，方框=%s；"
+                "%s：模型话题：箭头方向=%s，箭头三维位置=%s，ArUco=%s，"
+                "方框完整JSON=%s，方框候选中心=%s，方框三维位置=%s；"
                 "阶段间不再启动或关闭子任务launch"
             ),
             NODE_NAME,
@@ -826,6 +849,8 @@ class Task3Final:
             self.arrow_target_topic,
             self.aruco_topic,
             self.rectangle_topic,
+            self.rectangle_center_topic,
+            self.rectangle_target_topic,
         )
         rospy.loginfo(
             (
@@ -1273,10 +1298,92 @@ class Task3Final:
                 self.aruco_history_color,
             )
 
+    def forward_rectangle_candidates(self, message):
+        """把YOLO JSON中的全部候选转成深度节点使用的PointStamped。"""
+        try:
+            payload = json.loads(message.data)
+        except (TypeError, ValueError) as error:
+            rospy.logwarn_throttle(
+                2.0,
+                "%s：[方框全候选桥接] JSON解析失败：%s",
+                NODE_NAME,
+                str(error),
+            )
+            return 0
+        if not isinstance(payload, dict):
+            rospy.logwarn_throttle(
+                2.0,
+                "%s：[方框全候选桥接] JSON根节点不是对象",
+                NODE_NAME,
+            )
+            return 0
+        detections = payload.get("detections", [])
+        if not isinstance(detections, list):
+            rospy.logwarn_throttle(
+                2.0,
+                "%s：[方框全候选桥接] detections不是数组",
+                NODE_NAME,
+            )
+            return 0
+        try:
+            stamp_sec = float(payload.get("stamp"))
+        except (TypeError, ValueError):
+            stamp_sec = float("nan")
+        if not math.isfinite(stamp_sec) or stamp_sec <= 0.0:
+            rospy.logwarn_throttle(
+                2.0,
+                "%s：[方框全候选桥接] 缺少有效原始图像时间戳",
+                NODE_NAME,
+            )
+            return 0
+
+        stamp = rospy.Time.from_sec(stamp_sec)
+        forwarded_classes = []
+        for detection in detections:
+            if not isinstance(detection, dict):
+                continue
+            class_name = str(detection.get("class_name", "")).strip()
+            center = detection.get("center")
+            try:
+                confidence = float(detection.get("confidence"))
+                center_u = float(center.get("u"))
+                center_v = float(center.get("v"))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if (
+                not class_name
+                or not all(math.isfinite(value) for value in (
+                    confidence, center_u, center_v
+                ))
+            ):
+                continue
+            target = PointStamped()
+            target.header.stamp = stamp
+            target.header.frame_id = class_name
+            target.point.x = center_u
+            target.point.y = center_v
+            target.point.z = confidence
+            self.rectangle_center_pub.publish(target)
+            forwarded_classes.append(class_name)
+
+        rospy.loginfo_throttle(
+            1.0,
+            (
+                "%s：[方框全候选桥接] 原始帧时间=%.9f，"
+                "已向深度节点转发%d个候选：%s"
+            ),
+            NODE_NAME,
+            stamp_sec,
+            len(forwarded_classes),
+            ",".join(forwarded_classes) if forwarded_classes else "无有效候选",
+        )
+        return len(forwarded_classes)
+
     def rectangle_model_callback(self, message):
         self.log_raw_string_frame(
             "rectangle_detections", self.rectangle_topic, message
         )
+        self.forward_rectangle_candidates(message)
         self._record_model_frame("rectangle")
 
     def _model_snapshot(self):
@@ -1612,7 +1719,7 @@ class Task3Final:
         return None
 
     def return_origin_and_ascend(self, context):
-        """方框阶段收尾：对准返航航向、前往预设点并安全上浮。"""
+        """方框阶段收尾：边前往预设点边转向，超时后就地上浮。"""
         return_point = self.fixed_points["return"]
         current_goal = self.capture_current_map_goal(
             self.fixed_map_z,
@@ -1648,60 +1755,37 @@ class Task3Final:
                 )
 
         start_yaw = self.yaw_from_pose(current_goal.pose)
-        turn_yaw = self.return_origin_target_yaw
-        turn_goal = self.make_map_goal(
-            current_goal.pose.position.x,
-            current_goal.pose.position.y,
-            self.fixed_map_z,
-            turn_yaw,
-        )
-        rospy.logwarn(
-            (
-                "%s：%s开始原地对准返航绝对航向："
-                "配置返航航向=%.1fdeg，"
-                "保持位置=(%.3f,%.3f,%.3f)，当前航向=%.1fdeg -> 目标航向=%.1fdeg"
-            ),
-            NODE_NAME,
-            context,
-            self.return_origin_yaw_deg,
-            turn_goal.pose.position.x,
-            turn_goal.pose.position.y,
-            turn_goal.pose.position.z,
-            math.degrees(start_yaw),
-            math.degrees(turn_yaw),
-        )
-        turned = self.wait_for_motion_goal(
-            turn_goal,
-            self.post_drop_step_timeout,
-            self.handoff_stable_seconds,
-            "{}原地对准返航绝对航向{:.1f}度".format(
-                context,
-                math.degrees(self.return_origin_target_yaw),
-            ),
-        )
-        yaw = turn_yaw
-        if not turned:
-            rospy.logwarn(
-                "%s：%s原地航向对准超时，前往预设返航点时继续使用绝对航向%.1fdeg",
-                NODE_NAME,
-                context,
-                math.degrees(yaw),
-            )
-
+        yaw = self.return_origin_target_yaw
         return_goal = self.make_map_goal(
             return_point["N"],
             return_point["E"],
             self.fixed_map_z,
             yaw,
         )
+        rospy.logwarn(
+            (
+                "%s：%s不执行原地转向，直接前往预设返航点并同时转向："
+                "目标=(N=%.3f,E=%.3f,z=%.3f,yaw=%.1fdeg)，"
+                "当前航向=%.1fdeg，返航超时=%.1fs"
+            ),
+            NODE_NAME,
+            context,
+            return_goal.pose.position.x,
+            return_goal.pose.position.y,
+            return_goal.pose.position.z,
+            math.degrees(yaw),
+            math.degrees(start_yaw),
+            self.post_drop_step_timeout,
+        )
         returned = self.wait_for_motion_goal(
             return_goal,
             self.post_drop_step_timeout,
             self.handoff_stable_seconds,
-            "{}前往预设返航点(N={:.3f},E={:.3f})".format(
+            "{}边转向边前往预设返航点(N={:.3f},E={:.3f},yaw={:.1f}度)".format(
                 context,
                 return_point["N"],
                 return_point["E"],
+                math.degrees(yaw),
             ),
         )
         safe_ascent_goal = current_goal
@@ -1751,28 +1835,25 @@ class Task3Final:
 
         if rospy.is_shutdown():
             return False, "ROS关闭，上浮保持被中止"
-        turn_detail = (
-            "已原地对准返航绝对航向%.1f度" % math.degrees(yaw)
-            if turned
-            else "原地航向对准超时，返航时继续对准绝对航向%.1f度"
-            % math.degrees(yaw)
-        )
         return_detail = (
-            "已到达预设返航点(N=%.3f,E=%.3f)并向z=%.2f上浮、持续%.1fs"
+            "已边返航边转向，到达预设点(N=%.3f,E=%.3f,yaw=%.1f度)"
+            "并向z=%.2f上浮、持续%.1fs"
             % (
                 return_point["N"],
                 return_point["E"],
+                math.degrees(yaw),
                 self.post_drop_ascent_target_z,
                 ascent_seconds,
             )
             if returned
-            else "前往预设返航点超时，已在安全锁存点向z=%.2f上浮、持续%.1fs"
-            % (self.post_drop_ascent_target_z, ascent_seconds)
+            else "边转向边返航超过%.1fs，已在当前安全锁存点向z=%.2f上浮、持续%.1fs"
+            % (
+                self.post_drop_step_timeout,
+                self.post_drop_ascent_target_z,
+                ascent_seconds,
+            )
         )
-        return (
-            returned,
-            "{}；{}".format(turn_detail, return_detail),
-        )
+        return returned, return_detail
 
     def wait_for_motion_goal(
         self,
@@ -2160,6 +2241,7 @@ class Task3Final:
         task = None
         timed_out = False
         final_yaw = None
+        final_map_point = None
         try:
             task = self.EmbeddedTask1()
             task.motion_timeout_started_at = stage_started_at
@@ -2167,6 +2249,16 @@ class Task3Final:
             timed_out = bool(task.embedded_timed_out)
             if success:
                 final_yaw = task.final_target_yaw
+                if (
+                    task.final_arrow_map_x is not None
+                    and task.final_arrow_map_y is not None
+                    and math.isfinite(float(task.final_arrow_map_x))
+                    and math.isfinite(float(task.final_arrow_map_y))
+                ):
+                    final_map_point = (
+                        float(task.final_arrow_map_x),
+                        float(task.final_arrow_map_y),
+                    )
         except Exception:
             log_exception_safely()
             success = False
@@ -2193,19 +2285,38 @@ class Task3Final:
             str(success),
             detail,
         )
-        return success, detail, timed_out, final_yaw
+        return success, detail, timed_out, final_yaw, final_map_point
 
-    def run_subtask2(self):
+    def run_subtask2(self, turn_anchor_map_point):
         label = "ArUco子任务"
         stage_started_at = time.monotonic()
         flow_step = "2/{}".format(self.mission_stage_count)
         self.task2_params["max_wait_seconds"] = self.aruco_timeout_seconds
+        if turn_anchor_map_point is None:
+            self.task2_params.pop("turn_anchor_map_x", None)
+            self.task2_params.pop("turn_anchor_map_y", None)
+            rospy.logwarn(
+                "%s：子任务1未返回箭头冻结点；子任务2转向位置回退到启动锁存点",
+                NODE_NAME,
+            )
+        else:
+            self.task2_params["turn_anchor_map_x"] = turn_anchor_map_point[0]
+            self.task2_params["turn_anchor_map_y"] = turn_anchor_map_point[1]
+            rospy.loginfo(
+                (
+                    "%s：子任务2转向位置锁定为上一个箭头冻结点："
+                    "map=(%.3f,%.3f)"
+                ),
+                NODE_NAME,
+                turn_anchor_map_point[0],
+                turn_anchor_map_point[1],
+            )
         self.log_flow_stage(
             flow_step,
             label,
             "进入ArUco子任务",
             "总任务启动时已确认ArUco模型可用；全流程只受ArUco子任务总超时限制",
-            "进入定点悬停、ID确认、亮灯和原地转向",
+            "进入定点悬停、ID确认、亮灯并在上一个箭头冻结点转向",
         )
 
         history_marker_id, history_color = self.get_aruco_history_result()
@@ -2237,7 +2348,7 @@ class Task3Final:
             label,
             "识别、灯光与转向执行",
             "实时识别优先；超时后依次使用三帧一致历史结果和人工颜色",
-            "等待灯光反馈到位并保持，再灭灯并执行配置的原地转向",
+            "等待灯光反馈到位并保持，再灭灯并在上一个箭头冻结点转向",
         )
 
         rospy.loginfo(
@@ -2296,6 +2407,58 @@ class Task3Final:
             detail,
         )
         return success, detail, timed_out, color
+
+    def perform_timeout_return_clamp_light_action(self, task, target_color):
+        """方框最终超时后，返航前开爪亮灯一段可配置时间。"""
+        duration = self.timeout_return_clamp_light_seconds
+        if duration <= 0.0:
+            rospy.loginfo(
+                "%s：方框超时返航前夹爪/灯动作时间为0，直接进入返航保护",
+                NODE_NAME,
+            )
+            return True
+
+        hold_ready = task.request_motion_hold(
+            "方框最终超时，返航前执行夹爪打开和亮灯动作",
+            discard_search_resume=True,
+            force_refresh=True,
+        )
+        started_at = time.monotonic()
+        command_published = False
+        while (
+            not rospy.is_shutdown()
+            and time.monotonic() - started_at < duration
+        ):
+            if hold_ready:
+                task.publish_active_goal()
+            if task.publish_actuator(task.clamp_open, target_color):
+                command_published = True
+            rospy.loginfo_throttle(
+                1.0,
+                "%s：方框最终超时，返航前夹爪打开且%s灯点亮 %.1f/%.1fs",
+                NODE_NAME,
+                target_color,
+                time.monotonic() - started_at,
+                duration,
+            )
+            task.rate.sleep()
+
+        task.publish_actuator(task.clamp_closed, "off")
+        if rospy.is_shutdown():
+            return False
+        if not command_published:
+            rospy.logwarn(
+                "%s：方框最终超时，但夹爪打开和亮灯指令未成功发布；继续返航保护",
+                NODE_NAME,
+            )
+            return False
+        rospy.loginfo(
+            "%s：方框最终超时返航前动作完成：夹爪和%s灯已打开%.1fs，现已关闭并熄灯",
+            NODE_NAME,
+            target_color,
+            duration,
+        )
+        return True
 
     def run_subtask3(self, target_color, search_yaw):
         label = "彩色方框投放子任务"
@@ -2371,19 +2534,34 @@ class Task3Final:
             log_exception_safely()
             success = False
             detail = "任务异常"
+
+        try:
+            if not success and not timed_out and not rospy.is_shutdown():
+                timed_out = self.defer_subtask_failure_to_total_timeout(
+                    label,
+                    stage_started_at,
+                    self.box_timeout_seconds,
+                    detail,
+                )
+                if timed_out:
+                    detail = "{}；异常后保持悬停至子任务总超时".format(
+                        detail
+                    )
+            if timed_out and task is not None and not rospy.is_shutdown():
+                try:
+                    self.perform_timeout_return_clamp_light_action(
+                        task,
+                        target_color,
+                    )
+                except Exception:
+                    log_exception_safely()
+                    rospy.logwarn(
+                        "%s：方框超时返航前夹爪/灯动作异常；继续执行返航保护",
+                        NODE_NAME,
+                    )
         finally:
             if task is not None:
                 self.deactivate_task(task)
-
-        if not success and not timed_out and not rospy.is_shutdown():
-            timed_out = self.defer_subtask_failure_to_total_timeout(
-                label,
-                stage_started_at,
-                self.box_timeout_seconds,
-                detail,
-            )
-            if timed_out:
-                detail = "{}；异常后保持悬停至子任务总超时".format(detail)
 
         rospy.loginfo(
             "%s：%s [%s结束] success=%s，%s",
@@ -2636,7 +2814,13 @@ class Task3Final:
             )
             return self.run_all_timeout_protection("启动就绪异常")
 
-        success, detail, timed_out, _ = self.run_subtask1(1)
+        (
+            success,
+            detail,
+            timed_out,
+            _,
+            first_arrow_map_point,
+        ) = self.run_subtask1(1)
         if rospy.is_shutdown():
             return self.fail("第一次箭头阶段期间ROS关闭")
         if not success:
@@ -2662,7 +2846,9 @@ class Task3Final:
             if rospy.is_shutdown():
                 return self.fail("第一次箭头保护移动期间ROS关闭")
 
-        success, detail, timed_out, target_color = self.run_subtask2()
+        success, detail, timed_out, target_color = self.run_subtask2(
+            first_arrow_map_point
+        )
         if rospy.is_shutdown():
             return self.fail("ArUco阶段期间ROS关闭")
         if not success:
@@ -2742,7 +2928,13 @@ class Task3Final:
                 self.aruco_yaw_deg,
             )
         else:
-            success, detail, timed_out, second_arrow_yaw = self.run_subtask1(2)
+            (
+                success,
+                detail,
+                timed_out,
+                second_arrow_yaw,
+                _,
+            ) = self.run_subtask1(2)
             if rospy.is_shutdown():
                 return self.fail("第二次箭头阶段期间ROS关闭")
             if not success:
@@ -2815,7 +3007,7 @@ class Task3Final:
         rospy.logwarn(
             (
                 "%s：彩色方框%s：%s；投放动作已开始=%s；"
-                "不退出，先保持悬停，再按返航绝对航向%.1f度前往预设点上浮"
+                "不退出，前往预设返航点时同时对准绝对航向%.1f度，随后上浮"
             ),
             NODE_NAME,
             "达到最终超时" if timed_out else "运行期异常按超时收尾",
