@@ -39,7 +39,7 @@
          Tune these values from bag statistics rather than comparing classes
          against one shared confidence scale. -->
     <arg name="class_conf_thresholds"
-         default="red:0.20,green:0.10,yello:0.20,yellow:0.20" />
+         default="red:0.20,green:0.10,yellow:0.20" />
 
     <!-- Keep enough candidates BEFORE per-class selection. -->
     <arg name="max_det" default="30" />
@@ -52,11 +52,11 @@
     <arg name="target_pub_queue_size" default="20" />
 
     <!-- Optional: empty means all model classes are accepted. -->
-    <arg name="class_whitelist" default="" />
+    <arg name="class_whitelist" default="red,yellow,green" />
 
     <!-- Optional deterministic publish order, e.g. red,green,yello.
          This does NOT determine which class is accepted. -->
-    <arg name="class_priority" default="" />
+    <arg name="class_priority" default="red,yellow,green" />
 
     <!-- Depth should not re-reject a class already accepted by YOLO. -->
     <arg name="depth_conf_thre" default="0.05" />
