@@ -171,7 +171,7 @@ yaw_brake_jerk_deg_s3: 15.0 # 8 Hz 下缩短刹转加速度建立时间，避免
 # 保留原 XY+Yaw 联合轨迹；大航向误差仅降低 TY，减轻下位机侧推单侧过载。
 yaw_ty_limit_enter_error_deg: 80.0
 yaw_ty_limit_exit_error_deg: 40.0
-yaw_ty_limit_scale: 0.30
+yaw_ty_limit_scale: 0.9
 
 # 航向刹停迟滞；高于 0.6 deg/s 才进入，低于 0.2 deg/s 才退出。
 yaw_brake_enter_rate_deg_s: 1.5 # data3 残余约 0.7 deg/s 不再触发重复刹转；主刹停速度仍远高于此阈值

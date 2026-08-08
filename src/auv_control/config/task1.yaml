@@ -48,8 +48,8 @@ normal_finish_min_completed_path_length: 5.0
 # 搜索耗尽或总超时后的统一兜底。false 时不移动，原地直接 FINISH
 fallback_move_enabled: true
 # true 时使用以下绝对 map 位姿，收到 HOVER 后 FINISH
-fallback_target_x: -0.21
-fallback_target_y: -6.56
+fallback_target_x: -1.67
+fallback_target_y: -7.16
 fallback_target_z: -0.6
 fallback_target_yaw_deg: 210.0
 
@@ -58,7 +58,7 @@ line_classes: line
 line_lock_window_seconds: 0.3
 # 首次锁线后等待曲线冻结的最长时间；超时后只原地搜索一轮
 initial_line_freeze_timeout_seconds: 1.0
-line_min_confidence: 0.65  # line 置信度下限
+line_min_confidence: 0.8  # line 置信度下限 中午0.8
 line_point_merge_distance: 0.0
 line_point_update_alpha: 0.20
 line_curve_max_points: 200
@@ -123,7 +123,7 @@ black_light_count: 2
 # 回到 Task1 保持深度后仍等待控制端 HOVER。
 yellow_contact_enabled: true
 yellow_alignment_frame: hand
-yellow_contact_depth: -0.3
+yellow_contact_depth: -0.2
 yellow_contact_depth_tolerance: 0.05
 yellow_dive_timeout: 10.0
 # 开始上浮后至少等待该时长，再检查 HOVER 并恢复巡线
