@@ -27,11 +27,11 @@
 
     <!-- absolute 模式下 map 坐标系的绝对 x、y 位置，单位 m。 -->
     <!-- -1.67,-7.16 -->
-    <arg name="target_x" default="-1.67" />
-    <arg name="target_y" default="-7.16" />
+    <arg name="target_x" default="0.13" />
+    <arg name="target_y" default="-0.23" />
 
     <!-- absolute 模式下 map 坐标系的绝对航向，单位 deg。 -->
-    <arg name="target_yaw_deg" default="210.0" />
+    <arg name="target_yaw_deg" default="300.0" />
 
     <!--
       测试节点启动后、生成或发送目标前的等待时间，单位 s。
