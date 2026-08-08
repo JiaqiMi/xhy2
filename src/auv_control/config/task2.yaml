@@ -49,12 +49,13 @@ final_yaw_switch_distance: 1.0
 pushrod_speed: 250
 # 推杆确认前进后连续采水的时长；执行器反馈异常会暂停并重新计时。
 pushrod_duration: 10.0
-# 推杆在送水点下潜并由控制器确认 HOVER 后启动反向回收；启动后与返回起始点并行，
-# 速度固定复用 pushrod_speed。执行器反馈异常会先安全停止，恢复后重新计时。
+# 推杆在水面送水结束、下潜目标首次发布后固定等待 dive_delay_seconds 再启动反向回收；
+# 启动后与返回起始点并行，速度固定复用 pushrod_speed。执行器反馈异常会先安全停止，恢复后重新计时。
 pushrod_retract_duration: 10.0
-# 在送水点浮出并收到 HOVER 后，保持水面位置的时长。
+# 送水点浮出并由 HOVER 确认入场后，持续发布同一锁存目标的保持时长。保持期间若受
+# 水面扰动短时退出 HOVER，不会清零计时；motion 反馈失效、SAFE 或执行器闭环异常仍安全暂停或回退。
 surface_hold_seconds: 20.0
-# 返回起始点并收到 HOVER 后，保持最终位置和航向的时长。
+# 返回起始点并由 HOVER 确认入场后，持续发布同一锁存目标的最终保持时长；规则同上。
 final_hold_seconds: 2.0
 
 # ============================== 执行器安全状态与闭环 ==============================
@@ -84,19 +85,23 @@ goal_match_yaw_tolerance_deg: 2.0
 
 # 等待首帧 map_frame -> base_frame TF 的告警阈值；超时后继续等待且不发布导航目标。
 tf_initial_timeout: 100.0
-# 最新 /motion/state 允许的最大年龄；超过后视为控制器反馈失效。
-motion_state_timeout: 10.0
+# 最新 /motion/state 允许的最大年龄；超过后视为控制器反馈失效。主循环为 5 Hz，
+# 设置为 0.5 s 可覆盖正常通信抖动，同时避免 10 s 陈旧反馈误被当作控制器正常。
+motion_state_timeout: 0.5
 # motion 状态失效或 SAFE 持续达到该时长后，切换到最终安全定点。
 motion_recovery_timeout: 10.0
 # 起始锁存点等待 motion_supervisor 进入 HOVER 的最长时间。
 initial_hover_timeout: 120.0
-# 仅在 task_depth 水平前往送水点时，等待 HOVER 的最长时间；收到当前目标的 HOVER 后，
-# task2 才会发布同一 XY 的 surface_depth 目标，因此水平移动与深度切换完全解耦。
-delivery_depth_timeout: 180.0
+# 仅在 task_depth 水平前往送水点时，等待最终航向 HOVER 的最长时间。超过该时间后，
+# 认为可能已抵到送水点墙面，Task2 不再等待 HOVER，直接发布同一 XY 的 surface_depth 浮出目标并
+# 进入 surface_hold_seconds 水面操作窗口；该窗口不判断 HOVER，保证可人工取走采水器。
+# 260808 无碰撞送水实际耗时约 54.2 s，设为 60 s 以保留约 6 s 正常裕量。
+delivery_depth_timeout: 60.0
 # 送水点从 task_depth 浮出至 surface_depth 时，等待 HOVER 的最长时间。
 surface_timeout: 120.0
-# 送水点从 surface_depth 下潜回 task_depth 时，等待 HOVER 的最长时间。
-dive_timeout: 120.0
+# 水面送水结束后，下潜目标首次发布到启动推杆反向回收的固定等待时间。期间不判断
+# 当前深度、水平位置或 HOVER；仅在 motion 反馈失效/SAFE 或执行器闭环异常时暂停安全处理。
+dive_delay_seconds: 2.0
 # 从送水点返回起始 XY 并调整到 final_yaw_deg 时，等待 HOVER 的最长时间。
 return_home_timeout: 180.0
 # 最终安全定点未获得 HOVER 时的严重告警间隔阈值；节点不会因该阈值直接退出。
