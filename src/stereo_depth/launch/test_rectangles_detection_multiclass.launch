@@ -6,6 +6,22 @@
     <arg name="start_web" default="true" />
     <arg name="node_output" default="screen" />
 
+    <!-- Add these args near the top of the launch file. -->
+    <arg name="multi_class_targets" default="true" />
+    <arg name="target_batch_wait_sec" default="0.03" />
+    <arg name="target_group_tolerance" default="0.01" />
+    <arg name="max_pending_target_batches" default="10" />
+    <arg name="target_sub_queue_size" default="20" />
+    <arg name="publisher_queue_size" default="10" />
+
+    <!-- auto / combined / per_target -->
+    <arg name="multi_target_depth_mode" default="auto" />
+    <arg name="combined_roi_cost_ratio" default="1.20" />
+
+    <!-- Empty means all classes are accepted. Use actual model label spelling. -->
+    <arg name="class_whitelist" default="" />
+    <arg name="class_priority" default="" />
+
     <!-- ==================== 模型选择 ==================== -->
     <!--
         true：使用 model_rectangles_260726.pt
@@ -108,7 +124,7 @@
     </node>
 
     <node pkg="stereo_depth"
-          type="stereo_depth_node_speed.py"
+          type="stereo_depth_node_multiclass.py"
           name="stereo_depth_rectangle"
           output="$(arg node_output)">
         <param name="task_mode" value="center" />
@@ -135,6 +151,15 @@
         <param name="max_sync_dt" value="0.15" />
         <param name="frame_buffer_size" value="20" />
         <param name="depth_statistic" value="mean" />
+
+        <param name="multi_class_targets" value="$(arg multi_class_targets)" />
+        <param name="target_batch_wait_sec" value="$(arg target_batch_wait_sec)" />
+        <param name="target_group_tolerance" value="$(arg target_group_tolerance)" />
+        <param name="max_pending_target_batches" value="$(arg max_pending_target_batches)" />
+        <param name="target_sub_queue_size" value="$(arg target_sub_queue_size)" />
+        <param name="publisher_queue_size" value="$(arg publisher_queue_size)" />
+        <param name="multi_target_depth_mode" value="$(arg multi_target_depth_mode)" />
+        <param name="combined_roi_cost_ratio" value="$(arg combined_roi_cost_ratio)" />
 
         <!-- ROI / 全图深度计算切换 -->
         <param name="window_size" value="$(arg window_size)" />

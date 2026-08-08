@@ -4,7 +4,7 @@
 功能：state_web 仪表盘页面结构
 作者：xhy
 监听：用户地图交互
-发布：地图朝向与水池范围设置
+发布：地图朝向、水池范围与手动标绘设置
 记录：
 2026.7.30
     增加指定向上航向的地图手动旋转控件。
@@ -29,6 +29,8 @@
     将右上区域改为中心裁切鱼眼、执行器反馈图形和 6S4P 电源摘要。
     降低导航与控制诊断优先级，并在航向仪表增加目标航向。
     执行器改为浅色指令与深色反馈叠加显示，夹爪调整为向上开合。
+2026.8.7
+    在 NED 地图增加手动标点、撤销、清除和水平测距控件。
 
 -->
 <html lang="zh-CN">
@@ -44,7 +46,7 @@
             : "/assets";
         const dashboardStylesheet = document.createElement("link");
         dashboardStylesheet.rel = "stylesheet";
-        dashboardStylesheet.href = `${dashboardAssetRoot}/dashboard.css?v=20260805-actuator2`;
+        dashboardStylesheet.href = `${dashboardAssetRoot}/dashboard.css?v=20260807-annotation1`;
         document.head.appendChild(dashboardStylesheet);
     </script>
 </head>
@@ -315,6 +317,26 @@
                                 </button>
                             </div>
                         </div>
+
+                        <div class="map-control-group annotation-control-group">
+                            <span class="map-control-group-title">标绘</span>
+                            <div class="map-control-group-items">
+                                <button id="mark-map-point" type="button" aria-pressed="false"
+                                    title="连续点击地图添加手动标点，最多保留20个">
+                                    标点
+                                </button>
+                                <button id="undo-map-point" type="button" title="撤销最后一个手动标点">
+                                    撤销点
+                                </button>
+                                <button id="clear-map-points" type="button" title="清除全部手动标点">
+                                    清标点
+                                </button>
+                                <button id="measure-map-distance" type="button" aria-pressed="false"
+                                    title="点击地图中的两个位置测量N/E平面水平距离">
+                                    测距
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -399,7 +421,7 @@
 
     <script>
         const dashboardScript = document.createElement("script");
-        dashboardScript.src = `${dashboardAssetRoot}/dashboard.js?v=20260805-actuator2`;
+        dashboardScript.src = `${dashboardAssetRoot}/dashboard.js?v=20260807-annotation1`;
         dashboardScript.async = false;
         document.body.appendChild(dashboardScript);
     </script>

@@ -39,6 +39,17 @@
 #   保持位置增益、加速度、jerk 和 X 速度环增益不变，使 1 m 内制动段的 TX 尽量维持原状。
 # 2026.8.6
 #   撤回航向优先暂停 XY；改为 80/40 deg 迟滞下仅把 TY 输出降至 30%。
+# 2026.8.6
+#   高速档侧推卡死检测的 TX 允许上限由 500 提高到 1000，低速档保持不变。
+# 2026.8.7
+#   提高航向位置增益与计划刹转减速度，使约 34 deg 航向误差即可达到 30 deg/s 参考上限；
+#   计划减速度仍低于高速档已标定的两向有效刹转减速度，保留制动余量。
+# 2026.8.7
+#   根据 260807 data1 单轴测试，提高 X 正向刹停所用负 TX 速度环增益与 XY 刹车 jerk，
+#   并小幅扩大控制中心保持死区，缩短低速漂移和末段回追至 HOVER 的时间。
+# 2026.8.7
+#   以原 high 档作为新 low 基线，重建更高输出档；依据稳态曲线保留 XY 全局上限 0.65 m/s，
+#   将 Yaw 上限收敛到 MZ ±5000 可支持的约 32 deg/s，并按输出限幅比例估算有效制动减速度。
 
 # 运动管理层控制频率与反馈处理
 pure_depth_control: true    # true：全程 mode=2，由上位机统一控制并在稳定后进入 HOVER
@@ -60,12 +71,13 @@ log_max_file_size_mb: 50.0                        # 单个 CSV 最大 50 MiB，�
 power_feedback_timeout: 1.0                       # /status/power 超时不影响正常跟踪，但禁止触发侧推自动恢复
 
 # 正常跟踪与主动刹车共用方向性限幅和步长；参数后缀表示实际输出正负号。
-max_tx_positive: 3000.0             # data8 手控稳态 +0.423 m/s，正 TX 限幅固定为 3000
-max_tx_negative: 3000.0             # data8 手控稳态 -0.355 m/s，负 TX 限幅固定为 3000
-max_ty_positive: 4000.0             # 正 TY 最大值
-max_ty_negative: 6000.0             # 负 TY 绝对值上限
-max_mz_positive: 3000.0             # 正 MZ 最大值
-max_mz_negative: 3500.0             # data5 反向连续旋转 51.3% 帧触及 -3000；先提高至 -3500 验证跟踪余量
+# 依据稳态曲线设置首轮上限；正式下水前仍属于估计值，必须按方向逐轴验证。
+max_tx_positive: 5000.0             # 50% 推力估算 X 前进约 0.64 m/s
+max_tx_negative: 5000.0             # 50% 推力估算 X 后退约 0.40 m/s，不能达到 0.65 m/s
+max_ty_positive: 6000.0             # 60% 推力估算 Y 右移约 0.20 m/s
+max_ty_negative: 6000.0             # 60% 推力估算 Y 左移约 0.14 m/s
+max_mz_positive: 5000.0             # 约 50% 力矩，估算稳态角速度约 30～31 deg/s
+max_mz_negative: 5000.0             # 约 50% 力矩，估算稳态角速度约 30～31 deg/s
 force_slew_per_cycle: 10000.0       # 等于协议上限，取消每周期 TX/TY/MZ 限斜率；各轴最大输出限幅仍生效
 
 # 已停用：主动刹车不再使用独立最大限幅和步长，保留末次值供历史配置对照。
@@ -87,7 +99,7 @@ kp_yaw_negative: 18000.0            # data4 反转同增益仍在 -17～-21 deg/
 
 # 定点模式锁存制动时的速度环增益；仍按最终 TX/TY 输出符号区分正反车效率。
 brake_kv_x_positive: 20000.0
-brake_kv_x_negative: 24000.0        # 降低负 TX 制动速度误差放大，抑制执行滞后后的反向加速
+brake_kv_x_negative: 30000.0        # 260807 data1：提高负 TX 低速制动，缩短 X 正向刹停长尾
 brake_kv_y_positive: 40000.0
 brake_kv_y_negative: 60000.0
 # 定点模式锁存刹转时的角速度环增益；按最终 MZ 输出符号区分正反转效率。
@@ -105,9 +117,9 @@ brake_kp_yaw_negative: 14000.0      # data4 表明负 MZ 刹转过强；反向�
 # brake_min_mz: 100.0
 
 # 各轴独立停车距离模型；后缀表示实际刹车输出力或力矩的符号
-brake_acceleration_tx_positive: 0.13 # data8 +3000 刹负向速度实测最低 0.077 m/s^2，
-brake_acceleration_tx_negative: 0.14 # data8 -3000 刹正向速度实测最低 0.127 m/s^2，
-brake_acceleration_ty_positive: 0.075 # +4000 跨零速实测中位数约 0.075 m/s^2，
+brake_acceleration_tx_positive: 0.217 # 按 +TX 3000→5000 线性估算；下水后必须重新标定
+brake_acceleration_tx_negative: 0.233 # 按 -TX 3000→5000 线性估算；下水后必须重新标定
+brake_acceleration_ty_positive: 0.113 # 按 +TY 4000→6000 线性估算；下水后必须重新标定
 brake_acceleration_ty_negative: 0.043 # -6000 跨零速实测中位数约 0.043 m/s^2，
 
 # 制动速度轨迹的计划减速度与推进器有效减速度分开配置；方向性增益和限幅继续反映正反车差异。
@@ -115,10 +127,10 @@ brake_reference_acceleration_tx_positive: 0.09 # data8 正 TX 有效减速度下
 brake_reference_acceleration_tx_negative: 0.08 # 2026.8.5 降低负 TX 计划减速度，按速度平方项提前 X 正向高速制动
 brake_reference_acceleration_ty_positive: 0.045 # 2026.8.5 降低正 TY 计划减速度，按速度平方项提前 Y 负向高速制动
 brake_reference_acceleration_ty_negative: 0.025 # 2026.8.5 小幅降低负 TY 计划减速度，改善 Y 正向高速超调
-angular_brake_acceleration_mz_positive: 0.242   # +3000 跨零速实测约 15.39 deg/s^2，保留 10% 后换算为 rad/s^2
-angular_brake_acceleration_mz_negative: 0.262   #TODO 参数快照值；待 -3500 下独立反向刹停标定后再更新有效减速度模型
-angular_brake_reference_acceleration_mz_positive_deg_s2: 3.50 # 计划值仍显著低于 +MZ 标定有效减速度，减少长时间低力矩刹转
-angular_brake_reference_acceleration_mz_negative_deg_s2: 3.50 # 计划值仍显著低于 -MZ 标定有效减速度，正反向使用同一首轮轨迹
+angular_brake_acceleration_mz_positive: 0.403   # 按 +MZ 3000→5000 线性估算；下水后必须重新标定
+angular_brake_acceleration_mz_negative: 0.374   # 按 -MZ 3500→5000 线性估算；下水后必须重新标定
+angular_brake_reference_acceleration_mz_positive_deg_s2: 13.50 # 约 34 deg 误差放开 30 deg/s；低于 +MZ 有效减速度 13.87 deg/s^2
+angular_brake_reference_acceleration_mz_negative_deg_s2: 13.50 # 两向使用同一轨迹；低于 -MZ 有效减速度 15.01 deg/s^2
 control_delay: 0.2                 # 反馈、计算、通信和执行的综合延迟估计，单位 s
 brake_margin_tx_positive: 0.1      # X 回退使用正 TX 制动，按 data7 最大超调加 data8 制动延迟余量设置
 brake_margin_tx_negative: 0.12      # X 正向使用负 TX 制动，固定余量保持原值，避免过度影响低速刹停
@@ -130,7 +142,7 @@ yaw_brake_margin_negative_deg: 0.8  # 与正向一致，满足核心参数校验
 # 进入hover阈值,也就是代表着定位精度
 capture_radius: 0.05                  # 两种模式到达 HOVER 的外层水平位置误差，满足旋转时位置精度 4 cm
 yaw_tolerance_deg: 4.0                # 最终航向允许误差，单位 deg
-control_center_hold_tolerance: 0.03   # 当前锁存控制中心的二维圆形位置死区，单位 m
+control_center_hold_tolerance: 0.035  # 260807 data1：减少 3～5 cm 区间回追，保留 0.05 m HOVER 捕获余量
 horizontal_speed_threshold: 0.008     # data6 中 0.01 m/s 仍持续漂移，收紧三轴停稳判定
 yaw_control_tolerance_deg: 1.0        # mode=2 上位机航向保持死区，与最终航向精度一致
 yaw_rate_threshold_deg_s: 0.3         # 判定转动停稳的角速度上限，单位 deg/s
@@ -143,17 +155,17 @@ hover_exit_hold_seconds: 0.50         # HOVER 或 Yaw 制动误差连续超限�
 mode_ack_timeout: 1.0                 # 接管确认及 HOVER 模式反馈最大允许间隔，单位 s
 
 # 统一三轴位置-速度-力控制。
-xy_max_speed: 0.425 # 260805 data2：远距离 TX 目标约 2.8k；受制动距离约束，0.886 m 内参考速度不变
+xy_max_speed: 0.65 # 全局上限仅与 X 前进约 0.64 m/s 匹配；其余方向受稳态能力限制
 xy_position_gain: 1.20
 xy_max_acceleration: 0.40
 xy_max_jerk: 0.40
-xy_brake_jerk: 0.30  # 2026.8.5 缩短制动减速度建立时间，减少刹停后越点和重复回追
+xy_brake_jerk: 0.35  # 260807 data1：小幅缩短制动减速度建立时间，减少刹停长尾
 
 # 预测停车距离内且合速度达到进入阈值时锁存刹停；低于退出阈值才恢复跟踪。
 xy_brake_enter_speed: 0.020
 xy_brake_exit_speed: 0.012
-yaw_max_rate_deg_s: 30.0  # 高速任务目标角速度调整为 30 deg/s，避免以更高参考持续驱动推进器
-yaw_position_gain: 0.22 # 仅在 120 deg 及以上动作达到 25 deg/s；短角度动作提前收敛，避免反复刹转
+yaw_max_rate_deg_s: 32.0  # MZ ±5000 的稳态曲线约为 30～31 deg/s，保留小幅参考余量
+yaw_position_gain: 1.04 # 扣除 1 deg 控制死区后，约 32 deg 航向误差即可放开 32 deg/s 参考上限
 yaw_max_acceleration_deg_s2: 20.0
 yaw_max_jerk_deg_s3: 35.0 # 5 Hz 前视目标跨过 5 deg 重规划阈值后，减小角速度参考恢复时的力矩阶跃；不影响刹转 jerk
 yaw_brake_jerk_deg_s3: 15.0 # 8 Hz 下缩短刹转加速度建立时间，避免计划减速度长期低于实际停车需求
@@ -192,7 +204,7 @@ effectiveness_min_determinant: 0.05
 thruster_recovery_enabled: true
 thruster_fault_combined_effort_min: 0.75
 thruster_fault_axis_effort_min: 0.40
-thruster_fault_tx_max: 500.0
+thruster_fault_tx_max: 1000.0 # 高速档允许中等 TX 下继续检测 TY/MZ 卡死；不改变 TX 输出限幅
 thruster_fault_power_increment_max: 15.0
 thruster_fault_lateral_speed_max: 0.010
 thruster_fault_yaw_rate_max_deg_s: 0.3
