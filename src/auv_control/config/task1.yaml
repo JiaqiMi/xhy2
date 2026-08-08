@@ -65,7 +65,10 @@ line_curve_max_points: 200
 line_curve_overlap_points: 40
 line_curve_sample_count: 100
 line_curve_degree: 3
-curve_freeze_required_frames: 2
+# 首条线和后续延伸都必须在下方存活时间内累计足够的合格拟合帧才允许固定。
+# 合格帧不要求连续；超过存活时间仍未达到数量时，整批未固定数据会被剔除。
+curve_freeze_required_frames: 5
+curve_freeze_frame_lifetime_seconds: 0.6
 curve_freeze_min_length: 0.15
 curve_freeze_min_advance: 0.10
 curve_freeze_overlap_distance: 0.25

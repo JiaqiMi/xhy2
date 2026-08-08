@@ -414,6 +414,10 @@ class Task1(Task1LineFollow):
             initial_line_freeze_timeout_seconds=(
                 self.initial_line_freeze_timeout_seconds
             ),
+            curve_freeze_required_frames=self.curve_freeze_required_frames,
+            curve_freeze_frame_lifetime_seconds=(
+                self.curve_freeze_frame_lifetime_seconds
+            ),
             task_timeout_seconds=self.task_timeout_seconds,
             normal_finish_min_completed_path_length=(
                 self.normal_finish_min_completed_path_length
@@ -495,7 +499,24 @@ class Task1(Task1LineFollow):
             (rospy.Time.now() - self.task_execution_started_at).to_sec(),
         )
 
+    def set_state(self, state):
+        if self.state == self.FINISH:
+            return
+        if self.state == self.FALLBACK_TARGET and state != self.FINISH:
+            return
+        if (
+            getattr(self, "fallback_reason", None) is not None
+            and state not in (self.FALLBACK_TARGET, self.FINISH)
+        ):
+            return
+        super().set_state(state)
+
     def set_search_state(self, state):
+        if (
+            getattr(self, "fallback_reason", None) is not None
+            or self.state in (self.FALLBACK_TARGET, self.FINISH)
+        ):
+            return
         previous_state = self.state
         super().set_search_state(state)
         if (
@@ -661,6 +682,8 @@ class Task1(Task1LineFollow):
         self.fallback_reason = reason
         self.fallback_triggered_at = rospy.Time.now()
         self.fallback_goal = self.make_fallback_goal()
+        self.line_lock_candidate = None
+        self.discard_unconfirmed_curve()
         self.clear_active_marker_action()
         self.extension_search_active = False
         self.search_target = None
@@ -750,9 +773,20 @@ class Task1(Task1LineFollow):
         self.set_state(self.FINISH)
 
     def try_lock_line(self):
-        if self.state in (self.FALLBACK_TARGET, self.FINISH):
+        if (
+            getattr(self, "fallback_reason", None) is not None
+            or self.state in (self.FALLBACK_TARGET, self.FINISH)
+        ):
             return
         super().try_lock_line()
+
+    def line_callback(self, message):
+        if (
+            getattr(self, "fallback_reason", None) is not None
+            or self.state in (self.FALLBACK_TARGET, self.FINISH)
+        ):
+            return
+        super().line_callback(message)
 
     def marker_kind(self, message):
         if message.class_name in self.yellow_classes:
@@ -1982,6 +2016,9 @@ class Task1(Task1LineFollow):
         )
 
     def run_task_override_cycle(self):
+        if self.state == self.FINISH:
+            self.finish()
+            return True
         self.check_task_timeout()
         if self.state == self.FALLBACK_TARGET:
             self.run_fallback_target()
