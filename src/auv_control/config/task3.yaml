@@ -67,7 +67,7 @@ task3_search_paths:
     search_second_forward_distance: 0.65
     search_third_forward_distance: 0.65
   box:
-    auto_search_first_forward_distance: 1.6
+    auto_search_first_forward_distance: 2.1
     auto_search_second_forward_distance: 0.5
     auto_search_third_forward_distance: 0.30
     # 左移从当前搜索点计算；右移从左移结束位置计算。

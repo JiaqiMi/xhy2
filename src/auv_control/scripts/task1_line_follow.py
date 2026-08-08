@@ -355,10 +355,10 @@ class Task1LineFollow:
             "~line_curve_degree", 3
         )))
         self.curve_freeze_required_frames = max(1, int(rospy.get_param(
-            "~curve_freeze_required_frames", 5
+            "~curve_freeze_required_frames", 2
         )))
         self.curve_freeze_frame_lifetime_seconds = max(0.1, float(
-            rospy.get_param("~curve_freeze_frame_lifetime_seconds", 0.6)
+            rospy.get_param("~curve_freeze_frame_lifetime_seconds", 0.9)
         ))
         self.curve_freeze_min_length = float(rospy.get_param(
             "~curve_freeze_min_length", 0.15
