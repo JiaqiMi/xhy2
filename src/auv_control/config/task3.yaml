@@ -29,21 +29,21 @@ task3_target_depth_m: 0.6
 task3_heading_mode: 2
 # 三个阶段使用的map绝对航向，单位deg，取值范围[0, 360)。
 # 第一次箭头使用初始航向；ArUco结束后绝对转到ArUco航向；离场使用返航航向。
-task3_initial_yaw_deg: 210
-task3_aruco_yaw_deg: 120
-task3_return_origin_yaw_deg: 30
+task3_initial_yaw_deg: 212
+task3_aruco_yaw_deg: 122
+task3_return_origin_yaw_deg: 33
 
 # 三个固定位置点，均为reset_world_origin.launch成功后的map绝对坐标。
 # N（北向）、E（东向）单位m；深度和航向分别使用上面的统一固定参数。
 task3_fixed_points:
   # 第一次箭头最终超时后前往的ArUco识别点。
   aruco:
-    N: "-1.73"
-    E: "-8.05"
+    N: "-3.04"
+    E: "-7.86"
   # 第二次箭头最终超时后前往的彩色方框点。
   box:
-    N: "-3.26"
-    E: "-6.53"
+    N: "-4.47"
+    E: "-6.04"
   # 子任务3正常投放结束、超时或异常后的返航和上浮点。
   # 当前先保持原有(0,0)行为；实船调参时只需修改下面两个值。
   return:
@@ -57,7 +57,7 @@ task3_fixed_points:
 # 所有距离单位均为m；这里只配置移动几何，悬停时间和总超时仍在对应任务段。
 task3_search_paths:
   arrow1:
-    search_initial_forward_distance: 1.2
+    search_initial_forward_distance: 1.5
     search_lateral_distance: 0.6
     search_second_forward_distance: 0.65
     search_third_forward_distance: 0.65
@@ -67,7 +67,7 @@ task3_search_paths:
     search_second_forward_distance: 0.65
     search_third_forward_distance: 0.65
   box:
-    auto_search_first_forward_distance: 2.0
+    auto_search_first_forward_distance: 2.1
     auto_search_second_forward_distance: 0.5
     auto_search_third_forward_distance: 0.30
     # 左移从当前搜索点计算；右移从左移结束位置计算。
@@ -99,14 +99,14 @@ test_task3_1_acquire_area:
   # 位置帧先独立判断；局部箭头只要检测和深度有效即可进入位置窗口。
   min_confidence: 0.4
   # 精确认阶段方向有效帧的最低置信度。
-  direction_start_confidence: 0.4
+  direction_start_confidence: 0.5
   # 位置话题和方向话题分别允许的最大数据年龄。
   detection_timeout: 5
 
   # 第一、第三步位置确认：只把有效三维位置写入最多10帧的队列；
   # 队列中任意3帧相对其平均位置的最大二维距离不超过下面容差即通过。
   stable_detection_window_size: 10
-  stable_detection_count: 3
+  stable_detection_count: 6
   # 稳定组三帧从最早到最晚的最大接收时间跨度，单位s；超过后不参与粗对准或精确认。
   stable_position_group_max_span_seconds: 10.0
   # 三帧位置相对其平均map位置的最大二维距离，单位m。
@@ -117,16 +117,16 @@ test_task3_1_acquire_area:
   # 精确认阶段连续多少个唯一推理源帧（方向或三维位置）为低置信度或未识别，
   # 才确认首次位置是误识别；同一时间戳的方向/位置消息不会重复计数。
   # 设为1表示任意一帧无效就立即恢复搜索；默认3帧用于过滤单帧抖动。
-  fine_false_positive_invalid_count: 3
+  fine_false_positive_invalid_count: 6
   # 已确认误识别的箭头map点忽略半径；后续落入该范围的位置帧不再参与锁定。
-  false_positive_ignore_radius_m: 0.30
+  false_positive_ignore_radius_m: 0.20
   # 方向候选组的最大角度抖动，单位deg。
   stable_angle_tolerance_deg: 12.0
 
   # 第三步方向确认：最多保留10个有效方向帧；要求与三帧稳定位置
   # 来自同一批推理时间戳，并且三个方向相对圆周平均值的误差都在上面容差内。
   direction_confirm_window_size: 10
-  direction_confirm_required_count: 3
+  direction_confirm_required_count: 6
 
   # motion_supervisor首次反馈等待；运行期反馈和取消保护统一读取
   # 文件顶部task3_protection，不在各子任务重复配置。
@@ -267,10 +267,10 @@ test_task3_3_inspect_and_drop:
   # TargetDetection并缓存红、黄、绿三种颜色帧，稳定判别时只取target_color对应颜色。
   model_target_topic: "/vision/rectangle/target_message"
   # 人工模式稳定候选组要求。
-  stable_detection_count: 3
+  stable_detection_count: 6
   # 自动模式最多保留10个有效map位置帧；任意3帧相近即通过。
   stable_detection_window_size: 10
-  auto_search_stable_detection_count: 3
+  auto_search_stable_detection_count: 6
   # 三帧map位置相对平均值的最大二维抖动，单位m。
   stable_map_position_tolerance_m: 0.20
   # 细确认三帧平均位置与首次粗锁定位置允许的最大二维距离。
@@ -280,8 +280,8 @@ test_task3_3_inspect_and_drop:
   false_positive_ignore_radius_m: 0.30
   # camera粗对准后，当前camera与二次三帧平均map位置的XY实际误差门槛，单位m。
   # 相对首次平均位置的误差只用于诊断；camera实际X、Y误差必须同时进入门槛，才完成精确认并进入投放。
-  fine_position_x_tolerance_m: 0.15
-  fine_position_y_tolerance_m: 0.15
+  fine_position_x_tolerance_m: 0.12
+  fine_position_y_tolerance_m: 0.12
   auto_hover_confirm_settle_seconds: 0.5
   stable_center_tolerance_px: 40.0
   stable_area_tolerance_ratio: 0.35
@@ -312,7 +312,7 @@ test_task3_3_inspect_and_drop:
 
   # map精对准小步参数：XY任一误差超限都会继续小步移动；航向始终保持锁存值。
   auto_visual_min_step_m: 0.05
-  auto_visual_max_step_m: 0.20
+  auto_visual_max_step_m: 0.50
 
   # 动作时序
   # 以下时间均从/status/actuator反馈确认到位后开始计算，
@@ -401,7 +401,7 @@ task3_final:
   # 修改其中一个不会影响另外两个；ArUco继续使用自己的识别超时参数。
   arrow1_timeout_seconds: 180.0
   arrow2_timeout_seconds: 180.0
-  box_timeout_seconds: 180.0
+  box_timeout_seconds: 240.0
 
   # 唯一最终超时处理始终启用，不再提供三级保护开关或阶段重试。
   # [HOVER超时-8] 箭头最终超时后，下一阶段人工测量点目标进入HOVER。
