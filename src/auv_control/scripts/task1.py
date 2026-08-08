@@ -552,6 +552,19 @@ class Task1(Task1LineFollow):
 
     def handle_completed_search_cycle(self, search_phase):
         if (
+            self.curve_candidate_active()
+            or self.line_version > self.tracking_curve_version
+        ):
+            rospy.loginfo_throttle(
+                1.0,
+                "%s: 搜索动作已完成，但曲线候选仍在 %.1f s 生存期内"
+                "或已有新固定曲线待启用；暂不判定搜索失败、暂不前往兜底点",
+                NODE_NAME,
+                self.curve_freeze_frame_lifetime_seconds,
+            )
+            return True
+
+        if (
             search_phase == "before_lock"
             and self.initial_line_freeze_recovery_active
         ):
@@ -638,6 +651,26 @@ class Task1(Task1LineFollow):
         self.yellow_phase_started_at = None
         self.yellow_dive_start_depth = None
         self.marker_rotation_state = None
+
+    def endpoint_finish_ready(self):
+        if not super().endpoint_finish_ready():
+            return False
+        # run_task_override_cycle 会先处理已经到达触发进度的标志。走到这里仍
+        # 留在 pending 中的必需标志尚在前方或等待曲线延伸，不能抢先结束。
+        pending_required = [
+            marker for marker in list(self.pending_markers)
+            if self.handled_counts[marker["kind"]]
+            < self.required_counts[marker["kind"]]
+        ]
+        if not pending_required:
+            return True
+        rospy.loginfo_throttle(
+            2.0,
+            "%s: 终点直接结束已阻止；仍有 %d 个已注册必需标志待处理",
+            NODE_NAME,
+            len(pending_required),
+        )
+        return False
 
     def enter_normal_finish(self):
         move_to_fallback = (
@@ -1085,6 +1118,9 @@ class Task1(Task1LineFollow):
                 "endpoint_pending_extension_tolerance": round(
                     self.endpoint_pending_extension_tolerance, 6
                 ),
+                "endpoint_stable_count": self.endpoint_candidate_count,
+                "endpoint_stable_required": self.endpoint_stable_frames,
+                "endpoint_confirmed": self.endpoint_confirmed(),
                 "endpoint_finish_ready": self.endpoint_finish_ready(),
                 "use_known_line_length": self.use_known_line_length,
                 "known_line_stop_progress": (

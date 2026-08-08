@@ -358,13 +358,13 @@ class Task1LineFollow:
             "~curve_freeze_required_frames", 2
         )))
         self.curve_freeze_frame_lifetime_seconds = max(0.1, float(
-            rospy.get_param("~curve_freeze_frame_lifetime_seconds", 0.9)
+            rospy.get_param("~curve_freeze_frame_lifetime_seconds", 1.2)
         ))
         self.curve_freeze_min_length = float(rospy.get_param(
-            "~curve_freeze_min_length", 0.15
+            "~curve_freeze_min_length", 0.05
         ))
         self.curve_freeze_min_advance = float(rospy.get_param(
-            "~curve_freeze_min_advance", 0.10
+            "~curve_freeze_min_advance", 0.05
         ))
         self.curve_freeze_overlap_distance = float(rospy.get_param(
             "~curve_freeze_overlap_distance", 0.25
@@ -485,7 +485,8 @@ class Task1LineFollow:
         self.extension_search_active = False
 
         self.line_lock_candidate = None
-        self.curve_lock = threading.Lock()
+        # 曲线拟合、确认计数和候选过期会同时被识别回调与主循环访问。
+        self.curve_lock = threading.RLock()
         self.line_locked = False
         self.line_lock_confidence = 0.0
         self.line_reference_point = None
@@ -1061,57 +1062,93 @@ class Task1LineFollow:
         )
 
     def clear_freeze_confirmations(self):
-        self.freeze_confirmation_times.clear()
-        self.freeze_confirmation_count = 0
+        with self.curve_lock:
+            self.freeze_confirmation_times.clear()
+            self.freeze_confirmation_count = 0
 
     def set_freeze_confirmations(self, timestamps):
-        now = rospy.Time.now()
-        self.freeze_confirmation_times = deque(
-            stamp for stamp in timestamps
-            if (now - stamp).to_sec()
-            <= self.curve_freeze_frame_lifetime_seconds
-        )
-        self.freeze_confirmation_count = min(
-            self.curve_freeze_required_frames,
-            len(self.freeze_confirmation_times),
-        )
+        with self.curve_lock:
+            now = rospy.Time.now()
+            self.freeze_confirmation_times = deque(
+                stamp for stamp in timestamps
+                if (now - stamp).to_sec()
+                <= self.curve_freeze_frame_lifetime_seconds
+            )
+            self.freeze_confirmation_count = min(
+                self.curve_freeze_required_frames,
+                len(self.freeze_confirmation_times),
+            )
 
     def add_freeze_confirmation(self, stamp):
-        self.freeze_confirmation_times.append(stamp)
-        self.freeze_confirmation_count = min(
-            self.curve_freeze_required_frames,
-            len(self.freeze_confirmation_times),
-        )
+        with self.curve_lock:
+            self.freeze_confirmation_times.append(stamp)
+            self.freeze_confirmation_count = min(
+                self.curve_freeze_required_frames,
+                len(self.freeze_confirmation_times),
+            )
+
+    def curve_candidate_active(self, now=None):
+        """首帧候选仍在生存期内时，禁止按搜索失败结束。"""
+        now = rospy.Time.now() if now is None else now
+        with self.curve_lock:
+            if self.line_lock_candidate is not None:
+                age = (
+                    now - self.line_lock_candidate["started"]
+                ).to_sec()
+                if age <= self.curve_freeze_frame_lifetime_seconds:
+                    return True
+            if not self.freeze_confirmation_times:
+                return False
+            age = (now - self.freeze_confirmation_times[0]).to_sec()
+            return age <= self.curve_freeze_frame_lifetime_seconds
 
     def snapshot_committed_fit_state(self):
-        self.committed_fit_state = {
-            field: copy.deepcopy(getattr(self, field))
-            for field in self.fit_state_fields()
-        }
+        with self.curve_lock:
+            self.committed_fit_state = {
+                field: copy.deepcopy(getattr(self, field))
+                for field in self.fit_state_fields()
+            }
 
     def discard_unconfirmed_curve(self):
-        """丢弃未达到固定帧数的拟合，只保留最近一次已固定曲线。"""
-        if self.committed_fit_state is None:
-            reference = copy.deepcopy(self.line_reference_point)
-            self.reset_tentative_line_state()
-            self.line_reference_point = reference
-        else:
-            with self.curve_lock:
+        """撤销未固定拟合，但保留独立的终点多帧观测证据。"""
+        with self.curve_lock:
+            if self.committed_fit_state is None:
+                reference = copy.deepcopy(self.line_reference_point)
+                self.reset_tentative_line_state()
+                self.line_reference_point = reference
+            else:
+                endpoint_candidate = copy.deepcopy(
+                    self.endpoint_candidate_point
+                )
+                endpoint_count = self.endpoint_candidate_count
                 for field, value in self.committed_fit_state.items():
                     setattr(self, field, copy.deepcopy(value))
-            self.clear_freeze_confirmations()
+                # 候选曲线可以撤销，但近期看到的终点/延伸位置不能被伪装成
+                # “没有待固定延伸”。终点判断会继续核对该证据与固定端点。
+                self.endpoint_candidate_point = endpoint_candidate
+                self.endpoint_candidate_count = endpoint_count
+                self.clear_freeze_confirmations()
 
     def expire_unconfirmed_curve(self, now=None):
-        if not self.freeze_confirmation_times:
-            return False
-        now = rospy.Time.now() if now is None else now
-        age = (now - self.freeze_confirmation_times[0]).to_sec()
-        if age <= self.curve_freeze_frame_lifetime_seconds:
-            return False
+        with self.curve_lock:
+            if not self.freeze_confirmation_times:
+                return False
+            now = rospy.Time.now() if now is None else now
+            age = (now - self.freeze_confirmation_times[0]).to_sec()
+            if age <= self.curve_freeze_frame_lifetime_seconds:
+                return False
 
-        expired_count = self.freeze_confirmation_count
-        fitted_length = self.line_curve_s[-1] if self.line_curve_s else 0.0
-        self.discard_unconfirmed_curve()
+            expired_count = self.freeze_confirmation_count
+            fitted_length = self.line_curve_s[-1] if self.line_curve_s else 0.0
+            reopen_initial_search = (
+                self.initial_line_freeze_recovery_active
+                and self.state in self.SEARCH_STATES
+                and not self.line_committed_curve_points
+            )
+            if reopen_initial_search:
+                self.abandon_initial_line_lock()
+            else:
+                self.discard_unconfirmed_curve()
         self.write_data_record(
             "curve_freeze_candidate_expired",
             elapsed_seconds=round(age, 6),
@@ -1121,39 +1158,42 @@ class Task1LineFollow:
             discarded_fitted_curve_length=round(fitted_length, 6),
         )
         rospy.loginfo(
-            "%s: 未固定曲线候选 %.2f s 内仅确认 %d/%d 帧，已剔除",
+            "%s: 未固定曲线候选存活 %.2f s，确认 %d/%d 帧、"
+            "拟合长度 %.2f m，仍未满足冻结条件，已剔除",
             NODE_NAME,
             age,
             expired_count,
             self.curve_freeze_required_frames,
+            fitted_length,
         )
         return True
 
     def freeze_confirmed_curve(self):
         """把存活时间内足够合格帧确认的拟合曲线冻结为新 LOS 版本。"""
-        if (
-            not self.curve_ready()
-            or self.freeze_confirmation_count < self.curve_freeze_required_frames
-        ):
-            return False
-        current_length = self.line_curve_s[-1]
-        fixed_length = (
-            self.line_committed_curve_s[-1]
-            if self.line_committed_curve_s else 0.0
-        )
-        required_advance = (
-            self.curve_freeze_min_length
-            if not self.line_committed_curve_points
-            else self.curve_freeze_min_advance
-        )
-        if current_length < fixed_length + required_advance:
-            return False
-
-        fixed_curve = [
-            copy.deepcopy(point) for point in self.line_curve_points
-        ]
-        fixed_curve_s = self.cumulative_distance(fixed_curve)
         with self.curve_lock:
+            if (
+                not self.curve_ready()
+                or self.freeze_confirmation_count
+                < self.curve_freeze_required_frames
+            ):
+                return False
+            current_length = self.line_curve_s[-1]
+            fixed_length = (
+                self.line_committed_curve_s[-1]
+                if self.line_committed_curve_s else 0.0
+            )
+            required_advance = (
+                self.curve_freeze_min_length
+                if not self.line_committed_curve_points
+                else self.curve_freeze_min_advance
+            )
+            if current_length < fixed_length + required_advance:
+                return False
+
+            fixed_curve = [
+                copy.deepcopy(point) for point in self.line_curve_points
+            ]
+            fixed_curve_s = self.cumulative_distance(fixed_curve)
             self.line_committed_curve_points = fixed_curve
             self.line_committed_curve_s = fixed_curve_s
             self.line_version += 1
@@ -1694,13 +1734,20 @@ class Task1LineFollow:
             self.record_line_frame("lock_candidate", confidence, points=points)
             return
 
-        self.expire_unconfirmed_curve(now)
-        # conf 已通过硬下限后，positions 全部点直接进入融合和拟合；旧的曲线关联、
-        # 内点比例、延伸方向及固定段重复点过滤均按实测要求停用。
-        if self.fit_points_transaction(points):
-            self.add_freeze_confirmation(now)
-            self.update_endpoint_evidence(points, tracking.pose.position)
-            self.freeze_confirmed_curve()
+        # 候选过期、拟合、计数和冻结必须原子执行，避免主循环恰好在第二帧
+        # 到达期间撤销同一批曲线。
+        with self.curve_lock:
+            self.expire_unconfirmed_curve(rospy.Time.now())
+            # conf 已通过硬下限后，positions 全部点直接进入融合和拟合；旧的
+            # 曲线关联、内点比例、延伸方向及固定段重复点过滤均按实测要求停用。
+            fit_succeeded = self.fit_points_transaction(points)
+            if fit_succeeded:
+                # 从本帧完成拟合并真正进入候选后开始计时，避免耗时拟合
+                # 提前消耗候选的有效期。
+                self.add_freeze_confirmation(rospy.Time.now())
+                self.update_endpoint_evidence(points, tracking.pose.position)
+                self.freeze_confirmed_curve()
+        if fit_succeeded:
             self.record_line_frame("accepted", confidence, points=points)
         else:
             self.record_line_frame(
@@ -1775,6 +1822,25 @@ class Task1LineFollow:
             self.last_los_goal = None
             self.clear_active_los_target()
             self.set_state(self.FOLLOW_LINE)
+        elif (
+            self.initial_line_freeze_recovery_active
+            and self.state in self.SEARCH_STATES
+        ):
+            self.initial_line_freeze_started_at = None
+            self.write_data_record(
+                "initial_line_freeze_search_candidate",
+                search_state=self.state,
+                fitted_curve_length=round(
+                    self.line_curve_s[-1] if self.line_curve_s else 0.0, 6
+                ),
+                freeze_confirmation_count=self.freeze_confirmation_count,
+                freeze_required_frames=self.curve_freeze_required_frames,
+            )
+            rospy.loginfo(
+                "%s: 原地搜索期间发现红线候选，但曲线尚未固定；"
+                "继续完成当前搜索动作",
+                NODE_NAME,
+            )
         else:
             self.initial_line_freeze_started_at = rospy.Time.now()
             self.set_state(self.WAIT_FIXED_LINE)
@@ -1837,6 +1903,15 @@ class Task1LineFollow:
             now - self.initial_line_freeze_started_at
         ).to_sec()
         if elapsed < self.initial_line_freeze_timeout_seconds:
+            return
+        if self.curve_candidate_active(now):
+            rospy.loginfo_throttle(
+                1.0,
+                "%s: 首帧曲线候选仍在 %.1f s 生存期内；"
+                "暂不触发固定超时或进入搜索",
+                NODE_NAME,
+                self.curve_freeze_frame_lifetime_seconds,
+            )
             return
 
         fitted_length = self.line_curve_s[-1] if self.line_curve_s else 0.0
@@ -1994,22 +2069,40 @@ class Task1LineFollow:
         if current is None:
             return
         if (
-            self.extension_search_active
+            (
+                self.extension_search_active
+                or self.initial_line_freeze_recovery_active
+            )
             and self.line_version > self.tracking_curve_version
             and self.activate_latest_tracking_curve(current=current)
         ):
-            self.write_data_record(
-                "endpoint_search_complete",
-                result="extension_found",
-                completed_path=round(self.completed_path_length, 6),
-                fixed_curve_version=self.line_version,
-                tracking_curve_version=self.tracking_curve_version,
-            )
-            rospy.loginfo(
-                "%s: 搜索期间发现新的固定曲线，恢复连续 LOS 巡线",
-                NODE_NAME,
-            )
+            if self.extension_search_active:
+                self.write_data_record(
+                    "endpoint_search_complete",
+                    result="extension_found",
+                    completed_path=round(self.completed_path_length, 6),
+                    fixed_curve_version=self.line_version,
+                    tracking_curve_version=self.tracking_curve_version,
+                )
+                rospy.loginfo(
+                    "%s: 搜索期间发现新的固定曲线，恢复连续 LOS 巡线",
+                    NODE_NAME,
+                )
+            else:
+                self.write_data_record(
+                    "initial_line_freeze_search_complete",
+                    result="fixed_line_found",
+                    fixed_curve_version=self.line_version,
+                    fixed_curve_length=round(self.tracking_curve_s[-1], 6),
+                )
+                rospy.loginfo(
+                    "%s: 首段固定失败后的原地搜索发现固定红线，"
+                    "开始连续 LOS 巡线",
+                    NODE_NAME,
+                )
             self.extension_search_active = False
+            self.initial_line_freeze_recovery_active = False
+            self.initial_line_freeze_started_at = None
             self.search_cycle_anchor = None
             self.search_target = None
             self.hold_target = None
@@ -2224,6 +2317,7 @@ class Task1LineFollow:
             return False
         return (
             self.endpoint_progress_ready()
+            and self.endpoint_confirmed()
             and self.endpoint_pending_extension()
             < self.endpoint_pending_extension_tolerance
         )
@@ -2272,7 +2366,7 @@ class Task1LineFollow:
             2.0,
             "%s: 最后中点保持；LOS末端距离=%.2f m，HOVER=%s，"
             "已完成/结束下限=%.2f/%.2f m，待固定延伸=%.2f m，"
-            "固定确认=%d/%d",
+            "固定确认=%d/%d，终点稳定=%d/%d",
             NODE_NAME,
             distance,
             "是" if stable else "否",
@@ -2281,6 +2375,8 @@ class Task1LineFollow:
             pending_extension,
             self.freeze_confirmation_count,
             self.curve_freeze_required_frames,
+            self.endpoint_candidate_count,
+            self.endpoint_stable_frames,
         )
         if stable:
             if self.endpoint_finish_ready():
@@ -2296,6 +2392,8 @@ class Task1LineFollow:
                     ),
                     fixed_curve_version=self.line_version,
                     tracking_curve_version=self.tracking_curve_version,
+                    endpoint_stable_count=self.endpoint_candidate_count,
+                    endpoint_stable_required=self.endpoint_stable_frames,
                 )
                 rospy.loginfo(
                     "%s: 最后中点收到 HOVER，终点进度已满足且待固定尾段"
@@ -2610,7 +2708,14 @@ class Task1LineFollow:
 
             if self.run_task_override_cycle():
                 pass
-            elif self.line_lock_candidate is not None and not self.line_locked:
+            elif (
+                self.line_lock_candidate is not None
+                and not self.line_locked
+                and not (
+                    self.initial_line_freeze_recovery_active
+                    and self.state in self.SEARCH_STATES
+                )
+            ):
                 # 首帧候选出现后立即停止搜索，短暂定点累计窗口内高置信点。
                 self.current_tracking_point = copy.deepcopy(
                     self.line_lock_candidate["points"][0]
