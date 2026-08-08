@@ -332,6 +332,10 @@ class Task1(Task1LineFollow):
         ))
         self.active_marker = None
         self.marker_resume_state = None
+        self.marker_resume_curve_version = None
+        self.marker_resume_completed_path = None
+        self.marker_resume_los_yaw = None
+        self.marker_line_fusion_paused = False
         self.marker_action_phase = None
         self.marker_action_hold_goal = None
         self.marker_action_dive_goal = None
@@ -644,6 +648,10 @@ class Task1(Task1LineFollow):
         self.publish_lights(0, 0)
         self.active_marker = None
         self.marker_resume_state = None
+        self.marker_resume_curve_version = None
+        self.marker_resume_completed_path = None
+        self.marker_resume_los_yaw = None
+        self.marker_line_fusion_paused = False
         self.marker_action_phase = None
         self.marker_action_hold_goal = None
         self.marker_action_dive_goal = None
@@ -820,6 +828,11 @@ class Task1(Task1LineFollow):
         ):
             return
         super().line_callback(message)
+
+    def should_suspend_line_fusion(self):
+        # 基类会先建立红线订阅；用 getattr 避免极早到达的回调早于
+        # Task1 自身字段初始化。
+        return getattr(self, "marker_line_fusion_paused", False)
 
     def marker_kind(self, message):
         if message.class_name in self.yellow_classes:
@@ -1592,6 +1605,16 @@ class Task1(Task1LineFollow):
 
     def start_marker_action(self, marker, current):
         current_yaw = yaw_from_quaternion(current.pose.orientation)
+        resume_state = self.state
+        resume_los_yaw = self.active_los_yaw
+        action_yaw = current_yaw
+        if marker["kind"] == "yellow":
+            if resume_los_yaw is not None:
+                action_yaw = resume_los_yaw
+            elif self.last_motion_goal is not None:
+                action_yaw = yaw_from_quaternion(
+                    self.last_motion_goal.pose.orientation
+                )
         alignment_pose = None
         trigger_progress = self.completed_path_length
         hold_x = current.pose.position.x
@@ -1602,7 +1625,7 @@ class Task1(Task1LineFollow):
             )
             if alignment_pose is None:
                 self.publish_motion_goal(self.make_pose(
-                    hold_x, hold_y, current_yaw
+                    hold_x, hold_y, action_yaw
                 ))
                 with self.marker_lock:
                     self.pending_markers.append(marker)
@@ -1632,10 +1655,22 @@ class Task1(Task1LineFollow):
                 if alignment_projection is not None else None
             )
 
+        # 先关闭回调融合，再持锁撤销动作前尚未固定的候选。动作期间的
+        # 识别仍完成校验、坐标转换和日志记录，但不会改变固定/跟踪曲线。
+        self.marker_line_fusion_paused = True
+        with self.curve_lock:
+            discarded_confirmation_count = self.freeze_confirmation_count
+            discarded_lock_candidate = self.line_lock_candidate is not None
+            self.discard_unconfirmed_curve()
+            self.line_lock_candidate = None
+            self.marker_resume_curve_version = self.tracking_curve_version
+            self.marker_resume_completed_path = self.completed_path_length
+
         self.active_marker = marker
-        self.marker_resume_state = self.state
+        self.marker_resume_state = resume_state
+        self.marker_resume_los_yaw = resume_los_yaw
         self.marker_action_hold_goal = self.make_pose(
-            hold_x, hold_y, current_yaw
+            hold_x, hold_y, action_yaw
         )
         self.marker_action_dive_goal = None
         if marker["kind"] == "yellow" and self.yellow_contact_enabled:
@@ -1690,6 +1725,17 @@ class Task1(Task1LineFollow):
                 alignment_pose
             ),
             resume_state=self.marker_resume_state,
+            resume_curve_version=self.marker_resume_curve_version,
+            resume_completed_path=round(
+                self.marker_resume_completed_path, 6
+            ),
+            resume_los_yaw_deg=(
+                round(math.degrees(self.marker_resume_los_yaw), 6)
+                if self.marker_resume_los_yaw is not None else None
+            ),
+            action_yaw_deg=round(math.degrees(action_yaw), 6),
+            discarded_confirmation_count=discarded_confirmation_count,
+            discarded_lock_candidate=discarded_lock_candidate,
         )
         return True
 
@@ -1801,21 +1847,9 @@ class Task1(Task1LineFollow):
             elapsed = (
                 rospy.Time.now() - self.yellow_phase_started_at
             ).to_sec()
-            start_depth = self.yellow_dive_start_depth
-            if start_depth is None:
-                depth_reached = (
-                    depth_error <= self.yellow_contact_depth_tolerance
-                )
-            elif goal.pose.position.z >= start_depth:
-                depth_reached = current_depth >= (
-                    goal.pose.position.z
-                    - self.yellow_contact_depth_tolerance
-                )
-            else:
-                depth_reached = current_depth <= (
-                    goal.pose.position.z
-                    + self.yellow_contact_depth_tolerance
-                )
+            depth_reached = (
+                depth_error <= self.yellow_contact_depth_tolerance
+            )
             timed_out = elapsed >= self.yellow_dive_timeout
             rospy.loginfo_throttle(
                 2.0,
@@ -1866,15 +1900,20 @@ class Task1(Task1LineFollow):
         rospy.loginfo_throttle(
             2.0,
             "%s: 黄色接触%s；当前/目标深度=%.2f/%.2f m，"
-            "上浮等待=%.1f/%.1f s，之后检查 HOVER",
+            "误差/允许误差=%.2f/%.2f m，上浮等待=%.1f/%.1f s，"
+            "之后检查深度与 HOVER",
             NODE_NAME,
             stage,
             current_depth,
             goal.pose.position.z,
+            depth_error,
+            self.yellow_contact_depth_tolerance,
             return_elapsed,
             self.yellow_return_wait_seconds,
         )
         if return_elapsed < self.yellow_return_wait_seconds:
+            return
+        if depth_error > self.yellow_contact_depth_tolerance:
             return
         if not self.motion_arrived():
             return
@@ -1890,10 +1929,12 @@ class Task1(Task1LineFollow):
             goal=self.pose_record(goal),
         )
         rospy.loginfo(
-            "%s: 黄色接触上浮已等待 %.1f s 且收到 HOVER；"
-            "目标任务深度 %.2f m，恢复巡线",
+            "%s: 黄色接触上浮已等待 %.1f s，深度误差 %.2f <= %.2f m"
+            " 且收到 HOVER；目标任务深度 %.2f m，恢复巡线",
             NODE_NAME,
             return_elapsed,
+            depth_error,
+            self.yellow_contact_depth_tolerance,
             self.marker_action_hold_goal.pose.position.z,
         )
         self.complete_marker_action()
@@ -2029,11 +2070,18 @@ class Task1(Task1LineFollow):
             path_s=marker["path_s"],
             handled_counts=copy.deepcopy(self.handled_counts),
             required_counts=copy.deepcopy(self.required_counts),
+            resume_curve_version=self.marker_resume_curve_version,
+            current_fixed_curve_version=self.line_version,
+            current_tracking_curve_version=self.tracking_curve_version,
+            line_fusion_was_paused=self.marker_line_fusion_paused,
         )
 
         resume_state = self.marker_resume_state
         self.active_marker = None
         self.marker_resume_state = None
+        self.marker_resume_curve_version = None
+        self.marker_resume_completed_path = None
+        self.marker_resume_los_yaw = None
         self.marker_action_phase = None
         self.marker_action_hold_goal = None
         self.marker_action_dive_goal = None
@@ -2050,6 +2098,9 @@ class Task1(Task1LineFollow):
             if resume_state in (self.FOLLOW_LINE, self.HOLD_END)
             else self.FOLLOW_LINE
         )
+        # 状态和旧跟踪曲线都恢复完成后再开放融合；随后必须重新收到两帧
+        # 存活期内的有效识别，才可能固定新的曲线版本。
+        self.marker_line_fusion_paused = False
 
     def run_task_override_cycle(self):
         if self.state == self.FINISH:

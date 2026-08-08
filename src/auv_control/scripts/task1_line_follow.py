@@ -1632,6 +1632,10 @@ class Task1LineFollow:
             curve_version=self.line_version,
         )
 
+    def should_suspend_line_fusion(self):
+        """完整任务可在定点动作期间暂停曲线融合。"""
+        return False
+
     def line_callback(self, message):
         # 无效识别消息同样证明红线识别节点已经启动。
         self.last_line_message_time = rospy.Time.now()
@@ -1694,6 +1698,15 @@ class Task1LineFollow:
             else tracking.pose.position
         )
         points = self.ordered_line_points(transformed, reference)
+
+        if self.should_suspend_line_fusion():
+            self.record_line_frame(
+                "observed",
+                confidence,
+                "marker_action_curve_fusion_paused",
+                points,
+            )
+            return
 
         now = rospy.Time.now()
         if not self.line_locked:
@@ -2317,7 +2330,8 @@ class Task1LineFollow:
             return False
         return (
             self.endpoint_progress_ready()
-            and self.endpoint_confirmed()
+            and self.line_version == self.tracking_curve_version
+            and not self.curve_candidate_active()
             and self.endpoint_pending_extension()
             < self.endpoint_pending_extension_tolerance
         )
@@ -2379,6 +2393,15 @@ class Task1LineFollow:
             self.endpoint_stable_frames,
         )
         if stable:
+            if self.curve_candidate_active():
+                rospy.loginfo_throttle(
+                    1.0,
+                    "%s: 最后中点已 HOVER，但仍有未决曲线候选；"
+                    "最多等待 %.2f s 后再决定结束或继续巡线",
+                    NODE_NAME,
+                    self.curve_freeze_frame_lifetime_seconds,
+                )
+                return
             if self.endpoint_finish_ready():
                 self.write_data_record(
                     "endpoint_finish_direct",
@@ -2392,6 +2415,7 @@ class Task1LineFollow:
                     ),
                     fixed_curve_version=self.line_version,
                     tracking_curve_version=self.tracking_curve_version,
+                    endpoint_evidence_is_diagnostic=True,
                     endpoint_stable_count=self.endpoint_candidate_count,
                     endpoint_stable_required=self.endpoint_stable_frames,
                 )

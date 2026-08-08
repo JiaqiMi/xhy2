@@ -62,12 +62,12 @@ task3_search_paths:
     search_second_forward_distance: 0.65
     search_third_forward_distance: 0.65
   arrow2:
-    search_initial_forward_distance: 1.5
+    search_initial_forward_distance: 1.8
     search_lateral_distance: 0.6
     search_second_forward_distance: 0.65
     search_third_forward_distance: 0.65
   box:
-    auto_search_first_forward_distance: 2.1
+    auto_search_first_forward_distance: 1.7
     auto_search_second_forward_distance: 0.5
     auto_search_third_forward_distance: 0.30
     # 左移从当前搜索点计算；右移从左移结束位置计算。
@@ -280,8 +280,8 @@ test_task3_3_inspect_and_drop:
   false_positive_ignore_radius_m: 0.30
   # camera粗对准后，当前camera与二次三帧平均map位置的XY实际误差门槛，单位m。
   # 相对首次平均位置的误差只用于诊断；camera实际X、Y误差必须同时进入门槛，才完成精确认并进入投放。
-  fine_position_x_tolerance_m: 0.12
-  fine_position_y_tolerance_m: 0.12
+  fine_position_x_tolerance_m: 0.15
+  fine_position_y_tolerance_m: 0.15
   auto_hover_confirm_settle_seconds: 0.5
   stable_center_tolerance_px: 40.0
   stable_area_tolerance_ratio: 0.35
@@ -345,7 +345,7 @@ test_task3_3_inspect_and_drop:
   # 正常和超时返航都不先原地转向，而是前往固定点时同时对准顶部配置的绝对返航航向。
   post_drop_motion_enabled: true
   # 边返航边转向的最长时间；超过后锁存当前位置并直接上浮等待结束。
-  post_drop_step_timeout: 30.0
+  post_drop_step_timeout: 75
   # 到达预设返航点后的绝对NED/map上浮目标z；NED z向下为正，值越小表示越向上。
   post_drop_ascent_target_z: -1.3
   # 上浮目标持续发布时间，到时结束全部流程。
@@ -401,7 +401,7 @@ task3_final:
   # 修改其中一个不会影响另外两个；ArUco继续使用自己的识别超时参数。
   arrow1_timeout_seconds: 180.0
   arrow2_timeout_seconds: 180.0
-  box_timeout_seconds: 240.0
+  box_timeout_seconds: 180.0
 
   # 唯一最终超时处理始终启用，不再提供三级保护开关或阶段重试。
   # [HOVER超时-8] 箭头最终超时后，下一阶段人工测量点目标进入HOVER。

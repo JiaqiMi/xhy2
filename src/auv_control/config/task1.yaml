@@ -73,7 +73,7 @@ curve_freeze_min_length: 0.05
 curve_freeze_min_advance: 0.05
 curve_freeze_overlap_distance: 0.25
 endpoint_growth_tolerance: 0.08
-# 最后中点 HOVER 后，终点多帧稳定且待固定尾段小于该值才允许直接结束
+# 最后中点 HOVER 后，无活动候选且待固定尾段小于该值才允许直接结束
 endpoint_pending_extension_tolerance: 0.20
 
 # FOLLOW_LINE 每周期按最新位置重算 LOS 中点，不等待 HOVER；定点阶段仍等待 HOVER。
@@ -84,6 +84,7 @@ los_target_update_min_distance: 0.08
 # 终点：默认使用未知长度模式。
 # 到达最后中点后固定 XY，只搜索一轮“左、右、返回”；无新增长则结束。
 endpoint_min_completed_path_length: 5.0
+# 仅用于终点识别证据统计和日志观察，不再作为结束的硬门槛
 endpoint_stable_frames: 8
 endpoint_stable_position_tolerance: 0.12
 endpoint_evidence_robot_distance: 0.8
@@ -124,9 +125,10 @@ black_light_count: 2
 yellow_contact_enabled: true
 yellow_alignment_frame: hand
 yellow_contact_depth: -0.15
+# 黄色下潜到接触深度、上浮回任务深度均使用该深度允许误差
 yellow_contact_depth_tolerance: 0.05
 yellow_dive_timeout: 10.0
-# 开始上浮后至少等待该时长，再检查 HOVER 并恢复巡线
+# 开始上浮后至少等待该时长，再检查深度允许误差与 HOVER 并恢复巡线
 yellow_return_wait_seconds: 3.0
 
 # 黑色动作：动态超前 90 度，累计一圈后等待最后目标的一次 HOVER

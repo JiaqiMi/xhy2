@@ -105,13 +105,13 @@
                to="$(arg rectangle_center_topic)" />
         <remap from="/vision/rectangle/pose"
                to="$(arg rectangle_pose_topic)" />
-        <include file="$(find stereo_depth)/launch/test_rectangles_detection_multiclass.launch">
+        <include file="$(find stereo_depth)/launch/test_rectangles_detection_speed.launch">
             <arg name="start_camera" value="$(arg start_down_camera)" />
             <arg name="start_splitter" value="$(arg start_down_splitter)" />
             <arg name="start_web" value="$(arg start_rectangle_web)" />
             <arg name="web_port" value="$(arg rectangle_web_port)" />
             <arg name="node_output" value="$(arg model_node_output)" />
-            <arg name="multi_class_targets" value="true" />
+            <!-- <arg name="multi_class_targets" value="true" /> -->
         </include>
     </group>
 
