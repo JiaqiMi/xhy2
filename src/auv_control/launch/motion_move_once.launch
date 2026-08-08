@@ -27,8 +27,8 @@
 
     <!-- absolute 模式下 map 坐标系的绝对 x、y 位置，单位 m。 -->
     <!-- 3.8,-4.21 -->
-    <arg name="target_x" default="1.2" />
-    <arg name="target_y" default="0.05" />
+    <arg name="target_x" default="0.62" />
+    <arg name="target_y" default="0.17" />
 
     <!-- absolute 模式下 map 坐标系的绝对航向，单位 deg。 -->
     <arg name="target_yaw_deg" default="300.0" />

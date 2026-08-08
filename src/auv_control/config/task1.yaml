@@ -6,7 +6,7 @@ rate: 5.0
 map_frame: map
 # false：使用机器人启动时的当前深度；true：使用 reference_depth
 use_reference_depth: true
-reference_depth: -0.6
+reference_depth: -0.4
 # false：使用机器人启动时的当前航向；true：先旋转到参考航向，
 # 收到 HOVER 且识别/运动话题均有数据后，再定点缓冲 startup_hold_seconds
 use_reference_yaw: true
@@ -123,7 +123,7 @@ black_light_count: 2
 # 回到 Task1 保持深度后仍等待控制端 HOVER。
 yellow_contact_enabled: true
 yellow_alignment_frame: hand
-yellow_contact_depth: -0.35
+yellow_contact_depth: -0.3
 yellow_contact_depth_tolerance: 0.05
 yellow_dive_timeout: 10.0
 # 开始上浮后至少等待该时长，再检查 HOVER 并恢复巡线
