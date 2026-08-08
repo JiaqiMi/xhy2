@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""任务3子任务2：定点识别 ArUco、点亮对应颜色灯并原地转向。
+"""任务3子任务2：定点识别 ArUco、点亮对应颜色灯并在固定点转向。
 
 人工把机器人停在目标正前方后，节点记录当前 ``map -> base_link`` 位姿，
 通过 ``motion_supervisor`` 做动力定位。启动后先悬停10秒，再开始识别计时。
@@ -186,6 +186,12 @@ class Task3GetTaskTest:
         ))
         self.aruco_yaw_deg = float(rospy.get_param(
             "/task3_aruco_yaw_deg", DEFAULT_ARUCO_YAW_DEG
+        ))
+        self.turn_anchor_map_x = float(rospy.get_param(
+            "~turn_anchor_map_x", "nan"
+        ))
+        self.turn_anchor_map_y = float(rospy.get_param(
+            "~turn_anchor_map_y", "nan"
         ))
         self.turn_timeout = float(rospy.get_param(
             "~turn_timeout", DEFAULT_TURN_TIMEOUT
@@ -398,6 +404,20 @@ class Task3GetTaskTest:
             or self.aruco_yaw_deg >= 360.0
         ):
             raise ValueError("task3_aruco_yaw_deg必须在[0, 360)度范围内")
+        turn_anchor_is_finite = (
+            math.isfinite(self.turn_anchor_map_x),
+            math.isfinite(self.turn_anchor_map_y),
+        )
+        if any(turn_anchor_is_finite) and not all(turn_anchor_is_finite):
+            raise ValueError("turn_anchor_map_x和turn_anchor_map_y必须同时设置")
+        if (
+            not any(turn_anchor_is_finite)
+            and not (
+                math.isnan(self.turn_anchor_map_x)
+                and math.isnan(self.turn_anchor_map_y)
+            )
+        ):
+            raise ValueError("转向固定点必须是有限数，或同时不设置")
         if min(
                 self.turn_stable_seconds,
                 self.turn_hold_seconds,
@@ -491,12 +511,19 @@ class Task3GetTaskTest:
         rospy.loginfo(
             (
                 "%s：转向参数：启用=%s，绝对ArUco航向=%.1fdeg，"
+                "转向固定点=%s，"
                 "局部HOVER超时%.1fs仅记录，稳定确认=%.1fs，完成后保持=%.1fs；"
                 "子任务进入后唯一总超时=%.1fs"
             ),
             NODE_NAME,
             str(self.turn_enabled),
             self.aruco_yaw_deg,
+            (
+                "上一个箭头冻结点(%.3f,%.3f)"
+                % (self.turn_anchor_map_x, self.turn_anchor_map_y)
+                if math.isfinite(self.turn_anchor_map_x)
+                else "子任务2启动锁存点"
+            ),
             self.turn_timeout,
             self.turn_stable_seconds,
             self.turn_hold_seconds,
@@ -854,8 +881,17 @@ class Task3GetTaskTest:
         target_yaw = normalize_angle(math.radians(self.aruco_yaw_deg))
         goal = PoseStamped()
         goal.header.frame_id = self.hold_goal.header.frame_id
-        goal.pose.position.x = self.hold_goal.pose.position.x
-        goal.pose.position.y = self.hold_goal.pose.position.y
+        use_arrow_anchor = math.isfinite(self.turn_anchor_map_x)
+        goal.pose.position.x = (
+            self.turn_anchor_map_x
+            if use_arrow_anchor
+            else self.hold_goal.pose.position.x
+        )
+        goal.pose.position.y = (
+            self.turn_anchor_map_y
+            if use_arrow_anchor
+            else self.hold_goal.pose.position.y
+        )
         goal.pose.position.z = self.hold_goal.pose.position.z
         quaternion = quaternion_from_euler(0.0, 0.0, target_yaw)
         goal.pose.orientation.x = quaternion[0]
@@ -864,11 +900,13 @@ class Task3GetTaskTest:
         goal.pose.orientation.w = quaternion[3]
         rospy.loginfo(
             (
-                "%s：[转向目标] 绝对ArUco航向%.1f度，保持位置=(%.3f,%.3f,%.3f)，"
+                "%s：[转向目标] 绝对ArUco航向%.1f度，固定位置来源=%s，"
+                "目标位置=(%.3f,%.3f,%.3f)，"
                 "航向=%.1fdeg -> %.1fdeg"
             ),
             NODE_NAME,
             self.aruco_yaw_deg,
+            "上一个箭头冻结点" if use_arrow_anchor else "子任务2启动锁存点",
             goal.pose.position.x,
             goal.pose.position.y,
             goal.pose.position.z,
@@ -1523,8 +1561,8 @@ class Task3GetTaskTest:
                 return
             rospy.loginfo(
                 (
-                    "%s：[子任务2阶段] 当前阶段=原地转向；"
-                    "前置条件=灯光和灭灯阶段完成；目标=绝对航向%.1f度"
+                    "%s：[子任务2阶段] 当前阶段=箭头冻结点转向；"
+                    "前置条件=灯光和灭灯阶段完成；目标=固定位置上绝对航向%.1f度"
                 ),
                 NODE_NAME,
                 self.aruco_yaw_deg,
@@ -1533,7 +1571,7 @@ class Task3GetTaskTest:
                     rotation_goal,
                     self.turn_timeout,
                     self.turn_stable_seconds,
-                    "ArUco识别后原地对准绝对航向{:.1f}度".format(
+                    "ArUco识别后在固定点对准绝对航向{:.1f}度".format(
                         self.aruco_yaw_deg),
             ):
                 reason = (
@@ -1560,10 +1598,13 @@ class Task3GetTaskTest:
             rospy.loginfo(
                 (
                     "%s：[子任务2阶段] 当前阶段=转向完成；"
-                    "结果=%s，位置和深度保持不变"
+                    "结果=%s，最终位置=(%.3f,%.3f,%.3f)"
                 ),
                 NODE_NAME,
                 turn_text,
+                rotation_goal.pose.position.x,
+                rotation_goal.pose.position.y,
+                rotation_goal.pose.position.z,
             )
         else:
             rospy.logwarn("%s：turn_enabled=false，本次识别亮灯后不执行转向", NODE_NAME)

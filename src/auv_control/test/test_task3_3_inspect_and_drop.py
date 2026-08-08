@@ -6,7 +6,7 @@
 功能：识别指定颜色方框，基于map位置完成camera粗对准、XY误差精对准、投放和离场
 作者：Tangzongle
 监听：/vision/rectangle/target_message (auv_control/TargetDetection)
-      /vision/rectangle/detections (std_msgs/String，人工模式兼容)
+      /vision/rectangle/detections (std_msgs/String，完整YOLO候选和模型健康检查)
       /motion/state (auv_control/MotionState)
       /status/auv (auv_control/AUVData)
       /status/actuator (auv_control/ActuatorControl)
@@ -110,6 +110,7 @@ DEFAULT_DETECTION_TOPIC = "/vision/rectangle/detections"
 DEFAULT_TARGET_TOPIC = "/vision/rectangle/target_message"
 DEFAULT_TARGET_COLOR = "yellow"
 DEFAULT_MIN_CONFIDENCE = 0.35
+DEFAULT_FINE_MIN_CONFIDENCE = 0.50
 DEFAULT_STABLE_DETECTION_COUNT = 5
 DEFAULT_AUTO_SEARCH_STABLE_DETECTION_COUNT = 3
 DEFAULT_STABLE_DETECTION_WINDOW_SIZE = 10
@@ -140,6 +141,8 @@ DEFAULT_AUTO_VISUAL_MIN_STEP_M = 0.01
 DEFAULT_AUTO_VISUAL_MAX_STEP_M = 0.05
 DEFAULT_FINE_POSITION_X_TOLERANCE_M = 0.10
 DEFAULT_FINE_POSITION_Y_TOLERANCE_M = 0.10
+DEFAULT_FINE_POSITION_MATCH_TOLERANCE_M = 0.20
+DEFAULT_FALSE_POSITIVE_IGNORE_RADIUS_M = 0.30
 DEFAULT_FINE_POSITION_Y_TOLERANCE_M = 0.10
 DEFAULT_LOG_INTERVAL = 1.0
 DEFAULT_WARNING_LOG_INTERVAL = 2.0
@@ -153,7 +156,7 @@ DEFAULT_PRE_DROP_HAND_FRAME = "hand"
 DEFAULT_POST_DROP_MOTION_ENABLED = True
 DEFAULT_ARUCO_YAW_DEG = 120.0
 DEFAULT_RETURN_ORIGIN_YAW_DEG = 30.0
-DEFAULT_POST_DROP_STEP_TIMEOUT = 90.0
+DEFAULT_POST_DROP_STEP_TIMEOUT = 30.0
 DEFAULT_POST_DROP_ASCENT_SECONDS = 5.0
 DEFAULT_POST_DROP_ASCENT_TARGET_Z = -1.3
 
@@ -184,7 +187,6 @@ class Task3InspectAndDropTest:
     OPEN_CLAMP = 4
     RETURN_GRIPPER_RIGHT = 5
     CLOSE_CLAMP = 6
-    POST_DROP_TURN = 7
     POST_DROP_RETURN_POINT = 8
     PRE_DROP_HAND_ALIGN = 9
     POST_DROP_ASCEND = 10
@@ -198,8 +200,7 @@ class Task3InspectAndDropTest:
         OPEN_CLAMP: "打开夹爪",
         RETURN_GRIPPER_RIGHT: "打开状态回到右侧",
         CLOSE_CLAMP: "关闭夹爪",
-        POST_DROP_TURN: "投放后返航航向对准",
-        POST_DROP_RETURN_POINT: "投放后前往预设返航点",
+        POST_DROP_RETURN_POINT: "投放后边转向边前往预设返航点",
         PRE_DROP_HAND_ALIGN: "投放前夹爪TF对准",
         POST_DROP_ASCEND: "预设返航点持续上浮",
     }
@@ -243,8 +244,8 @@ class Task3InspectAndDropTest:
         ).strip().lower()
         self.auto_enabled = self.operation_mode == "auto"
 
-        # 旧 launch 的 detection_topic 指向三维 TargetDetection；当前人工测试
-        # 直接读取 YOLO 全候选 JSON，使用独立参数避免修改团队共享 launch。
+        # JSON话题提供完整YOLO候选和模型健康检查；自动模式的三维位置判别
+        # 仍使用target_topic，并在本子任务内按target_color筛选。
         self.detection_topic = str(
             rospy.get_param("~model_detection_topic", DEFAULT_DETECTION_TOPIC)
         ).strip()
@@ -257,6 +258,10 @@ class Task3InspectAndDropTest:
         self.min_confidence = float(
             rospy.get_param("~min_confidence", DEFAULT_MIN_CONFIDENCE)
         )
+        self.fine_min_confidence = float(rospy.get_param(
+            "~fine_min_confidence",
+            DEFAULT_FINE_MIN_CONFIDENCE,
+        ))
         self.stable_detection_count = int(
             rospy.get_param(
                 "~stable_detection_count", DEFAULT_STABLE_DETECTION_COUNT
@@ -270,9 +275,21 @@ class Task3InspectAndDropTest:
             "~stable_detection_window_size",
             DEFAULT_STABLE_DETECTION_WINDOW_SIZE,
         ))
+        self.box_position_buffer_limit = (
+            self.stable_detection_window_size
+            * sum(color != "off" for color in self.COLOR_LIGHTS)
+        )
         self.stable_map_position_tolerance_m = float(rospy.get_param(
             "~stable_map_position_tolerance_m",
             DEFAULT_STABLE_MAP_POSITION_TOLERANCE_M,
+        ))
+        self.fine_position_match_tolerance_m = float(rospy.get_param(
+            "~fine_position_match_tolerance_m",
+            DEFAULT_FINE_POSITION_MATCH_TOLERANCE_M,
+        ))
+        self.false_positive_ignore_radius_m = float(rospy.get_param(
+            "~false_positive_ignore_radius_m",
+            DEFAULT_FALSE_POSITIVE_IGNORE_RADIUS_M,
         ))
         self.auto_hover_confirm_settle_seconds = float(rospy.get_param(
             "~auto_hover_confirm_settle_seconds",
@@ -564,12 +581,17 @@ class Task3InspectAndDropTest:
         self.box_coarse_camera_frame = None
         self.box_fine_candidate = None
         self.box_recheck_collecting = False
+        self.box_recheck_started_at = None
         self.box_precision_goal_pending = False
         self.box_final_goal_pending = False
         self.box_final_map_x = None
         self.box_final_map_y = None
         self.box_final_camera_frame = None
         self.box_position_lock_ready = False
+        self.box_false_positive_trigger_pose = None
+        self.box_false_positive_resume_search_index = None
+        self.box_false_positive_recovery_active = False
+        self.rejected_box_map_points = []
         self.auto_hold_z = None
         self.auto_hold_yaw = None
         self.auto_search_origin_goal = None
@@ -609,6 +631,7 @@ class Task3InspectAndDropTest:
         self.pending_drop_reason = ""
         self.drop_action_started = False
         self.post_drop_target_yaw = None
+        self.post_drop_return_timed_out = False
         self.last_actuator_command = None
         self.latest_actuator_status = None
         self.last_actuator_status_time = None
@@ -634,7 +657,7 @@ class Task3InspectAndDropTest:
                 self.target_topic,
                 TargetDetection,
                 self.rectangle_target_callback,
-                queue_size=20,
+                queue_size=100,
             )
         else:
             self.detection_sub = rospy.Subscriber(
@@ -690,26 +713,29 @@ class Task3InspectAndDropTest:
         )
         rospy.loginfo(
             (
-                "%s：模型话题=%s，三维目标话题=%s，目标颜色=%s，最低置信度=%.2f"
+                "%s：模型话题=%s，三维目标话题=%s，目标颜色=%s，"
+                "粗搜索最低置信度=%.2f，细对准最低置信度=%.2f"
             ),
             NODE_NAME,
             self.detection_topic,
             self.target_topic,
             self.target_color,
             self.min_confidence,
+            self.fine_min_confidence,
         )
         if self.auto_enabled:
             rospy.loginfo(
                 (
-                    "%s：自动模式三维位置门槛：最多%d帧队列，"
+                    "%s：自动模式三维位置门槛：每种颜色最多%d帧，"
+                    "红黄绿总缓存最多%d帧；"
                     "任意%d帧map位置相近即通过；"
                     "精确认误差=(X<=%.3fm,Y<=%.3fm)"
                 ),
                 NODE_NAME,
                 self.stable_detection_window_size,
+                self.box_position_buffer_limit,
                 self.auto_search_stable_detection_count,
                 self.fine_position_x_tolerance_m,
-                self.fine_position_y_tolerance_m,
                 self.fine_position_y_tolerance_m,
             )
             rospy.loginfo(
@@ -738,8 +764,8 @@ class Task3InspectAndDropTest:
             rospy.loginfo(
                 (
                     "%s：投放后离场：启用=%s，返航绝对航向=%.1fdeg；"
-                    "随后前往预设返航点(N=%.3f,E=%.3f)，"
-                    "局部HOVER超时%.1fs仅记录；到点后向NED z=%.2f上浮、"
+                    "边前往预设返航点(N=%.3f,E=%.3f)边转向，"
+                    "返航超过%.1fs则从当前位置直接上浮；上浮目标z=%.2f，"
                     "持续%.1fs并结束"
                 ),
                 NODE_NAME,
@@ -1092,6 +1118,12 @@ class Task3InspectAndDropTest:
             raise ValueError("target_color 不能为空")
         if not 0.0 <= self.min_confidence <= 1.0:
             raise ValueError("min_confidence 必须在 0 到 1 之间")
+        if not 0.0 <= self.fine_min_confidence <= 1.0:
+            raise ValueError("fine_min_confidence 必须在 0 到 1 之间")
+        if self.fine_min_confidence < self.min_confidence:
+            raise ValueError(
+                "fine_min_confidence 不能低于粗搜索 min_confidence"
+            )
         if self.stable_detection_count < 1:
             raise ValueError("stable_detection_count 必须大于等于 1")
         if self.stable_detection_window_size < 1:
@@ -1106,6 +1138,20 @@ class Task3InspectAndDropTest:
             raise ValueError("stable_center_tolerance_px 不能小于 0")
         if self.stable_map_position_tolerance_m < 0.0:
             raise ValueError("stable_map_position_tolerance_m 不能小于 0")
+        if (
+            not math.isfinite(self.fine_position_match_tolerance_m)
+            or self.fine_position_match_tolerance_m <= 0.0
+        ):
+            raise ValueError(
+                "fine_position_match_tolerance_m 必须是大于0的有限数"
+            )
+        if (
+            not math.isfinite(self.false_positive_ignore_radius_m)
+            or self.false_positive_ignore_radius_m < 0.0
+        ):
+            raise ValueError(
+                "false_positive_ignore_radius_m 必须是大于等于0的有限数"
+            )
         if not 0.0 <= self.stable_area_tolerance_ratio <= 1.0:
             raise ValueError("stable_area_tolerance_ratio 必须在 0 到 1 之间")
         if self.detection_timeout <= 0.0:
@@ -1570,6 +1616,48 @@ class Task3InspectAndDropTest:
         )
         return mean_x, mean_y, jitter
 
+    def rejected_box_point_match(self, map_x, map_y):
+        matches = []
+        for index, point in enumerate(self.rejected_box_map_points):
+            distance = math.hypot(map_x - point["x"], map_y - point["y"])
+            if distance <= self.false_positive_ignore_radius_m:
+                matches.append((distance, index, point))
+        if not matches:
+            return None
+        return min(matches, key=lambda item: item[0])
+
+    def mark_current_coarse_box_rejected(self, reason):
+        if self.box_coarse_map_x is None or self.box_coarse_map_y is None:
+            return False
+        match = self.rejected_box_point_match(
+            self.box_coarse_map_x,
+            self.box_coarse_map_y,
+        )
+        if match is None:
+            point = {
+                "x": self.box_coarse_map_x,
+                "y": self.box_coarse_map_y,
+                "reason": str(reason),
+            }
+            self.rejected_box_map_points.append(point)
+            point_index = len(self.rejected_box_map_points)
+        else:
+            _, index, point = match
+            point["reason"] = str(reason)
+            point_index = index + 1
+        rospy.logwarn(
+            (
+                "%s：已标记方框误识别点#%d：map=(%.3f,%.3f)，"
+                "后续%.3fm半径内的目标颜色位置帧不再参与锁定"
+            ),
+            NODE_NAME,
+            point_index,
+            point["x"],
+            point["y"],
+            self.false_positive_ignore_radius_m,
+        )
+        return True
+
     def stable_box_position_groups(self):
         now = rospy.Time.now()
         fresh_samples = [
@@ -1579,14 +1667,22 @@ class Task3InspectAndDropTest:
             <= self.detection_timeout
         ]
         self.box_position_samples = fresh_samples[
+            -self.box_position_buffer_limit:
+        ]
+        target_samples = [
+            item
+            for item in self.box_position_samples
+            if item["color"] == self.target_color
+            and item["decision_eligible"]
+        ][
             -self.stable_detection_window_size:
         ]
         required_count = self.auto_search_stable_detection_count
-        if len(self.box_position_samples) < required_count:
+        if len(target_samples) < required_count:
             return []
         groups = []
         for group in itertools.combinations(
-            self.box_position_samples, required_count
+            target_samples, required_count
         ):
             _, _, jitter = self.box_position_group_summary(group)
             if jitter <= self.stable_map_position_tolerance_m:
@@ -1610,21 +1706,94 @@ class Task3InspectAndDropTest:
         self.box_fine_candidate = None
 
     def add_box_position_sample(self, sample):
+        color = sample["color"]
+        previous = next(
+            (
+                item
+                for item in reversed(self.box_position_samples)
+                if item["color"] == color
+            ),
+            None,
+        )
+        if (
+            previous is not None
+            and (
+                sample["received_time"] - previous["received_time"]
+            ).to_sec() > self.detection_timeout
+        ):
+            self.box_position_samples = [
+                item
+                for item in self.box_position_samples
+                if item["color"] != color
+            ]
+            if color == self.target_color:
+                self.box_fine_candidate = None
+            rospy.logwarn(
+                "%s：[方框多颜色缓存] %s消息间隔超过%.2fs，清空该颜色过期帧",
+                NODE_NAME,
+                color,
+                self.detection_timeout,
+            )
+
         self.box_position_samples.append(sample)
-        self.box_position_samples = self.box_position_samples[
-            -self.stable_detection_window_size:
+        color_sample_count = 0
+        bounded_samples = []
+        for item in reversed(self.box_position_samples):
+            if item["color"] == color:
+                color_sample_count += 1
+                if color_sample_count > self.stable_detection_window_size:
+                    continue
+            bounded_samples.append(item)
+        self.box_position_samples = list(reversed(bounded_samples))[
+            -self.box_position_buffer_limit:
         ]
+        color_counts = {
+            item_color: sum(
+                item["color"] == item_color
+                for item in self.box_position_samples
+            )
+            for item_color in self.COLOR_LIGHTS
+            if item_color != "off"
+        }
+        if color != self.target_color or not sample["decision_eligible"]:
+            rospy.loginfo_throttle(
+                self.log_interval,
+                (
+                    "%s：[方框多颜色缓存] 已保存%s帧#%d；"
+                    "缓存(red=%d,yellow=%d,green=%d)，"
+                    "判别目标=%s，本帧参与判别=%s"
+                ),
+                NODE_NAME,
+                color,
+                sample["frame_index"],
+                color_counts.get("red", 0),
+                color_counts.get("yellow", 0),
+                color_counts.get("green", 0),
+                self.target_color,
+                "是" if sample["decision_eligible"] else "否",
+            )
+            return
+
+        target_sample_count = sum(
+            item["color"] == self.target_color
+            and item["decision_eligible"]
+            for item in self.box_position_samples
+        )
         group = self.best_box_position_group()
         if group is None:
             rospy.loginfo(
                 (
-                    "%s：[方框map帧#%d] 有效位置写入队列=%d/%d，"
+                    "%s：[方框map帧#%d] %s有效位置写入目标队列=%d/%d，"
+                    "全颜色缓存=%d/%d，"
                     "尚未找到相近的%d帧"
                 ),
                 NODE_NAME,
                 sample["frame_index"],
-                len(self.box_position_samples),
+                self.target_color,
+                target_sample_count,
                 self.stable_detection_window_size,
+                len(self.box_position_samples),
+                self.box_position_buffer_limit,
                 self.auto_search_stable_detection_count,
             )
             return
@@ -1640,12 +1809,13 @@ class Task3InspectAndDropTest:
         }
         rospy.loginfo(
             (
-                "%s：[方框map帧#%d] 三帧位置确认通过：队列=%d/%d，"
+                "%s：[方框map帧#%d] %s三帧位置确认通过：目标队列=%d/%d，"
                 "命中帧=%s，平均map=(%.3f,%.3f)，抖动=%.3f/%.3fm，阶段=%s"
             ),
             NODE_NAME,
             sample["frame_index"],
-            len(self.box_position_samples),
+            self.target_color,
+            target_sample_count,
             self.stable_detection_window_size,
             candidate["frame_ids"],
             mean_x,
@@ -1677,25 +1847,41 @@ class Task3InspectAndDropTest:
             self.AUTO_APPROACH,
         ):
             return
-        if self.state == self.WAIT_FOR_TARGET and self.auto_search_index == 0:
-            return
-        if self.state == self.AUTO_HOVER_CONFIRM:
-            return
-        if self.state == self.AUTO_APPROACH and not self.box_recheck_collecting:
-            return
+        decision_eligible = not (
+            (
+                self.state == self.WAIT_FOR_TARGET
+                and self.auto_search_index == 0
+            )
+            or self.state == self.AUTO_HOVER_CONFIRM
+            or (
+                self.state == self.AUTO_APPROACH
+                and not self.box_recheck_collecting
+            )
+        )
         class_name = str(message.class_name).strip()
+        color = self.detection_color(class_name)
         confidence = self.finite_number(message.conf)
-        if self.detection_color(class_name) != self.target_color:
+        if color is None:
             rospy.loginfo_throttle(
                 self.log_interval,
-                "%s：[方框map帧#%d] 忽略类别%s，目标颜色=%s",
+                "%s：[方框map帧#%d] 忽略无法映射到红黄绿的类别%s",
                 NODE_NAME,
                 frame_index,
                 class_name or "空",
-                self.target_color,
             )
             return
-        if confidence is None or confidence < self.min_confidence:
+        fine_confidence_required = (
+            self.state == self.AUTO_APPROACH
+            and self.box_recheck_collecting
+            and color == self.target_color
+        )
+        if (
+            not fine_confidence_required
+            and (
+                confidence is None
+                or confidence < self.min_confidence
+            )
+        ):
             rospy.loginfo_throttle(
                 self.log_interval,
                 "%s：[方框map帧#%d] 忽略置信度%s，最低=%.2f",
@@ -1715,21 +1901,59 @@ class Task3InspectAndDropTest:
                 reason,
             )
             return
-        if (
-            self.box_position_samples
-            and (now - self.box_position_samples[-1]["received_time"]).to_sec()
-            > self.detection_timeout
-        ):
-            self.reset_box_position_queue()
-            rospy.logwarn(
-                "%s：[方框map] 消息间隔超过%.2fs，清空过期位置队列",
-                NODE_NAME,
-                self.detection_timeout,
-            )
         source = message.pose.pose.position
         target = transformed.pose.position
+        if color == self.target_color:
+            rejected_match = self.rejected_box_point_match(
+                target.x,
+                target.y,
+            )
+            if rejected_match is not None:
+                distance, index, point = rejected_match
+                rospy.logwarn_throttle(
+                    self.warning_log_interval,
+                    (
+                        "%s：[方框map帧#%d] 忽略已确认误识别点#%d附近"
+                        "%s帧：当前位置=(%.3f,%.3f)，误识别点=(%.3f,%.3f)，"
+                        "距离=%.3f/%.3fm"
+                    ),
+                    NODE_NAME,
+                    frame_index,
+                    index + 1,
+                    self.target_color,
+                    target.x,
+                    target.y,
+                    point["x"],
+                    point["y"],
+                    distance,
+                    self.false_positive_ignore_radius_m,
+                )
+                return
+        if fine_confidence_required and (
+            confidence is None
+            or confidence < self.fine_min_confidence
+        ):
+            confidence_text = (
+                "无效"
+                if confidence is None
+                else "{:.3f}".format(confidence)
+            )
+            self.begin_box_false_positive_recovery(
+                (
+                    "细对准目标颜色%s帧置信度%s低于%.2f"
+                    % (
+                        self.target_color,
+                        confidence_text,
+                        self.fine_min_confidence,
+                    )
+                )
+            )
+            return
         sample = {
             "frame_index": frame_index,
+            "color": color,
+            "class_name": class_name,
+            "decision_eligible": decision_eligible,
             "received_time": now,
             "source_stamp": message.pose.header.stamp,
             "source_stamp_sec": message.pose.header.stamp.to_sec(),
@@ -1802,31 +2026,31 @@ class Task3InspectAndDropTest:
         )
         self.log_arrival_gate("投放前夹爪TF对准到达判定")
 
-    def start_post_drop_turn(self):
+    def start_post_drop_return_point(self):
         source_goal = self.active_goal
         if source_goal is None:
-            source_goal = self.get_current_pose("生成投放后返航航向对准目标")
-        if source_goal is None:
+            source_goal = self.get_current_pose("生成投放后返航目标")
+        if source_goal is None or self.auto_hold_z is None:
             return False
 
         start_yaw = yaw_from_quaternion(source_goal.pose.orientation)
         self.post_drop_target_yaw = self.return_origin_target_yaw
+        self.post_drop_return_timed_out = False
+        self.auto_hold_yaw = self.post_drop_target_yaw
         self.set_active_goal(
-            source_goal.pose.position.x,
-            source_goal.pose.position.y,
+            self.return_point_n,
+            self.return_point_e,
             self.auto_hold_z,
             self.post_drop_target_yaw,
-            "投放完成后原地对准返航绝对航向%.1f度"
+            "投放完成后边返航边对准绝对航向%.1f度"
             % math.degrees(self.post_drop_target_yaw),
         )
         rospy.loginfo(
             (
-                "%s：[投放后离场] 开始原地对准返航绝对航向，"
-                "配置返航航向=%.1fdeg，"
-                "保持位置=(%.3f,%.3f,%.3f)，当前航向=%.1fdeg -> 目标航向=%.1fdeg"
+                "%s：[投放后离场] 不执行原地转向，直接前往预设返航点并同时转向；"
+                "目标=(%.3f,%.3f,%.3f)，当前航向=%.1fdeg，最终航向=%.1fdeg"
             ),
             NODE_NAME,
-            self.return_origin_yaw_deg,
             self.active_goal.pose.position.x,
             self.active_goal.pose.position.y,
             self.active_goal.pose.position.z,
@@ -1834,140 +2058,115 @@ class Task3InspectAndDropTest:
             math.degrees(self.post_drop_target_yaw),
         )
         self.set_state(
-            self.POST_DROP_TURN,
-            "夹爪关闭并熄灯后开始对准返航绝对航向",
-        )
-        return True
-
-    def start_post_drop_return_point(self):
-        if self.post_drop_target_yaw is None:
-            return False
-        self.auto_hold_yaw = self.post_drop_target_yaw
-        self.set_active_goal(
-            self.return_point_n,
-            self.return_point_e,
-            self.auto_hold_z,
-            self.post_drop_target_yaw,
-            "投放后返航航向对准完成，前往预设返航点",
-        )
-        rospy.loginfo(
-            (
-                "%s：[投放后离场] 返航航向已由HOVER确认，"
-                "开始前往预设返航点，目标=(%.3f,%.3f,%.3f)"
-            ),
-            NODE_NAME,
-            self.active_goal.pose.position.x,
-            self.active_goal.pose.position.y,
-            self.active_goal.pose.position.z,
-        )
-        self.set_state(
             self.POST_DROP_RETURN_POINT,
-            "返航航向目标已到达，开始前往预设返航点",
+            "夹爪关闭并熄灯后边返航边对准最终航向",
         )
         return True
 
-    def start_post_drop_ascent(self):
+    def start_post_drop_ascent(self, from_current_position=False):
         if self.post_drop_target_yaw is None or self.auto_hold_z is None:
             return False
+        ascent_n = self.return_point_n
+        ascent_e = self.return_point_e
+        if from_current_position:
+            current = self.get_current_pose("返航超时后锁存当前上浮点")
+            if current is None:
+                rospy.logwarn_throttle(
+                    self.warning_log_interval,
+                    "%s：[投放后离场] 返航已超时，但暂时无法读取当前位置；继续重试锁存上浮点",
+                    NODE_NAME,
+                )
+                return False
+            ascent_n = current.pose.position.x
+            ascent_e = current.pose.position.y
+        self.post_drop_return_timed_out = bool(from_current_position)
         self.set_active_goal(
-            self.return_point_n,
-            self.return_point_e,
+            ascent_n,
+            ascent_e,
             self.post_drop_ascent_target_z,
             self.post_drop_target_yaw,
-            "到达预设返航点后向NED z=%.2f上浮"
-            % self.post_drop_ascent_target_z,
+            (
+                "返航超时后从当前位置向NED z=%.2f直接上浮"
+                if from_current_position
+                else "到达预设返航点后向NED z=%.2f上浮"
+            ) % self.post_drop_ascent_target_z,
         )
         rospy.loginfo(
             (
-                "%s：[投放后离场] 预设返航点已由HOVER确认，"
-                "NED z向下为正，从z=%.2f向目标z=%.2f上浮，"
-                "持续发布%.1fs"
+                "%s：[投放后离场] %s，目标水平位置=(%.3f,%.3f)，"
+                "NED z向下为正，从z=%.2f向目标z=%.2f上浮，持续发布%.1fs"
             ),
             NODE_NAME,
+            "返航超过%.1fs" % self.post_drop_step_timeout
+            if from_current_position
+            else "预设返航点已由HOVER确认",
+            ascent_n,
+            ascent_e,
             self.auto_hold_z,
             self.post_drop_ascent_target_z,
             self.post_drop_ascent_seconds,
         )
         self.set_state(
             self.POST_DROP_ASCEND,
-            "已到达预设返航点，开始持续上浮",
+            "返航超时，从当前位置直接上浮"
+            if from_current_position
+            else "已到达预设返航点，开始持续上浮",
         )
         return True
 
-    def motion_step_timed_out(self, step_name, timeout):
-        elapsed = self.state_elapsed()
-        if elapsed < timeout:
-            return False
-        rospy.logwarn_throttle(
-            self.warning_log_interval,
-            "%s：%s已等待%.1fs，局部HOVER超时%.1fs不终止任务；继续等待子任务总超时",
-            NODE_NAME,
-            step_name,
-            elapsed,
-            timeout,
-        )
-        return False
-
-    def handle_post_drop_turn(self):
-        self.publish_actuator(self.clamp_closed, "off")
-        if self.motion_step_timed_out(
-            "投放后返航航向对准",
-            self.post_drop_step_timeout,
-        ):
-            return
-        if self.motion_arrived():
-            if not self.start_post_drop_return_point():
-                self.finish_task(False, "无法生成投放后预设返航点目标")
-            return
-        rospy.loginfo_throttle(
-            self.log_interval,
-            "%s：[投放后离场] 返航绝对航向对准中 %.1f/%.1fs，motion=%s",
-            NODE_NAME,
-            self.state_elapsed(),
-            self.post_drop_step_timeout,
-            self.current_motion_state_name(),
-        )
-        self.log_arrival_gate("投放后返航绝对航向到达判定")
-
     def handle_post_drop_return_point(self):
         self.publish_actuator(self.clamp_closed, "off")
-        if self.motion_step_timed_out(
-            "投放后前往预设返航点",
-            self.post_drop_step_timeout,
-        ):
-            return
         if self.motion_arrived():
             if not self.start_post_drop_ascent():
                 self.finish_task(False, "无法生成预设返航点上浮目标")
             return
+        if self.state_elapsed() >= self.post_drop_step_timeout:
+            if not self.start_post_drop_ascent(from_current_position=True):
+                return
+            return
         rospy.loginfo_throttle(
             self.log_interval,
-            "%s：[投放后离场] 前往预设返航点进行中 %.1f/%.1fs，motion=%s",
+            (
+                "%s：[投放后离场] 边返航边对准最终航向 %.1f/%.1fs，"
+                "motion=%s"
+            ),
             NODE_NAME,
             self.state_elapsed(),
             self.post_drop_step_timeout,
             self.current_motion_state_name(),
         )
-        self.log_arrival_gate("投放后预设返航点到达判定")
+        self.log_arrival_gate("投放后返航点与最终航向联合到达判定")
 
     def handle_post_drop_ascent(self):
         self.publish_actuator(self.clamp_closed, "off")
         elapsed = self.state_elapsed()
         if elapsed >= self.post_drop_ascent_seconds:
-            self.finish_task(
-                True,
-                (
-                    "识别和投放完成，对准返航绝对航向%.1f度、"
+            if self.post_drop_return_timed_out:
+                finish_detail = (
+                    "识别和投放完成；边返航边对准最终航向时超过%.1fs，"
+                    "已从当前位置向NED z=%.2f上浮、持续%.1fs后结束"
+                    % (
+                        self.post_drop_step_timeout,
+                        self.post_drop_ascent_target_z,
+                        self.post_drop_ascent_seconds,
+                    )
+                )
+            else:
+                finish_detail = (
+                    "识别和投放完成，边返航边对准绝对航向%.1f度、"
                     "到达预设返航点(N=%.3f,E=%.3f)，"
                     "向NED z=%.2f上浮、持续%.1fs后结束"
+                    % (
+                        math.degrees(self.post_drop_target_yaw),
+                        self.return_point_n,
+                        self.return_point_e,
+                        self.post_drop_ascent_target_z,
+                        self.post_drop_ascent_seconds,
+                    )
                 )
-                % (
-                    math.degrees(self.post_drop_target_yaw),
-                    self.return_point_n,
-                    self.return_point_e,
-                    self.post_drop_ascent_target_z,
-                    self.post_drop_ascent_seconds,
-                ),
+            self.finish_task(
+                True,
+                finish_detail,
             )
             return
         rospy.loginfo_throttle(
@@ -2491,6 +2690,57 @@ class Task3InspectAndDropTest:
         )
         return True
 
+    def begin_box_false_positive_recovery(self, reason):
+        trigger_pose = self.box_false_positive_trigger_pose
+        resume_index = self.box_false_positive_resume_search_index
+        if (
+            trigger_pose is None
+            or resume_index is None
+            or not 0 <= resume_index <= len(self.auto_search_plan)
+        ):
+            self.finish_task(False, "方框误识别恢复缺少触发位置或原搜索步骤")
+            return False
+        if not self.mark_current_coarse_box_rejected(reason):
+            self.finish_task(False, "方框误识别恢复无法标记首次粗锁定位置")
+            return False
+
+        self.box_position_lock_ready = False
+        self.box_fine_candidate = None
+        self.box_recheck_collecting = False
+        self.box_recheck_started_at = None
+        self.box_precision_goal_pending = False
+        self.box_final_goal_pending = False
+        self.box_final_map_x = None
+        self.box_final_map_y = None
+        self.box_final_camera_frame = None
+        self.hover_confirmation_hover_at = None
+        self.reset_box_position_queue()
+        self.set_active_goal(
+            trigger_pose["x"],
+            trigger_pose["y"],
+            trigger_pose["z"],
+            trigger_pose["yaw"],
+            "方框细确认未通过，返回识别触发位置后继续未完成搜索",
+        )
+        self.box_false_positive_recovery_active = True
+        rospy.logwarn(
+            (
+                "%s：方框细确认判定为误识别：%s；"
+                "先返回触发搜索位置=(%.3f,%.3f)，再恢复搜索步骤%d/%d"
+            ),
+            NODE_NAME,
+            reason,
+            trigger_pose["x"],
+            trigger_pose["y"],
+            min(resume_index + 1, len(self.auto_search_plan)),
+            len(self.auto_search_plan),
+        )
+        self.set_state(
+            self.WAIT_FOR_TARGET,
+            "方框细确认未通过，返回识别触发位置",
+        )
+        return True
+
     def begin_box_coarse_camera_alignment(self):
         if (
             not self.box_position_lock_ready
@@ -2498,6 +2748,9 @@ class Task3InspectAndDropTest:
             or self.box_coarse_map_y is None
             or not self.box_coarse_camera_frame
         ):
+            return False
+        current = self.get_current_pose("记录方框首次锁定的搜索触发位置")
+        if current is None:
             return False
         if not self.set_camera_xy_goal(
             self.box_coarse_map_x,
@@ -2507,10 +2760,19 @@ class Task3InspectAndDropTest:
             "首次三帧方框map位置通过，camera xy粗对准",
         ):
             return False
+        self.box_false_positive_trigger_pose = {
+            "x": current.pose.position.x,
+            "y": current.pose.position.y,
+            "z": self.auto_hold_z,
+            "yaw": self.auto_hold_yaw,
+        }
+        self.box_false_positive_resume_search_index = self.auto_search_index
+        self.box_false_positive_recovery_active = False
         self.box_position_lock_ready = False
         self.box_precision_goal_pending = False
         self.box_final_goal_pending = False
         self.box_recheck_collecting = False
+        self.box_recheck_started_at = None
         self.hover_confirmation_hover_at = None
         self.reset_box_position_queue()
         self.set_state(
@@ -2540,6 +2802,7 @@ class Task3InspectAndDropTest:
                 return
         self.reset_box_position_queue()
         self.box_recheck_collecting = True
+        self.box_recheck_started_at = rospy.Time.now()
         self.hover_confirmation_hover_at = None
         self.set_state(
             self.AUTO_APPROACH,
@@ -2560,6 +2823,7 @@ class Task3InspectAndDropTest:
             return False
         self.box_final_goal_pending = True
         self.box_recheck_collecting = False
+        self.box_recheck_started_at = None
         self.reset_box_position_queue()
         rospy.logwarn(
             (
@@ -2605,6 +2869,7 @@ class Task3InspectAndDropTest:
                 return
             self.box_precision_goal_pending = False
             self.box_recheck_collecting = True
+            self.box_recheck_started_at = rospy.Time.now()
             self.reset_box_position_queue()
             rospy.loginfo(
                 "%s：方框map精对准小步已HOVER，重新累计三帧位置",
@@ -2612,20 +2877,58 @@ class Task3InspectAndDropTest:
             )
             return
         if self.box_fine_candidate is None:
+            if self.box_recheck_collecting:
+                if self.box_recheck_started_at is None:
+                    self.box_recheck_started_at = rospy.Time.now()
+                recheck_elapsed = (
+                    rospy.Time.now() - self.box_recheck_started_at
+                ).to_sec()
+                if recheck_elapsed >= self.detection_timeout:
+                    self.begin_box_false_positive_recovery(
+                        (
+                            "细对准%.2fs内未形成满足置信度%.2f的稳定三帧"
+                            % (
+                                recheck_elapsed,
+                                self.fine_min_confidence,
+                            )
+                        )
+                    )
+                    return
             rospy.loginfo_throttle(
                 self.log_interval,
-                "%s：方框精确认中：等待%d帧相近map位置，队列=%d/%d",
+                (
+                    "%s：方框精确认中：等待%d帧相近map位置，"
+                    "细对准置信度门槛=%.2f，队列=%d/%d"
+                ),
                 NODE_NAME,
                 self.auto_search_stable_detection_count,
-                len(self.box_position_samples),
+                self.fine_min_confidence,
+                sum(
+                    item["color"] == self.target_color
+                    and item["decision_eligible"]
+                    for item in self.box_position_samples
+                ),
                 self.stable_detection_window_size,
             )
             return
 
         candidate = self.box_fine_candidate
         self.box_fine_candidate = None
+        self.box_recheck_started_at = None
         coarse_x_error = candidate["map_x"] - self.box_coarse_map_x
         coarse_y_error = candidate["map_y"] - self.box_coarse_map_y
+        coarse_difference = math.hypot(coarse_x_error, coarse_y_error)
+        if coarse_difference > self.fine_position_match_tolerance_m:
+            self.begin_box_false_positive_recovery(
+                (
+                    "细对准三帧平均位置与首次粗锁定点相差%.3fm，超过%.3fm"
+                    % (
+                        coarse_difference,
+                        self.fine_position_match_tolerance_m,
+                    )
+                )
+            )
+            return
         camera_pose = self.get_camera_pose(
             candidate["camera_frame"],
             "方框三帧精确认camera实际误差计算",
@@ -2651,7 +2954,6 @@ class Task3InspectAndDropTest:
             camera_y_error,
             self.fine_position_x_tolerance_m,
             self.fine_position_y_tolerance_m,
-            self.fine_position_y_tolerance_m,
         )
         if (
             abs(camera_x_error) <= self.fine_position_x_tolerance_m
@@ -2670,6 +2972,7 @@ class Task3InspectAndDropTest:
             return
         self.box_precision_goal_pending = True
         self.box_recheck_collecting = False
+        self.box_recheck_started_at = None
         self.reset_box_position_queue()
         self.set_state(
             self.AUTO_APPROACH,
@@ -2683,6 +2986,55 @@ class Task3InspectAndDropTest:
             return
         if self.box_position_lock_ready:
             self.begin_box_coarse_camera_alignment()
+            return
+        if self.box_false_positive_recovery_active:
+            if not self.motion_arrived():
+                rospy.loginfo_throttle(
+                    self.log_interval,
+                    "%s：方框误识别恢复中：等待返回识别触发位置，motion=%s",
+                    NODE_NAME,
+                    self.current_motion_state_name(),
+                )
+                self.log_arrival_gate("等待返回方框误识别触发位置")
+                return
+
+            resume_index = self.box_false_positive_resume_search_index
+            self.box_false_positive_recovery_active = False
+            self.box_false_positive_trigger_pose = None
+            self.box_false_positive_resume_search_index = None
+            self.box_coarse_map_x = None
+            self.box_coarse_map_y = None
+            self.box_coarse_camera_frame = None
+            if resume_index < len(self.auto_search_plan):
+                self.auto_search_index = resume_index
+                if self.auto_search_step_goal is None:
+                    self.active_goal = None
+                    self.active_goal_reason = ""
+                else:
+                    self.active_goal = copy.deepcopy(
+                        self.auto_search_step_goal
+                    )
+                    self.active_goal_reason = (
+                        "方框误识别恢复完成，继续原搜索步骤"
+                    )
+                rospy.logwarn(
+                    (
+                        "%s：已返回方框识别触发位置；"
+                        "继续未完成搜索步骤%d/%d：%s"
+                    ),
+                    NODE_NAME,
+                    resume_index + 1,
+                    len(self.auto_search_plan),
+                    self.search_step_description(
+                        *self.auto_search_plan[resume_index]
+                    ),
+                )
+            else:
+                rospy.logwarn(
+                    "%s：已返回方框识别触发位置；搜索路线此前已完成，"
+                    "保持当前位置继续识别至总超时",
+                    NODE_NAME,
+                )
             return
         if self.auto_search_index >= len(self.auto_search_plan):
             rospy.loginfo_throttle(
@@ -3729,7 +4081,11 @@ class Task3InspectAndDropTest:
             timeout_elapsed = self.motion_timeout_elapsed()
 
             if (
-                timeout_elapsed is not None
+                self.state not in (
+                    self.POST_DROP_RETURN_POINT,
+                    self.POST_DROP_ASCEND,
+                )
+                and timeout_elapsed is not None
                 and timeout_elapsed >= self.max_wait_seconds
             ):
                 self.max_wait_timed_out = True
@@ -3937,10 +4293,10 @@ class Task3InspectAndDropTest:
                     ),
                 ):
                     if self.auto_enabled and self.post_drop_motion_enabled:
-                        if not self.start_post_drop_turn():
+                        if not self.start_post_drop_return_point():
                             self.finish_task(
                                 False,
-                                "投放完成，但无法生成投放后返航航向对准目标",
+                                "投放完成，但无法生成边转向边返航目标",
                             )
                             return
                     else:
@@ -3951,9 +4307,6 @@ class Task3InspectAndDropTest:
                             else "人工模式识别和投放动作执行完成",
                         )
                         return
-
-            elif self.state == self.POST_DROP_TURN:
-                self.handle_post_drop_turn()
 
             elif self.state == self.POST_DROP_RETURN_POINT:
                 self.handle_post_drop_return_point()
