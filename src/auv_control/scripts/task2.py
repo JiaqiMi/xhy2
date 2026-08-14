@@ -40,6 +40,8 @@
         3. 水面送水结束后，下潜目标首次发布起固定等待 2 秒，不再以深度或 HOVER 作为推杆回收、返航的转场条件。
         4. 送水点水平移动超过配置时限时直接浮出，避免抵墙或无法进入最终航向范围时永久等待。
         5. 实时路径 TF 丢失时改用锁存的固定最终航向目标，阶段超时继续计时，不再冻结送水或返航流程。
+    2026.8.13
+        1. 新增完整送水模式开关；关闭时仅完成起始定点、推杆前进和停止闭环后结束任务，不发布送水、浮出、下潜或返航目标。
 """
 
 from datetime import datetime
@@ -90,7 +92,7 @@ class Task2V2(object):
     # CSV 每行对应一次 5 Hz 主循环；字段与 motion_supervisor 的完整复盘日志对齐。
     LOG_FIELDS = (
         'wall_time', 'ros_time', 'elapsed_s', 'task_state',
-        'task_state_elapsed_s', 'finished', 'failure_reason',
+        'task_state_elapsed_s', 'full_delivery_mode', 'finished', 'failure_reason',
         'decision_name', 'decision_detail', 'active_goal_age_s',
         'active_goal_x', 'active_goal_y', 'active_goal_z',
         'active_goal_yaw_deg', 'motion_status_age_s',
@@ -168,6 +170,8 @@ class Task2V2(object):
         self.delivery_yaw_deg = float(rospy.get_param('~delivery_yaw_deg', 0.0))
         self.surface_depth = float(rospy.get_param('~surface_depth', 0.0))
         self.final_yaw_deg = float(rospy.get_param('~final_yaw_deg', 0.0))
+        self.full_delivery_mode = bool(rospy.get_param(
+            '~full_delivery_mode', True))
         self.pushrod_speed = int(rospy.get_param('~pushrod_speed', 250))
         self.pushrod_duration = float(rospy.get_param(
             '~pushrod_duration', 10.0))
@@ -302,6 +306,7 @@ class Task2V2(object):
             delivery_yaw_deg=self.delivery_yaw_deg,
             surface_depth=self.surface_depth,
             final_yaw_deg=self.final_yaw_deg,
+            full_delivery_mode=self.full_delivery_mode,
             final_yaw_switch_distance=self.final_yaw_switch_distance,
             pushrod_speed=self.pushrod_speed,
             pushrod_duration=self.pushrod_duration,
@@ -445,6 +450,7 @@ class Task2V2(object):
             'delivery_yaw_deg': self.delivery_yaw_deg,
             'surface_depth': self.surface_depth,
             'final_yaw_deg': self.final_yaw_deg,
+            'full_delivery_mode': self.full_delivery_mode,
             'final_yaw_switch_distance': self.final_yaw_switch_distance,
             'pushrod_speed': self.pushrod_speed,
             'pushrod_duration': self.pushrod_duration,
@@ -679,6 +685,7 @@ class Task2V2(object):
                 self.cycle_log_monotonic_started_at, monotonic_now),
             'task_state': self.state,
             'task_state_elapsed_s': self._stage_elapsed(),
+            'full_delivery_mode': int(self.full_delivery_mode),
             'finished': int(self.finished),
             'failure_reason': self.failure_reason or '',
             'decision_name': decision.get('name', ''),
@@ -1701,6 +1708,11 @@ class Task2V2(object):
         if self.state == self.WAIT_PUSHROD_STOP:
             self._publish_goal()
             if self._actuator_gate(safe_command, '推杆停止'):
+                if not self.full_delivery_mode:
+                    self._finish(
+                        True,
+                        '仅推杆模式：推杆前进和停止闭环均已确认')
+                    return
                 if not self._start_path_navigation(
                         '送水点水平移动（任务深度）',
                         self.delivery_xy[0], self.delivery_xy[1],
