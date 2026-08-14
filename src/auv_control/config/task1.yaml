@@ -1,16 +1,21 @@
 # Task1 比赛完整流程参数。
 # launch 只负责编排节点；任务运行参数统一在本文件中修改。
 
-# 主循环、坐标系、深度与启动航向
+# 主循环、坐标系、深度与启动位姿
 rate: 5.0
 map_frame: map
 # false：使用机器人启动时的当前深度；true：使用 reference_depth
 use_reference_depth: true
-reference_depth: -0.4
-# false：使用机器人启动时的当前航向；true：先旋转到参考航向，
-# 收到 HOVER 且识别/运动话题均有数据后，再定点缓冲 startup_hold_seconds
-use_reference_yaw: true
-reference_yaw_deg: -60.0
+reference_depth: -0.45
+# 启动第一阶段保持当前 XY/航向下潜；深度误差满足该值且收到 HOVER 后，
+# 才进入指定启动 XY/航向阶段。
+startup_depth_tolerance: 0.05
+# false：使用机器人启动时的当前 XY 和当前航向；true：先运行到 map 坐标系
+# 中的指定 XY 并指向指定航向。深度始终由上面的深度配置决定。
+use_reference_start_pose: true
+reference_start_x: 0.0
+reference_start_y: 0.0
+reference_start_yaw_deg: 105
 line_tracking_frame: camera
 
 # motion_supervisor 接口
@@ -35,7 +40,7 @@ startup_hold_seconds: 5.0
 camera_message_timeout: 2.0
 tf_timeout_seconds: 1.0
 line_message_max_age_seconds: 5.0
-search_forward_distance: 1.5 # 起始的前进距离
+search_forward_distance: 0.05 # 起始的前进距离
 search_yaw_angle_deg: 45.0
 search_yaw_sign: 1.0
 # 一轮锁线前搜索：向前、左转、右转、回正；一轮锁线后搜索：左转、右转、回正
@@ -58,7 +63,7 @@ line_classes: line
 line_lock_window_seconds: 0.3
 # 首次锁线后等待曲线冻结的最长时间；超时后只原地搜索一轮
 initial_line_freeze_timeout_seconds: 1.0
-line_min_confidence: 0.65  # line 置信度下限
+line_min_confidence: 0.75  # line 置信度下限
 line_point_merge_distance: 0.0
 line_point_update_alpha: 0.20
 line_curve_max_points: 200
@@ -135,6 +140,8 @@ yellow_return_wait_seconds: 3.0
 black_rotation_angle_deg: 360.0
 black_rotation_direction: 1.0
 black_rotation_step_deg: 150.0
+# 旋转返回 HOVER 后继续保持最终位姿；等待期间仍暂停长线拟合与固定
+black_post_rotation_hover_wait_seconds: 2.0
 
 # 外设默认值
 light1: 0

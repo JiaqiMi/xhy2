@@ -280,12 +280,18 @@ class Task1LineFollow:
         self.reference_depth = float(rospy.get_param(
             "~reference_depth", -0.99
         ))
-        self.use_reference_yaw = bool(rospy.get_param(
-            "~use_reference_yaw", False
+        self.use_reference_start_pose = bool(rospy.get_param(
+            "~use_reference_start_pose", False
         ))
-        self.reference_yaw = wrap_angle(math.radians(float(rospy.get_param(
-            "~reference_yaw_deg", 0.0
-        ))))
+        self.reference_start_x = float(rospy.get_param(
+            "~reference_start_x", 0.0
+        ))
+        self.reference_start_y = float(rospy.get_param(
+            "~reference_start_y", 0.0
+        ))
+        self.reference_start_yaw = wrap_angle(math.radians(float(
+            rospy.get_param("~reference_start_yaw_deg", 0.0)
+        )))
         self.line_topic = rospy.get_param("~line_topic", "/obj/line_message")
         self.finished_topic = rospy.get_param("~finished_topic", "/finished")
         self.camera_topic = rospy.get_param("~camera_topic", "/left/image_raw")
@@ -319,6 +325,9 @@ class Task1LineFollow:
         )))
         self.startup_hold_seconds = max(0.0, float(rospy.get_param(
             "~startup_hold_seconds", 3.0
+        )))
+        self.startup_depth_tolerance = max(0.0, float(rospy.get_param(
+            "~startup_depth_tolerance", 0.05
         )))
 
         # 红线首帧选择和置信度硬下限。
@@ -466,6 +475,8 @@ class Task1LineFollow:
 
         self.state = self.WAIT_CAMERA
         self.start_pose = None
+        self.startup_dive_pose = None
+        self.startup_dive_complete = False
         self.hold_z = None
         self.search_base_yaw = None
         self.startup_hold_started = None
@@ -695,16 +706,21 @@ class Task1LineFollow:
         if current is None:
             return False
         self.start_pose = copy.deepcopy(current)
+        self.startup_dive_pose = copy.deepcopy(current)
         self.hold_z = (
             self.reference_depth
             if self.use_reference_depth
             else current.pose.position.z
         )
+        self.startup_dive_pose.pose.position.z = self.hold_z
+        if self.use_reference_start_pose:
+            self.start_pose.pose.position.x = self.reference_start_x
+            self.start_pose.pose.position.y = self.reference_start_y
         self.start_pose.pose.position.z = self.hold_z
         current_yaw = yaw_from_quaternion(current.pose.orientation)
         self.search_base_yaw = (
-            self.reference_yaw
-            if self.use_reference_yaw
+            self.reference_start_yaw
+            if self.use_reference_start_pose
             else current_yaw
         )
         self.start_pose.pose.orientation = Quaternion(*quaternion_from_euler(
@@ -712,21 +728,29 @@ class Task1LineFollow:
         ))
         self.startup_hold_started = None
         rospy.loginfo(
-            "%s: 当前位姿=(%.2f, %.2f, %.2f)，启动深度=%.2f m（%s），"
-            "启动航向=%.1f deg（%s）",
+            "%s: 当前位姿=(%.2f, %.2f, %.2f)，启动目标="
+            "(%.2f, %.2f, %.2f, %.1f deg)（%s）",
             NODE_NAME,
             current.pose.position.x,
             current.pose.position.y,
             current.pose.position.z,
-            self.hold_z,
-            "参考深度" if self.use_reference_depth else "当前深度",
+            self.start_pose.pose.position.x,
+            self.start_pose.pose.position.y,
+            self.start_pose.pose.position.z,
             math.degrees(self.search_base_yaw),
-            "参考航向" if self.use_reference_yaw else "当前航向",
+            "指定XY/航向" if self.use_reference_start_pose else "当前XY/航向",
         )
-        if self.use_reference_yaw:
+        rospy.loginfo(
+            "%s: 启动第一阶段保持当前 XY/航向，仅下潜到 %.2f m；"
+            "深度误差不超过 %.2f m 且收到 HOVER 后，再前往启动目标",
+            NODE_NAME,
+            self.hold_z,
+            self.startup_depth_tolerance,
+        )
+        if self.use_reference_start_pose:
             rospy.loginfo(
-                "%s: 启动阶段先原地旋转到参考航向；收到 HOVER 且输入"
-                "数据均就绪后开始定点缓冲",
+                "%s: 启动第二阶段前往指定起点并指向指定航向；收到 HOVER"
+                " 且输入数据均就绪后开始定点缓冲",
                 NODE_NAME,
             )
         return True
@@ -2751,11 +2775,61 @@ class Task1LineFollow:
                     NODE_NAME,
                 )
             elif self.state == self.WAIT_CAMERA:
+                current = self.get_current_pose()
+                if not self.startup_dive_complete:
+                    self.publish_dprov(self.startup_dive_pose)
+                    self.current_tracking_point = copy.deepcopy(
+                        self.startup_dive_pose.pose.position
+                    )
+                    depth_error = (
+                        abs(current.pose.position.z - self.hold_z)
+                        if current is not None else float("inf")
+                    )
+                    dive_hover_ready = self.hover_confirmed()
+                    rospy.loginfo_throttle(
+                        2.0,
+                        "%s: 启动下潜；当前/目标深度=%.2f/%.2f m，"
+                        "误差/允许误差=%.2f/%.2f m，HOVER=%s",
+                        NODE_NAME,
+                        (
+                            current.pose.position.z
+                            if current is not None else float("nan")
+                        ),
+                        self.hold_z,
+                        depth_error,
+                        self.startup_depth_tolerance,
+                        "是" if dive_hover_ready else "否",
+                    )
+                    if (
+                        depth_error <= self.startup_depth_tolerance
+                        and dive_hover_ready
+                    ):
+                        self.startup_dive_complete = True
+                        self.write_data_record(
+                            "startup_dive_complete",
+                            actual_depth=round(
+                                current.pose.position.z, 6
+                            ),
+                            target_depth=round(self.hold_z, 6),
+                            depth_error=round(depth_error, 6),
+                            tolerance=round(
+                                self.startup_depth_tolerance, 6
+                            ),
+                            next_goal=self.pose_record(self.start_pose),
+                        )
+                        rospy.loginfo(
+                            "%s: 启动下潜完成；开始前往启动位姿",
+                            NODE_NAME,
+                        )
+                    self.log_debug_cycle()
+                    self.after_control_cycle()
+                    self.rate.sleep()
+                    continue
+
                 self.publish_dprov(self.start_pose)
                 self.current_tracking_point = copy.deepcopy(
                     self.start_pose.pose.position
                 )
-                current = self.get_current_pose()
                 hover_ready = self.hover_confirmed()
                 readiness = self.startup_readiness()
                 inputs_ready = all(readiness.values())
@@ -2766,7 +2840,7 @@ class Task1LineFollow:
                 ):
                     self.startup_hold_started = rospy.Time.now()
                     rospy.loginfo(
-                        "%s: 参考航向、运动节点及识别数据均已就绪；"
+                        "%s: 启动位姿、运动节点及识别数据均已就绪；"
                         "开始启动定点缓冲 %.1f s",
                         NODE_NAME,
                         self.startup_hold_seconds,
@@ -2797,7 +2871,7 @@ class Task1LineFollow:
                     (
                         "定点等待识别"
                         if self.startup_hold_started is not None
-                        else "旋转到参考航向"
+                        else "前往启动位姿"
                     ),
                     ", ".join(
                         "%s=%s" % (

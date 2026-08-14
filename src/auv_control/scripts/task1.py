@@ -153,10 +153,17 @@ class Task1(Task1LineFollow):
                 ),
                 use_reference_depth=self.use_reference_depth,
                 reference_depth=self.reference_depth,
-                use_reference_yaw=self.use_reference_yaw,
-                reference_yaw_deg=round(
-                    math.degrees(self.reference_yaw), 6
-                ),
+                startup_depth_tolerance=self.startup_depth_tolerance,
+                use_reference_start_pose=self.use_reference_start_pose,
+                reference_start_pose={
+                    "position": [
+                        self.reference_start_x,
+                        self.reference_start_y,
+                    ],
+                    "yaw_deg": round(
+                        math.degrees(self.reference_start_yaw), 6
+                    ),
+                },
             )
             rospy.loginfo("%s: 完整数据文件=%s", NODE_NAME, self.data_log_path)
         except OSError as error:
@@ -330,6 +337,11 @@ class Task1(Task1LineFollow):
                 "~black_rotation_step_deg", 90.0
             )))),
         ))
+        self.black_post_rotation_hover_wait_seconds = max(0.0, float(
+            rospy.get_param(
+                "~black_post_rotation_hover_wait_seconds", 2.0
+            )
+        ))
         self.active_marker = None
         self.marker_resume_state = None
         self.marker_resume_curve_version = None
@@ -343,6 +355,7 @@ class Task1(Task1LineFollow):
         self.yellow_phase_started_at = None
         self.yellow_dive_start_depth = None
         self.marker_rotation_state = None
+        self.black_post_rotation_wait_started_at = None
         self.commanded_lights = {"red": 0, "green": 0}
 
         self.actuator_pub = rospy.Publisher(
@@ -437,8 +450,15 @@ class Task1(Task1LineFollow):
             },
             use_reference_depth=self.use_reference_depth,
             reference_depth=self.reference_depth,
-            use_reference_yaw=self.use_reference_yaw,
-            reference_yaw_deg=math.degrees(self.reference_yaw),
+            startup_depth_tolerance=self.startup_depth_tolerance,
+            use_reference_start_pose=self.use_reference_start_pose,
+            reference_start_pose={
+                "position": [
+                    self.reference_start_x,
+                    self.reference_start_y,
+                ],
+                "yaw_deg": math.degrees(self.reference_start_yaw),
+            },
             light_seconds=self.light_seconds,
             gap_seconds=self.gap_seconds,
             yellow_light_count=self.yellow_light_count,
@@ -455,6 +475,9 @@ class Task1(Task1LineFollow):
             black_rotation_direction=self.black_rotation_direction,
             black_rotation_lookahead_deg=math.degrees(
                 self.black_rotation_lookahead
+            ),
+            black_post_rotation_hover_wait_seconds=(
+                self.black_post_rotation_hover_wait_seconds
             ),
             use_known_line_length=self.use_known_line_length,
             known_line_length=self.known_line_length,
@@ -659,6 +682,7 @@ class Task1(Task1LineFollow):
         self.yellow_phase_started_at = None
         self.yellow_dive_start_depth = None
         self.marker_rotation_state = None
+        self.black_post_rotation_wait_started_at = None
 
     def endpoint_finish_ready(self):
         if not super().endpoint_finish_ready():
@@ -1038,8 +1062,10 @@ class Task1(Task1LineFollow):
 
     def stage_description(self):
         if self.state == self.WAIT_CAMERA:
+            if not self.startup_dive_complete:
+                return "保持启动XY和航向并下潜到任务深度"
             if self.startup_hold_started is None:
-                return "保持启动位置并等待航向、识别和运动数据就绪"
+                return "前往启动位姿并等待识别和运动数据就绪"
             return "保持启动位置并执行启动缓冲"
         if (
             self.extension_search_active
@@ -1076,6 +1102,7 @@ class Task1(Task1LineFollow):
             "YELLOW_DIVE": "黄色标志保持水平位置并下潜",
             "YELLOW_RETURN": "黄色标志保持水平位置并回到任务深度",
             "ROTATE": "执行黑色标志连续旋转",
+            "BLACK_HOVER_WAIT": "黑色旋转后保持 HOVER 并等待",
         }
         return action_descriptions.get(
             self.marker_action_phase, "执行%s标志动作" % kind_name
@@ -1164,6 +1191,9 @@ class Task1(Task1LineFollow):
             use_reference_depth=self.use_reference_depth,
             reference_depth=self.reference_depth,
             active_depth=self.hold_z,
+            startup_depth_tolerance=self.startup_depth_tolerance,
+            startup_dive_complete=self.startup_dive_complete,
+            startup_dive_goal=self.pose_record(self.startup_dive_pose),
             yellow_contact_enabled=self.yellow_contact_enabled,
             yellow_alignment_frame=self.yellow_alignment_frame,
             yellow_alignment_pose=self.pose_record(
@@ -1219,14 +1249,17 @@ class Task1(Task1LineFollow):
                 ),
                 "goal": self.pose_record(self.fallback_goal),
             },
-            use_reference_yaw=self.use_reference_yaw,
-            reference_yaw_deg=round(
-                math.degrees(self.reference_yaw), 6
-            ),
-            active_start_yaw_deg=(
-                round(math.degrees(self.search_base_yaw), 6)
-                if self.search_base_yaw is not None else None
-            ),
+            use_reference_start_pose=self.use_reference_start_pose,
+            reference_start_pose={
+                "position": [
+                    self.reference_start_x,
+                    self.reference_start_y,
+                ],
+                "yaw_deg": round(
+                    math.degrees(self.reference_start_yaw), 6
+                ),
+            },
+            active_start_pose=self.pose_record(self.start_pose),
         )
 
     def log_task_summary(self):
@@ -1685,6 +1718,7 @@ class Task1(Task1LineFollow):
         self.yellow_phase_started_at = None
         self.yellow_dive_start_depth = None
         self.marker_rotation_state = None
+        self.black_post_rotation_wait_started_at = None
         self.current_tracking_point = copy.deepcopy(
             self.marker_action_hold_goal.pose.position
         )
@@ -2043,6 +2077,47 @@ class Task1(Task1LineFollow):
             self.run_yellow_contact()
         elif self.marker_action_phase == "ROTATE":
             if self.run_black_rotation():
+                if self.black_post_rotation_hover_wait_seconds <= 0.0:
+                    self.complete_marker_action()
+                else:
+                    self.marker_action_phase = "BLACK_HOVER_WAIT"
+                    self.black_post_rotation_wait_started_at = rospy.Time.now()
+                    self.write_data_record(
+                        "marker_action_phase",
+                        marker=self.marker_entry_record(self.active_marker),
+                        next_phase=self.marker_action_phase,
+                        wait_seconds=(
+                            self.black_post_rotation_hover_wait_seconds
+                        ),
+                        goal=self.pose_record(
+                            self.marker_rotation_state.get("goal")
+                        ),
+                    )
+                    rospy.loginfo(
+                        "%s: 黑色旋转已返回 HOVER；保持最终位姿 %.1f s，"
+                        "期间继续暂停长线融合",
+                        NODE_NAME,
+                        self.black_post_rotation_hover_wait_seconds,
+                    )
+        elif self.marker_action_phase == "BLACK_HOVER_WAIT":
+            goal = (
+                self.marker_rotation_state.get("goal")
+                if self.marker_rotation_state is not None else None
+            )
+            if goal is None:
+                goal = self.marker_action_hold_goal
+            self.publish_motion_goal(goal)
+            elapsed = (
+                rospy.Time.now() - self.black_post_rotation_wait_started_at
+            ).to_sec()
+            rospy.loginfo_throttle(
+                1.0,
+                "%s: 黑色旋转后保持 HOVER %.1f/%.1f s；长线融合暂停",
+                NODE_NAME,
+                elapsed,
+                self.black_post_rotation_hover_wait_seconds,
+            )
+            if elapsed >= self.black_post_rotation_hover_wait_seconds:
                 self.complete_marker_action()
 
     def complete_marker_action(self):
@@ -2089,6 +2164,7 @@ class Task1(Task1LineFollow):
         self.yellow_phase_started_at = None
         self.yellow_dive_start_depth = None
         self.marker_rotation_state = None
+        self.black_post_rotation_wait_started_at = None
         if resume_state == self.FOLLOW_LINE:
             self.last_los_goal = None
             self.hold_target = None
